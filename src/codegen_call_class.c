@@ -194,7 +194,8 @@ static void emit_respond_to_runtime_name(Compiler *c, int id, Buf *b, int recv, 
   buf_printf(b, " || sp_str_in_list(_n%d, (const char *const[]){", tv);
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *ts = &c->scopes[s];
-    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form) {
+    if (ts->name && ts->def_node >= 0 && ts->class_id < 0 && !ts->is_cmethod && !ts->is_proc_form &&
+        !name_is_synth_method(c, ts->name) && !comp_scope_is_private_helper(c, s)) {
       buf_puts(b, "\"");
       emit_c_escaped(b, ts->name);
       buf_puts(b, "\", ");
@@ -624,7 +625,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
         buf_printf(b, "%d", md_priv ? 1 : 0);
         return 1;
       }
-      if (name_is_synth_method(c, qm) || comp_is_undeffed_in_chain(c, ci, qm)) { buf_puts(b, "FALSE"); return 1; }
+      if (name_is_synth_method(c, qm) || comp_method_is_private_helper(c, ci, qm) || comp_is_undeffed_in_chain(c, ci, qm)) { buf_puts(b, "FALSE"); return 1; }
       int parent = c->classes[ci].parent;
       int mc = -1;
       int mi = comp_method_in_chain(c, ci, qm, &mc);
@@ -5353,7 +5354,8 @@ void emit_refl_method_defined(Compiler *c, Buf *b) {
     int nrows = 0;
     for (int i = 0; i < nn; i++) {
       const char *qm = names[i];
-      if (sp_streq(qm, "initialize") || name_is_synth_method(c, qm) || comp_is_undeffed_in_chain(c, k, qm)) continue;
+      if (sp_streq(qm, "initialize") || name_is_synth_method(c, qm) || comp_method_is_private_helper(c, k, qm) ||
+          comp_is_undeffed_in_chain(c, k, qm)) continue;
       char base[256]; base[0] = 0;
       int is_setter = setter_base_name(qm, base, sizeof base);
       int mc = -1;

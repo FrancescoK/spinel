@@ -168,6 +168,7 @@ int builtin_kernel_fn_span(const char *name, int with_block, int *lo, int *hi);
 int builtin_arity_violation(Compiler *c, int id);
 int is_handler_proc_block(Compiler *c, int id);
 int builtin_class_id(const char *name);
+int class_is_prim_reopen(Compiler *c, int k);
 int stdlib_name_from_source(const char *n);
 int builtin_class_parent_id(int id);
 int desugar_builtin_reopen_named_superclass(Compiler *c);
@@ -617,6 +618,7 @@ int desugar_root_scoped_constants(Compiler *c);
 int desugar_errno_aliases(Compiler *c);
 const char *errno_canonical_name(const char *n);   /* analyze_util.c */
 void desugar_class_reopen(Compiler *c);
+int is_class_const(const NodeTable *nt, int id);   /* a `Class` constant read */
 int desugar_def_unless_method_defined(Compiler *c);
 int desugar_class_body_self_calls(Compiler *c);
 int desugar_builtins(Compiler *c);
@@ -684,6 +686,7 @@ int desugar_extend_self(Compiler *c);
 int desugar_instance_eval_defs(Compiler *c);
 int enumerator_own_with_object(Compiler *c, int id);
 int block_body_breaks(const NodeTable *nt, int node);   /* a break that leaves this block */
+const LowerRow *lower_row_nt(const NodeTable *nt, int id, int family);   /* the family's row call id's shape matches */
 int desugar_kernel_reopen(Compiler *c);
 int desugar_singleton_class_mixin(Compiler *c);
 int desugar_explicit_receiver_mixin(Compiler *c);
@@ -699,6 +702,7 @@ int desugar_fiber_prepended_init(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
 int desugar_static_class_eval(Compiler *c);
+int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 void desugar_nil_block_arg(Compiler *c);
 int desugar_compose_method_operand(Compiler *c);
 int desugar_mutator_receiver_value(Compiler *c);

@@ -4378,12 +4378,7 @@ static void cf_collect_dyn(CF *f) {
           nt_kind(nt, blk0) == NK_BlockNode && nt_int(nt, blk0, "sym_proc_block", 0))
         cf_dyn_add(f, nt_str(nt, blk0, "sym_proc"));
     }
-    if (!sp_streq(cn, "send") && !sp_streq(cn, "__send__") && !sp_streq(cn, "public_send") &&
-        !sp_streq(cn, "method") && !sp_streq(cn, "public_method") && !sp_streq(cn, "instance_method") &&
-        !sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method") &&
-        !sp_streq(cn, "alias_method") && !sp_streq(cn, "singleton_method") && !sp_streq(cn, "respond_to?") &&
-        !sp_streq(cn, "method_defined?") && !sp_streq(cn, "instance_method"))
-      continue;
+    if (!is_method_name_reflection(cn)) continue;
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     int any = 0;
@@ -5702,4 +5697,17 @@ int cls_fact_idx(Compiler *c, int node) {
   if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return -1;
   int p = c->cls_fact[node];
   return p <= 0 || p >= c->ncls_pool ? -1 : p;
+}
+
+/* See compiler.h. The closed world's value from anywhere (f->every): each
+   class of the program's, each Class object and a builtin */
+int cls_fact_unbounded(Compiler *c, int node) {
+  const ClsSet *s = cls_fact_node(c, node);
+  if (!s || s->all) return 1;
+  if (!s->bv || s->n < c->nclasses) return 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!cls_set_has(s, k + c->nclasses)) return 0;
+    if (!cls_set_has(s, k) && !comp_class_is_module(c, &c->classes[k])) return 0;
+  }
+  return 1;
 }

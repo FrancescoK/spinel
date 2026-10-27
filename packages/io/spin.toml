@@ -1,5 +1,6 @@
 [package]
 name = "io"
+boot = "io/buffer"   # CRuby has IO::Buffer before a program runs (tools/gen_package_facts.rb)
 
 # Pre-installed spin package: ships with the compiler, versioned with it.
 # A pure native binding: no carried C -- IO::Buffer's implementation lives

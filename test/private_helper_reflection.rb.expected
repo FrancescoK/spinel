@@ -1,0 +1,35 @@
+[0, 1, 4]
+2
+6
+8
+["__enumw_map", false, false, false, false]
+["__enumw_map", NoMethodError, NoMethodError, NoMethodError]
+["__enumw_map", false, false]
+["__enum_count__0", false, false, false, false]
+["__enum_count__0", NoMethodError, NoMethodError, NoMethodError]
+["__enum_count__0", false, false]
+["__int_double__0", false, false, false, false]
+["__int_double__0", NoMethodError, NoMethodError, NoMethodError]
+["__int_double__0", false, false]
+["__remove", false, false, true, false]
+["__remove", NoMethodError, NoMethodError, NoMethodError]
+["__remove", false, true]
+[]
+["__remove", false, false, NoMethodError]
+["__member?", false, false, NoMethodError]
+true
+true
+[]
+[]
+NameError
+["__int_twice", true, false, false]
+["__cmp_key", false, true, true]
+["go", false, true, true]
+[:__cmp_key, :__remove, :go]
+10
+7
+["__remove", true, true, "box 1", "box 2"]
+["__remove", false, false, NoMethodError]
+[:__remove]
+[]
+[:__cmp_key, :__remove, :go]

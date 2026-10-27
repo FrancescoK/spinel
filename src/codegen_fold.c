@@ -6131,6 +6131,12 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, innerIndent);
     if (bp_slot_oint(c, block, BP0(c, block), k)) buf_printf(g_pre, "%s lv_%s = sp_%sArray_oget(_t%d, _t%d);\n", oint_ctype(et_elem), p0, k, trecv, ti);
     else { emit_ctype(c, one_elem_decl_type(k, et_elem), g_pre); buf_printf(g_pre, " lv_%s = sp_%sArray_get%s(_t%d, _t%d);\n", p0, k, one_elem_get_sfx(k), trecv, ti); }
+    /* an element of a pointer array is held by the shadow alone once the
+       block takes it out of the array, and the block can allocate */
+    if (sp_streq(k, "Ptr") && ty_gc_rootable(c, et_elem)) {
+      char sn[200]; snprintf(sn, sizeof sn, "lv_%s", p0);
+      emit_indent(g_pre, innerIndent); emit_gc_root_var(c, et_elem, sn, g_pre); buf_puts(g_pre, "\n");
+    }
   }
   else if (as_handle) {
     emit_indent(g_pre, bodyIndent);

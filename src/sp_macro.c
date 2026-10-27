@@ -44,9 +44,9 @@
  * The macro's ivars are not followed: a macro that reads or writes one is not
  * evaluated, and its call stays as written. So does anything else the
  * evaluator does not understand. A replacement keeps the call's line count. */
-typedef enum { MV_UNDEF = 0, MV_NIL, MV_TRUE, MV_FALSE, MV_INT, MV_STR, MV_SYM, MV_ARR } MvKind;
-
-typedef struct Mv { MvKind k; long long i; char *s; struct Mv *a; int n; } Mv;
+/* the values it computes with and their operations, which every
+   compile-time evaluator shares */
+#include "ct_value.h"
 
 typedef struct { char *name; Mv v; } MxVar;
 
@@ -64,27 +64,13 @@ typedef struct {
   const pm_node_t *sites[512]; /* (debug) the expanded calls */
 } MxMacro;
 
-typedef struct MxBuf { char *p; size_t len, cap; } MxBuf;
-
 static MxMacro *g_mx_macros; static int g_mx_nmacros, g_mx_cmacros;
-
-static void mxb_putn(MxBuf *b, const char *s, size_t n) {
-  if (b->len + n + 1 > b->cap) {
-    b->cap = (b->len + n + 1) * 2 + 64;
-    b->p = realloc(b->p, b->cap);
-  }
-  memcpy(b->p + b->len, s, n);
-  b->len += n;
-  b->p[b->len] = 0;
-}
-
-static void mxb_puts(MxBuf *b, const char *s) { mxb_putn(b, s, strlen(s)); }
 
 typedef struct {
   MxVar loc[64]; int nloc;
   MxVar *iv; int *niv;    /* the class's macro state: the ivars its macros keep */
   int *unsure;            /* the class may have state the evaluator did not see */
-  MxBuf *out;             /* residual code, or NULL: evaluate only */
+  MvBuf *out;             /* residual code, or NULL: evaluate only */
   int returned; Mv ret;
   int stopped;            /* an unconditional raise was emitted */
   int in_ffi_rescue;      /* inside the rescue of a begin that attaches a function */
@@ -95,42 +81,7 @@ typedef struct {
   const char *clspath;    /* the name of the class it expands in, when `class X` spells it for certain */
 } MxCtx;
 
-static Mv mv_nil(void) { Mv v; memset(&v, 0, sizeof v); v.k = MV_NIL; return v; }
-
-static Mv mv_str(const char *s, size_t n, MvKind k) {
-  Mv v; memset(&v, 0, sizeof v); v.k = k;
-  v.s = malloc(n + 1); memcpy(v.s, s, n); v.s[n] = 0;
-  return v;
-}
-
-static int mv_truthy(Mv v) { return v.k != MV_NIL && v.k != MV_FALSE && v.k != MV_UNDEF; }
-
-static Mv mv_undef(void) { Mv v; memset(&v, 0, sizeof v); v.k = MV_UNDEF; return v; }
-
 static char *mx_name(pm_constant_id_t id) { return cstr(id); }
-
-static void mv_to_s(Mv v, MxBuf *b) {
-  char tmp[32];
-  switch (v.k) {
-  case MV_NIL: break;
-  case MV_TRUE: mxb_puts(b, "true"); break;
-  case MV_FALSE: mxb_puts(b, "false"); break;
-  case MV_INT: snprintf(tmp, sizeof tmp, "%lld", v.i); mxb_puts(b, tmp); break;
-  case MV_STR: case MV_SYM: mxb_puts(b, v.s); break;
-  default: break;
-  }
-}
-
-static int mx_sym_plain(const char *s) {
-  if (!*s) return 0;
-  if (!(isalpha((unsigned char)s[0]) || s[0] == '_')) return 0;
-  for (const char *p = s; *p; p++) {
-    if (isalnum((unsigned char)*p) || *p == '_') continue;
-    if ((*p == '?' || *p == '!' || *p == '=') && p[1] == 0) continue;
-    return 0;
-  }
-  return 1;
-}
 
 /* ---- may a string module_eval / class_eval be read as the body's own code?
    Text that a class body evaluates is spliced into it (a macro's module_eval
@@ -201,74 +152,6 @@ static int sp_snippet_graftable(const char *src) {
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   return ok;
-}
-
-static void mx_quote(const char *s, MxBuf *b) {
-  mxb_puts(b, "\"");
-  for (const char *p = s; *p; p++) {
-    char e[8];
-    unsigned char ch = (unsigned char)*p;
-    if (ch == '"' || ch == '\\' || ch == '#') { e[0] = '\\'; e[1] = (char)ch; e[2] = 0; }
-    else if (ch == '\n') strcpy(e, "\\n");
-    else if (ch == '\t') strcpy(e, "\\t");
-    else if (ch < 0x20) snprintf(e, sizeof e, "\\x%02x", ch);
-    else { e[0] = (char)ch; e[1] = 0; }
-    mxb_puts(b, e);
-  }
-  mxb_puts(b, "\"");
-}
-
-static void mv_inspect(Mv v, MxBuf *b) {
-  switch (v.k) {
-  case MV_NIL: mxb_puts(b, "nil"); break;
-  case MV_STR: mx_quote(v.s, b); break;
-  case MV_SYM:
-    mxb_puts(b, ":");
-    if (mx_sym_plain(v.s)) mxb_puts(b, v.s); else mx_quote(v.s, b);
-    break;
-  case MV_ARR:
-    mxb_puts(b, "[");
-    for (int i = 0; i < v.n; i++) { if (i) mxb_puts(b, ", "); mv_inspect(v.a[i], b); }
-    mxb_puts(b, "]");
-    break;
-  default: mv_to_s(v, b); break;
-  }
-}
-
-/* Does mv_inspect spell v exactly as CRuby's inspect does? It quotes for Ruby
-   source (`"\#"`, `"\x1b"`), which reads back as the same value but is not
-   the text CRuby prints, and quotes every operator Symbol (`:"+"`), so a
-   value whose inspect becomes program DATA (output, a constant) is followed
-   only when it is plain: printable ASCII Strings with nothing to escape,
-   Symbols spelled as identifiers, integers, nil, booleans and Arrays of them. */
-static int mv_inspect_exact(Mv v) {
-  switch (v.k) {
-  case MV_NIL: case MV_TRUE: case MV_FALSE: case MV_INT: return 1;
-  case MV_STR:
-    for (const char *p = v.s; *p; p++) {
-      unsigned char ch = (unsigned char)*p;
-      if (ch < 0x20 || ch > 0x7e || ch == '"' || ch == '\\' || ch == '#') return 0;
-    }
-    return 1;
-  case MV_SYM: return mx_sym_plain(v.s);
-  case MV_ARR:
-    for (int i = 0; i < v.n; i++) if (!mv_inspect_exact(v.a[i])) return 0;
-    return 1;
-  default: return 0;
-  }
-}
-
-static int mv_eq(Mv a, Mv b) {
-  if (a.k != b.k) return 0;
-  switch (a.k) {
-  case MV_INT: return a.i == b.i;
-  case MV_STR: case MV_SYM: return strcmp(a.s, b.s) == 0;
-  case MV_ARR:
-    if (a.n != b.n) return 0;
-    for (int i = 0; i < a.n; i++) if (!mv_eq(a.a[i], b.a[i])) return 0;
-    return 1;
-  default: return 1;
-  }
 }
 
 static Mv *mx_lookup(MxVar *vars, int n, const char *name) {
@@ -517,7 +400,7 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out);
 
 static int mx_exec_stmts(MxCtx *c, pm_statements_node_t *s);
 
-static int mx_residual(MxCtx *c, pm_node_t *n, MxBuf *b);
+static int mx_residual(MxCtx *c, pm_node_t *n, MvBuf *b);
 
 static int mx_call_macro(MxCtx *c, MxMacro *m, pm_arguments_node_t *args, Mv *ret);
 static int mx_template_writes(const char *code);
@@ -536,12 +419,12 @@ static int mx_eval_list(MxCtx *c, pm_node_list_t *l, Mv *out) {
 }
 
 /* the value of a string-ish node's parts */
-static int mx_eval_parts(MxCtx *c, pm_node_list_t *parts, MxBuf *b) {
+static int mx_eval_parts(MxCtx *c, pm_node_list_t *parts, MvBuf *b) {
   for (size_t i = 0; i < parts->size; i++) {
     pm_node_t *p = parts->nodes[i];
     if (PM_NODE_TYPE(p) == PM_STRING_NODE) {
       pm_string_node_t *s = (pm_string_node_t *)p;
-      mxb_putn(b, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
+      mvb_putn(b, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
     }
     else if (PM_NODE_TYPE(p) == PM_EMBEDDED_STATEMENTS_NODE) {
       pm_embedded_statements_node_t *e = (pm_embedded_statements_node_t *)p;
@@ -559,91 +442,18 @@ static int mx_eval_parts(MxCtx *c, pm_node_list_t *parts, MxBuf *b) {
   return 1;
 }
 
-static int mx_ascii(const char *s) {
-  for (; *s; s++) if ((unsigned char)*s >= 0x80) return 0;
-  return 1;
-}
-
-/* ---- the patterns gsub / sub follow: plain text, one character class or
-   escaped character with an optional `+`, or a run of literal characters --
-   matched over ASCII bytes, as CRuby's engine matches them there */
-typedef struct { int lit; char set[256]; int plus; const char *text; size_t tn; } MxPat;
-
-static int mx_pat_class(const char *p, const char *e, MxPat *pt) {
-  /* p after the `[`; e the end of the pattern */
-  int neg = 0;
-  memset(pt->set, 0, sizeof pt->set);
-  if (p < e && *p == '^') { neg = 1; p++; }
-  int first = 1;
-  while (p < e && (*p != ']' || first)) {
-    unsigned char ch;
-    if (*p == '\\') {
-      if (p + 1 >= e || isalnum((unsigned char)p[1])) return -1;
-      ch = (unsigned char)p[1]; p += 2;
-    }
-    else if (*p == '[' || (*p == '&' && p + 1 < e && p[1] == '&')) return -1;   /* nested, or an intersection */
-    else ch = (unsigned char)*p++;
-    if (ch >= 0x80) return -1;
-    if (p + 1 < e && *p == '-' && p[1] != ']') {
-      unsigned char hi;
-      if (p[1] == '\\') {
-        if (p + 2 >= e || isalnum((unsigned char)p[2])) return -1;
-        hi = (unsigned char)p[2]; p += 3;
-      }
-      else { hi = (unsigned char)p[1]; p += 2; }
-      if (hi < ch || hi >= 0x80) return -1;
-      for (unsigned x = ch; x <= hi; x++) pt->set[x] = 1;
-    }
-    else pt->set[ch] = 1;
-    first = 0;
-  }
-  if (p >= e) return -1;
-  if (neg) for (int x = 0; x < 256; x++) pt->set[x] = !pt->set[x];
-  return 0;
-}
-
-static int mx_pattern(pm_node_t *n, MxCtx *c, MxPat *pt) {
+static int mx_pattern(pm_node_t *n, MxCtx *c, MvPat *pt) {
   memset(pt, 0, sizeof *pt);
   if (PM_NODE_TYPE(n) == PM_REGULAR_EXPRESSION_NODE) {
     pm_regular_expression_node_t *re = (pm_regular_expression_node_t *)n;
     if (n->flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE | PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
                     PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE | PM_REGULAR_EXPRESSION_FLAGS_ONCE)) return 0;
-    const char *p = (const char *)re->content_loc.start, *e = (const char *)re->content_loc.end;
-    if (p >= e) return 0;
-    const char *q = NULL;
-    if (*p == '[') {
-      const char *r = p + 1;
-      int first = 1;
-      while (r < e && (*r != ']' || first)) { if (*r == '\\') r++; r++; first = 0; }
-      if (r >= e) return 0;
-      if (mx_pat_class(p + 1, e, pt) < 0) return 0;
-      q = r + 1;
-    }
-    else if (*p == '\\' && p + 1 < e && !isalnum((unsigned char)p[1]) && (unsigned char)p[1] < 0x80) {
-      pt->set[(unsigned char)p[1]] = 1; q = p + 2;
-    }
-    if (q) {
-      if (q < e && *q == '+') { pt->plus = 1; q++; }
-      return q == e;
-    }
-    /* a run of literal characters */
-    for (const char *r = p; r < e; r++)
-      if (strchr(".^$|()?*+{}[]\\/#", *r) || (unsigned char)*r >= 0x80) return 0;
-    pt->lit = 1; pt->text = p; pt->tn = (size_t)(e - p);
-    return 1;
+    return mv_pat_regexp((const char *)re->content_loc.start, (const char *)re->content_loc.end, pt);
   }
   Mv v;
-  if (!mx_eval(c, n, &v) || v.k != MV_STR || !mx_ascii(v.s) || !v.s[0]) return 0;
+  if (!mx_eval(c, n, &v) || v.k != MV_STR || !mv_ascii(v.s) || !v.s[0]) return 0;
   pt->lit = 1; pt->text = v.s; pt->tn = strlen(v.s);
   return 1;
-}
-
-/* the length of a match of pt at s (0: none) */
-static size_t mx_pat_at(const MxPat *pt, const char *s) {
-  if (pt->lit) return strncmp(s, pt->text, pt->tn) == 0 ? pt->tn : 0;
-  size_t n = 0;
-  while (s[n] && pt->set[(unsigned char)s[n]]) { n++; if (!pt->plus) break; }
-  return n;
 }
 
 static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
@@ -657,8 +467,8 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
     if (m && c->depth < 16) {
       /* a macro whose value is used: one that leaves residual code, or no
          value the evaluator made, has none here -- the call stays in the text */
-      MxBuf scratch = {0};
-      MxBuf *sv_out = c->out;
+      MvBuf scratch = {0};
+      MvBuf *sv_out = c->out;
       MxVar sv_iv[64]; int sv_niv = c->niv ? *c->niv : 0;
       if (c->iv) memcpy(sv_iv, c->iv, sizeof(MxVar) * (size_t)sv_niv);
       c->out = &scratch;
@@ -677,126 +487,16 @@ static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
   }
   Mv r;
   if (!mx_eval(c, n->receiver, &r)) goto done;
-  if (argc == 2 && (strcmp(name, "gsub") == 0 || strcmp(name, "sub") == 0) && r.k == MV_STR && mx_ascii(r.s)) {
-    MxPat pt; Mv rep;
-    /* a replacement with a backslash names a group: not followed */
-    if (!mx_pattern(args->nodes[0], c, &pt) || !mx_eval(c, args->nodes[1], &rep) || rep.k != MV_STR ||
-        strchr(rep.s, '\\')) goto done;
-    MxBuf b = {0};
-    int all = name[0] == 'g', did = 0;
-    for (const char *p = r.s; *p; ) {
-      size_t m = (all || !did) ? mx_pat_at(&pt, p) : 0;
-      if (m) { mxb_puts(&b, rep.s); p += m; did = 1; }
-      else mxb_putn(&b, p++, 1);
-    }
-    *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
+  if (argc == 2 && (strcmp(name, "gsub") == 0 || strcmp(name, "sub") == 0) && r.k == MV_STR && mv_ascii(r.s)) {
+    MvPat pt; Mv rep;
+    if (mx_pattern(args->nodes[0], c, &pt) && mx_eval(c, args->nodes[1], &rep) && rep.k == MV_STR)
+      ok = mv_sub(r, &pt, rep.s, name[0] == 'g', out);
     goto done;
   }
   Mv a0; memset(&a0, 0, sizeof a0);
   if (argc == 1 && !mx_eval(c, args->nodes[0], &a0)) goto done;
   if (argc > 1) goto done;
-  if (argc == 0) {
-    if (strcmp(name, "nil?") == 0) { *out = mv_nil(); out->k = r.k == MV_NIL ? MV_TRUE : MV_FALSE; ok = 1; }
-    else if (strcmp(name, "!") == 0) { *out = mv_nil(); out->k = mv_truthy(r) ? MV_FALSE : MV_TRUE; ok = 1; }
-    else if (strcmp(name, "to_s") == 0 && r.k != MV_ARR) {
-      MxBuf b = {0}; mv_to_s(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-    }
-    else if (strcmp(name, "to_sym") == 0 && (r.k == MV_STR || r.k == MV_SYM)) { *out = r; out->k = MV_SYM; ok = 1; }
-    else if (strcmp(name, "inspect") == 0 && mv_inspect_exact(r)) {
-      MxBuf b = {0}; mv_inspect(r, &b); *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-    }
-    /* case mapping and length only over ASCII: CRuby's are by character,
-       with Unicode case rules */
-    else if ((strcmp(name, "downcase") == 0 || strcmp(name, "upcase") == 0 ||
-              strcmp(name, "capitalize") == 0) && (r.k == MV_STR || r.k == MV_SYM) && mx_ascii(r.s)) {
-      *out = mv_str(r.s, strlen(r.s), r.k);
-      for (char *p = out->s; *p; p++) {
-        if (name[0] == 'd') *p = (char)tolower((unsigned char)*p);
-        else if (name[0] == 'u') *p = (char)toupper((unsigned char)*p);
-        else *p = (char)(p == out->s ? toupper((unsigned char)*p) : tolower((unsigned char)*p));
-      }
-      ok = 1;
-    }
-    else if (strcmp(name, "compact") == 0 && r.k == MV_ARR) {
-      Mv v = r; v.a = calloc(r.n + 1, sizeof(Mv)); v.n = 0;
-      for (int i = 0; i < r.n; i++) if (r.a[i].k != MV_NIL) v.a[v.n++] = r.a[i];
-      *out = v; ok = 1;
-    }
-    else if (strcmp(name, "reverse") == 0 && r.k == MV_ARR) {
-      Mv v = r; v.a = calloc(r.n + 1, sizeof(Mv));
-      for (int i = 0; i < r.n; i++) v.a[i] = r.a[r.n - i - 1];
-      *out = v; ok = 1;
-    }
-    else if ((strcmp(name, "size") == 0 || strcmp(name, "length") == 0) && r.k != MV_NIL) {
-      *out = mv_nil(); out->k = MV_INT;
-      out->i = r.k == MV_ARR ? r.n : (r.k == MV_STR || r.k == MV_SYM) ? (long long)strlen(r.s) : 0;
-      ok = r.k == MV_ARR || ((r.k == MV_STR || r.k == MV_SYM) && mx_ascii(r.s));
-    }
-    else if ((strcmp(name, "first") == 0 || strcmp(name, "last") == 0) && r.k == MV_ARR) {
-      *out = r.n == 0 ? mv_nil() : r.a[name[0] == 'f' ? 0 : r.n - 1]; ok = 1;
-    }
-    else if (strcmp(name, "join") == 0 && r.k == MV_ARR) {
-      /* a nested array is flattened by CRuby: not followed here */
-      int flat = 1;
-      for (int i = 0; i < r.n; i++) if (r.a[i].k == MV_ARR) flat = 0;
-      if (flat) {
-        MxBuf b = {0};
-        for (int i = 0; i < r.n; i++) mv_to_s(r.a[i], &b);
-        *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-      }
-    }
-    goto done;
-  }
-  /* one argument */
-  if (strcmp(name, "join") == 0 && r.k == MV_ARR && (a0.k == MV_STR || a0.k == MV_NIL)) {
-    int flat = 1;
-    for (int i = 0; i < r.n; i++) if (r.a[i].k == MV_ARR) flat = 0;
-    if (!flat) goto done;
-    MxBuf b = {0};
-    for (int i = 0; i < r.n; i++) {
-      if (i && a0.k == MV_STR) mxb_puts(&b, a0.s);
-      mv_to_s(r.a[i], &b);
-    }
-    *out = mv_str(b.p ? b.p : "", b.len, MV_STR); free(b.p); ok = 1;
-  }
-  else if ((strcmp(name, "<") == 0 || strcmp(name, ">") == 0 || strcmp(name, "<=") == 0 ||
-            strcmp(name, ">=") == 0) && r.k == MV_INT && a0.k == MV_INT) {
-    int t = name[0] == '<' ? (name[1] ? r.i <= a0.i : r.i < a0.i) : (name[1] ? r.i >= a0.i : r.i > a0.i);
-    *out = mv_nil(); out->k = t ? MV_TRUE : MV_FALSE; ok = 1;
-  }
-  else if (strcmp(name, "==") == 0 || strcmp(name, "!=") == 0) {
-    int eq = mv_eq(r, a0);
-    *out = mv_nil(); out->k = (eq == (name[0] == '=')) ? MV_TRUE : MV_FALSE; ok = 1;
-  }
-  /* an Integer result past 64 bits is a Bignum in CRuby: not followed */
-  else if (strcmp(name, "+") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_add_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "*") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_mul_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "**") == 0 && r.k == MV_INT && a0.k == MV_INT && a0.i >= 0 && a0.i < 64) {
-    long long v = 1; int of = 0;
-    for (long long q = 0; q < a0.i && !of; q++) of = __builtin_mul_overflow(v, r.i, &v);
-    *out = r; out->i = v; ok = !of;
-  }
-  else if (strcmp(name, "-") == 0 && r.k == MV_INT && a0.k == MV_INT) {
-    *out = r; ok = !__builtin_sub_overflow(r.i, a0.i, &out->i);
-  }
-  else if (strcmp(name, "+") == 0 && r.k == MV_STR && a0.k == MV_STR) {
-    MxBuf b = {0}; mxb_puts(&b, r.s); mxb_puts(&b, a0.s);
-    *out = mv_str(b.p, b.len, MV_STR); free(b.p); ok = 1;
-  }
-  else if (strcmp(name, "+") == 0 && r.k == MV_ARR && a0.k == MV_ARR) {
-    Mv v = r; v.a = calloc(r.n + a0.n + 1, sizeof(Mv)); v.n = 0;
-    for (int i = 0; i < r.n; i++) v.a[v.n++] = r.a[i];
-    for (int i = 0; i < a0.n; i++) v.a[v.n++] = a0.a[i];
-    *out = v; ok = 1;
-  }
-  else if (strcmp(name, "[]") == 0 && r.k == MV_ARR && a0.k == MV_INT) {
-    long long ix = a0.i < 0 ? r.n + a0.i : a0.i;
-    *out = (ix >= 0 && ix < r.n) ? r.a[ix] : mv_nil(); ok = 1;
-  }
+  ok = mv_call(name, r, (int)argc, a0, out);
 done:
   free(name);
   return ok;
@@ -835,7 +535,7 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
   case PM_INTERPOLATED_STRING_NODE: case PM_INTERPOLATED_SYMBOL_NODE: {
     pm_node_list_t *parts = PM_NODE_TYPE(n) == PM_INTERPOLATED_STRING_NODE
       ? &((pm_interpolated_string_node_t *)n)->parts : &((pm_interpolated_symbol_node_t *)n)->parts;
-    MxBuf b = {0};
+    MvBuf b = {0};
     if (!mx_eval_parts(c, parts, &b)) { free(b.p); return 0; }
     *out = mv_str(b.p ? b.p : "", b.len, PM_NODE_TYPE(n) == PM_INTERPOLATED_STRING_NODE ? MV_STR : MV_SYM);
     free(b.p);
@@ -915,7 +615,7 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
    the macro's local only at that depth (a block parameter of the same name
    is not). */
 
-typedef struct { MxCtx *c; const uint8_t *from; MxBuf *b; int bad; uint32_t scope; int clauses; int interp; } MxSubst;
+typedef struct { MxCtx *c; const uint8_t *from; MvBuf *b; int bad; uint32_t scope; int clauses; int interp; } MxSubst;
 
 static int mx_const_defined(pm_constant_id_t id) {
   char *nm = mx_name(id);
@@ -1035,10 +735,10 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
      which a mutation changes; the substituted literal is a new one each time
      (and a frozen String's FrozenError the clauses' rescue would swallow) */
   if (s->clauses && !s->interp && (v.k == MV_STR || v.k == MV_ARR)) { s->bad = 1; return false; }
-  mxb_putn(s->b, (const char *)s->from, (size_t)(n->location.start - s->from));
-  mxb_puts(s->b, "(");
+  mvb_putn(s->b, (const char *)s->from, (size_t)(n->location.start - s->from));
+  mvb_puts(s->b, "(");
   mv_inspect(v, s->b);
-  mxb_puts(s->b, ")");
+  mvb_puts(s->b, ")");
   s->from = n->location.end;
   return false;
 }
@@ -1050,25 +750,25 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
    `clauses`, the span is n's clauses moved out of a block, and n itself is
    not visited, only its children. */
 static int mx_subst_span(MxCtx *c, pm_node_t *n, const uint8_t *from, const uint8_t *to,
-                         MxBuf *b, uint32_t scope, int clauses) {
+                         MvBuf *b, uint32_t scope, int clauses) {
   MxSubst s = { c, from, b, 0, scope, clauses };
   if (clauses || mx_subst_visit(n, &s)) pm_visit_child_nodes(n, mx_subst_visit, &s);
   if (s.bad || s.from > to) return 0;
-  mxb_putn(b, (const char *)s.from, (size_t)(to - s.from));
+  mvb_putn(b, (const char *)s.from, (size_t)(to - s.from));
   return 1;
 }
 
-static int mx_subst_text_at(MxCtx *c, pm_node_t *n, MxBuf *b, uint32_t scope) {
+static int mx_subst_text_at(MxCtx *c, pm_node_t *n, MvBuf *b, uint32_t scope) {
   /* `n` itself too: a read, a write of a macro local, or a block or lambda
      handed over whole (whose body is one scope further in) */
   return mx_subst_span(c, n, n->location.start, n->location.end, b, scope, 0);
 }
 
-static int mx_subst_text(MxCtx *c, pm_node_t *n, MxBuf *b) { return mx_subst_text_at(c, n, b, 0); }
+static int mx_subst_text(MxCtx *c, pm_node_t *n, MvBuf *b) { return mx_subst_text_at(c, n, b, 0); }
 
 /* The body of a method a macro defines from a lambda or a block, one level
    in from the macro's own locals, as the text of a def's body. */
-static int mx_subst_body(MxCtx *c, pm_node_t *body, MxBuf *o) {
+static int mx_subst_body(MxCtx *c, pm_node_t *body, MvBuf *o) {
   if (!body) return 1;
   if (PM_NODE_TYPE(body) == PM_BEGIN_NODE && !((pm_begin_node_t *)body)->begin_keyword_loc.start) {
     /* `do ... rescue ... end`: the implicit begin spans the block's `do`, its
@@ -1078,18 +778,18 @@ static int mx_subst_body(MxCtx *c, pm_node_t *body, MxBuf *o) {
                      : bn->else_clause ? (pm_node_t *)bn->else_clause : (pm_node_t *)bn->ensure_clause;
     if (!first || !bn->end_keyword_loc.start) return 0;
     if (!mx_subst_span(c, body, first->location.start, bn->end_keyword_loc.start, o, 1, 1)) return 0;
-    mxb_puts(o, "\n");
+    mvb_puts(o, "\n");
     return 1;
   }
   if (PM_NODE_TYPE(body) != PM_STATEMENTS_NODE) {
     int ok = mx_subst_text_at(c, body, o, 1);
-    mxb_puts(o, "\n");
+    mvb_puts(o, "\n");
     return ok;
   }
   pm_statements_node_t *st = (pm_statements_node_t *)body;
   for (size_t i = 0; i < st->body.size; i++) {
     if (!mx_subst_text_at(c, st->body.nodes[i], o, 1)) return 0;
-    mxb_puts(o, "\n");
+    mvb_puts(o, "\n");
   }
   return 1;
 }
@@ -1197,7 +897,7 @@ static int mx_block_is_method_body(const pm_block_node_t *blk) {
 /* a residual expression: its value when computable, else its text with the
    macro values substituted; `public_send(name, ...)` becomes a plain call */
 
-static int mx_residual(MxCtx *c, pm_node_t *n, MxBuf *b) {
+static int mx_residual(MxCtx *c, pm_node_t *n, MvBuf *b) {
   Mv v;
   if (mx_eval(c, n, &v)) { mv_inspect(v, b); return 1; }
   if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
@@ -1210,18 +910,18 @@ static int mx_residual(MxCtx *c, pm_node_t *n, MxBuf *b) {
         cn->arguments->arguments.size >= 1 && !cn->block) {
       Mv mn;
       if (!mx_eval(c, cn->arguments->arguments.nodes[0], &mn) || (mn.k != MV_STR && mn.k != MV_SYM) ||
-          !mx_sym_plain(mn.s)) return 0;
+          !mv_sym_plain(mn.s)) return 0;
       /* `attr=(v)` would read as a local assignment, not a call */
       if (mn.s[0] && mn.s[strlen(mn.s) - 1] == '=') return 0;
       /* a send to a macro that may write an ivar writes what the evaluator does not follow */
       if (mx_writer_named(mn.s)) return 0;
-      mxb_puts(b, mn.s);
-      mxb_puts(b, "(");
+      mvb_puts(b, mn.s);
+      mvb_puts(b, "(");
       for (size_t i = 1; i < cn->arguments->arguments.size; i++) {
-        if (i > 1) mxb_puts(b, ", ");
+        if (i > 1) mvb_puts(b, ", ");
         if (!mx_residual(c, cn->arguments->arguments.nodes[i], b)) return 0;
       }
-      mxb_puts(b, ")");
+      mvb_puts(b, ")");
       return 1;
     }
   }
@@ -1243,7 +943,7 @@ static int mx_is_raise(pm_node_t *n) {
 
 static int mx_exec(MxCtx *c, pm_node_t *n) {
   if (c->returned || c->stopped) return 1;
-  MxBuf *o = c->out;
+  MvBuf *o = c->out;
   switch (PM_NODE_TYPE(n)) {
   case PM_RETURN_NODE: {
     pm_return_node_t *r = (pm_return_node_t *)n;
@@ -1269,7 +969,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     if (!c->iv || mx_poisoned(nm) || !mx_eval(c, w->value, &v)) { free(nm); return 0; }
     mx_set(c->iv, c->niv, 64, nm, v);
     if (!mx_lookup(c->iv, *c->niv, nm)) { free(nm); return 0; }    /* the table was full */
-    if (o) { mxb_puts(o, nm); mxb_puts(o, " = "); mv_inspect(v, o); mxb_puts(o, "\n"); }
+    if (o) { mvb_puts(o, nm); mvb_puts(o, " = "); mv_inspect(v, o); mvb_puts(o, "\n"); }
     free(nm);
     c->ret = v;
     return 1;
@@ -1295,30 +995,30 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     if (bn->else_clause || bn->ensure_clause) return 0;
     if (!bn->rescue_clause) return bn->statements ? mx_exec_stmts(c, bn->statements) : 1;
     if (!o) return 0;   /* whether a rescue body runs is decided at run time */
-    mxb_puts(o, "begin\n");
+    mvb_puts(o, "begin\n");
     size_t body_at = o->len;
     if (bn->statements && !mx_exec_stmts(c, bn->statements)) return 0;
     c->stopped = 0;
     for (pm_rescue_node_t *r = bn->rescue_clause; r; r = r->subsequent) {
-      mxb_puts(o, "rescue");
+      mvb_puts(o, "rescue");
       for (size_t i = 0; i < r->exceptions.size; i++) {
-        mxb_puts(o, i ? ", " : " ");
+        mvb_puts(o, i ? ", " : " ");
         pm_node_t *e = r->exceptions.nodes[i];
-        mxb_putn(o, (const char *)e->location.start, (size_t)(e->location.end - e->location.start));
+        mvb_putn(o, (const char *)e->location.start, (size_t)(e->location.end - e->location.start));
       }
       if (r->reference) {
-        mxb_puts(o, " => ");
-        mxb_putn(o, (const char *)r->reference->location.start,
+        mvb_puts(o, " => ");
+        mvb_putn(o, (const char *)r->reference->location.start,
                  (size_t)(r->reference->location.end - r->reference->location.start));
       }
-      mxb_puts(o, "\n");
+      mvb_puts(o, "\n");
       int sv_fr = c->in_ffi_rescue;
       c->in_ffi_rescue = strstr(o->p + body_at, "attach_function") != NULL;
       if (r->statements && !mx_exec_stmts(c, r->statements)) return 0;
       c->in_ffi_rescue = sv_fr;
       c->stopped = 0;
     }
-    mxb_puts(o, "end\n");
+    mvb_puts(o, "end\n");
     return 1;
   }
   case PM_CALL_NODE: {
@@ -1343,7 +1043,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
       Mv code;
       if (mx_eval(c, args->nodes[0], &code) && code.k == MV_STR && sp_snippet_graftable(code.s) &&
           !mx_template_writes(code.s)) {
-        if (o) { mxb_puts(o, code.s); mxb_puts(o, "\n"); }
+        if (o) { mvb_puts(o, code.s); mvb_puts(o, "\n"); }
         c->ret = mv_nil();
         ok = 1;
       }
@@ -1352,12 +1052,12 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              mx_prim_builtin(name)) {
       Mv cnm;
       if (mx_eval(c, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
-          isupper((unsigned char)cnm.s[0]) && mx_sym_plain(cnm.s)) {
+          isupper((unsigned char)cnm.s[0]) && mv_sym_plain(cnm.s)) {
         ok = 1;
         if (o) {
-          mxb_puts(o, cnm.s); mxb_puts(o, " = ");
+          mvb_puts(o, cnm.s); mvb_puts(o, " = ");
           ok = mx_residual(c, args->nodes[1], o);
-          mxb_puts(o, "\n");
+          mvb_puts(o, "\n");
         }
       }
     }
@@ -1367,18 +1067,18 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              PM_NODE_TYPE(args->nodes[1]) == PM_LAMBDA_NODE &&
              !((pm_lambda_node_t *)args->nodes[1])->parameters) {
       Mv mn;
-      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mx_sym_plain(mn.s) &&
+      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
           !mx_capture_rebound(c, n)) {
         ok = 1;
         mx_poison_writes_in(((pm_lambda_node_t *)args->nodes[1])->body);
         if (o && c->in_ffi_rescue && name[7] == 's') {
           /* standing in for the function attach_function could not find:
              a static def would replace the attached one */
-          mxb_puts(o, "__ffi_define_proc(:");
-          mxb_puts(o, mn.s);
-          mxb_puts(o, ", ");
+          mvb_puts(o, "__ffi_define_proc(:");
+          mvb_puts(o, mn.s);
+          mvb_puts(o, ", ");
           ok = mx_residual(c, args->nodes[1], o);
-          mxb_puts(o, ")\n");
+          mvb_puts(o, ")\n");
         }
         else if (o) {
           pm_lambda_node_t *lam = (pm_lambda_node_t *)args->nodes[1];
@@ -1386,11 +1086,11 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              its text, with only the macro's locals (captured now)
              substituted -- an ivar read or a macro call in it is not
              evaluated now */
-          mxb_puts(o, name[7] == 's' ? "def self." : "def ");
-          mxb_puts(o, mn.s);
-          mxb_puts(o, "\n");
+          mvb_puts(o, name[7] == 's' ? "def self." : "def ");
+          mvb_puts(o, mn.s);
+          mvb_puts(o, "\n");
           ok = mx_subst_body(c, lam->body, o);
-          mxb_puts(o, "end\n");
+          mvb_puts(o, "end\n");
         }
       }
     }
@@ -1401,22 +1101,22 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
          the method's, so it is the same text as a def */
       pm_block_node_t *blk = (pm_block_node_t *)cn->block;
       Mv mn;
-      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mx_sym_plain(mn.s) &&
+      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
           !mx_capture_rebound(c, n)) {
         ok = 1;
         mx_poison_writes_in(blk->body);
         if (o) {
           pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)blk->parameters;
-          mxb_puts(o, name[7] == 's' ? "def self." : "def ");
-          mxb_puts(o, mn.s);
+          mvb_puts(o, name[7] == 's' ? "def self." : "def ");
+          mvb_puts(o, mn.s);
           if (bp && bp->parameters) {
-            mxb_puts(o, "(");
+            mvb_puts(o, "(");
             ok = mx_subst_text_at(c, (pm_node_t *)bp->parameters, o, 1);
-            mxb_puts(o, ")");
+            mvb_puts(o, ")");
           }
-          mxb_puts(o, "\n");
+          mvb_puts(o, "\n");
           if (ok) ok = mx_subst_body(c, blk->body, o);
-          mxb_puts(o, "end\n");
+          mvb_puts(o, "end\n");
         }
       }
     }
@@ -1444,33 +1144,33 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
       if (o && !self_recv && mx_attr_dyn(cn, 1)) {
         /* `singleton_class.attr_accessor name`: the same call in the
            singleton class's body, the names substituted */
-        mxb_puts(o, "class << self; ");
-        mxb_puts(o, name);
-        mxb_puts(o, " ");
+        mvb_puts(o, "class << self; ");
+        mvb_puts(o, name);
+        mvb_puts(o, " ");
         for (size_t i = 0; i < argc && ok; i++) {
-          if (i) mxb_puts(o, ", ");
+          if (i) mvb_puts(o, ", ");
           ok = mx_residual(c, args->nodes[i], o);
         }
-        mxb_puts(o, "; end\n");
+        mvb_puts(o, "; end\n");
       }
       else if (o) {
         if (self_recv && !cn->receiver && !cn->block && argc > 0 && strcmp(name, "public_send") != 0 &&
             strcmp(name, "send") != 0) {
           /* keep the call's shape, arguments substituted one by one */
-          mxb_puts(o, name);
-          mxb_puts(o, " ");
+          mvb_puts(o, name);
+          mvb_puts(o, " ");
           for (size_t i = 0; i < argc && ok; i++) {
-            if (i) mxb_puts(o, ", ");
+            if (i) mvb_puts(o, ", ");
             pm_node_t *a = args->nodes[i];
             if (PM_NODE_TYPE(a) == PM_KEYWORD_HASH_NODE) {
               pm_keyword_hash_node_t *kh = (pm_keyword_hash_node_t *)a;
               for (size_t j = 0; j < kh->elements.size && ok; j++) {
-                if (j) mxb_puts(o, ", ");
+                if (j) mvb_puts(o, ", ");
                 pm_node_t *el = kh->elements.nodes[j];
                 if (PM_NODE_TYPE(el) != PM_ASSOC_NODE) { ok = 0; break; }
                 pm_assoc_node_t *as = (pm_assoc_node_t *)el;
                 ok = mx_residual(c, as->key, o);
-                mxb_puts(o, " => ");
+                mvb_puts(o, " => ");
                 if (ok) ok = mx_residual(c, as->value, o);
               }
             }
@@ -1478,7 +1178,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
           }
         }
         else ok = mx_residual(c, n, o);
-        mxb_puts(o, "\n");
+        mvb_puts(o, "\n");
       }
       if (ok && mx_is_raise(n)) c->stopped = 1;
     }
@@ -2831,7 +2531,7 @@ static char *mx_join_residual(const char *t) {
   pm_node_destroy(&tp, tr);
   pm_parser_free(&tp);
   if (bad || ls.multi || !drop) { free(drop); return NULL; }
-  MxBuf rep = {0};
+  MvBuf rep = {0};
   int first = 1;
   size_t i = 0;
   while (i < tl) {
@@ -2842,14 +2542,14 @@ static char *mx_join_residual(const char *t) {
     while (a < z && (t[a] == ' ' || t[a] == '\t')) a++;
     while (z > a && (t[z - 1] == ' ' || t[z - 1] == '\t' || t[z - 1] == '\r')) z--;
     if (z > a && !drop[a]) {
-      if (!first) mxb_puts(&rep, "; ");
-      mxb_putn(&rep, t + a, z - a);
+      if (!first) mvb_puts(&rep, "; ");
+      mvb_putn(&rep, t + a, z - a);
       first = 0;
     }
     i = e + 1;
   }
   free(drop);
-  if (first) mxb_puts(&rep, "nil");
+  if (first) mvb_puts(&rep, "nil");
   pm_parser_t cp;
   sp_pm_parser_init(&cp, rep.p, rep.len, NULL);
   pm_node_t *cr = pm_parse(&cp);
@@ -3003,7 +2703,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
                                          p[2] == '"' || p[2] == '\'' || p[2] == '`'))
         hd = 1;
     if (!extended || k->vis || k->unknown || hd) { k->unknown = 1; continue; }
-    MxBuf out = {0};
+    MvBuf out = {0};
     MxCtx c; memset(&c, 0, sizeof c);
     c.out = dyn ? &out : NULL; c.modname = m->module; c.own_class = m->self_def; c.clspath = k->clsname;
     c.iv = k->noiv ? NULL : k->iv; c.niv = &k->niv; c.unsure = &k->unknown;
@@ -3026,11 +2726,11 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     /* the replacement, on the call's own lines */
     int lines = 0;
     for (const uint8_t *p = whole->location.start; p < whole->location.end; p++) if (*p == '\n') lines++;
-    MxBuf rep = {0};
+    MvBuf rep = {0};
     if (guard) {
-      mxb_puts(&rep, guard_unless ? "unless " : "if ");
-      mxb_putn(&rep, (const char *)guard->location.start, (size_t)(guard->location.end - guard->location.start));
-      mxb_puts(&rep, "; ");
+      mvb_puts(&rep, guard_unless ? "unless " : "if ");
+      mvb_putn(&rep, (const char *)guard->location.start, (size_t)(guard->location.end - guard->location.start));
+      mvb_puts(&rep, "; ");
     }
     char *body = mx_join_residual(out.p ? out.p : "");
     if (!body) {
@@ -3039,13 +2739,13 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
       free(rep.p); free(out.p); continue;
     }
     mx_note_generated(body, &k->gen);
-    mxb_puts(&rep, body);
+    mvb_puts(&rep, body);
     free(body);
-    if (guard) mxb_puts(&rep, "; end");
+    if (guard) mvb_puts(&rep, "; end");
     /* the guard's own line breaks are in its copied text already */
     if (guard)
       for (const uint8_t *p = guard->location.start; p < guard->location.end; p++) if (*p == '\n') lines--;
-    for (int q = 0; q < lines; q++) mxb_puts(&rep, "\n");
+    for (int q = 0; q < lines; q++) mvb_puts(&rep, "\n");
     free(out.p);
     if (ed->n == ed->cap) { ed->cap = ed->cap ? ed->cap * 2 : 32; ed->e = realloc(ed->e, sizeof(MxEdit) * (size_t)ed->cap); }
     ed->e[ed->n].start = whole->location.start;
@@ -3384,23 +3084,23 @@ static char *sp_expand_class_macros(const char *source) {
         for (int i = 0; i < nm; i++) {
           if (!drop[i]) continue;
           const uint8_t *ds = g_mx_macros[i].def->base.location.start, *de = g_mx_macros[i].def->base.location.end;
-          MxBuf blank = {0};
-          for (const uint8_t *p = ds; p < de; p++) if (*p == '\n') mxb_puts(&blank, "\n");
-          if (!blank.p) mxb_puts(&blank, "");
+          MvBuf blank = {0};
+          for (const uint8_t *p = ds; p < de; p++) if (*p == '\n') mvb_puts(&blank, "\n");
+          if (!blank.p) mvb_puts(&blank, "");
           all[nall].start = ds; all[nall].end = de; all[nall].text = blank.p; nall++;
         }
         free(result); result = NULL;
         if (nall > 0) {
           qsort(all, (size_t)nall, sizeof(MxEdit), mx_edit_cmp);
-          MxBuf nb = {0};
+          MvBuf nb = {0};
           const uint8_t *from = (const uint8_t *)source;
           for (int i = 0; i < nall; i++) {
             if (all[i].start < from) continue;   /* nested in an earlier edit */
-            mxb_putn(&nb, (const char *)from, (size_t)(all[i].start - from));
-            mxb_puts(&nb, all[i].text);
+            mvb_putn(&nb, (const char *)from, (size_t)(all[i].start - from));
+            mvb_puts(&nb, all[i].text);
             from = all[i].end;
           }
-          mxb_putn(&nb, (const char *)from, (size_t)((const uint8_t *)source + len - from));
+          mvb_putn(&nb, (const char *)from, (size_t)((const uint8_t *)source + len - from));
           result = nb.p;
         }
         int again = 0;

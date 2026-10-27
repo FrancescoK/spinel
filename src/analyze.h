@@ -115,6 +115,29 @@ void an_nil_facts(Compiler *c);
    (analyze_const.c). Runs once the constants are registered, ahead of the
    folds that decide `defined?(K)`. */
 void an_const_presence(Compiler *c);
+/* The program's files under --load-model=graph (analyze_program.c, #9898):
+   their top-level scopes and roots, and what the model refuses for now. */
+void prog_file_scopes(Compiler *c);
+void prog_walk_files(Compiler *c);
+void prog_refuse_loads(Compiler *c);
+void prog_refuse_order(Compiler *c);
+int prog_is_top_scope(const Compiler *c, const Scope *s);
+int prog_is_root(const Compiler *c, int id);
+int prog_is_root_stmts(const Compiler *c, int st);
+int prog_root_stmts(const Compiler *c, int i);
+int prog_defines_only(const Compiler *c, int i);
+int prog_ordered_load(const Compiler *c, int id);
+void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
+int *prog_top_seq(const Compiler *c, int *n, int **file);
+void prog_visit_files(const Compiler *c, void (*fn)(void *ud, int node, int file), void *ud);
+/* Does node a run before node b, as the program runs its files
+   (analyze_program.c)? PROG_UNKNOWN where no order is known: a file loaded
+   only from a method, a condition or a block, against another file. */
+enum { PROG_BEFORE = -1, PROG_SAME = 0, PROG_AFTER = 1, PROG_UNKNOWN = 2 };
+int prog_order(Compiler *c, int a, int b);
+void prog_sort(Compiler *c, int *v, int n, const int *node_of);
+int prog_has_files(const Compiler *c);
+int prog_cmp(Compiler *c, int a, int b, int at, const char *reader);
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.
@@ -169,6 +192,7 @@ TyKind local_aset_key_type(Compiler *c, Scope *sc, const char *name, int *nwrite
 /* Run inference over the whole program: register locals, reach a fixpoint
    on their types, and fill the node type cache. */
 void analyze_program(Compiler *c);
+int lower_rows_check(const NodeTable *nt);   /* SPINEL_LOWER_ROWS_CHECK: the parse's lowering rows against the node's */
 /* The program as written gives no class a method named `nm`, beyond `defs`
    (0 or 1) defs of that name: read ahead of the desugars, by absence. */
 int an_prog_never_gives(const char *nm, int defs);

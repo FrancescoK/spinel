@@ -52,8 +52,10 @@ static int call_is_chain_receiver_with_block(Compiler *c, int id) {
        recognises that shape by this call being typed an Enumerator. Left in the
        guard, `arr.map.each { }` typed neither and answered NoMethodError at run
        time (#4331). */
+    /* to_a / entries ignore their block: `arr.map.to_a { }` is the
+       Enumerator's elements */
     { const char *cn = nt_str(nt, n, "name");
-      if (cn && sp_streq(cn, "each")) return 0; }
+      if (cn && (sp_streq(cn, "each") || is_to_array_alias(cn))) return 0; }
     return 1;
   }
   return 0;
@@ -1133,7 +1135,7 @@ int infer_array_call(Compiler *c, int id, TyKind rt, TyKind *out) {
        yields the RHS BOXED (its `_t` temp is an sp_RbVal), so a poly receiver
        infers TY_POLY; a typed receiver's emitter yields the raw RHS value. */
     if (sp_streq(name, "[]=") && argc == 2) {
-      if (infer_type(c, argv[0]) == TY_RANGE)
+      if (infer_type(c, argv[0]) == TY_RANGE || infer_type(c, argv[0]) == TY_FLOAT_RANGE)
         { *out = rt == TY_POLY_ARRAY ? TY_POLY : infer_type(c, argv[1]); return 1; }
       { *out = ty_array_elem(rt); return 1; }
     }
@@ -2023,9 +2025,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
         sp_streq(name, "saturday?"))
       { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "zone") ||
-        ((sp_streq(name, "iso8601") || sp_streq(name, "xmlschema") || sp_streq(name, "httpdate") ||
-          sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
-         sp_feature_enabled("time")))
+        (is_time_native_format(name) && sp_feature_enabled("time")))
       { *out = TY_STRING; return 1; }
     if (sp_streq(name, "asctime") || sp_streq(name, "ctime")) { *out = TY_STRING; return 1; }
     if (sp_streq(name, "subsec")) { *out = TY_POLY; return 1; }

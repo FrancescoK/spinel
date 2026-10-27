@@ -1,0 +1,5 @@
+class KwEmptyHashFill
+  def fill: (?into: untyped) -> untyped
+  def outer: (**untyped) -> untyped
+  def inner: (?into: untyped) -> untyped
+end

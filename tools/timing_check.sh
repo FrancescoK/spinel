@@ -25,6 +25,12 @@ for p in an_desugar_register an_pre_fixpoint an_post_fixpoint an_reconcile_check
   grep -Eq "^spinel-timing: phase=$p ms=[0-9.]+$" "$tmp/on.err" || fail "no $p line"
 done
 grep -Eq '^spinel-timing: phase=analysis_renarrow ms=[0-9.]+ rounds=[0-9]+$' "$tmp/on.err" || fail "no analysis_renarrow line"
+# the C generation's phases, and the methods that took longest
+for p in cg_prepare cg_preamble cg_classes cg_dispatch cg_main cg_assemble cg_write_barriers cg_finish; do
+  grep -Eq "^spinel-timing: phase=$p ms=[0-9.]+$" "$tmp/on.err" || fail "no $p line"
+done
+grep -Eq '^spinel-timing: phase=cg_methods ms=[0-9.]+ methods=[1-9][0-9]*$' "$tmp/on.err" || fail "no cg_methods line"
+grep -Eq '^spinel-timing: cg_method=[A-Za-z_][^ ]* ms=[0-9.]+$' "$tmp/on.err" || fail "no cg_method line"
 grep -Eq '^spinel-timing: pass=infer_write_types ms=[0-9.]+ calls=[1-9][0-9]* changed=[0-9]+$' "$tmp/on.err" ||
   fail "no infer_write_types pass line"
 [ "$(grep -c '^spinel-timing: pass=' "$tmp/on.err")" -ge 100 ] || fail "fewer than 100 pass lines"
@@ -36,4 +42,12 @@ for p in cc_preprocess cc_split cc_link cc_total; do
   grep -q "phase=$p ms=" "$tmp/cc2.err" || fail "split: no $p"
 done
 grep -q 'phase=cc_compile ms=[0-9.]* jobs=2' "$tmp/cc2.err" || fail "split: no cc_compile jobs=2"
+# and of an --incremental build, whose cache stays in the temp directory
+SPINEL_CACHE_DIR="$tmp/cache" SPINEL_INCREMENTAL_STRICT=1 $SPINEL --timing --incremental -o "$tmp/c.out" $src 2>"$tmp/cc3.err" ||
+  fail "incremental compile"
+for p in cc_preprocess cc_split cache_lookup cc_link cc_total; do
+  grep -q "phase=$p ms=" "$tmp/cc3.err" || fail "incremental: no $p"
+done
+grep -q 'phase=cc_compile ms=[0-9.]* units=[0-9]* miss=[0-9]* jobs=[0-9]*' "$tmp/cc3.err" ||
+  fail "incremental: no cc_compile units= miss= jobs="
 [ $ok -eq 1 ] && echo "timing-test: pass" || exit 1

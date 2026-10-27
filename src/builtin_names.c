@@ -91,6 +91,42 @@ int is_send_family(const char *n) {
   return sp_streq(n, "send") || sp_streq(n, "__send__") || sp_streq(n, "public_send");
 }
 
+/* The calls whose arguments name a method by a value (a Symbol, a String,
+   or one computed at run time): the send family, the Method and
+   UnboundMethod readers, define/alias/respond_to?/method_defined?. A
+   computed name among them can call or answer for any method the
+   receiver has; the analysis bounds it by the literals that reach it
+   (cf_collect_dyn), and the load graph counts a program's literals as
+   names where one is. */
+int is_method_name_reflection(const char *n) {
+  return is_send_family(n) || sp_streq(n, "method") || sp_streq(n, "public_method") ||
+         sp_streq(n, "instance_method") || sp_streq(n, "define_method") ||
+         sp_streq(n, "define_singleton_method") || sp_streq(n, "alias_method") ||
+         sp_streq(n, "singleton_method") || sp_streq(n, "respond_to?") || sp_streq(n, "method_defined?");
+}
+
+/* The calls given their code as a String, which the load graph reads as the
+   code it is */
+int is_code_eval_name(const char *n) {
+  return sp_streq(n, "eval") || sp_streq(n, "class_eval") || sp_streq(n, "module_eval") ||
+         sp_streq(n, "instance_eval");
+}
+
+/* A Symbol made of a value: the name it makes is known only at run time */
+int is_symbol_conversion(const char *n) {
+  return sp_streq(n, "to_sym") || sp_streq(n, "intern");
+}
+
+/* The name a builtins/ file gives a helper of its own (the enumerator's
+   `__enumw_map`, enumerable.rb's `__no_false`, ThreadGroup's `__remove`):
+   a leading `__`, without the trailing one of CRuby's own `__send__`,
+   `__id__` and `__method__`. A definition of that name in a builtins/ file
+   is the compiler's, not a Ruby method (comp_scope_is_private_helper). */
+int is_builtin_helper_name(const char *n) {
+  size_t l = n ? strlen(n) : 0;
+  return l > 2 && n[0] == '_' && n[1] == '_' && !(n[l - 1] == '_' && n[l - 2] == '_');
+}
+
 /* A call that can run code the analysis does not see, or capture a String:
    send and its siblings, call, new, lambda/proc, freeze, eval, and the
    instance_* / class_* / module_* / *method* reflection families. */
@@ -980,6 +1016,23 @@ int is_iso8601_alias(const char *n) {
   return sp_streq(n, "iso8601") || sp_streq(n, "xmlschema");
 }
 
+int is_rfc2822_alias(const char *n) {
+  return sp_streq(n, "rfc2822") || sp_streq(n, "rfc822");
+}
+
+/* The formats Spinel's runtime writes and reads itself once "time" is
+   required, which CRuby's time.rb (packages/time) defines in Ruby: Time#x
+   and Time.x for each. time.rb's own definitions of them are not what a
+   program reaches here; its parse and strptime are (#9946). */
+int is_time_native_format(const char *n) {
+  return is_iso8601_alias(n) || sp_streq(n, "httpdate") || is_rfc2822_alias(n);
+}
+
+/* Time's class-method parsers: parse, strptime and the native formats */
+int is_time_parser_name(const char *n) {
+  return sp_streq(n, "parse") || sp_streq(n, "strptime") || is_time_native_format(n);
+}
+
 int is_prepend_alias(const char *n) {
   return sp_streq(n, "unshift") || sp_streq(n, "prepend");
 }
@@ -1201,6 +1254,13 @@ static int builtin_name_in(const char *name, const char *const *names) {
 
 int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
+int is_autoload_name(const char *n) { return sp_streq(n, "autoload"); }
+/* A LoadNode's `how` (spinel_parse.c, sp_load_resolve) that names no file
+   at compile time: one not there (LoadError when it runs), or a path the
+   require computes when it runs. */
+int is_load_how_unresolved(const char *how) {
+  return how && (sp_streq(how, "none") || sp_streq(how, "run-time"));
+}
 
 int is_enumerable_module_name(const char *n) {
   return n && sp_streq(n, "Enumerable");
@@ -1609,4 +1669,299 @@ int boxed_stat_name(const char *name) {
    receiver it may be Time#ctime's String as well. */
 int boxed_stat_reader(const char *name) {
   return sp_streq(name, "mtime") || sp_streq(name, "atime") || sp_streq(name, "ftype");
+}
+
+/* The lowerings onto a library's method (builtin_names.h, LowerRow): one
+   row per shape, in the order each family's desugar asked its names. */
+static const char *const lr_walk_sources[] = { "each", "cycle", "new", NULL };
+static const LowerRow lower_rows[] = {
+  /* system(cmd, ..., out: File::NULL): CRuby's spawn-and-wait, with options */
+  { LR_SYSTEM_OPTIONS, "system", LR_RECV_NONE, NULL, NULL, NULL, 2, -1, LR_NO_BLOCK | LR_KWHASH, 0, 0, 0,
+    "__sp_system_spawn", "builtins/system_spawn" },
+  /* IO.popen(cmd) { |io| ... }: read through a pipe, the child reaped */
+  { LR_POPEN_BLOCK, "popen", LR_RECV_CONST, "IO", NULL, NULL, 0, -1, LR_BLOCK, 0, 0, 0,
+    "__sp_popen", "builtins/io_popen" },
+  /* File.foreach(path).first(n): the first n lines, read one at a time */
+  { LR_FOREACH_FIRST, "first", LR_RECV_CALL, "foreach", "File", NULL, 1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS,
+    1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS, "__sp_foreach_first", "builtins/file_foreach_first" },
+  { LR_FOREACH_FIRST, "first", LR_RECV_CALL, "foreach", "IO", NULL, 1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS,
+    1, 1, LR_NO_BLOCK | LR_PLAIN_ARGS, "__sp_foreach_first", "builtins/file_foreach_first" },
+  /* an Enumerator's walk whose block breaks: the helper drives `each` */
+  { LR_ENUM_WALK, "map", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "collect", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "select", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_select", "builtins/enumerator" },
+  { LR_ENUM_WALK, "filter", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_select", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reject", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_reject", "builtins/enumerator" },
+  { LR_ENUM_WALK, "filter_map", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_filter_map", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_with_object", "builtins/enumerator" },
+  { LR_ENUM_WALK, "with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_with_object", "builtins/enumerator" },
+  { LR_ENUM_WALK, "inject", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject0", "builtins/enumerator" },
+  { LR_ENUM_WALK, "inject", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject1", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reduce", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject0", "builtins/enumerator" },
+  { LR_ENUM_WALK, "reduce", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_inject1", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_slice", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_slice", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_cons", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_cons", "builtins/enumerator" },
+  { LR_ENUM_WALK, "each_entry", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK_LITERAL | LR_BREAKS, 0, 0, 0,
+    "__enumw_each_entry", "builtins/enumerator" },
+  /* `arr.map.with_index { }` is map's: only an Enumerator that walks its
+     source (each, cycle, a generator) is a plain walk with a counter */
+  { LR_ENUM_WALK, "with_index", LR_RECV_SOME, NULL, NULL, lr_walk_sources, 0, 1, LR_BLOCK_LITERAL | LR_BREAKS,
+    0, 0, 0, "__enumw_with_index", "builtins/enumerator" },
+  /* a String's piece walk with an index, the String no variable or the block breaking */
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_char", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_chars_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_line", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_lines_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_byte", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_bytes_with_index", "builtins/enumerator" },
+  { LR_STR_WALK, "with_index", LR_RECV_CALL, "each_codepoint", NULL, NULL, 0, 1, LR_BLOCK_LITERAL | LR_NO_SPLAT,
+    0, 0, LR_NO_BLOCK | LR_HAS_RECV | LR_NO_ARGS, "__enumw_str_codepoints_with_index", "builtins/enumerator" },
+  /* Enumerable's other names for a definition builtins/enumerable.rb has */
+  { LR_ENUM_NAME, "collect_concat", LR_RECV_ANY, NULL, NULL, NULL, 0, -1, 0, 0, 0, 0, "flat_map", "builtins/enumerable" },
+  { LR_ENUM_NAME, "detect", LR_RECV_ANY, NULL, NULL, NULL, 0, -1, 0, 0, 0, 0, "find", "builtins/enumerable" },
+  /* Array#index with a block and no argument is find_index */
+  { LR_INDEX_BLOCK, "index", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, LR_BLOCK | LR_NO_ARGS, 0, 0, 0,
+    "find_index", "builtins/enumerable" },
+  /* a stored Enumerator's with_object(memo) { } is each_with_object */
+  { LR_WITH_OBJECT, "with_object", LR_RECV_SOME, NULL, NULL, NULL, 1, 1, LR_BLOCK, 0, 0, 0,
+    "each_with_object", "builtins/enumerable" },
+  /* to_set is Set.new(recv.to_a) */
+  { LR_TO_SET, "to_set", LR_RECV_SOME, NULL, NULL, NULL, 0, 0, 0, 0, 0, 0, "Set", "set" },
+};
+#define LOWER_ROW_N ((int)(sizeof lower_rows / sizeof lower_rows[0]))
+
+const LowerRow *lower_row_at(int i) {
+  return i >= 0 && i < LOWER_ROW_N ? &lower_rows[i] : NULL;
+}
+const LowerRow *lower_row_of(int family) {
+  for (int i = 0; i < LOWER_ROW_N; i++) if (lower_rows[i].family == family) return &lower_rows[i];
+  return NULL;
+}
+const LowerRow *lower_row_named(int family, const char *name) {
+  if (!name) return NULL;
+  for (int i = 0; i < LOWER_ROW_N; i++)
+    if (lower_rows[i].family == family && sp_streq(lower_rows[i].name, name)) return &lower_rows[i];
+  return NULL;
+}
+
+/* The pre-installed packages' facts, from their manifests (package_facts.inc) */
+#include "package_facts.inc"
+#define SP_PACKAGE_FACT_ROW(pkg, feature, boot, rides) { pkg, feature, boot, rides },
+static const PackageFact package_facts[] = { SP_PACKAGE_FACTS(SP_PACKAGE_FACT_ROW) };
+#undef SP_PACKAGE_FACT_ROW
+const PackageFact *package_fact_at(int i) {
+  return i >= 0 && i < (int)(sizeof package_facts / sizeof package_facts[0]) ? &package_facts[i] : NULL;
+}
+
+/* One table for the builtin class/module/exception names. These four
+   predicates were four independent lists that had to be kept in step by hand,
+   and the code has a comment noting where they already disagree. A row now
+   carries every fact about one name: the flags say which predicate accepts it,
+   and `id` is its negative cls_id (0 when codegen has none). Adding a name is
+   one row instead of four edits.
+
+   The rows are exactly the union of the old lists, flags included, so every
+   predicate answers what it answered before -- what the table changes is that
+   the answers can no longer drift apart. It also makes the existing gaps
+   visible rather than implicit: six names are classes with no cls_id
+   (Encoding, GC, Method, ObjectSpace, Process, UnboundMethod), seven have a
+   cls_id but are not bare constants (the Thread:: / Process:: / Math::
+   qualified forms), and fourteen exception names have no id. Each is a
+   deliberate answer today; closing any of them is a behavior change and does
+   not belong in the same commit as the table.
+
+   The `CRUBY_KNOWN` list in codegen_call.c is a fifth list, for a different
+   question (names CRuby defines that spinel does not implement), and is left
+   alone here. */
+static const BuiltinClass BUILTIN_CLASSES[] = {
+  { "Integer",                      -100,  BC_CLASS },
+  { "Float",                        -101,  BC_CLASS },
+  { "String",                       -102,  BC_CLASS },
+  { "Symbol",                       -103,  BC_CLASS },
+  { "Array",                        -104,  BC_CLASS },
+  { "Hash",                         -105,  BC_CLASS },
+  { "Range",                        -106,  BC_CLASS },
+  { "Time",                         -107,  BC_CLASS },
+  { "Module",                       -108,  BC_CLASS },
+  { "Class",                        -109,  BC_CLASS },
+  { "NilClass",                     -110,  BC_CLASS },
+  { "TrueClass",                    -111,  BC_CLASS },
+  { "FalseClass",                   -112,  BC_CLASS },
+  { "Numeric",                      -113,  BC_CLASS },
+  { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
+  { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
+  { "Object",                       -116,  BC_CLASS },
+  { "BasicObject",                  -117,  BC_CLASS },
+  { "Proc",                         -118,  BC_CLASS },
+  { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
+  { "IO",                           -120,  BC_CLASS },
+  { "File",                         -121,  BC_CLASS },
+  { "Exception",                    -122,  BC_CLASS | BC_EXCEPTION },
+  { "StandardError",                -123,  BC_CLASS | BC_EXCEPTION },
+  { "RuntimeError",                 -124,  BC_CLASS | BC_EXCEPTION },
+  { "TypeError",                    -125,  BC_CLASS | BC_EXCEPTION },
+  { "ArgumentError",                -126,  BC_CLASS | BC_EXCEPTION },
+  { "NameError",                    -127,  BC_CLASS | BC_EXCEPTION },
+  { "NoMethodError",                -128,  BC_CLASS | BC_EXCEPTION },
+  { "StopIteration",                -129,  BC_CLASS | BC_EXCEPTION },
+  { "Math",                         -130,  BC_CLASS | BC_MODULE },
+  { "Complex",                      -131,  BC_CLASS },
+  { "IndexError",                   -132,  BC_CLASS | BC_EXCEPTION },
+  { "KeyError",                     -133,  BC_CLASS | BC_EXCEPTION },
+  { "RangeError",                   -134,  BC_CLASS | BC_EXCEPTION },
+  { "FloatDomainError",             -135,  BC_CLASS | BC_EXCEPTION },
+  { "ZeroDivisionError",            -136,  BC_CLASS | BC_EXCEPTION },
+  { "FrozenError",                  -137,  BC_CLASS | BC_EXCEPTION },
+  { "IOError",                      -138,  BC_CLASS | BC_EXCEPTION },
+  { "LocalJumpError",               -139,  BC_CLASS | BC_EXCEPTION },
+  { "NotImplementedError",          -140,  BC_CLASS | BC_EXCEPTION },
+  { "ScriptError",                  -141,  BC_CLASS | BC_EXCEPTION },
+  { "Rational",                     -142,  BC_CLASS },
+  { "Regexp",                       -143,  BC_CLASS },
+  { "Enumerator",                   -144,  BC_CLASS },
+  { "Struct",                       -145,  BC_CLASS },
+  { "Data",                         -146,  BC_CLASS },
+  { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
+  { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
+  { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
+  { "EncodingError",                -150,  BC_CLASS | BC_EXCEPTION },
+  { "SignalException",              -151,  BC_CLASS | BC_EXCEPTION },
+  { "Interrupt",                    -152,  BC_CLASS | BC_EXCEPTION },
+  { "ThreadError",                  -153,  BC_CLASS | BC_EXCEPTION },
+  { "FiberError",                   -154,  BC_CLASS | BC_EXCEPTION },
+  { "ClosedQueueError",             -155,  BC_CLASS | BC_EXCEPTION },
+  { "UncaughtThrowError",           -156,  BC_CLASS | BC_EXCEPTION },
+  { "NoMatchingPatternError",       -157,  BC_CLASS | BC_EXCEPTION },
+  { "NoMatchingPatternKeyError",    -158,  BC_CLASS | BC_EXCEPTION },
+  { "EOFError",                     -159,  BC_CLASS | BC_EXCEPTION },
+  { "Math::DomainError",            -160,  BC_EXCEPTION },
+  { "SystemExit",                   -161,  BC_CLASS | BC_EXCEPTION },
+  { "Signal",                       -162,  BC_CLASS | BC_MODULE },
+  { "Process::Status",              -163,  BC_CLASS },
+  { "Process::Tms",                 -164,  0 },
+  { "Dir",                          -165,  BC_CLASS },
+  { "BasicSocket",                  -166,  BC_CLASS | BC_SOCKET },
+  { "IPSocket",                     -167,  BC_CLASS | BC_SOCKET },
+  { "TCPSocket",                    -168,  BC_CLASS | BC_SOCKET },
+  { "TCPServer",                    -169,  BC_CLASS | BC_SOCKET },
+  { "UDPSocket",                    -170,  BC_CLASS | BC_SOCKET },
+  { "UNIXSocket",                   -171,  BC_CLASS | BC_SOCKET },
+  { "UNIXServer",                   -172,  BC_CLASS | BC_SOCKET },
+  { "Socket",                       -173,  BC_CLASS | BC_SOCKET },
+  { "Thread",                       -174,  BC_CLASS },
+  { "Mutex",                        -175,  BC_CLASS },
+  { "Thread::Mutex",                -175,  0 },
+  { "Queue",                        -176,  BC_CLASS },
+  { "Thread::Queue",                -176,  0 },
+  { "SizedQueue",                   -177,  BC_CLASS },
+  { "Thread::SizedQueue",           -177,  0 },
+  { "ConditionVariable",            -178,  BC_CLASS },
+  { "Thread::ConditionVariable",    -178,  0 },
+  { "Fiber",                        -179,  BC_CLASS },
+  { "MatchData",                    -180,  BC_CLASS },
+  { "Encoding",                     0,     BC_CLASS },
+  { "Enumerator::Chain",            0,     BC_CLASS },
+  { "Enumerator::Lazy",             0,     BC_CLASS },
+  { "Enumerator::Product",          0,     BC_CLASS },
+  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
+     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
+  { "JSON::JSONError",              0,     BC_EXCEPTION },
+  { "JSON::ParserError",            0,     BC_EXCEPTION },
+  { "JSON::NestingError",           0,     BC_EXCEPTION },
+  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
+  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
+  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
+  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
+  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
+  { "Errno::ENOENT",                0,     BC_EXCEPTION },
+  { "GC",                           0,     BC_CLASS | BC_MODULE },
+  { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
+  { "IO::TimeoutError",            0,     BC_EXCEPTION },
+  /* the socket library's: lib/sp_exc.c gives them their parents, so
+     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
+  { "SocketError",                  0,     BC_EXCEPTION },
+  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
+  { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
+  { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
+  { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
+  { "IO::EWOULDBLOCKWaitReadable",  0,     BC_EXCEPTION },
+  { "IO::EWOULDBLOCKWaitWritable",  0,     BC_EXCEPTION },
+  { "IO::WaitReadable",             0,     BC_EXCEPTION },
+  { "IO::WaitWritable",             0,     BC_EXCEPTION },
+  { "LoadError",                    0,     BC_EXCEPTION },
+  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
+  { "Method",                       0,     BC_CLASS },
+  { "NoMemoryError",                0,     BC_EXCEPTION },
+  { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
+  { "Process",                      0,     BC_CLASS | BC_MODULE },
+  { "Random",                       0,     BC_CLASS },
+  { "StringScanner::Error",         0,     BC_EXCEPTION },
+  { "SystemCallError",              0,     BC_EXCEPTION },
+  { "SystemStackError",             0,     BC_EXCEPTION },
+  { "UnboundMethod",                0,     BC_CLASS },
+};
+#define BUILTIN_CLASS_N ((int)(sizeof BUILTIN_CLASSES / sizeof BUILTIN_CLASSES[0]))
+
+/* The i-th row, NULL past the last. The socket rows are a constant only
+   after `require "socket"`: the analysis's predicates ask that themselves. */
+const BuiltinClass *builtin_class_at(int i) {
+  return i >= 0 && i < BUILTIN_CLASS_N ? &BUILTIN_CLASSES[i] : NULL;
+}
+/* Is `n` a class or module Spinel has natively (any row, the socket ones
+   whether or not "socket" is required)? The load graph asks it of a
+   library's `class X`: a native X is reopened, and the methods the library
+   adds to it are what a program's names reach. */
+int is_native_class_name(const char *n) {
+  if (!n) return 0;
+  for (int i = 0; i < BUILTIN_CLASS_N; i++) if (sp_streq(n, BUILTIN_CLASSES[i].name)) return 1;
+  return 0;
+}
+
+/* ---- the compile-time evaluation and its questions ---- */
+int is_class_const_name(const char *n) { return n && sp_streq(n, "Class"); }
+int is_hash_read_only(const char *n) {
+  static const char *const R[] = { "each", "each_pair", "[]", "fetch", "key?", "has_key?", "include?",
+    "member?", "key", "keys", "values", "size", "length", "empty?", "dig", "to_a", "frozen?", "freeze",
+    "each_key", "each_value", "values_at", "has_value?", "value?", "count", "any?", "all?", "none?",
+    "find", "detect", "map", "collect", "select", "filter", "reject", "min_by", "max_by", "sort_by",
+    "group_by", "sum", "inject", "reduce", "to_h", "invert", "sort", "first", "inspect", "to_s", "hash", "==", NULL };
+  for (int i = 0; n && R[i]; i++) if (sp_streq(n, R[i])) return 1;
+  return 0;
+}
+int is_hash_self_answer(const char *n) {
+  return n && (sp_streq(n, "each") || sp_streq(n, "each_pair") || sp_streq(n, "each_key") ||
+               sp_streq(n, "each_value") || sp_streq(n, "freeze") || sp_streq(n, "to_h"));
+}
+int is_core_change_call(const char *n) {
+  return n && (is_class_eval_family(n) || sp_streq(n, "prepend") || sp_streq(n, "include") ||
+               sp_streq(n, "define_method") || is_send_family(n) || sp_streq(n, "alias_method") ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
+}
+int is_singleton_reach_call(const char *n) {
+  return n && (sp_streq(n, "define_singleton_method") || sp_streq(n, "extend") ||
+               sp_streq(n, "singleton_class") || is_instance_eval_family(n));
+}
+int is_method_naming_call(const char *n) {
+  return n && (sp_streq(n, "define_method") || sp_streq(n, "define_singleton_method") ||
+               sp_streq(n, "alias_method") || sp_streq(n, "remove_method") || sp_streq(n, "undef_method") ||
+               sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n));
+}
+int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+int is_method_list_call(const char *n) {
+  return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||
+               sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
 }

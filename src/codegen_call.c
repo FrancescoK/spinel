@@ -1974,58 +1974,11 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
   return 1;
 }
 
-/* Compiler-synthesized instance methods that must stay invisible to
-   reflection (respond_to?, instance_methods): they are implementation detail
-   with no CRuby counterpart. Matched by exact name so a user-defined `__foo`
-   stays visible. */
 /* The name a message about call `id` says: the one the program wrote, where
    the call was pointed at a hidden definition (version_redefined_reopen_defs). */
 const char *call_shown_name(const NodeTable *nt, int id) {
   const char *sh = nt_str(nt, id, "redef_shown");
   return sh ? sh : nt_str(nt, id, "name");
-}
-
-int name_is_synth_method(Compiler *c, const char *m) {
-  if (!m) return 0;
-  if (sp_streq(m, "__enum_to_a")) return 1;
-  /* a class's copy of its initialize as a method, for its own calls of it
-     (desugar_explicit_initialize_calls) */
-  if (sp_streq(m, "__spinel_reinit")) return 1;
-  /* `__noarg inspect` / `__noarg to_s`: the no-argument siblings of an
-     inspect / to_s whose parameters are all optional
-     (desugar_noarg_display_wrappers); the space is no `def`'s, so a method
-     the program names `__noarg_inspect` is its own */
-  if (strncmp(m, "__noarg ", 8) == 0) return 1;
-  /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
-     so an override can reach it through super (#3738) */
-  if (strncmp(m, "__inc ", 6) == 0) return 1;
-  /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
-     Ruby method name */
-  if (strchr(m, '#')) return 1;
-  /* `__to_enum_<m>`, the Enumerator generator for `to_enum(:m)`
-     (synth_to_enum_generators): it shares the DefNode of the method it
-     wraps, which a user method of that name never does */
-  if (strncmp(m, "__to_enum_", 10) == 0) {
-    for (int si = 0; si < c->nscopes; si++) {
-      Scope *s = &c->scopes[si];
-      if (!s->name || !sp_streq(s->name, m) || s->def_node < 0) continue;
-      for (int sj = 0; sj < c->nscopes; sj++)
-        if (c->scopes[sj].name && sp_streq(c->scopes[sj].name, m + 10) &&
-            c->scopes[sj].def_node == s->def_node) return 1;
-    }
-    return 0;
-  }
-  /* a parameter default moved into a method of its own
-     (desugar_recursive_param_defaults, #4900): known by the mark on its
-     DefNode rather than its name, which the desugar picks so that no method
-     the program defines has it */
-  if (strncmp(m, "__sp_default_", 13) != 0) return 0;
-  for (int si = 0; si < c->nscopes; si++) {
-    Scope *s = &c->scopes[si];
-    if (s->def_node >= 0 && s->name && sp_streq(s->name, m) &&
-        nt_int(c->nt, s->def_node, "default_helper", 0)) return 1;
-  }
-  return 0;
 }
 
 /* Enumerable's public instance methods, for respond_to? on a user class
@@ -2318,14 +2271,16 @@ static int class_path_constants(Compiler *c, int ci, const char **out, const cha
       if (nm) n = add_listed_const(out, shown, n, nm, sh);
     }
   const char *rn = class_ruby_name(c, ci);
-  int top = nt->root_id >= 0 ? nt_ref(nt, nt->root_id, "statements") : -1;
-  int sn = 0; const int *st = rn && top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
-  for (int k = 0; k < sn && n < max; k++) {
-    if (nt_kind(nt, st[k]) != NK_ConstantPathWriteNode) continue;
-    int t = nt_ref(nt, st[k], "target");
-    const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
-    const char *nm = own && sp_streq(own, rn) ? nt_str(nt, t, "name") : NULL;
-    if (nm) n = add_listed_const(out, shown, n, nm, nt_str(nt, t, "qc_orig_name"));
+  for (int r = 0; rn && r < nt_nroots(nt); r++) {   /* each file's top level */
+    int top = prog_root_stmts(c, r);
+    int sn = 0; const int *st = top >= 0 ? nt_arr(nt, top, "body", &sn) : NULL;
+    for (int k = 0; k < sn && n < max; k++) {
+      if (nt_kind(nt, st[k]) != NK_ConstantPathWriteNode) continue;
+      int t = nt_ref(nt, st[k], "target");
+      const char *own = t >= 0 ? nt_str(nt, t, "qc_owner") : NULL;
+      const char *nm = own && sp_streq(own, rn) ? nt_str(nt, t, "name") : NULL;
+      if (nm) n = add_listed_const(out, shown, n, nm, nt_str(nt, t, "qc_orig_name"));
+    }
   }
   return n;
 }
@@ -6391,7 +6346,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
       ts = "sp_time_iso8601((sp_Time *)_tR.v.p)";
     else if (sp_streq(name, "httpdate") && sp_feature_enabled("time"))
       ts = "sp_time_httpdate((sp_Time *)_tR.v.p)";
-    else if ((sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) && sp_feature_enabled("time"))
+    else if (is_rfc2822_alias(name) && sp_feature_enabled("time"))
       ts = "sp_time_rfc2822((sp_Time *)_tR.v.p)";
     if (ti || tb || ts) {
       const char *expr = ti ? ti : tb ? tb : ts;
@@ -16545,7 +16500,7 @@ int splice_to_ary_mi(Compiler *c, TyKind rhs_ty) {
   if (!ty_is_object(rhs_ty)) return -1;
   int cid = ty_object_class(rhs_ty);
   if (c->classes[cid].is_value_type) return -1;
-  int mi = comp_method_in_chain(c, cid, "to_ary", NULL);
+  int mi = comp_implicit_to_ary_mi(c, cid);
   if (mi < 0) return -1;
   return ty_is_array((TyKind)c->scopes[mi].ret) ? mi : -1;
 }
@@ -17839,7 +17794,7 @@ int class_implicit_responds(Compiler *c, int cid, const char *qm) {
    compiler-synthesized helper, or a generated Struct iterator on a Data
    class. */
 int method_hidden_from_reflection(Compiler *c, int cid, const char *m) {
-  if (name_is_synth_method(c, m)) return 1;
+  if (name_is_synth_method(c, m) || comp_method_is_private_helper(c, cid, m)) return 1;
   if (class_struct_kind(c, cid) != 2) return 0;
   int mi = comp_method_in_chain(c, cid, m, NULL);
   return mi >= 0 && scope_is_struct_synth(c, mi);
@@ -17923,7 +17878,7 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
       nm = comp_prep_user_name(nm);
       if (nm == s->name) continue;
     }
-    if (name_is_synth_method(c, nm) || scope_is_struct_synth(c, si)) continue;
+    if (name_is_synth_method(c, nm) || comp_scope_is_private_helper(c, si) || scope_is_struct_synth(c, si)) continue;
     if (s->origin_module_ci > 0 && !with_modules) continue;
     refl_note(r, nm, refl_vis_wanted(refl_own_vis(c, ci, si, s->name), pub, prot, priv));
   }
@@ -18535,7 +18490,7 @@ int respond_to_user_defined(Compiler *c, int id, int recv) {
 /* Name `nm` of class k into the list its visibility answers by: `pub` for
    any respond_to?, `priv` for one with include_all only. */
 void emit_responds_name(Compiler *c, int k, const char *nm, Buf *pub, Buf *priv) {
-  if (name_is_synth_method(c, nm) || is_initialize_family(nm)) return;
+  if (name_is_synth_method(c, nm) || comp_method_is_private_helper(c, k, nm) || is_initialize_family(nm)) return;
   /* a name class k or a class between it and the definer undefines
      (`undef_method :x` in a subclass) is answered by none of k's objects */
   if (k >= 0 && comp_is_undeffed_in_chain(c, k, nm)) return;
@@ -27593,6 +27548,12 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
 
 static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  int fm = frange_index_view(c, id);
+  if (fm >= 0) {
+    emit_call(c, id, b);
+    view_unwind(fm);
+    return;
+  }
   int lk = an_push_lifts_boxed(c, id);
   if (lk) {
     int sv = g_lift_recv, svk = g_lift_kinds;
@@ -30643,7 +30604,7 @@ int object_private_method_name(const char *qm) {
    without its deferral to the class's own respond_to? -- this is what that
    override's `super` asks. */
 static int obj_responds_answer(Compiler *c, int cid, const char *qm) {
-  if (name_is_synth_method(c, qm)) return 0;
+  if (name_is_synth_method(c, qm) || comp_method_is_private_helper(c, cid, qm)) return 0;
   if (sp_streq(qm, "initialize_copy")) return 1;
   /* BasicObject#initialize is private too, unless the class made it public:
      a `public :initialize` counts whether or not the chain defines it */

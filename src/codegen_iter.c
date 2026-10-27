@@ -5272,7 +5272,9 @@ int emit_hash_filter_loop(Compiler *c, int recv, int block, TyKind rt, const cha
 int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const char *name,
                            Buf *b, int indent, int *tr, int *torig, int *twp) {
   const NodeTable *nt = c->nt;
-  const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : array_kind(rt);
+  /* (an object array, which narrow_object_arrays admits, is an sp_PtrArray
+     of sp_X * elements) */
+  const char *kk = (rt == TY_POLY_ARRAY) ? "Poly" : ty_is_obj_array(rt) ? "Ptr" : array_kind(rt);
   int is_rej = sp_streq(name, "reject!") || sp_streq(name, "delete_if");
   const char *bp0 = block_param_name(c, block, 0);
   const char *bp = bp0 ? rename_local(bp0) : NULL;
@@ -5320,7 +5322,11 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   else {
     snprintf(lenf, sizeof lenf, "sp_%sArray_length", kk);
     snprintf(getf, sizeof getf, "sp_%sArray_%s", kk, ote ? "oget" : one_h ? "get_e" : "get");
-    snprintf(setf, sizeof setf, "sp_%sArray_%s", kk, ote ? "oset" : one_h ? "set_e" : "set");
+    /* (a kept element written past the end of an array the block cut
+       fills the gap with nil, as CRuby's store does, and as the setters of
+       the other kinds do; the plain pointer setter drops it) */
+    snprintf(setf, sizeof setf, "sp_%sArray_%s", kk,
+             ote ? "oset" : one_h ? "set_e" : sp_streq(kk, "Ptr") ? "set_grow" : "set");
   }
   Buf rb = expr_buf(c, recv);
   /* rooted: a receiver that is a temporary has no other holder once its own
@@ -5336,7 +5342,8 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
   emit_indent(b, indent);
   buf_printf(b, "if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);\n", t, t, t,
              sp_streq(kk, "Poly") ? "SP_BUILTIN_POLY_ARRAY" : sp_streq(kk, "Str") ? "SP_BUILTIN_STR_ARRAY"
-             : sp_streq(kk, "Float") ? "SP_BUILTIN_FLT_ARRAY" : "SP_BUILTIN_INT_ARRAY");
+             : sp_streq(kk, "Float") ? "SP_BUILTIN_FLT_ARRAY" : sp_streq(kk, "Ptr") ? "SP_BUILTIN_PTR_ARRAY"
+             : "SP_BUILTIN_INT_ARRAY");
   emit_indent(b, indent);
   buf_printf(b, "sp_int _t%d = %s(%s); volatile sp_int _t%d = 0, _t%d = 0; sp_int _t%d = 0;", to, lenf, lv, ti, tw, tk);
   buf_printf(b, " sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", tnv, tnv);
@@ -5347,6 +5354,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_ctype(c, et, b);
     if (et == TY_POLY) buf_printf(b, " _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d);\n", te, te);
     else if (et == TY_STRING) buf_printf(b, " _t%d = NULL; SP_GC_ROOT_STR(_t%d);\n", te, te);
+    else if (ty_gc_rootable(c, et)) { buf_printf(b, " _t%d = NULL; ", te); emit_gc_root_tmp(c, et, te, b); buf_puts(b, "\n"); }
     else buf_printf(b, " _t%d = 0;\n", te);
   }
   /* the region: emit_begin's ensure protocol, less the deferred-next flag
@@ -5446,7 +5454,9 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     /* live: CRuby answers nil when every element the loop reached was kept */
     if (live) buf_printf(b, "sp_poly_arr_live_truncate(%s, _t%d); _t%d = _t%d;\n", lv, tw, to, ti);
     else if (ote) buf_printf(b, "if (_t%d) sp_%sArray_cut(_t%d, _t%d);\n", t, kk, t, tw);
-    else buf_printf(b, "if (_t%d) _t%d->len = _t%d;\n", t, t, tw);
+    /* (a block that cut the array leaves it cut, as CRuby does: the kept
+       elements past its new end are gone) */
+    else buf_printf(b, "if (_t%d && _t%d->len > _t%d) _t%d->len = _t%d;\n", t, t, tw, t, tw);
     if (flv) { lv_set_type(flv, fsaved); flv->nullable_int = fnsaved; }
     *tr = t; *torig = to; *twp = tw;
     return 1;
@@ -5477,7 +5487,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     buf_printf(b, "if (_t%d) { for (sp_int _t%d = _t%d; _t%d < sp_%sArray_length(_t%d); _t%d++, _t%d++)", t, tj, ti, tj, kk, t, tj, tw);
     buf_printf(b, " if (_t%d != _t%d) %s(_t%d, _t%d, %s(_t%d, _t%d));", tw, tj, setf, t, tw, getf, t, tj);
     if (ote) buf_printf(b, " sp_%sArray_cut(_t%d, _t%d); }\n", kk, t, tw);
-    else buf_printf(b, " _t%d->len = _t%d; }\n", t, tw);
+    else buf_printf(b, " if (_t%d->len > _t%d) _t%d->len = _t%d; }\n", t, tw, t, tw);
   }
   emit_indent(b, indent); buf_puts(b, "if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();\n");
   emit_indent(b, indent);

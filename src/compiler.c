@@ -519,6 +519,8 @@ void comp_free(Compiler *c) {
     free(sc->pdefault);
   }
   free(c->scopes);
+  free(c->file_scope);
+  free(c->prog_file); free(c->prog_rank);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
   free(c->symbols);
   for (int i = 0; i < c->nclasses; i++) {
@@ -1561,6 +1563,14 @@ int comp_arysub_emb(Compiler *c, int cid) {
 const char *comp_arysub_builtin(Compiler *c, int cid) {
   return comp_ary_is_str(c, cid) ? "String" : comp_ary_is_hash(c, cid) ? "Hash" : "Array";
 }
+/* The scope of the #to_ary an implicit Array conversion of a class cid
+   instance calls, or -1. An Array subclass instance is an Array already:
+   CRuby (rb_check_array_type) takes it as it is and never calls its own
+   #to_ary. */
+int comp_implicit_to_ary_mi(Compiler *c, int cid) {
+  if (comp_ary_root(c, cid) >= 0 && comp_arysub_emb(c, cid) == 0) return -1;
+  return comp_method_in_chain(c, cid, "to_ary", NULL);
+}
 
 int builtin_instance_method_known(const char *cls, const char *m);
 /* A name an Array answers: its own methods and Enumerable's, and the
@@ -2043,7 +2053,9 @@ int comp_is_wellknown_const(const char *cn) {
 int const_name_resolves_top_level(Compiler *c, const char *cn) {
   if (!cn) return 0;
   if (comp_is_wellknown_const(cn)) return 1;
-  return const_top_level_walk(c, c->nt->root_id, cn, 0);
+  for (int r = 0; r < nt_nroots(c->nt); r++)   /* each file's tree */
+    if (const_top_level_walk(c, nt_root(c->nt, r), cn, 0)) return 1;
+  return 0;
 }
 static int const_name_resolves(Compiler *c, const char *cn) {
   if (!cn) return 0;
@@ -3240,7 +3252,8 @@ static void cv_build(Compiler *c) {
     if (e >= 0 && nt_kind(nt, e) != NK_SelfNode && cv_self_value(nt, nonval, nt_ref(nt, n, "body"), 1))
       cv_mark_name(c, v, nt_str(nt, e, "name"));
   }
-  cv_self_answers(c, v, nt_ref(nt, nt->root_id, "statements"), -1, 1, 0);
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's top level */
+    cv_self_answers(c, v, nt_ref(nt, nt_root(nt, r), "statements"), -1, 1, 0);
   if (owner && methods) all = 1;
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;

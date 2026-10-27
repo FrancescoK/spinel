@@ -114,6 +114,7 @@ the count it reports.
 | `--check-stores` | each value written raw into a C slot of another C type                                                                                | `make check-stores-test`                                                              |
 | value edges      | the generated table of how each node kind's parent uses its value, against its source                                                 | `make value-edges-check`                                                              |
 | counted setters  | the tables `infer_type` reads are written only through their setters                                                                  | `make ty-setter-check`                                                                |
+| incremental-test | an incremental build's binary against a from-scratch build's, and the misses of a local edit against a bound                          | `tools/incremental_test.sh` (`make incremental-test`)                                 |
 
 The checks report; they do not decide. When a check and the C disagree
 and the C is right, the layer's answer is what to fix, so the two agree.

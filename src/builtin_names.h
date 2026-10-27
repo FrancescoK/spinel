@@ -28,6 +28,10 @@ int is_class_name_name(const char *n);   /* name */
 int is_inspect_name(const char *n);       /* inspect */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
+int is_method_name_reflection(const char *n); /* send family, method public_method instance_method define_method define_singleton_method alias_method singleton_method respond_to? method_defined? */
+int is_code_eval_name(const char *n);  /* eval class_eval module_eval instance_eval: given its code as a String */
+int is_symbol_conversion(const char *n); /* to_sym intern: a Symbol made of a value */
+int is_builtin_helper_name(const char *n); /* __x but not __x__: a builtins/ file's own helper */
 int is_opaque_reaching_call(const char *n); /* send family, call, new, lambda/proc, freeze, eval, instance_/class_/module_*, *method* */
 int is_async_code_entry(const char *recv, const char *n); /* Thread.new/start/fork, Fiber.new, trap, Signal.trap */
 int is_name_reader(const char *n);    /* name to_s inspect: a Class's or Module's name */
@@ -225,6 +229,9 @@ int is_initialize_name(const char *n); /* initialize */
 int is_initialize_family(const char *n); /* initialize initialize_copy */
 
 int is_iso8601_alias(const char *n); /* iso8601 xmlschema */
+int is_rfc2822_alias(const char *n);   /* rfc2822 rfc822 */
+int is_time_native_format(const char *n);   /* iso8601 xmlschema httpdate rfc2822 rfc822: Time#x and Time.x the runtime answers once "time" is required */
+int is_time_parser_name(const char *n);   /* parse strptime and the native formats: Time's class-method parsers */
 int sock_const_always(const char *n); /* Socket constants every platform defines */
 int is_exception_message(const char *n); /* message to_s */
 int is_socket_pair_alias(const char *n); /* pair socketpair */
@@ -306,6 +313,8 @@ int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
 int is_include_name(const char *n);
 int is_prepend_name(const char *n);
+int is_autoload_name(const char *n);
+int is_load_how_unresolved(const char *how);
 int is_comparable_module_name(const char *n);
 int is_enumerable_module_name(const char *n);
 int is_comparable_builtin_name(const char *n);
@@ -421,4 +430,92 @@ int boxed_stat_pred(const char *n);   /* a mode predicate's sp_stat_pred kind, a
 int stat_field_slot(const char *n);   /* a numeric field's sp_stat_field slot, else -1 */
 int boxed_stat_name(const char *n);   /* mode or a numeric field */
 int boxed_stat_reader(const char *n); /* mtime, atime, ftype */
+/* ---- Lowerings onto a library's method: the shared shape rows ----
+   A call of one of these shapes is lowered by the analysis onto a method or
+   constant a library defines (builtins/*.rb, Set): `system(cmd, out: ...)`
+   onto builtins/system_spawn.rb's __sp_system_spawn, and so on. Each row is
+   the shape, the name it lowers to and the library that defines that name.
+   The desugar a row's family names reads its shape from here; conditions on
+   a value, a type or the rest of the program (the receiver is an
+   Enumerator, the mode is a read, the program defines no `system`) stay in
+   the desugar. A shape is only what the parsed call shows, so graph mode
+   can ask the same rows which libraries a program's trees reach. A
+   rewrite that falls back to a native method when the library is absent
+   (sort_by.with_index, rfind) has no row. */
+enum {
+  LR_SYSTEM_OPTIONS,   /* desugar_system_options */
+  LR_POPEN_BLOCK,      /* desugar_io_popen_block */
+  LR_FOREACH_FIRST,    /* desugar_dir_surface's File.foreach(..).first(n) */
+  LR_ENUM_WALK,        /* desugar_enum_walk_calls */
+  LR_STR_WALK,         /* the String walk with an index (desugar_iter_receivers) */
+  LR_ENUM_NAME,        /* desugar_builtin_enum_calls: a name for a builtins/enumerable.rb definition */
+  LR_INDEX_BLOCK,      /* desugar_builtin_enum_calls: Array#index with a block */
+  LR_WITH_OBJECT,      /* a stored Enumerator's with_object */
+  LR_TO_SET            /* to_set -> Set.new(recv.to_a) */
+};
+/* the receiver: no condition, none, one, the constant recv_name, or a call
+   named recv_name (on the constant recv_const when that is not NULL) */
+enum { LR_RECV_ANY, LR_RECV_NONE, LR_RECV_SOME, LR_RECV_CONST, LR_RECV_CALL };
+enum {
+  LR_BLOCK = 1,          /* a block, literal or `&arg` */
+  LR_BLOCK_LITERAL = 2,  /* a literal block */
+  LR_NO_BLOCK = 4,
+  LR_BREAKS = 8,         /* the literal block's body breaks out of it */
+  LR_KWHASH = 16,        /* an argument is a keyword hash */
+  LR_NO_SPLAT = 32,      /* no argument is a splat */
+  LR_PLAIN_ARGS = 64,    /* no argument is a splat, a keyword hash or a block argument */
+  LR_HAS_RECV = 128,     /* the call has a receiver (for the receiver call: of its own) */
+  LR_NO_ARGS = 256       /* no ArgumentsNode at all (a synthesized call may carry an empty one) */
+};
+typedef struct {
+  int family;                      /* LR_*: the desugar that reads it */
+  const char *name;                /* the call's name */
+  int recv;                        /* LR_RECV_* */
+  const char *recv_name;           /* LR_RECV_CONST: the constant; LR_RECV_CALL: the call */
+  const char *recv_const;          /* LR_RECV_CALL: that call's receiver constant, or NULL */
+  const char *const *recv_calls;   /* when the receiver is a blockless call, its name is one of these (NULL: any) */
+  signed char argc_min, argc_max;  /* the call's argument count (-1: no bound) */
+  unsigned short flags;            /* LR_* bits for the call */
+  signed char rargc_min, rargc_max;   /* LR_RECV_CALL: the receiver call's */
+  unsigned short rflags;
+  const char *target;              /* the method (or, for LR_TO_SET, the constant) it lowers to */
+  const char *lib;                 /* the library that defines target, as a require names it */
+} LowerRow;
+const LowerRow *lower_row_at(int i);              /* the i-th row, NULL past the last */
+/* SPINEL_LOWER_ROWS_CHECK: the rows a call's parse matched travel on its node
+   as a mask of row indices (`lr_rows`), so only this many rows are checked */
+#define LOWER_ROWS_MASK_BITS 63
+const LowerRow *lower_row_of(int family);         /* the family's first row */
+const LowerRow *lower_row_named(int family, const char *name);   /* the family's row for a call name */
+
+/* ---- The pre-installed packages' facts ----
+   Generated from their manifests (packages/<package>/spin.toml) into
+   src/package_facts.inc by tools/gen_package_facts.rb: the feature a package
+   is required by, whether CRuby has it loaded at boot, and the require it
+   rides as an add-on. */
+typedef struct {
+  const char *package;   /* "set" */
+  const char *feature;   /* its file, packages/<package>/<feature>.rb: "set", "io/buffer" */
+  int boot;              /* CRuby has it loaded before a program runs */
+  const char *rides;     /* the require that makes the add-on available ("time"), or NULL */
+} PackageFact;
+const PackageFact *package_fact_at(int i);   /* the i-th row, NULL past the last */
+
+/* ---- Spinel's native classes, modules and exceptions (BUILTIN_CLASSES) ----
+   One row per name: which predicate accepts it (BC_*) and its negative
+   cls_id (0 when codegen has none). */
+enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
+typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
+const BuiltinClass *builtin_class_at(int i);   /* the i-th row, NULL past the last */
+int is_native_class_name(const char *n);       /* any row: a class Spinel has without a library */
+/* names the compile-time evaluation and its questions ask about (ct_eval.c,
+   analyze_ct.c) */
+int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
+int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
+int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */
+int is_core_change_call(const char *n);    /* class_eval .. module_exec include prepend define_method send family alias_method remove_method undef_method: may change a class's methods */
+int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
+int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
+int is_refine_name(const char *n);         /* refine */
+int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif

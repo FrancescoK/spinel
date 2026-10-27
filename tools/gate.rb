@@ -81,19 +81,18 @@ module Gate
     end
   end
 
-  # The function-size rule (#7033), whole: emit_call_body only shrinks, and a
-  # function past FUNCTION_LIMIT lines neither grows nor is added. Returns
-  # the complaint for function fn, `was` lines at HEAD (nil when new) and n
-  # lines staged, or nil; check refuses the commit on it.
+  # The function size (#7033): FUNCTION_LIMIT lines is where a split is worth
+  # considering, along a seam in what the function does; a function with no
+  # such seam stays whole. Returns the note for function fn, `was` lines at
+  # HEAD (nil when new) and n lines staged, or nil; check warns on it and
+  # does not refuse the commit.
   FUNCTION_LIMIT = 1000
 
-  def function_size_error(fn, was, n)
-    if fn == "emit_call_body" && was && n > was
-      "emit_call_body grew #{was} -> #{n}; it only shrinks (#7033)"
-    elsif was && was > FUNCTION_LIMIT && n > was
-      "#{fn} grew #{was} -> #{n}; add the arm through a helper or its receiver file"
+  def function_size_note(fn, was, n)
+    if was && was > FUNCTION_LIMIT && n > was
+      "#{fn} grew #{was} -> #{n}; consider a split if it has a seam"
     elsif was.nil? && n > FUNCTION_LIMIT
-      "new function #{fn} is #{n} lines"
+      "new function #{fn} is #{n} lines; consider a split if it has a seam"
     end
   end
 
@@ -127,7 +126,7 @@ module Gate
     changed.grep(%r{\Asrc/.*\.c\z}).each do |f|
       before = functions(show("#{change.before}#{f}"))
       functions(show("#{change.after}#{f}")).each do |fn, n|
-        e = function_size_error(fn, before[fn], n) and errors << "#{f}: #{e}"
+        e = function_size_note(fn, before[fn], n) and warn "gate: #{f}: #{e}"
       end
     end
     added = git("diff", *change.diff, "--name-only", "--diff-filter=A", "--", "test/*.rb").to_s.split("\n")

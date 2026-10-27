@@ -460,7 +460,7 @@ static const char *nil_sum_ck_text(Compiler *c, int recv, TyKind rt, int float_s
 /* (vg: the element read, "oget" where the receiver's element carries its nil) */
 static void emit_values_at_boxed(const char *an, const char *vs, const char *vg, int to, int tr, const char *val, Buf *b) {
   int k = ++g_tmp;
-  buf_printf(b, "{ sp_RbVal _e%d = %s; if (_e%d.tag == SP_TAG_OBJ && _e%d.cls_id == SP_BUILTIN_RANGE) {"
+  buf_printf(b, "{ sp_RbVal _e%d = sp_poly_frange_ix(%s); if (_e%d.tag == SP_TAG_OBJ && _e%d.cls_id == SP_BUILTIN_RANGE) {"
                 " sp_Range _r%d = *(sp_Range *)_e%d.v.p; sp_int _n%d = sp_%sArray_length(_t%d);"
                 " sp_int _f%d = _r%d.first == INTPTR_MIN ? 0 : (_r%d.first < 0 ? _r%d.first + _n%d : _r%d.first);",
              k, val, k, k, k, k, k, an, tr, k, k, k, k, k, k);
@@ -3280,6 +3280,28 @@ static void emit_bsearch_param(Compiler *c, int block, const char *bp, const cha
   else
   buf_printf(g_pre, "lv_%s = sp_%sArray_get(_t%d, _t%d);\n", bp, k, trecv, tmid);
 }
+/* An Array#fill offset with its nil: a nil start is 0, a nil length runs
+   to the end */
+static void emit_fill_offset(Compiler *c, int node, Buf *b) {
+  if (node_has_oint_form(c, node)) { emit_oint_expr(c, node, TY_INT, b); return; }
+  /* a boxed one (a method's nilable Integer under --int-overflow=promote):
+     its nil is the slot's nil, anything else an Integer argument */
+  if (repr_of(c, node).kind == RK_BOXED) {
+    int t = ++g_tmp;
+    buf_printf(b, "({ sp_RbVal _t%d = ", t);
+    emit_expr(c, node, b);
+    buf_printf(b, "; _t%d.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_arg_int_chk(_t%d)); })", t, t);
+    return;
+  }
+  buf_puts(b, "sp_oint_of("); emit_int_expr(c, node, b); buf_puts(b, ")");
+}
+
+/* The runtime reading of an Array#fill Range span, by the Range's type:
+   an Integer or a Float Range (each end through to_int) */
+static const char *fill_range_fn(TyKind t) {
+  return t == TY_RANGE ? "sp_array_fill_range" : t == TY_FLOAT_RANGE ? "sp_array_fill_frange" : NULL;
+}
+
 static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, TyKind a0, TyKind res, int *out) {
   if (!(recv >= 0 && ty_is_array(rt))) return 0;
   if (emit_scalar_array_conversion(c, id, recv, rt, name, argc, b)) { *out = 1; return 1; }
@@ -3581,31 +3603,27 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, fk, trecv);
       /* resolve the [start, end) span from the arguments */
-      int is_range = (argc == 1 && comp_ntype(c, argv[0]) == TY_RANGE);
-      if (is_range) {
-        int tr = ++g_tmp;
+      const char *fill_rng = argc == 1 ? fill_range_fn(comp_ntype(c, argv[0])) : NULL;
+      if (fill_rng) {
+        /* the span as the value form reads it (sp_array_fill_range); rendered
+           first: emit_expr may want g_pre lines of its own (#4065) */
+        Buf rgb2; memset(&rgb2, 0, sizeof rgb2); emit_expr(c, argv[0], &rgb2);
         emit_indent(g_pre, g_indent);
-        /* rendered first: emit_expr may want g_pre lines of its own (#4065) */
-        { Buf rgb2; memset(&rgb2, 0, sizeof rgb2); emit_expr(c, argv[0], &rgb2);
-          buf_printf(g_pre, "sp_Range _t%d = sp_range_ix(%s);\n", tr, rgb2.p ? rgb2.p : "(sp_Range){0}");
-          free(rgb2.p); }
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = _t%d.first; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;\n",
-                   ts, tr, ts, ts, tn, ts, ts);
-        emit_indent(g_pre, g_indent);
-        buf_printf(g_pre, "sp_int _t%d = (_t%d.last < 0 ? _t%d.last + _t%d : _t%d.last) + (_t%d.excl ? 0 : 1);\n",
-                   te, tr, tr, tn, tr, tr);
+        buf_printf(g_pre, "sp_int _t%d = _t%d; sp_int _t%d = %s(%s, &_t%d);\n",
+                   te, tn, ts, fill_rng, rgb2.p ? rgb2.p : "(sp_Range){0}", te);
+        free(rgb2.p);
       }
       else {
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = 0;", ts);
-        if (argc >= 1) { buf_printf(g_pre, " _t%d = ", ts); emit_int_expr(c, argv[0], g_pre);
-                         buf_printf(g_pre, "; if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, tn, ts, ts); }
+        /* a nil start is 0 and a nil length runs to the end */
+        if (argc >= 1) { buf_printf(g_pre, " { sp_oint _ts = "); emit_fill_offset(c, argv[0], g_pre);
+                         buf_printf(g_pre, "; if (!_ts.nil) _t%d = _ts.v; } if (_t%d < 0) _t%d += _t%d; if (_t%d < 0) _t%d = 0;", ts, ts, ts, tn, ts, ts); }
         buf_puts(g_pre, "\n");
         emit_indent(g_pre, g_indent);
         buf_printf(g_pre, "sp_int _t%d = _t%d;", te, tn);
-        if (argc == 2) { buf_printf(g_pre, " { sp_int _tl = "); emit_int_expr(c, argv[1], g_pre);
-                         buf_printf(g_pre, "; if (_tl < 0) _tl = 0; _t%d = _t%d + _tl; }", te, ts); }
+        if (argc == 2) { buf_printf(g_pre, " { sp_oint _tl = "); emit_fill_offset(c, argv[1], g_pre);
+                         buf_printf(g_pre, "; if (!_tl.nil) { if (_tl.v < 0) _tl.v = 0; _t%d = _t%d + _tl.v; } }", te, ts); }
         buf_puts(g_pre, "\n");
       }
       emit_indent(g_pre, g_indent);
@@ -3712,12 +3730,12 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       else if (fsfx[0]) emit_elem_store_value(c, fk, argv[0], b);
       else emit_typed_elem_value(c, argv[0], ty_array_elem(fill_rt), b);
       buf_printf(b, "; sp_int _t%d = sp_%sArray_length(_t%d);", tn, fk, t);
-      if (argc >= 2 && comp_ntype(c, argv[1]) == TY_RANGE) {
+      if (argc >= 2 && fill_range_fn(comp_ntype(c, argv[1]))) {
         /* fill(val, range): the range is the index span, its end in place
            of the length (sp_array_fill_range) -- a negative end counts from
            the end and an endless one runs to the last element (#3605,
            #3606), a begin before the start is CRuby's RangeError */
-        buf_printf(b, " sp_int _t%d = sp_array_fill_range(", ts); emit_expr(c, argv[1], b);
+        buf_printf(b, " sp_int _t%d = %s(", ts, fill_range_fn(comp_ntype(c, argv[1]))); emit_expr(c, argv[1], b);
         buf_printf(b, ", &_t%d);", tn);
         buf_printf(b, " for (sp_int _t%d = _t%d; _t%d < _t%d; _t%d++)"
                       " sp_%sArray_set%s(_t%d, _t%d, _t%d); _t%d; })",
@@ -5434,6 +5452,19 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       buf_printf(b, "sp_PtrArray_clear(%s", nil_ok ? "" : "(sp_PtrArray *)sp_nil_recv_named(");
       emit_expr(c, recv, b);
       buf_puts(b, nil_ok ? ")" : ", \"clear\"))");
+      return 1;
+    }
+    /* the filters with a bang, which the pass admits for an object array
+       only: the in-place filter loop, and the array boxed by reference */
+    if (!nested && is_select_reject_bang(name) && argc == 0 && nt_ref(nt, id, "block") >= 0) {
+      int trecv, torig, twp;
+      if (!emit_array_filter_loop(c, recv, nt_ref(nt, id, "block"), rt, name, g_pre, g_indent, &trecv, &torig, &twp))
+        return 0;
+      char ts[24]; snprintf(ts, sizeof ts, "_t%d", trecv);
+      Buf box; memset(&box, 0, sizeof box);
+      emit_boxed_text(c, rt, ts, &box);
+      emit_filter_bang_result(name, trecv, torig, twp, box.p ? box.p : "sp_box_nil()", b);
+      free(box.p);
       return 1;
     }
     if (sp_streq(name, "[]=") && argc == 2) {
@@ -9813,7 +9844,7 @@ static int str_arms_poly_pattern(Compiler *c, int id, Buf *b, const NodeTable *n
   /* a Range (value_may_be_range) takes the substring arm:
      s[range] read it as an Integer index */
   if (is_slice_alias(name) && argc == 1 && value_may_be_range(c, argv[0])) {
-    buf_printf(&eb, ") : (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp);
+    buf_printf(&eb, ") : ((_t%d = sp_poly_frange_ix(_t%d)).tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? (", tp, tp, tp);
     bind = view_bind(argv[0], "(*(sp_Range *)_t%d.v.p)", tp);
     v = view_push(c, argv[0], TY_RANGE);
     ok = ok && str_arms_text(c, id, &eb, nt, name, recv, argc, argv, rs);
@@ -13237,7 +13268,7 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
       else buf_printf(b, "sp_time_iso8601(%s)", r);
     }
     else if (sp_streq(name, "httpdate") && sp_feature_enabled("time")) buf_printf(b, "sp_time_httpdate(%s)", r);
-    else if ((sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) && sp_feature_enabled("time"))
+    else if (is_rfc2822_alias(name) && sp_feature_enabled("time"))
       buf_printf(b, "sp_time_rfc2822(%s)", r);
     else if (sp_streq(name, "eql?") && argc == 1) {
       if (comp_ntype(c, argv[0]) == TY_TIME) {
@@ -14693,8 +14724,8 @@ static int face_view_index_ranges(Compiler *c, int id, int *toks, int cap) {
   return n;
 }
 
-/* `a.fill(v[, start[, len]])` on a boxed Array with Integer offsets and no
-   block: sp_poly_fill fills the Array itself where the value fits it,
+/* `a.fill(v[, start[, len]])` on a boxed Array with Integer offsets (each
+   may be nil) and no block: sp_poly_fill fills the Array itself where the value fits it,
    rather than a boxed copy of the whole Array written back. */
 static int face_fill_in_place(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -14745,10 +14776,10 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
     int tv = ++g_tmp;
     buf_printf(val, "({ sp_RbVal _t%d = ", tv);
     emit_boxed(c, argv[0], val);
-    buf_printf(val, "; SP_GC_ROOT_RBVAL(_t%d); sp_int _s = ", tv);
-    if (argc >= 2) emit_expr(c, argv[1], val); else buf_puts(val, "0");
-    buf_puts(val, "; sp_int _l = ");
-    if (argc == 3) emit_expr(c, argv[2], val); else buf_puts(val, "0");
+    buf_printf(val, "; SP_GC_ROOT_RBVAL(_t%d); sp_oint _s = ", tv);
+    if (argc >= 2) emit_fill_offset(c, argv[1], val); else buf_puts(val, "sp_oint_nil()");
+    buf_puts(val, "; sp_oint _l = ");
+    if (argc == 3) emit_fill_offset(c, argv[2], val); else buf_puts(val, "sp_oint_nil()");
     buf_printf(val, "; sp_poly_fill(_t%d, _t%d, %d, _s, _l); })", t, tv, argc);
     free(rb.p);
     return TY_POLY;

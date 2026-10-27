@@ -3,12 +3,14 @@
  * parser was fetched (SPINEL_INLINE_RBS); the stub at the end answers for a
  * build without it.
  *
- * sp_parse_emit calls sp_inline_rbs_run between pm_parse and flatten, when
- * the whole spliced program and its comment list are alive together. The pass
- * groups the comments into blocks, attaches each annotation to the node it
- * describes, parses it with the rbs C parser and maps its types with the
- * extractor's own map_type (rbs_map.c). The result is a fact on that node,
- * written by flatten as attributes of the node (docs/internals/AST.md):
+ * The parser calls sp_inline_rbs_run between pm_parse and flatten, when a
+ * parse's tree and its comment list are alive together: under
+ * --load-model=graph each file's own parse (sp_graph_file), under the inline
+ * model the whole spliced program (sp_parse_emit). The pass groups the
+ * comments into blocks, attaches each annotation to the node it describes,
+ * parses it with the rbs C parser and maps its types with the extractor's own
+ * map_type (rbs_map.c). The result is a fact on that node, written by flatten
+ * as attributes of the node (docs/internals/AST.md):
  *
  *   S <def> rbs_ret <tag>        S <def> rbs_params <tag>,<tag>,...
  *   S <attr_* call> rbs_ivar <tag>
@@ -37,35 +39,53 @@ static ir_held *g_held = NULL;
 static int g_nheld = 0;
 static int g_hold = 0;
 
-static void ir_diag(const char *file, int line, int col, int is_error,
+/* The file one run of the pass reads: under --load-model=graph each file of
+ * the program by itself, with its own parse; under the inline model the
+ * spliced program, whose lines the multi-file map takes back to the files
+ * they came from. */
+typedef struct {
+    const char *path;
+    int fid;               /* its id in the node table's file list */
+    const uint8_t *src;
+    size_t len;
+    size_t *line_starts;   /* byte offset of each line, index 0 = line 1 */
+    int nlines;
+    pm_parser_t *pm;
+} ir_file;
+
+static void ir_diag(const ir_file *f, int line, int col, int is_error,
                     const char *fmt, ...) RBS_ATTRIBUTE_FORMAT(5, 6);
-/* A buffer line of the spliced program as the file and line it came from. */
-static void ir_orig(int bline, const char **file, int *line) {
-    *file = g_source_file;
+/* Line `bline` of `f` as the file, line and file id it is reported and
+ * stamped with: a line of a file's own parse is that already, and a line of
+ * the spliced program is mapped back to the file it came from. */
+static void ir_orig(const ir_file *f, int bline, const char **file, int *line, int *fid) {
+    *file = f->path;
     *line = bline;
+    *fid = sp_line_map_n > 0 && bline <= sp_line_map_n ? sp_line_file[bline] : f->fid;
     if (sp_line_map_n > 0 && bline >= 1 && bline <= sp_line_map_n && sp_line_orig[bline] > 0) {
         *file = sp_file_table[sp_line_file[bline]];
         *line = sp_line_orig[bline];
     }
 }
 
-/* "file:line" of a buffer line, for naming a second position in a message */
-static const char *ir_where(int bline) {
+/* "file:line" of a line of `f`, for naming a second position in a message */
+static const char *ir_where(const ir_file *f, int bline) {
     static char bufs[4][4200];
     static int k = 0;
     const char *file;
-    int line;
-    ir_orig(bline, &file, &line);
+    int line, fid;
+    ir_orig(f, bline, &file, &line, &fid);
     k = (k + 1) % 4;
     snprintf(bufs[k], sizeof bufs[k], "%s:%d", file, line);
     return bufs[k];
 }
 
-static void ir_diag(const char *file, int line, int col, int is_error,
+static void ir_diag(const ir_file *f, int line, int col, int is_error,
                     const char *fmt, ...) {
     char head[4200], body[2048];
-    int bline = line;
-    ir_orig(bline, &file, &line);
+    const char *file;
+    int bline = line, fid;
+    ir_orig(f, bline, &file, &line, &fid);
     if (col > 0) snprintf(head, sizeof head, "spinel: %s:%d:%d: %s", file, line, col, is_error ? "" : "warning: ");
     else snprintf(head, sizeof head, "spinel: %s:%d: %s", file, line, is_error ? "" : "warning: ");
     if (is_error) g_inline_errors++;
@@ -109,13 +129,16 @@ typedef struct {
     char *ivar;       /* an attr_* call: the tag */
     sbuf_t ivars;     /* a class body: `@x=<tag>@<line>@<file>@<col>,...` */
     sbuf_t names;     /* `<tag>=<type as written>` per tag, newline-separated */
-    int line;         /* buffer line of the annotation */
+    const char *file; /* the file of the annotation, */
+    int line;         /* its line there, */
+    int fid;          /* and the file's id in the node table */
     int col;          /* 1-based column of its `#` */
     int emitted;      /* written as attributes of its node's flattened id */
 } ir_nfact;
 
 static ir_nfact *g_nf = NULL;
 static int g_nnf = 0, g_cnf = 0;
+static int g_nf_sorted = 0;   /* g_nf in node order, for the lookups flatten makes */
 
 static char *ir_strdup(const char *s) {
     if (s == NULL) return NULL;
@@ -134,29 +157,22 @@ static char *ir_strndup(const char *s, size_t n) {
     return d;
 }
 
-static ir_nfact *ir_nfact_for(const pm_node_t *node) {
+static ir_nfact *ir_nfact_for(const ir_file *f, const pm_node_t *node) {
     for (int i = 0; i < g_nnf; i++) if (g_nf[i].node == node) return &g_nf[i];
     if (g_nnf >= g_cnf) {
         g_cnf = g_cnf ? g_cnf * 2 : 32;
         g_nf = (ir_nfact *) realloc(g_nf, sizeof(ir_nfact) * (size_t) g_cnf);
         if (g_nf == NULL) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
-    ir_nfact *f = &g_nf[g_nnf++];
-    memset(f, 0, sizeof *f);
-    f->node = node;
-    return f;
+    ir_nfact *fa = &g_nf[g_nnf++];
+    memset(fa, 0, sizeof *fa);
+    fa->node = node;
+    fa->file = f->path;
+    fa->fid = f->fid;
+    return fa;
 }
 
 /* ---- source positions --------------------------------------------------- */
-
-typedef struct {
-    const char *path;
-    const uint8_t *src;
-    size_t len;
-    size_t *line_starts;   /* byte offset of each line, index 0 = line 1 */
-    int nlines;
-    pm_parser_t *pm;
-} ir_file;
 
 static int ir_line_of(const ir_file *f, size_t off) {
     int lo = 0, hi = f->nlines - 1;
@@ -517,14 +533,14 @@ static void ir_syntax_error(const ir_file *f, const ir_ann *a, rbs_parser_t *p) 
         ir_ann_pos(a, p->error->token.range.start.byte_pos, &line, &col);
         if (p->error->message) msg = p->error->message;
     }
-    ir_diag(f->path, line, col, 1, "inline RBS syntax error: %s\n"
+    ir_diag(f, line, col, 1, "inline RBS syntax error: %s\n"
             "  the annotation is not applied and the compile stops; correct it, or "
             "make it an ordinary comment (%s)", msg,
             a->shape == IA_RBS ? "one whose text does not start with `@rbs`" : "`# :` is not an annotation");
 }
 
 static void ir_warn(const ir_file *f, const ir_ann *a, const char *what, const char *why) {
-    ir_diag(f->path, a->first_line, a->first_col + 1, 0,
+    ir_diag(f, a->first_line, a->first_col + 1, 0,
             "inline RBS: %s is not applied: %s", what, why);
 }
 
@@ -733,7 +749,7 @@ static const char *ir_method_type(rbs_parser_t *p, rbs_node_t *mtn, const ir_tar
 static void ir_emit_method_fact(const ir_file *f, const ir_target *t, const ir_ann *a,
                                 const char *name, char *ret, char **ptypes, int np) {
     (void) f; (void) name;
-    ir_nfact *fa = ir_nfact_for(t->node);
+    ir_nfact *fa = ir_nfact_for(f, t->node);
     fa->ret = ret;
     sbuf_t ps; sbuf_init(&ps);
     int last = -1;
@@ -746,16 +762,16 @@ static void ir_emit_method_fact(const ir_file *f, const ir_target *t, const ir_a
     sbuf_free(&ps);
     for (int k = 0; k < np; k++) free(ptypes[k]);
     free(ptypes);
-    fa->line = a->first_line;
+    ir_orig(f, a->first_line, &fa->file, &fa->line, &fa->fid);
     fa->col = a->first_col + 1;
     ir_names_merge(&fa->names, &g_ir_names);
 }
 
 /* An attr_* call: one tag for every name it declares. */
-static void ir_emit_ivar_fact(const ir_target *t, const char *tag, const ir_ann *a) {
-    ir_nfact *fa = ir_nfact_for(t->node);
+static void ir_emit_ivar_fact(const ir_file *f, const ir_target *t, const char *tag, const ir_ann *a) {
+    ir_nfact *fa = ir_nfact_for(f, t->node);
     fa->ivar = ir_strdup(tag);
-    fa->line = a->first_line;
+    ir_orig(f, a->first_line, &fa->file, &fa->line, &fa->fid);
     fa->col = a->first_col + 1;
     ir_names_merge(&fa->names, &g_ir_names);
 }
@@ -766,10 +782,10 @@ static void ir_emit_ivar_fact(const ir_target *t, const char *tag, const ir_ann 
  * of the two would have to be dropped without a word. */
 static void ir_second_signature(const ir_file *f, const char *name, const ir_ann *later, const ir_ann *earlier) {
     if (later->first_line < earlier->first_line) { const ir_ann *t = later; later = earlier; earlier = t; }
-    ir_diag(f->path, later->first_line, later->first_col + 1, 1,
+    ir_diag(f, later->first_line, later->first_col + 1, 1,
             "inline RBS: `%s` has a second signature here; the first is at %s\n"
             "  write one signature: a `#:` method type, or `# @rbs` parameter and return lines",
-            name, ir_where(earlier->first_line));
+            name, ir_where(f, earlier->first_line));
 }
 
 static void ir_apply_def(const ir_file *f, ir_target *t) {
@@ -906,9 +922,9 @@ static void ir_apply_def(const ir_file *f, ir_target *t) {
                         skip = 1;
                     }
                     else if (param_by[idx]) {
-                        ir_diag(f->path, a->first_line, a->first_col + 1, 1,
+                        ir_diag(f, a->first_line, a->first_col + 1, 1,
                                 "inline RBS: parameter `%s` is annotated twice; the first is at %s",
-                                pname, ir_where(param_by[idx]->first_line));
+                                pname, ir_where(f, param_by[idx]->first_line));
                         bad = 1;
                     }
                     else if (!ir_map(p, pa->param_type, t, &tag)) {
@@ -925,9 +941,9 @@ static void ir_apply_def(const ir_file *f, ir_target *t) {
                         ? ((rbs_ast_ruby_annotations_return_type_annotation_t *) node)->return_type
                         : ((rbs_ast_ruby_annotations_node_type_assertion_t *) node)->type;
                     if (ret_by) {
-                        ir_diag(f->path, a->first_line, a->first_col + 1, 1,
+                        ir_diag(f, a->first_line, a->first_col + 1, 1,
                                 "inline RBS: the return type of `%s` is annotated twice; the first is at %s",
-                                name, ir_where(ret_by->first_line));
+                                name, ir_where(f, ret_by->first_line));
                         bad = 1;
                     }
                     else if (!ir_map(p, rt, t, &tag)) {
@@ -981,9 +997,9 @@ static void ir_apply_attr(const ir_file *f, ir_target *t) {
             continue;
         }
         if (a != NULL) {
-            ir_diag(f->path, next->first_line, next->first_col + 1, 1,
+            ir_diag(f, next->first_line, next->first_col + 1, 1,
                     "inline RBS: this attribute has a second type annotation; the first is at %s",
-                    ir_where(a->first_line));
+                    ir_where(f, a->first_line));
             return;
         }
         a = next;
@@ -1012,7 +1028,7 @@ static void ir_apply_attr(const ir_file *f, ir_target *t) {
         ir_warn(f, a, "this attribute type", "the attribute names are not all symbol literals, so there is nothing it can name");
     }
     else {
-        ir_emit_ivar_fact(t, tag.buf, a);
+        ir_emit_ivar_fact(f, t, tag.buf, a);
     }
     sbuf_free(&tag);
     rbs_parser_free(p);
@@ -1046,14 +1062,18 @@ static void ir_apply_ivar_decl(const ir_file *f, const ir_ann *a, const ir_conta
     if (!ir_map(p, iv->type, &t, &tag)) ir_warn(f, a, "this instance variable type", "it is outside the types Spinel can pin");
     else {
         char *nm = ir_sym_name(p, iv->ivar_name);
-        ir_nfact *fa = ir_nfact_for(c->body);
+        ir_nfact *fa = ir_nfact_for(f, c->body);
         const char *file;
-        int line;
-        ir_orig(a->first_line, &file, &line);
+        int line, fid;
+        ir_orig(f, a->first_line, &file, &line, &fid);
+        /* the fact's own place, for a fact of declarations only: the first
+           one's, which sp_inline_rbs_done names when its class body is
+           never flattened (ir_nfact_for sets only its file; a line of 0
+           says no annotation gave it a place yet) */
+        if (fa->line == 0) { fa->file = file; fa->line = line; fa->fid = fid; fa->col = a->first_col + 1; }
         char ent[512];
         snprintf(ent, sizeof ent, "%s%s=%s@%d@%d@%d", fa->ivars.len ? "," : "", nm, tag.buf,
-                 line, sp_line_map_n > 0 && a->first_line <= sp_line_map_n ? sp_line_file[a->first_line] : 0,
-                 a->first_col + 1);
+                 line, fid, a->first_col + 1);
         sbuf_append_cstr(&fa->ivars, ent);
         ir_names_merge(&fa->names, &g_ir_names);
         free(nm);
@@ -1243,52 +1263,85 @@ static void ir_associate(ir_file *f, ir_walk *w) {
 
 /* ---- the entry points ------------------------------------------------------ */
 
-/* Between pm_parse and flatten: attach and parse the program's annotations,
- * reporting as it goes. Answers the number of errors; any stops the compile. */
-static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root,
-                             const char *source, size_t len) {
-    if (!sp_inline_rbs_enabled) return 0;
-    /* a program with no annotation-shaped comment costs one look at each */
-    bool any = false;
-    for (const pm_comment_t *c = (const pm_comment_t *) parser->comment_list.head; c && !any;
+/* Does a parse hold an annotation-shaped comment? A program with none costs
+ * one look at each comment. */
+static bool ir_any_annotation(const pm_parser_t *parser) {
+    for (const pm_comment_t *c = (const pm_comment_t *) parser->comment_list.head; c;
          c = (const pm_comment_t *) c->node.next) {
         if (c->type != PM_COMMENT_INLINE || sp_in_builtin(c->location.start)) continue;
         size_t n = (size_t) (c->location.end - c->location.start);
         if (ir_classify((const char *) c->location.start, n) != CL_PROSE ||
-            (n >= 2 && c->location.start[1] == '[')) any = true;
+            (n >= 2 && c->location.start[1] == '[')) return true;
     }
-    if (!any) return 0;
-    ir_file f;
-    memset(&f, 0, sizeof f);
-    f.path = g_source_file;
-    f.src = (const uint8_t *) source;
-    f.len = len;
-    f.pm = parser;
-    f.nlines = 1;
-    for (size_t i = 0; i < len; i++) if (source[i] == '\n') f.nlines++;
-    f.line_starts = (size_t *) malloc(sizeof(size_t) * (size_t) f.nlines);
-    f.line_starts[0] = 0;
+    return false;
+}
+
+/* A parse's tree walked for the declarations and the places an annotation
+ * can attach to: the classes and modules it declares join the names a type
+ * resolves against (known_names), whichever file's annotation names them. */
+static void ir_walk_open(ir_file *f, ir_walk *w, pm_parser_t *parser, pm_node_t *root,
+                         const char *source, size_t len, const char *path, int fid) {
+    memset(f, 0, sizeof *f);
+    f->path = path;
+    f->fid = fid;
+    f->src = (const uint8_t *) source;
+    f->len = len;
+    f->pm = parser;
+    f->nlines = 1;
+    for (size_t i = 0; i < len; i++) if (source[i] == '\n') f->nlines++;
+    f->line_starts = (size_t *) malloc(sizeof(size_t) * (size_t) f->nlines);
+    if (f->line_starts == NULL) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    f->line_starts[0] = 0;
     int l = 1;
-    for (size_t i = 0; i < len; i++) if (source[i] == '\n') f.line_starts[l++] = i + 1;
-    ir_walk w;
-    memset(&w, 0, sizeof w);
-    w.f = &f;
-    ir_ctx cx = { &w, "", "", 0 };
+    for (size_t i = 0; i < len; i++) if (source[i] == '\n') f->line_starts[l++] = i + 1;
+    memset(w, 0, sizeof *w);
+    w->f = f;
+    ir_ctx cx = { w, "", "", 0 };
     pm_visit_node(root, ir_visit, &cx);
+}
+
+static void ir_walk_close(ir_file *f, ir_walk *w) {
+    for (int i = 0; i < w->ntargets; i++) {
+        for (int j = 0; j < w->targets[i].nanns; j++) ir_ann_free(w->targets[i].anns[j]);
+        free(w->targets[i].owner);
+        free(w->targets[i].lookup);
+        free(w->targets[i].anns);
+    }
+    for (int i = 0; i < w->nconts; i++) { free(w->conts[i].owner); free(w->conts[i].lookup); }
+    free(w->targets);
+    free(w->conts);
+    free(f->line_starts);
+}
+
+/* Under --load-model=graph, before any file's annotations are read: does
+ * the file's parse hold one, and the classes and modules it declares, for
+ * a type any file names (RBS resolves a name against the whole program's
+ * declarations, wherever they are). */
+static int sp_inline_rbs_any(pm_parser_t *parser) {
+    return sp_inline_rbs_enabled && ir_any_annotation(parser);
+}
+static void sp_inline_rbs_declare(pm_parser_t *parser, pm_node_t *root, const char *source, size_t len) {
+    if (!sp_inline_rbs_enabled) return;
+    ir_file f;
+    ir_walk w;
+    ir_walk_open(&f, &w, parser, root, source, len, "", 0);
+    ir_walk_close(&f, &w);
+}
+
+/* Between pm_parse and flatten: attach and parse the annotations of one
+ * parse, `source` read from `path` (file `fid` of the node table's list),
+ * reporting as it goes. Answers the number of errors; any stops the compile. */
+static int sp_inline_rbs_run(pm_parser_t *parser, pm_node_t *root,
+                             const char *source, size_t len, const char *path, int fid) {
+    if (!sp_inline_rbs_enabled || !ir_any_annotation(parser)) return 0;
+    ir_file f;
+    ir_walk w;
+    ir_walk_open(&f, &w, parser, root, source, len, path, fid);
     g_hold = 1;
     ir_associate(&f, &w);
     g_hold = 0;
     ir_flush_held();
-    for (int i = 0; i < w.ntargets; i++) {
-        for (int j = 0; j < w.targets[i].nanns; j++) ir_ann_free(w.targets[i].anns[j]);
-        free(w.targets[i].owner);
-        free(w.targets[i].lookup);
-        free(w.targets[i].anns);
-    }
-    for (int i = 0; i < w.nconts; i++) { free(w.conts[i].owner); free(w.conts[i].lookup); }
-    free(w.targets);
-    free(w.conts);
-    free(f.line_starts);
+    ir_walk_close(&f, &w);
     return g_inline_errors;
 }
 
@@ -1299,9 +1352,8 @@ static int ir_nfact_cmp(const void *a, const void *b) {
 
 /* From flatten: the facts of `node`, under the id it is about to get. */
 static void sp_inline_rbs_emit(const pm_node_t *node, int id) {
-    static int sorted = 0;
     if (g_nnf == 0) return;
-    if (!sorted) { qsort(g_nf, (size_t) g_nnf, sizeof(ir_nfact), ir_nfact_cmp); sorted = 1; }
+    if (!g_nf_sorted) { qsort(g_nf, (size_t) g_nnf, sizeof(ir_nfact), ir_nfact_cmp); g_nf_sorted = 1; }
     if (PM_NODE_TYPE_P(node, PM_PROGRAM_NODE)) { emit_int(id, "rbs_any", 1); return; }
     ir_nfact key;
     key.node = node;
@@ -1315,12 +1367,9 @@ static void sp_inline_rbs_emit(const pm_node_t *node, int id) {
     if (fa->ivars.len) emit_str(id, "rbs_ivars", fa->ivars.buf);
     if (fa->names.len) emit_bytes(id, "rbs_names", fa->names.buf, fa->names.len);
     if (fa->ret || fa->params || fa->ivar) {
-        const char *file;
-        int line;
-        ir_orig(fa->line, &file, &line);
-        emit_int(id, "rbs_line", line);
+        emit_int(id, "rbs_line", fa->line);
         emit_int(id, "rbs_col", fa->col);
-        emit_int(id, "rbs_file", sp_line_map_n > 0 && fa->line <= sp_line_map_n ? sp_line_file[fa->line] : 0);
+        emit_int(id, "rbs_file", fa->fid);
     }
 }
 
@@ -1330,9 +1379,8 @@ static void sp_inline_rbs_done(void) {
     for (int i = 0; i < g_nnf; i++) {
         ir_nfact *fa = &g_nf[i];
         if (fa->emitted || !(fa->ret || fa->params || fa->ivar || fa->ivars.len)) continue;
-        ir_diag(g_source_file, fa->line, 0, 0,
-                "inline RBS: this annotation is not applied: the declaration it belongs to is not "
-                "part of the program Spinel compiles");
+        fprintf(stderr, "spinel: %s:%d: warning: inline RBS: this annotation is not applied: the declaration "
+                        "it belongs to is not part of the program Spinel compiles\n", fa->file, fa->line);
     }
 }
 
@@ -1348,4 +1396,5 @@ static void sp_inline_rbs_free(void) {
     free(g_nf);
     g_nf = NULL;
     g_nnf = g_cnf = 0;
+    g_nf_sorted = 0;
 }

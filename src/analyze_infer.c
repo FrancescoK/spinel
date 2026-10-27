@@ -2357,6 +2357,32 @@ int poly_builtin_zero_arg_name(const char *m) {
     "succ", "next", "abs", "round", "floor", "ceil", "arity", "call", NULL };
   return str_in(m, B);
 }
+/* A user class a poly value can be: one whose construction the census
+   (compute_instantiated) found in reachable code, or a reopened builtin
+   (Object, Integer, IO, an exception...), whose instances the runtime
+   makes. The same census drops a class's arms from every poly dispatch, so
+   a class it leaves out answers no call and its returns must not widen one
+   (a Float `length` in a class nothing builds boxed every `poly.length` in
+   the program). A module is outside the census: nothing constructs one,
+   and its methods answer through the classes that include it, so it keeps
+   its place in the union as before. */
+static int an_poly_class_live(Compiler *c, int k) {
+  return c->classes[k].ctor_reachable || builtin_class_id(c->classes[k].name) != 0 ||
+         class_is_prim_reopen(c, k) || comp_class_is_module(c, &c->classes[k]);
+}
+/* Whether the census leaves `name` a class to answer it. When it leaves
+   none, the call is typed from every class that defines the name. */
+static int an_poly_name_live(Compiler *c, const char *name) {
+  int npc = 0;
+  const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  for (int pi = 0; pi < npc; pi++) {
+    int k = pcs[pi].cls;
+    if (c->classes[k].is_native_class
+          ? c->classes[k].ctor_reachable && comp_native_method_find(c, k, name, 0, 0) >= 0
+          : an_poly_class_live(c, k)) return 1;
+  }
+  return 0;
+}
 /* The return a user class gives `name` at this arity, unified over every class
    that defines it, or TY_UNKNOWN when none does (or none has settled). The
    poly-dispatch union rules ask this to tell a name whose user answer AGREES
@@ -2364,6 +2390,7 @@ int poly_builtin_zero_arg_name(const char *m) {
 static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
   if (an_builtin_only) return TY_UNKNOWN;
   TyKind r = TY_UNKNOWN; int found = 0;
+  int live = an_poly_name_live(c, name);
   for (int k = 0; k < c->nclasses; k++) {
     if (c->classes[k].is_native_class) {
       int nmk = comp_native_method_find(c, k, name, argc, 0);
@@ -2374,6 +2401,7 @@ static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
       }
       continue;
     }
+    if (live && !an_poly_class_live(c, k)) continue;
     int mi = comp_method_in_chain(c, k, name, NULL);
     if (mi >= 0 && c->scopes[mi].ret != TY_UNKNOWN) {
       r = found ? ty_unify(r, c->scopes[mi].ret) : (TyKind)c->scopes[mi].ret;
@@ -2394,6 +2422,7 @@ static TyKind an_user_read_ty(Compiler *c, const char *name, int argc) {
    true/false, and `0` -- truthy in Ruby -- arrived as false (#4072). */
 int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want) {
   if (!name) return 0;
+  int live = an_poly_name_live(c, name);
   for (int k = 0; k < c->nclasses; k++) {
     /* a native class answers by its declared bindings, as the dispatch
        arms do (#4504); a Ruby-side def on it has no arm to disagree with */
@@ -2410,6 +2439,7 @@ int an_user_ret_disagrees(Compiler *c, const char *name, TyKind want) {
   for (int i = 0, k = 0; rp ? i < nr : k < c->nclasses; i++, k++) {
     if (rp) k = rp[2 * i];
     if (c->classes[k].is_native_class) continue;
+    if (live && !an_poly_class_live(c, k)) continue;
     int mi = rp ? rp[2 * i + 1] : comp_method_in_chain(c, k, name, NULL);
     if (mi < 0 || mi >= c->nscopes) continue;
     TyKind r = (TyKind)c->scopes[mi].ret;
@@ -2505,6 +2535,7 @@ static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
      comp_method_in_chain over every class on every poly call (#4965) */
   int npc = 0;
   const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
+  int live = an_poly_name_live(c, name);
   for (int pi = 0; pi < npc; pi++) {
     int k = pcs[pi].cls;
     /* A native class's methods are its declared bindings, and that is the
@@ -2515,7 +2546,7 @@ static TyKind an_poly_concrete(Compiler *c, const char *name, TyKind t) {
        the codegen half: `[$stdin, nil][0].read(4)` was typed poly here while
        the poly-IO arm answered its raw const char *, and the C did not
        build. an_user_read_ty and the dispatch union already skip them. */
-    if (c->classes[k].is_native_class) continue;
+    if (c->classes[k].is_native_class || (live && !an_poly_class_live(c, k))) continue;
     int mi = pcs[pi].mi;
     if ((mi < 0 || mi >= c->nscopes) && pcs[pi].rdcls < 0) continue;
     TyKind r = mi >= 0 && mi < c->nscopes ? (TyKind)c->scopes[mi].ret : an_reader_ret(c, k, pcs[pi].rdcls, name);
@@ -3566,6 +3597,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       int npc = 0;
       const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
       char ivn_same[256] = "";   /* "@name" for a reader under its own name */
+      int live = !an_builtin_only && an_poly_name_live(c, name);
       for (int pi = 0; pi < npc; pi++) {
         int k = pcs[pi].cls;
         if (an_builtin_only) continue;   /* the builtin answer alone is wanted */
@@ -3573,9 +3605,8 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           /* A native class no reachable code constructs is no candidate: its
              binding's return type must not widen the union (a dead FFI
              wrapper's Vector2 put a float `x` beside every int `x`, #4460).
-             Native classes only: a user class left out here would type the
-             call narrower than the emitters, which still count every user
-             candidate, and the two disagreed on three tests. */
+             A user class is held to the same census below
+             (an_poly_class_live). */
           if (!c->classes[k].ctor_reachable) continue;
           /* The lookup's loose fallback answers a same-name binding of ANY
              arity; one that cannot take this call's arguments is no answer to
@@ -3590,6 +3621,7 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           }
           continue;
         }
+        if (live && !an_poly_class_live(c, k)) continue;
         int mi = pcs[pi].mi;
         /* A candidate whose own return has not been derived yet contributes
            nothing: "not known yet" is not an answer, and taking it as one is
@@ -4782,9 +4814,10 @@ static int infer_handle_call(Compiler *c, int id, const NodeTable *nt, const cha
       const BuiltinOp *op = an_bop_find(c, id, rt, name, argc, nt_ref(nt, id, "block") >= 0);
       if (op && op->result != TY_UNKNOWN) { *out = op->result; return 1; }
     }
-    if (sp_streq(name, "iso8601") && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
-    if ((sp_streq(name, "httpdate") || sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) &&
-        argc == 0 && sp_feature_enabled("time")) { *out = TY_STRING; return 1; }
+    /* the formats the runtime writes once "time" is required, iso8601 with
+       its fraction digits too (xmlschema's rows answer above) */
+    if (is_time_native_format(name) && (argc == 0 || is_iso8601_alias(name)) && sp_feature_enabled("time"))
+      { *out = TY_STRING; return 1; }
     /* Time <=> Time is an Integer; against a non-Time operand it is nil, so
        the result is poly (#2677). */
     if (sp_streq(name, "<=>") && argc == 1)
@@ -7190,6 +7223,10 @@ static int infer_enum_chain_call(Compiler *c, int id, const NodeTable *nt, const
           { *out = rt; return 1; }
         if ((is_map_alias(name)) && argc == 0)
           { *out = infer_map_block_ty(c, id, oblk); return 1; }
+        /* the filters: one with a bang answers the array or nil, boxed,
+           and one without a bang a new array of the same class */
+        if (is_select_reject_bang(name) && argc == 0) { *out = TY_POLY; return 1; }
+        if ((is_select_alias(name) || sp_streq(name, "reject")) && argc == 0) { *out = rt; return 1; }
       } }
   }
   return 0;
@@ -10744,7 +10781,7 @@ TyKind infer_uncached(Compiler *c, int id) {
   if (nk == NK_XStringNode || nk == NK_InterpolatedXStringNode) return TY_STRING;
   if (nk == NK_InterpolatedSymbolNode)  return TY_SYMBOL;
   if (nk == NK_SymbolNode)              return TY_SYMBOL;
-  if (nk == NK_TrueNode)                return TY_BOOL;
+  if (nk == NK_TrueNode || nk == NK_LoadNode) return TY_BOOL;   /* a require answers true or false */
   if (nk == NK_FalseNode)               return TY_BOOL;
   if (nk == NK_NilNode)                 return TY_NIL;
   /* A while/until loop in value position evaluates to nil (a valued `break`

@@ -212,6 +212,7 @@ int masgn_flat_targets(const NodeTable *nt, int node, int *out, int n);
 int masgn_value_changes(Compiler *c, int mw, int part);
 /* ...the handle of a boxed receiver's call whose arms answer a String, or of a sequence ending in one */
 void emit_poly_arms_handle(Compiler *c, int base, Buf *b);
+void emit_poly_user_handle(Compiler *c, int v, Buf *b);
 int strbuf_call_picks_up(Compiler *c, int id);
 /* ...the call run, then the handle its target published, or a new one
    over its bytes (codegen_call.c) */
@@ -1046,6 +1047,24 @@ extern char g_unit_tag[UNIT_TAG_MAX];
 void unit_reset(void);                 /* at the start of a program's emission */
 void unit_begin(const char *tag);      /* a top-level function starts */
 const char *uid_new(void);             /* "<tag>_<n>": a file-scope symbol's name */
+/* --incremental: codegen marks where each unit's text starts with a
+   `#pragma spinel unit <tag> <group>` line, which survives cc -E for the
+   splitter to cut at, and gives up inline hints (a hinted method's callers
+   in another unit would need its body). Without the flag nothing is
+   written, so the default C stays byte for byte what it was. */
+extern int g_incremental;
+void unit_incremental_set(int on);     /* the driver, before codegen_program */
+/* unit_begin(tag) and, with g_incremental, the unit pragma written to dst
+   and to g_procs / g_proc_protos (a method's procs, fiber bodies, capture
+   structs and kinds tables are spliced ahead of every body and would
+   otherwise lose their unit). group: the key the units are packed by. */
+void unit_begin_in(Buf *dst, const char *tag, const char *group);
+/* `#pragma spinel unit prog prog`: ends a tagged region, with g_incremental */
+void unit_pragma_reset(Buf *dst);
+/* The group key of the file node stands in: its base name and a hash of its
+   path relative to the main file's directory, so the key does not change
+   with how the main file was spelled on the command line. */
+void unit_file_key(const NodeTable *nt, int node, char *out, size_t sz);
 extern int g_needs_proc_poly_argslot; /* any proc takes a TY_POLY arg via _sp_proc_poly_args */
 
 /* Static regex-literal table: each distinct (source, flags) pair compiles once
@@ -2713,6 +2732,7 @@ int brk_wrapper_surely_light(Compiler *c, int id);
 void emit_array_splice(Compiler *c, int id, int recv, TyKind rt, int start_node, int len_node, int range_node, int rhs_node, Buf *b);
 int aset_range_held(Compiler *c, TyKind rt, const int *argv);
 void emit_aset_range_held(Compiler *c, int id, int recv, TyKind rt, const int *argv, Buf *b);
+int frange_index_view(Compiler *c, int id);
 int splice_to_ary_mi(Compiler *c, TyKind rhs_ty);
 TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty, int mi, int ta, Buf *b, Buf *out);
 void emit_index_op_write(Compiler *c, int id, Buf *b, int indent);

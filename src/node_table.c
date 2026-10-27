@@ -209,6 +209,22 @@ static void nt_clone_collect(NodeTable *nt, int id, char *seen, int *list, int *
     for (int k = 0; k < nd->a[j].n; k++) nt_clone_collect(nt, nd->a[j].ids[k], seen, list, n);
 }
 
+/* Retype every node of the subtree at `id` to a NilNode: a desugar that
+   replaced the subtree leaves it out of the program, and the passes that
+   walk the node table by id rather than by tree would still see its
+   definitions, block parameters and locals, and declare each of them
+   (rooted) in main. A NilNode is what those passes skip. A replaced subtree
+   stays visible to such by-id walks; making its detachment real belongs to
+   the load-phase elaborator's work (#9898). */
+void nt_subtree_blank(NodeTable *nt, int id) {
+  if (id < 0 || id >= nt->count) return;
+  SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) nt_subtree_blank(nt, nd->r[j].ref);
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++) nt_subtree_blank(nt, nd->a[j].ids[k]);
+  nt_node_set_type(nt, id, "NilNode");
+}
+
 /* Deep-clone the subtree rooted at `root`, appending fresh nodes to the
    table and remapping internal child references. Refs/array elements that
    point outside the subtree are kept verbatim. Returns the new root id, or
@@ -461,6 +477,7 @@ void nt_free(NodeTable *nt) {
   for (int k = 0; k < nt->nfiles; k++) free(nt->files[k]);
   free(nt->files);
   free(nt->file_defers);
+  free(nt->file_roots);
   free(nt);
 }
 
@@ -610,6 +627,39 @@ const int *nt_nodes_of_kind(const NodeTable *nt, NodeKind k, int *count) {
   return nki_ids + nki_off[k];
 }
 
+
+/* Renumber the table's nodes: order[k] is the id node k had. Every field
+   that holds a node id moves with it: the refs, the arrays, the root and
+   the two int fields the parse writes that hold a node id: node_bi (the
+   builtin node a builtins/ node counts from, plus one) and a root's load_by
+   (the LoadNode that first runs its file). */
+void nt_renumber(NodeTable *nt, const int *order) {
+  int n = nt->count;
+  int *perm = malloc(sizeof(int) * (size_t)(n ? n : 1));
+  SpNode *nodes = malloc(sizeof(SpNode) * (size_t)(nt->node_cap ? nt->node_cap : 1));
+  if (!perm || !nodes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < n; k++) perm[order[k]] = k;
+  for (int k = 0; k < n; k++) nodes[k] = nt->nodes[order[k]];
+  for (int k = n; k < nt->node_cap; k++) nodes[k] = nt->nodes[k];
+  for (int k = 0; k < n; k++) {
+    SpNode *nd = &nodes[k];
+    for (int j = 0; j < nd->nr; j++) if (nd->r[j].ref >= 0 && nd->r[j].ref < n) nd->r[j].ref = perm[nd->r[j].ref];
+    for (int j = 0; j < nd->na; j++)
+      for (int q = 0; q < nd->a[j].n; q++) if (nd->a[j].ids[q] >= 0 && nd->a[j].ids[q] < n) nd->a[j].ids[q] = perm[nd->a[j].ids[q]];
+    for (int j = 0; j < nd->ni; j++) {
+      if (sp_streq(nd->i[j].key, "node_bi") && nd->i[j].val > 0 && nd->i[j].val <= n) nd->i[j].val = perm[nd->i[j].val - 1] + 1;
+      if (sp_streq(nd->i[j].key, "load_by") && nd->i[j].val >= 0 && nd->i[j].val < n) nd->i[j].val = perm[nd->i[j].val];
+    }
+  }
+  free(nt->nodes);
+  nt->nodes = nodes;
+  if (nt->root_id >= 0 && nt->root_id < n) nt->root_id = perm[nt->root_id];
+  for (int f = 0; f < nt->nfile_roots; f++)
+    if (nt->file_roots[f] >= 0 && nt->file_roots[f] < n) nt->file_roots[f] = perm[nt->file_roots[f]];
+  free(perm);
+  nt->version++; nt->edits++;
+  nki_nt = NULL;   /* the ids of each kind moved */
+}
 
 int nt_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   SpNode *nd = (SpNode *)node_at(nt, id);

@@ -907,6 +907,59 @@ const char *uid_new(void) {
   uid_names[uid_n] = strdup(nm);
   return uid_names[uid_n++];
 }
+
+/* --incremental (codegen_internal.h). A setter rather than an environment
+   variable, so nothing of the flag reaches the environment of cc or of a
+   program run under -E. */
+int g_incremental = 0;
+void unit_incremental_set(int on) { g_incremental = on; }
+
+/* s with every byte outside [A-Za-z0-9_] made `_`, as unit_begin spells a
+   tag, cut to fit out: a pragma's words must lex as identifiers */
+static void unit_sanitize(const char *s, char *out, size_t sz) {
+  size_t o = 0;
+  for (; *s && o < sz - 1; s++) {
+    char ch = *s;
+    int ok = (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_';
+    out[o++] = ok ? ch : '_';
+  }
+  out[o] = 0;
+}
+void unit_begin_in(Buf *dst, const char *tag, const char *group) {
+  unit_begin(tag);
+  if (!g_incremental) return;
+  char g[UNIT_TAG_MAX];
+  unit_sanitize(group, g, sizeof g);
+  /* g_unit_tag, not tag: a tag begun twice carries its _dN here too */
+  buf_printf(dst, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+  buf_printf(&g_procs, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+  buf_printf(&g_proc_protos, "#pragma spinel unit %s %s\n", g_unit_tag, g);
+}
+void unit_pragma_reset(Buf *dst) {
+  if (g_incremental) buf_puts(dst, "#pragma spinel unit prog prog\n");
+}
+/* A required file is spelled as the main file's directory joined with the
+   require path (`main.rb`, `sub/helper.rb`; or `/abs/main.rb`,
+   `/abs/sub/helper.rb`), so the path past that directory is the same
+   however the main file was named, and a unit's group with it. */
+void unit_file_key(const NodeTable *nt, int node, char *out, size_t sz) {
+  const char *path = nt_file_path(nt, (int)nt_int(nt, node, "node_file", 0));
+  if (!path || !*path) path = nt->source_file ? nt->source_file : "";
+  const char *main_file = nt->source_file ? nt->source_file : "";
+  const char *ms = strrchr(main_file, '/');
+  size_t dl = ms ? (size_t)(ms - main_file) + 1 : 0;
+  const char *rel = path;
+  if (!strncmp(path, main_file, dl)) rel = path + dl;
+  else if (strrchr(path, '/')) rel = strrchr(path, '/') + 1;
+  const char *base = strrchr(rel, '/') ? strrchr(rel, '/') + 1 : rel;
+  char stem[UNIT_TAG_MAX];
+  snprintf(stem, sizeof stem, "%s", base);
+  char *dot = strrchr(stem, '.');
+  if (dot && dot > stem) *dot = 0;
+  char clean[UNIT_TAG_MAX];
+  unit_sanitize(stem, clean, sizeof clean - 8);
+  snprintf(out, sz, "%s_%06x", clean, unit_fnv(rel) & 0xffffffu);
+}
 /* A rename-table slot keeps its Buf when the table is cut back below it,
    and the next entry there rewrites it (buf_setf), so a name of any length
    fits and no site that cuts g_nren back has anything to free. */
@@ -7790,6 +7843,34 @@ void emit_slot_ctype(Compiler *c, const LocalVar *lv, Buf *b) {
    the same numbering in every struct of it and is no longer than it needs. */
 static int class_root(Compiler *c, int cid);
 static int ivar_has_nilbit_own(Compiler *c, int cid, int iv);
+/* The classes whose root is `root`, in index order, into *n: built for all
+   roots in one pass and kept while the classes and their parent links stay
+   (the count, comp_class_shape_gen), so a question asked of every ivar
+   walks its family, not every class of the program */
+static const int *class_family(Compiler *c, int root, int *n) {
+  static const NodeTable *m_nt = NULL;
+  static int m_ncls = -1;
+  static unsigned m_gen = 0;
+  static int *start = NULL, *members = NULL;
+  if (m_nt != c->nt || m_ncls != c->nclasses || m_gen != comp_class_shape_gen()) {
+    int nc = c->nclasses;
+    free(start); free(members);
+    start = calloc((size_t)nc + 2, sizeof *start);
+    members = malloc(sizeof *members * (size_t)(nc > 0 ? nc : 1));
+    int *roots = malloc(sizeof *roots * (size_t)(nc > 0 ? nc : 1));
+    if (!start || !members || !roots) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < nc; k++) { roots[k] = class_root(c, k); start[roots[k] + 1]++; }
+    for (int r = 0; r < nc; r++) start[r + 1] += start[r];
+    int *fill = calloc((size_t)nc + 1, sizeof *fill);
+    if (!fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < nc; k++) members[start[roots[k]] + fill[roots[k]]++] = k;
+    free(fill); free(roots);
+    m_nt = c->nt; m_ncls = nc; m_gen = comp_class_shape_gen();
+  }
+  if (root < 0 || root >= m_ncls) { *n = 0; return NULL; }
+  *n = start[root + 1] - start[root];
+  return members + start[root];
+}
 /* A field is one slot down its class family (a subclass lays the parent's
    fields first): a nil bit any class of the family keeps for it, every
    class keeps, so a parent's method that writes the field clears the bit a
@@ -7799,8 +7880,10 @@ int ivar_has_nilbit(Compiler *c, int cid, int iv) {
   ClassInfo *ci = &c->classes[cid];
   if (iv < 0 || iv >= ci->nivars || !oint_kind(ci->ivar_types[iv])) return 0;
   if (ivar_has_nilbit_own(c, cid, iv)) return 1;
-  int root = class_root(c, cid);
-  for (int k = 0; k < c->nclasses; k++) {
+  int root = class_root(c, cid), nfam = 0;
+  const int *fam = class_family(c, root, &nfam);
+  for (int fi = 0; fi < nfam; fi++) {
+    int k = fam[fi];
     if (k == cid) continue;
     ClassInfo *ck = &c->classes[k];
     if (iv >= ck->nivars || !ck->ivars[iv] || !ci->ivars[iv] || strcmp(ck->ivars[iv], ci->ivars[iv]) != 0) continue;

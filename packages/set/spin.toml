@@ -1,4 +1,5 @@
 [package]
 name = "set"
+boot = "set"   # CRuby has Set loaded before a program runs (tools/gen_package_facts.rb)
 
 # Pre-installed spin package: ships with the compiler, versioned with it.

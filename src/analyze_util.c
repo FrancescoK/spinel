@@ -5,166 +5,42 @@
 #include <errno.h>
 #include <limits.h>
 
-/* One table for the builtin class/module/exception names. These four
-   predicates were four independent lists that had to be kept in step by hand,
-   and the code has a comment noting where they already disagree. A row now
-   carries every fact about one name: the flags say which predicate accepts it,
-   and `id` is its negative cls_id (0 when codegen has none). Adding a name is
-   one row instead of four edits.
+/* The builtin class/module/exception names: one table, Spinel's native
+   classes (builtin_class_at, builtin_names.c), read here and by the load
+   graph. */
 
-   The rows are exactly the union of the old lists, flags included, so every
-   predicate answers what it answered before -- what the table changes is that
-   the answers can no longer drift apart. It also makes the existing gaps
-   visible rather than implicit: six names are classes with no cls_id
-   (Encoding, GC, Method, ObjectSpace, Process, UnboundMethod), seven have a
-   cls_id but are not bare constants (the Thread:: / Process:: / Math::
-   qualified forms), and fourteen exception names have no id. Each is a
-   deliberate answer today; closing any of them is a behavior change and does
-   not belong in the same commit as the table.
-
-   The `CRUBY_KNOWN` list in codegen_call.c is a fifth list, for a different
-   question (names CRuby defines that spinel does not implement), and is left
-   alone here. */
-enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
-typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
-static const BuiltinClass BUILTIN_CLASSES[] = {
-  { "Integer",                      -100,  BC_CLASS },
-  { "Float",                        -101,  BC_CLASS },
-  { "String",                       -102,  BC_CLASS },
-  { "Symbol",                       -103,  BC_CLASS },
-  { "Array",                        -104,  BC_CLASS },
-  { "Hash",                         -105,  BC_CLASS },
-  { "Range",                        -106,  BC_CLASS },
-  { "Time",                         -107,  BC_CLASS },
-  { "Module",                       -108,  BC_CLASS },
-  { "Class",                        -109,  BC_CLASS },
-  { "NilClass",                     -110,  BC_CLASS },
-  { "TrueClass",                    -111,  BC_CLASS },
-  { "FalseClass",                   -112,  BC_CLASS },
-  { "Numeric",                      -113,  BC_CLASS },
-  { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
-  { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
-  { "Object",                       -116,  BC_CLASS },
-  { "BasicObject",                  -117,  BC_CLASS },
-  { "Proc",                         -118,  BC_CLASS },
-  { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
-  { "IO",                           -120,  BC_CLASS },
-  { "File",                         -121,  BC_CLASS },
-  { "Exception",                    -122,  BC_CLASS | BC_EXCEPTION },
-  { "StandardError",                -123,  BC_CLASS | BC_EXCEPTION },
-  { "RuntimeError",                 -124,  BC_CLASS | BC_EXCEPTION },
-  { "TypeError",                    -125,  BC_CLASS | BC_EXCEPTION },
-  { "ArgumentError",                -126,  BC_CLASS | BC_EXCEPTION },
-  { "NameError",                    -127,  BC_CLASS | BC_EXCEPTION },
-  { "NoMethodError",                -128,  BC_CLASS | BC_EXCEPTION },
-  { "StopIteration",                -129,  BC_CLASS | BC_EXCEPTION },
-  { "Math",                         -130,  BC_CLASS | BC_MODULE },
-  { "Complex",                      -131,  BC_CLASS },
-  { "IndexError",                   -132,  BC_CLASS | BC_EXCEPTION },
-  { "KeyError",                     -133,  BC_CLASS | BC_EXCEPTION },
-  { "RangeError",                   -134,  BC_CLASS | BC_EXCEPTION },
-  { "FloatDomainError",             -135,  BC_CLASS | BC_EXCEPTION },
-  { "ZeroDivisionError",            -136,  BC_CLASS | BC_EXCEPTION },
-  { "FrozenError",                  -137,  BC_CLASS | BC_EXCEPTION },
-  { "IOError",                      -138,  BC_CLASS | BC_EXCEPTION },
-  { "LocalJumpError",               -139,  BC_CLASS | BC_EXCEPTION },
-  { "NotImplementedError",          -140,  BC_CLASS | BC_EXCEPTION },
-  { "ScriptError",                  -141,  BC_CLASS | BC_EXCEPTION },
-  { "Rational",                     -142,  BC_CLASS },
-  { "Regexp",                       -143,  BC_CLASS },
-  { "Enumerator",                   -144,  BC_CLASS },
-  { "Struct",                       -145,  BC_CLASS },
-  { "Data",                         -146,  BC_CLASS },
-  { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
-  { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
-  { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
-  { "EncodingError",                -150,  BC_CLASS | BC_EXCEPTION },
-  { "SignalException",              -151,  BC_CLASS | BC_EXCEPTION },
-  { "Interrupt",                    -152,  BC_CLASS | BC_EXCEPTION },
-  { "ThreadError",                  -153,  BC_CLASS | BC_EXCEPTION },
-  { "FiberError",                   -154,  BC_CLASS | BC_EXCEPTION },
-  { "ClosedQueueError",             -155,  BC_CLASS | BC_EXCEPTION },
-  { "UncaughtThrowError",           -156,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternError",       -157,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternKeyError",    -158,  BC_CLASS | BC_EXCEPTION },
-  { "EOFError",                     -159,  BC_CLASS | BC_EXCEPTION },
-  { "Math::DomainError",            -160,  BC_EXCEPTION },
-  { "SystemExit",                   -161,  BC_CLASS | BC_EXCEPTION },
-  { "Signal",                       -162,  BC_CLASS | BC_MODULE },
-  { "Process::Status",              -163,  BC_CLASS },
-  { "Process::Tms",                 -164,  0 },
-  { "Dir",                          -165,  BC_CLASS },
-  { "BasicSocket",                  -166,  BC_CLASS | BC_SOCKET },
-  { "IPSocket",                     -167,  BC_CLASS | BC_SOCKET },
-  { "TCPSocket",                    -168,  BC_CLASS | BC_SOCKET },
-  { "TCPServer",                    -169,  BC_CLASS | BC_SOCKET },
-  { "UDPSocket",                    -170,  BC_CLASS | BC_SOCKET },
-  { "UNIXSocket",                   -171,  BC_CLASS | BC_SOCKET },
-  { "UNIXServer",                   -172,  BC_CLASS | BC_SOCKET },
-  { "Socket",                       -173,  BC_CLASS | BC_SOCKET },
-  { "Thread",                       -174,  BC_CLASS },
-  { "Mutex",                        -175,  BC_CLASS },
-  { "Thread::Mutex",                -175,  0 },
-  { "Queue",                        -176,  BC_CLASS },
-  { "Thread::Queue",                -176,  0 },
-  { "SizedQueue",                   -177,  BC_CLASS },
-  { "Thread::SizedQueue",           -177,  0 },
-  { "ConditionVariable",            -178,  BC_CLASS },
-  { "Thread::ConditionVariable",    -178,  0 },
-  { "Fiber",                        -179,  BC_CLASS },
-  { "MatchData",                    -180,  BC_CLASS },
-  { "Encoding",                     0,     BC_CLASS },
-  { "Enumerator::Chain",            0,     BC_CLASS },
-  { "Enumerator::Lazy",             0,     BC_CLASS },
-  { "Enumerator::Product",          0,     BC_CLASS },
-  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
-     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
-  { "JSON::JSONError",              0,     BC_EXCEPTION },
-  { "JSON::ParserError",            0,     BC_EXCEPTION },
-  { "JSON::NestingError",           0,     BC_EXCEPTION },
-  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
-  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
-  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
-  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
-  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
-  { "Errno::ENOENT",                0,     BC_EXCEPTION },
-  { "GC",                           0,     BC_CLASS | BC_MODULE },
-  { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
-  { "IO::TimeoutError",            0,     BC_EXCEPTION },
-  /* the socket library's: lib/sp_exc.c gives them their parents, so
-     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
-  { "SocketError",                  0,     BC_EXCEPTION },
-  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
-  { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::WaitReadable",             0,     BC_EXCEPTION },
-  { "IO::WaitWritable",             0,     BC_EXCEPTION },
-  { "LoadError",                    0,     BC_EXCEPTION },
-  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
-  { "Method",                       0,     BC_CLASS },
-  { "NoMemoryError",                0,     BC_EXCEPTION },
-  { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
-  { "Process",                      0,     BC_CLASS | BC_MODULE },
-  { "Random",                       0,     BC_CLASS },
-  { "StringScanner::Error",         0,     BC_EXCEPTION },
-  { "SystemCallError",              0,     BC_EXCEPTION },
-  { "SystemStackError",             0,     BC_EXCEPTION },
-  { "UnboundMethod",                0,     BC_CLASS },
-};
-#define BUILTIN_CLASS_N ((int)(sizeof BUILTIN_CLASSES / sizeof BUILTIN_CLASSES[0]))
+/* The first row of each name, through a table hashed on the first ask: the
+   lookup compared the name with every row, and is asked of class names per
+   call (is_builtin_reopen, of each class a poly block dispatch weighs). */
+#define BUILTIN_ROW_CAP 512   /* a power of two above 4 * the rows */
+static short builtin_row_slot[BUILTIN_ROW_CAP];
+static int builtin_row_built;
+static int builtin_row_find(const char *n) {
+  const BuiltinClass *r;
+  if (!builtin_row_built) {
+    for (int i = 0; i < BUILTIN_ROW_CAP; i++) builtin_row_slot[i] = -1;
+    for (int i = 0; (r = builtin_class_at(i)) != NULL; i++) {
+      unsigned h = sp_strhash(r->name) & (BUILTIN_ROW_CAP - 1);
+      while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, r->name))
+        h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+      if (builtin_row_slot[h] < 0) builtin_row_slot[h] = (short)i;   /* a later row of the name: the first answers */
+    }
+    builtin_row_built = 1;
+  }
+  unsigned h = sp_strhash(n) & (BUILTIN_ROW_CAP - 1);
+  while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, n))
+    h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+  return builtin_row_slot[h];
+}
 
 /* A socket row is a constant only after `require "socket"`, as in CRuby. */
 static const BuiltinClass *builtin_row(const char *n) {
   if (!n) return NULL;
-  for (int i = 0; i < BUILTIN_CLASS_N; i++) {
-    if (!sp_streq(n, BUILTIN_CLASSES[i].name)) continue;
-    if ((BUILTIN_CLASSES[i].flags & BC_SOCKET) && !sp_feature_required("socket")) return NULL;
-    return &BUILTIN_CLASSES[i];
-  }
-  return NULL;
+  int i = builtin_row_find(n);
+  const BuiltinClass *r = i >= 0 ? builtin_class_at(i) : NULL;
+  if (!r) return NULL;
+  if ((r->flags & BC_SOCKET) && !sp_feature_required("socket")) return NULL;
+  return r;
 }
 
 int is_builtin_class_name(const char *n) {
@@ -179,10 +55,11 @@ int is_builtin_module_name(const char *n) {
    GC, ObjectSpace, Process): its name and runtime class id, 0 for one that
    is a class value by name only. Answers 0 past the last. */
 int builtin_module_at(int i, const char **name, int *id) {
-  for (int k = 0; k < BUILTIN_CLASS_N; k++) {
-    if (!(BUILTIN_CLASSES[k].flags & BC_MODULE)) continue;
+  const BuiltinClass *r;
+  for (int k = 0; (r = builtin_class_at(k)) != NULL; k++) {
+    if (!(r->flags & BC_MODULE)) continue;
     if (i-- > 0) continue;
-    *name = BUILTIN_CLASSES[k].name; *id = BUILTIN_CLASSES[k].id;
+    *name = r->name; *id = r->id;
     return 1;
   }
   return 0;
@@ -2537,7 +2414,25 @@ TyKind yield_value_type(Compiler *c, int mi) {
   int pf_fwd = 0, poly_site = 0;
   if (yvt_nt != nt || yvt_ntc != nt->count) yvt_build(c);
   YvtIt yit; yvt_it_init(c, &yit, mi);
-  for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
+  /* Under --load-model=graph the call sites are taken in the program's
+     order (prog_sort): where the first site's block answers (a method
+     specialized per site keeps one), it is the site the program reaches
+     first, whichever file holds it, not the one the node table happens to
+     number first. One program text (the inline model) numbers its nodes in
+     that order already, and its sites are read as they come. */
+  int nsite = 0, csite = 0, si = 0, *site = NULL;
+  if (prog_has_files(c)) {
+    for (int ii; (ii = yvt_it_next(&yit)) >= 0; ) {
+      if (nsite == csite) {
+        csite = csite ? csite * 2 : 16;
+        site = realloc(site, sizeof(int) * (size_t)csite);
+        if (!site) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      site[nsite++] = ii;
+    }
+    prog_sort(c, site, nsite, yvt_ids);
+  }
+  for (int ii; (ii = site ? (si < nsite ? site[si++] : -1) : yvt_it_next(&yit)) >= 0; ) {
     int cid = yvt_ids[ii];
     /* A `callee(...)` forward carries its block implicitly inside the `...`
        (no explicit block node); treat it as a forwarded block too. */
@@ -2604,6 +2499,7 @@ TyKind yield_value_type(Compiler *c, int mi) {
   /* A proc form forwarding its block (`def self.f(a, &) = g(a, &)` called
      only through a Method) hands on a real proc no literal types: its value
      is poly, where an unknown one unboxed it into the other arm's slot. */
+  free(site);
   if (result == TY_UNKNOWN && pf_fwd) result = TY_POLY;
   /* The only calls were on a poly receiver (a proc parameter, a value out of a
      poly collection). They still run this method with their block, and the
@@ -3553,6 +3449,89 @@ int comp_class_self_inst_mi(Compiler *c, int class_id, const char *name) {
   int mi = comp_method_in_chain(c, class_id, name, &dc);
   return mi >= 0 && dc >= 0 && c->classes[dc].name && str_in(c->classes[dc].name, OBJ_SIDE) ? mi : -1;
 }
+/* See compiler.h. A builtins/ file's helper is known by its def's stamp
+   (node_bi) and its name, a desugar's copy by the mark the desugar sets on
+   it: a copy of a program's own Integer or Enumerable method has no stamp,
+   and its name is one the program could have written. */
+int comp_scope_is_private_helper(Compiler *c, int si) {
+  const Scope *s = si >= 0 && si < c->nscopes ? &c->scopes[si] : NULL;
+  if (!s || !s->name || s->def_node < 0) return 0;
+  if (nt_int(c->nt, s->def_node, "private_helper", 0)) return 1;
+  return nt_int(c->nt, s->def_node, "node_bi", 0) != 0 && is_builtin_helper_name(s->name);
+}
+int comp_name_is_private_helper(Compiler *c, const char *m) {
+  if (!m || m[0] != '_' || m[1] != '_') return 0;
+  int helper = 0;
+  for (int s = an_scopes_named_first(c, m); s >= 0; s = an_scopes_named_next(c, m, s)) {
+    if (!comp_scope_is_private_helper(c, s)) return 0;
+    helper = 1;
+  }
+  return helper;
+}
+/* See compiler.h. The method an instance of `cid` reaches by `m` (its
+   chain, then the top-level def every object has as a private method),
+   for `cid` < 0 the top-level def alone: one name can be a builtin's
+   helper on one class (ThreadGroup's `__remove`) and a program's method on
+   another, so the answer is the resolved method's, not the name's. */
+int comp_method_is_private_helper(Compiler *c, int cid, const char *m) {
+  if (!m || m[0] != '_' || m[1] != '_') return 0;
+  /* the member an instance reaches: a reader the program declares nearer
+     than the helper is its own (comp_resolve_member) */
+  int mi = -1;
+  if (cid >= 0 && comp_resolve_member(c, cid, m, 0, NULL, &mi) == SP_MEMBER_ATTR) return 0;
+  for (int s = mi < 0 ? an_scopes_named_first(c, m) : -1; s >= 0 && mi < 0; s = an_scopes_named_next(c, m, s))
+    if (c->scopes[s].class_id < 0 && !c->scopes[s].is_cmethod && !c->scopes[s].is_proc_form) mi = s;
+  return comp_scope_is_private_helper(c, mi);
+}
+/* Compiler-synthesized methods that must stay invisible to reflection
+   (respond_to?, methods, instance_methods, method_defined?) and to a send
+   with a computed name: they are implementation detail with no CRuby
+   counterpart. Matched by exact name, or by the definition's mark, so a
+   user-defined `__foo` stays visible. */
+int name_is_synth_method(Compiler *c, const char *m) {
+  if (!m) return 0;
+  if (comp_name_is_private_helper(c, m)) return 1;
+  if (sp_streq(m, "__enum_to_a")) return 1;
+  /* a class's copy of its initialize as a method, for its own calls of it
+     (desugar_explicit_initialize_calls) */
+  if (sp_streq(m, "__spinel_reinit")) return 1;
+  /* `__noarg inspect` / `__noarg to_s`: the no-argument siblings of an
+     inspect / to_s whose parameters are all optional
+     (desugar_noarg_display_wrappers); the space is no `def`'s, so a method
+     the program names `__noarg_inspect` is its own */
+  if (strncmp(m, "__noarg ", 8) == 0) return 1;
+  /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
+     so an override can reach it through super (#3738) */
+  if (strncmp(m, "__inc ", 6) == 0) return 1;
+  /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
+     Ruby method name */
+  if (strchr(m, '#')) return 1;
+  /* `__to_enum_<m>`, the Enumerator generator for `to_enum(:m)`
+     (synth_to_enum_generators): it shares the DefNode of the method it
+     wraps, which a user method of that name never does */
+  if (strncmp(m, "__to_enum_", 10) == 0) {
+    for (int si = 0; si < c->nscopes; si++) {
+      Scope *s = &c->scopes[si];
+      if (!s->name || !sp_streq(s->name, m) || s->def_node < 0) continue;
+      for (int sj = 0; sj < c->nscopes; sj++)
+        if (c->scopes[sj].name && sp_streq(c->scopes[sj].name, m + 10) &&
+            c->scopes[sj].def_node == s->def_node) return 1;
+    }
+    return 0;
+  }
+  /* a parameter default moved into a method of its own
+     (desugar_recursive_param_defaults, #4900): known by the mark on its
+     DefNode rather than its name, which the desugar picks so that no method
+     the program defines has it */
+  if (strncmp(m, "__sp_default_", 13) != 0) return 0;
+  for (int si = 0; si < c->nscopes; si++) {
+    Scope *s = &c->scopes[si];
+    if (s->def_node >= 0 && s->name && sp_streq(s->name, m) &&
+        nt_int(c->nt, s->def_node, "default_helper", 0)) return 1;
+  }
+  return 0;
+}
+
 int comp_self_call_mi(Compiler *c, int id, const char *name) {
   if (!name || nt_int(c->nt, id, "kernel_recv", 0)) return -1;
   Scope *self = comp_scope_of(c, id);
@@ -3717,6 +3696,8 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
    makes one for every method a `method(:name)` names). */
 int method_obj_target_mi(Compiler *c, int node) {
   int mi = method_obj_target_mi_raw(c, node);
+  /* a lowering's own helper is no method a Method can name */
+  if (comp_scope_is_private_helper(c, mi)) return -1;
   int pf = scope_proc_form_of(c, mi);
   return pf >= 0 ? pf : mi;
 }
@@ -4026,7 +4007,9 @@ int call_user_yield_mi(Compiler *c, int id) {
     const char *cname = ((rk == NK_ConstantReadNode ||
                                  rk == NK_ConstantPathNode))
                         ? nt_str(nt, recv, "name") : NULL;
-    int ci = cname ? comp_class_index(c, cname) : -1;
+    /* ... and `self.class.run { }` by the class self.class names, as the
+       inliner does (self_class_static_ci) */
+    int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
     if (ci >= 0) mi = comp_cmethod_in_chain(c, ci, name, NULL);
     else if (ty_is_object(rt)) mi = comp_method_in_chain(c, ty_object_class(rt), name, NULL);
   }
@@ -4264,6 +4247,10 @@ static int send_name_is_computed(Compiler *c, int arg, int depth) {
        that element */
     int wv = nt_ref(nt, id, "value");
     if (value_is_computed_name(c, wv)) return 1;
+    /* and one bound to another local (`t = s`, as `&s` binds the Symbol it
+       is passed) is that local */
+    if (nt_kind(nt, wv) == NK_LocalVariableReadNode && depth < 4 &&
+        send_name_is_computed(c, wv, depth + 1)) return 1;
   }
   /* a parameter no statement of the method rebinds: the names its callers hand it */
   if (!written) return param_handed_computed_name(c, arg, vn, depth);
@@ -4302,9 +4289,9 @@ static const char *const io_family[] = {
 int io_family_name(const char *n) {
   if (!n) return 0;
   if (is_io_class_name(n)) return 1;
-  /* a socket class is the builtin only once the program loads socket */
-  if (!sp_feature_required("socket")) return 0;
-  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return 1;
+  /* a socket class is the builtin only once the program loads socket
+     (asked after the name matches: it walks the program's requires) */
+  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return sp_feature_required("socket");
   return 0;
 }
 /* Class k is a reopening of one of them, not a class of that name nested
@@ -4400,9 +4387,9 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return NULL;
-  const char *fn = sp_streq(name, "httpdate") ? "sp_time_s_httpdate"
-                 : (sp_streq(name, "rfc2822") || sp_streq(name, "rfc822")) ? "sp_time_s_rfc2822"
-                 : (sp_streq(name, "xmlschema") || sp_streq(name, "iso8601")) ? "sp_time_s_xmlschema"
+  const char *fn = is_time_native_format(name)
+                   ? (is_iso8601_alias(name) ? "sp_time_s_xmlschema" : is_rfc2822_alias(name) ? "sp_time_s_rfc2822"
+                                                                                       : "sp_time_s_httpdate")
                  : sp_streq(name, "parse") ? "sp_time_s_parse"
                  : NULL;
   if (!fn || !sp_feature_required("time")) return NULL;
@@ -4605,4 +4592,97 @@ int an_super_backtick_shape(Compiler *c, int id, const Scope *s, int *arg) {
     if (rn != 1 || kn != 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0) return 0;
   }
   return 2;
+}
+
+/* ---- The lowerings onto a library's method (builtin_names.h, LowerRow) ----
+   Whether call `call` passes lo..hi arguments (hi -1: no bound; no
+   ArgumentsNode counts as none) of the kinds `flags` allows, and has the
+   block and the receiver they ask for. */
+static int lower_args_fit(const NodeTable *nt, int call, int lo, int hi, unsigned flags) {
+  int a = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (an < lo || (hi >= 0 && an > hi)) return 0;
+  int blk = nt_ref(nt, call, "block");
+  if ((flags & LR_NO_BLOCK) && blk >= 0) return 0;
+  if ((flags & LR_BLOCK) && blk < 0) return 0;
+  if ((flags & (LR_BLOCK_LITERAL | LR_BREAKS)) && (blk < 0 || nt_kind(nt, blk) != NK_BlockNode)) return 0;
+  if ((flags & LR_HAS_RECV) && nt_ref(nt, call, "receiver") < 0) return 0;
+  if ((flags & LR_NO_ARGS) && a >= 0) return 0;
+  if ((flags & LR_KWHASH) && nt_argv_kwh(nt, av, an) < 0) return 0;
+  for (int i = 0; i < an; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if ((flags & (LR_NO_SPLAT | LR_PLAIN_ARGS)) && k == NK_SplatNode) return 0;
+    if ((flags & LR_PLAIN_ARGS) && (k == NK_KeywordHashNode || k == NK_BlockArgumentNode)) return 0;
+  }
+  if ((flags & LR_BREAKS) && !block_body_breaks(nt, nt_ref(nt, blk, "body"))) return 0;
+  return 1;
+}
+/* Is `n` the constant read `name`? */
+static int lower_const_is(const NodeTable *nt, int n, const char *name) {
+  return n >= 0 && nt_kind(nt, n) == NK_ConstantReadNode && nt_str(nt, n, "name") &&
+         sp_streq(nt_str(nt, n, "name"), name);
+}
+/* The row of `family` whose shape call `id` has, or NULL: the desugar that
+   lowers the family asks it before its own value, type and program tests. */
+const LowerRow *lower_row_nt(const NodeTable *nt, int id, int family) {
+  if (id < 0 || nt_kind(nt, id) != NK_CallNode) return NULL;
+  const char *nm = nt_str(nt, id, "name");
+  if (!nm) return NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  const LowerRow *r;
+  for (int i = 0; (r = lower_row_at(i)) != NULL; i++) {
+    if (r->family != family || !sp_streq(r->name, nm)) continue;
+    if (r->recv == LR_RECV_NONE && recv >= 0) continue;
+    if (r->recv == LR_RECV_SOME && recv < 0) continue;
+    if (r->recv == LR_RECV_CONST && !lower_const_is(nt, recv, r->recv_name)) continue;
+    if (r->recv == LR_RECV_CALL) {
+      const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+      if (!rn || !sp_streq(rn, r->recv_name)) continue;
+      if (r->recv_const && !lower_const_is(nt, nt_ref(nt, recv, "receiver"), r->recv_const)) continue;
+      if (!lower_args_fit(nt, recv, r->rargc_min, r->rargc_max, r->rflags)) continue;
+    }
+    if (r->recv_calls && recv >= 0 && nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, recv, "block") < 0) {
+      const char *rn = nt_str(nt, recv, "name");
+      int k = 0;
+      while (rn && r->recv_calls[k] && !sp_streq(rn, r->recv_calls[k])) k++;
+      if (!rn || !r->recv_calls[k]) continue;
+    }
+    if (!lower_args_fit(nt, id, r->argc_min, r->argc_max, r->flags)) continue;
+    return r;
+  }
+  return NULL;
+}
+
+/* SPINEL_LOWER_ROWS_CHECK, in the table modes: the load graph matches the
+   rows on each call's parse before the table exists (spinel_parse.c's
+   sp_pm_row_fits) and notes the rows it matched on the call's node
+   (`lr_rows`, a mask of row indices). For each family the first row so
+   noted must be the one lower_row_nt matches on the node, as flatten made
+   it. Each disagreement is reported with its place, then the count; the
+   number of disagreements. */
+int lower_rows_check(const NodeTable *nt) {
+  int calls = 0, bad = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    long long mask = nt_int(nt, id, "lr_rows", -1);
+    if (mask < 0) continue;
+    calls++;
+    for (int fam = LR_SYSTEM_OPTIONS; fam <= LR_TO_SET; fam++) {
+      const LowerRow *a = NULL, *r;
+      for (int i = 0; i < LOWER_ROWS_MASK_BITS && !a && (r = lower_row_at(i)) != NULL; i++)
+        if (r->family == fam && (mask >> i & 1)) a = r;
+      const LowerRow *b = lower_row_nt(nt, id, fam);
+      if (a == b) continue;
+      bad++;
+      int f = (int)nt_int(nt, id, "node_file", 0);
+      fprintf(stderr, "lower-rows-check: %s:%lld:%lld `%s`: the parse matches %s, the node %s\n",
+              f >= 0 && f < nt->nfiles && nt->files[f] ? nt->files[f] : "?", nt_int(nt, id, "node_line", 0),
+              nt_int(nt, id, "node_col", 0), nt_str(nt, id, "name"), a ? a->target : "no row", b ? b->target : "no row");
+    }
+  }
+  if (lower_row_at(LOWER_ROWS_MASK_BITS)) {
+    fprintf(stderr, "lower-rows-check: the rows past %d are not checked (the mask is full)\n", LOWER_ROWS_MASK_BITS);
+    bad++;
+  }
+  fprintf(stderr, "lower-rows-check: %d calls, %d disagreements\n", calls, bad);
+  return bad;
 }

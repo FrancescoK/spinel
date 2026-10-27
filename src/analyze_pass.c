@@ -968,7 +968,7 @@ static TyKind splice_incoming_elem(Compiler *c, int rhs) {
   if (t == TY_POLY_ARRAY) return TY_POLY_ARRAY;  /* heterogeneous source */
   if (ty_is_array(t)) return ty_array_elem(t);
   if (ty_is_object(t)) {
-    int mi = comp_method_in_chain(c, ty_object_class(t), "to_ary", NULL);
+    int mi = comp_implicit_to_ary_mi(c, ty_object_class(t));
     if (mi >= 0) {
       TyKind r = (TyKind)c->scopes[mi].ret;
       if (r == TY_POLY_ARRAY) return TY_POLY_ARRAY;
@@ -4014,7 +4014,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
          ivar array filled only from outside kept its empty literal's default
          and every element read back as an Integer (#3781). */
       int gcid = -1, cside = 0;
-      int all_owners = 0;
+      int all_owners = 0, tl_getter = -1;
       int grecv = nt_ref(nt, recv, "receiver");
       if (grecv >= 0 && nt_kind(nt, grecv) == NK_ConstantReadNode) {
         /* `Tbl.cache[k] = v`: the class-side getter */
@@ -4090,11 +4090,28 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       }
       else {
         Scope *caller = comp_scope_of(c, recv);
-        /* (a top-level method's value: the Arrays it answers widen where
-           they are built) */
-        if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
-        gcid = caller->class_id;
-        cside = caller->is_cmethod;
+        /* `def fs = @fs` at the top level, called there (`fs << 2`): main is
+           the self, and the getter hands out main's ivar, a slot of the
+           Toplevel pseudo-class. Only in the top-level statements, where the
+           self is main: a top-level method runs on whatever object calls it
+           (`obj.send(:add, x)`), an instance_eval block on its receiver, and
+           a module main extends answers the name first. */
+        int at_main = (!caller || (caller->class_id < 0 && !caller->is_cmethod && caller->def_node < 0)) &&
+                      self_is_main(c, recv);
+        if (at_main && !comp_toplevel_mod_defines(c, mname, 1))
+          tl_getter = comp_method_index(c, mname);
+        const char *tl_ivs[8];
+        if (tl_getter >= 0 && (c->scopes[tl_getter].class_id >= 0 || c->scopes[tl_getter].is_cmethod ||
+                               getter_exit_ivars(c, tl_getter, tl_ivs, 8) <= 0))
+          tl_getter = -1;
+        if (tl_getter >= 0) gcid = comp_class_index(c, "Toplevel");
+        /* (another top-level method's value: the Arrays it answers widen
+           where they are built) */
+        else if (!caller || caller->class_id < 0) { changed |= push_escape_widen_each(c, id, recv, is_push, (TyKind)vt); continue; }
+        else {
+          gcid = caller->class_id;
+          cside = caller->is_cmethod;
+        }
       }
       if (!all_owners && (gcid < 0 || gcid >= c->nclasses)) continue;
       /* The write lands in whichever ivar the getter returns, and a subclass
@@ -4110,7 +4127,15 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int *gcls = tcls + cap;
       const char **giv = tiv + cap;
       int ntg = 0;
-      for (int k = all_owners ? 0 : gcid; k < (all_owners ? c->nclasses : gcid + 1); k++) {
+      if (tl_getter >= 0) {
+        const char *ivs[8];
+        int niv = getter_exit_ivars(c, tl_getter, ivs, 8);
+        for (int j = 0; j < niv && ntg < cap; j++) {
+          int ivx = comp_ivar_index(&c->classes[gcid], ivs[j]);
+          if (ivx >= 0) { tcls[ntg] = gcid; tiv[ntg] = c->classes[gcid].ivars[ivx]; ntg++; }
+        }
+      }
+      for (int k = all_owners ? 0 : gcid; tl_getter < 0 && k < (all_owners ? c->nclasses : gcid + 1); k++) {
         if (all_owners && !class_owns_getter(c, k, mname)) continue;
         int ng = getter_ivar_targets(c, k, cside, mname, gcls, giv, cap);
         for (int j = 0; j < ng; j++) {
@@ -5469,7 +5494,8 @@ int class_value_escapes(Compiler *c, int cid) {
     int *stack = (int *)malloc(sizeof(int) * nn);
     int sp = 0;
     if (!stack) { free(parent); free(body_self); free(esc); esc = NULL; return 1; }
-    if (nt->root_id >= 0 && nt->root_id < nt->count) stack[sp++] = nt->root_id;
+    for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+      if (nt_root(nt, r) >= 0 && nt_root(nt, r) < nt->count) stack[sp++] = nt_root(nt, r);
     while (sp > 0) {
       int u = stack[--sp];
       int nr = nt_num_refs(nt, u);
@@ -5506,7 +5532,10 @@ int class_value_escapes(Compiler *c, int cid) {
   char *seen = (char *)calloc(nn, 1);
   if (stack && seen && nt->root_id >= 0 && nt->root_id < nt->count) {
     int sp = 0;
-    stack[sp++] = nt->root_id; seen[nt->root_id] = 1;
+    for (int r = 0; r < nt_nroots(nt); r++) {   /* each file's tree */
+      int rt = nt_root(nt, r);
+      if (rt >= 0 && rt < nt->count && !seen[rt]) { stack[sp++] = rt; seen[rt] = 1; }
+    }
     while (sp > 0) {
       int u = stack[--sp];
       int nr = nt_num_refs(nt, u);
@@ -8284,6 +8313,78 @@ static int local_only_fresh_hash(Compiler *c, int anode) {
   return saw;
 }
 
+/* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
+   that hash container, filled inside the callee through the reference.
+   Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
+   rather than passed as a NULL-deref'ing poly nil. Positional and keyword
+   arguments bind it alike, ptype being the parameter's type. */
+static int bind_empty_hash_arg(Compiler *c, TyKind ptype, int anode) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, anode) != NK_LocalVariableReadNode) return 0;
+  const char *an = nt_str(nt, anode, "name");
+  Scope *asc = an ? comp_scope_of(c, anode) : NULL;
+  LocalVar *al = asc ? scope_local(asc, an) : NULL;
+  if (!al || al->is_param || al->is_block_param) return 0;
+  if (ty_is_hash(ptype)) {
+    if ((al->type == TY_UNKNOWN || al->type == TY_POLY) &&
+        local_all_writes_empty_hash(c, asc, an)) {
+      lv_set_type(al, ptype); return 1;
+    }
+  }
+  /* Same, but the callee takes the hash opaquely (a TY_POLY param). An empty
+     `{}` passed there is written inside the callee through the reference; the
+     poly-value hash accessors (`h[k] ||= v` boxed set) only persist to a
+     PolyPoly hash, so a StrPoly default silently dropped an int-keyed write
+     (#3158). Type the caller's `{}` as PolyPoly so any key persists. */
+  else if (ptype == TY_POLY) {
+    if ((al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
+        al->type != TY_POLY_POLY_HASH &&
+        local_all_writes_empty_hash(c, asc, an)) {
+      lv_set_type(al, TY_POLY_POLY_HASH); al->poly_hash_pin = 1; return 1;
+    }
+  }
+  return 0;
+}
+
+/* The hash type the keyword `kname` has where method m hands its `**` rest
+   on (`def outer(**kw) = inner(**kw)`): a call in m's own body that splats
+   the rest into a method of m's class, or a top-level one, whose keyword of
+   that name is a hash. An empty `{}` given to m under that key is that
+   method's hash, and built as anything else, it reached it as a converted
+   copy that took the writes in its place. TY_UNKNOWN when no such call. */
+static TyKind kwrest_forward_hash_type(Compiler *c, Scope *m, const char *kname) {
+  const NodeTable *nt = c->nt;
+  const char *rest = m->pnames[m->kwrest_idx];
+  if (!rest || m->is_cmethod) return TY_UNKNOWN;
+  for (int n = 0; n < nt->count; n++) {
+    if (nt_kind(nt, n) != NK_CallNode || comp_scope_of(c, n) != m) continue;
+    int recv = nt_ref(nt, n, "receiver");
+    if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) continue;
+    int args = nt_ref(nt, n, "arguments"), an = 0;
+    const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    int splats_rest = 0;
+    for (int a = 0; a < an && !splats_rest; a++) {
+      if (nt_kind(nt, av[a]) != NK_KeywordHashNode) continue;
+      int en = 0;
+      const int *el = nt_arr(nt, av[a], "elements", &en);
+      for (int e = 0; e < en; e++) {
+        int v = nt_kind(nt, el[e]) == NK_AssocSplatNode ? nt_ref(nt, el[e], "value") : -1;
+        const char *vn = v >= 0 && nt_kind(nt, v) == NK_LocalVariableReadNode ? nt_str(nt, v, "name") : NULL;
+        if (vn && sp_streq(vn, rest)) { splats_rest = 1; break; }
+      }
+    }
+    if (!splats_rest) continue;
+    const char *nm = nt_str(nt, n, "name");
+    int ti = !nm ? -1 : m->class_id >= 0 ? comp_method_in_chain(c, m->class_id, nm, NULL) : comp_method_index(c, nm);
+    if (ti < 0) continue;
+    Scope *t = &c->scopes[ti];
+    if (!callee_has_kwarg(c, t, kname)) continue;
+    LocalVar *p = scope_local(t, kname);
+    if (p && ty_is_hash(p->type)) return p->type;
+  }
+  return TY_UNKNOWN;
+}
+
 static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, int argc) {
   if (mi < 0) return 0;
   const NodeTable *nt = c->nt;
@@ -8372,7 +8473,6 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       }
       continue;
     }
-    NodeKind apk = nt_kind(nt, anode);
     TyKind at = infer_type(c, anode);
     /* Post-convergence backstop only: an empty array-literal arg fills a
        parameter that no other call site typed, as an (empty) poly array so
@@ -8437,34 +8537,21 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* Reverse binding for an empty `[]` the method fills (fill_empty_array_arg) */
     if (p->push_fill_elem != TY_UNKNOWN)
       changed |= fill_empty_array_arg(c, anode, p->push_fill_elem);
-    /* Reverse binding: an empty-`{}`-only local passed to a hash parameter is
-       that hash container, filled inside the callee through the reference.
-       Type the local as the param's hash so it is constructed (sp_<H>Hash_new)
-       rather than passed as a NULL-deref'ing poly nil. */
-    if (ty_is_hash(p->type) && apk == NK_LocalVariableReadNode) {
-      const char *an = nt_str(nt, anode, "name");
-      Scope *asc = an ? comp_scope_of(c, anode) : NULL;
-      LocalVar *al = asc ? scope_local(asc, an) : NULL;
-      if (al && !al->is_param && !al->is_block_param &&
-          (al->type == TY_UNKNOWN || al->type == TY_POLY) &&
-          local_all_writes_empty_hash(c, asc, an)) {
-        lv_set_type(al, p->type); changed = 1;
-      }
-    }
-    /* Same, but the callee takes the hash opaquely (a TY_POLY param). An empty
-       `{}` passed there is written inside the callee through the reference; the
-       poly-value hash accessors (`h[k] ||= v` boxed set) only persist to a
-       PolyPoly hash, so a StrPoly default silently dropped an int-keyed write
-       (#3158). Type the caller's `{}` as PolyPoly so any key persists. */
-    if (p->type == TY_POLY && apk == NK_LocalVariableReadNode) {
-      const char *an = nt_str(nt, anode, "name");
-      Scope *asc = an ? comp_scope_of(c, anode) : NULL;
-      LocalVar *al = asc ? scope_local(asc, an) : NULL;
-      if (al && !al->is_param && !al->is_block_param &&
-          (al->type == TY_UNKNOWN || al->type == TY_POLY || ty_is_hash(al->type)) &&
-          al->type != TY_POLY_POLY_HASH &&
-          local_all_writes_empty_hash(c, asc, an)) {
-        lv_set_type(al, TY_POLY_POLY_HASH); al->poly_hash_pin = 1; changed = 1;
+    changed |= bind_empty_hash_arg(c, p->type, anode);
+    /* ...and a parameter of the caller handed on as it came, which no call
+       site has typed: every one passed an empty `{}`, or nothing settled.
+       The literal takes the Hash kind its use wants, as it does passed
+       here directly, so the parameter takes this one's; left open it was
+       widened to the boxed value afterwards, and the `{}` built as the
+       general Hash (`Client.new({})` forwarding to `Req.new(h)`). Once the
+       guesses are settled only: until then a call site may still type it. */
+    if (ty_is_hash(p->type) && !g_infer_optimistic) {
+      Scope *cs = comp_scope_of(c, call_id);
+      int ck = unassigned_param_read(c, cs, anode);
+      LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
+      if (cp && !cp->rbs_seeded && cp->type == TY_UNKNOWN) {
+        slot_rule(c, cp, p->type, anode, "handed on to a Hash parameter, and no call site gives it a type");
+        changed = 1;
       }
     }
     /* A key or value the method stores through a typed container parameter
@@ -8644,11 +8731,23 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
            passed it nothing, answering 0 where Ruby answers `{x: 9}`. A
            positional parameter sharing the name takes the whole hash
            positionally, as the layout above says. */
-        if (!callee_has_kwarg(c, m, kname)) continue;
+        /* A key no keyword names goes into the `**` rest, where the value
+           is held boxed: an empty `{}` passed there is filled by whatever
+           the callee hands it on to, as a hash taken opaquely is */
+        if (!callee_has_kwarg(c, m, kname)) {
+          if (m->kwrest_idx >= 0 && nt_kind(nt, val) == NK_LocalVariableReadNode) {
+            TyKind ft = kwrest_forward_hash_type(c, m, kname);
+            changed |= bind_empty_hash_arg(c, ty_is_hash(ft) ? ft : TY_POLY, val);
+          }
+          continue;
+        }
         LocalVar *p = scope_local(m, kname);
+        if (!p) continue;
         TyKind at = infer_type(c, val);
-        if (!p || param_seed_holds_arg(c, p, val, at)) continue;
-        changed |= slot_take(c, p, at, val);
+        /* a signature's parameter keeps its type, and still types the
+           empty `{}` it is handed */
+        if (!param_seed_holds_arg(c, p, val, at)) changed |= slot_take(c, p, at, val);
+        changed |= bind_empty_hash_arg(c, p->type, val);
       }
     }
   }
@@ -10888,7 +10987,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
         const PolyCand *pcs = comp_poly_candidates_at(c, id, name, &npc);
         /* a receiver of no known class: a Range among the arguments makes
            no candidate's parameter range_held */
-        c->range_unheld = cls_fact_idx(c, recv) < 0;
+        c->range_unheld = cls_fact_unbounded(c, recv);
         for (int pi = 0; pi < npc; pi++)
           if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id)) {
             if (pcs[pi].mi >= 0) c->scopes[pcs[pi].mi].cand_bound = 1;
@@ -11464,7 +11563,8 @@ static void bsi_kept_mark(Compiler *c) {
   int *stack = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
   if (!stack) { free(parent); free(def_first); free(def_next); return; }
   int sp = 0;
-  if (nt->root_id >= 0 && nt->root_id < n) stack[sp++] = nt->root_id;
+  for (int r = 0; r < nt_nroots(nt); r++)   /* each file's tree */
+    if (nt_root(nt, r) >= 0 && nt_root(nt, r) < n) stack[sp++] = nt_root(nt, r);
   while (sp > 0) {
     int id = stack[--sp];
     int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
@@ -13164,10 +13264,11 @@ int desugar_dir_surface(Compiler *c) {
   int changed = 0;
   int n0 = nt->count;
   /* the parser spliced builtins/file_foreach_first.rb (File.foreach(..).first) */
+  const char *foreach_first = lower_row_of(LR_FOREACH_FIRST)->target;
   int has_foreach_first = 0;
   for (int id = 0; id < n0 && !has_foreach_first; id++)
     if (nt_kind(nt, id) == NK_DefNode && nt_ref(nt, id, "receiver") >= 0 &&
-        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "__sp_foreach_first"))
+        nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), foreach_first))
       has_foreach_first = 1;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode) continue;
@@ -13279,36 +13380,26 @@ int desugar_dir_surface(Compiler *c) {
        materializes every line: 85 ms for the first 20 lines of a 106 MB file,
        against 0.07 ms in CRuby (an indexer that reads the first lines of
        many files pays it on each). Only the one-argument foreach and an n
-       written as one plain argument. */
-    if (has_foreach_first && nm && sp_streq(nm, "first") && recv >= 0 &&
-        nt_kind(nt, recv) == NK_CallNode && nt_ref(nt, id, "block") < 0) {
-      const char *fnm = nt_str(nt, recv, "name");
-      int frecv = nt_ref(nt, recv, "receiver");
-      const char *frn = frecv >= 0 && nt_kind(nt, frecv) == NK_ConstantReadNode ? nt_str(nt, frecv, "name") : NULL;
-      int fargs = nt_ref(nt, recv, "arguments"), fan = 0;
-      const int *fav = fargs >= 0 ? nt_arr(nt, fargs, "arguments", &fan) : NULL;
-      int nargs = nt_ref(nt, id, "arguments"), nan = 0;
-      const int *nav = nargs >= 0 ? nt_arr(nt, nargs, "arguments", &nan) : NULL;
-      if (fnm && sp_streq(fnm, "foreach") && frn && (sp_streq(frn, "File") || sp_streq(frn, "IO")) &&
-          nt_ref(nt, recv, "block") < 0 && fan == 1 && nan == 1 &&
-          nt_kind(nt, fav[0]) != NK_SplatNode && nt_kind(nt, fav[0]) != NK_KeywordHashNode &&
-          nt_kind(nt, nav[0]) != NK_SplatNode && nt_kind(nt, nav[0]) != NK_KeywordHashNode &&
-          nt_kind(nt, nav[0]) != NK_BlockArgumentNode) {
-        int an2 = nt_new_node(nt, "ArgumentsNode");
-        int fc2 = nt_new_node(nt, "ConstantReadNode");
-        if (an2 >= 0 && fc2 >= 0) {
-          int items[2] = { fav[0], nav[0] };
-          nt_node_set_arr(nt, an2, "arguments", items, 2);
-          nt_node_set_str(nt, fc2, "name", "File");
-          nt_node_set_str(nt, id, "name", "__sp_foreach_first");
-          nt_node_set_ref(nt, id, "receiver", fc2);
-          nt_node_set_ref(nt, id, "arguments", an2);
-          comp_grow_node_arrays(c);
-          c->nscope[an2] = c->nscope[id];
-          c->nscope[fc2] = c->nscope[id];
-          changed = 1;
-          continue;
-        }
+       written as one plain argument (LR_FOREACH_FIRST's rows). */
+    const LowerRow *ffr = has_foreach_first ? lower_row_nt(nt, id, LR_FOREACH_FIRST) : NULL;
+    if (ffr) {
+      int fan = 0, nan = 0;
+      const int *fav = nt_arr(nt, nt_ref(nt, recv, "arguments"), "arguments", &fan);
+      const int *nav = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &nan);
+      int an2 = nt_new_node(nt, "ArgumentsNode");
+      int fc2 = nt_new_node(nt, "ConstantReadNode");
+      if (an2 >= 0 && fc2 >= 0) {
+        int items[2] = { fav[0], nav[0] };
+        nt_node_set_arr(nt, an2, "arguments", items, 2);
+        nt_node_set_str(nt, fc2, "name", "File");
+        nt_node_set_str(nt, id, "name", ffr->target);
+        nt_node_set_ref(nt, id, "receiver", fc2);
+        nt_node_set_ref(nt, id, "arguments", an2);
+        comp_grow_node_arrays(c);
+        c->nscope[an2] = c->nscope[id];
+        c->nscope[fc2] = c->nscope[id];
+        changed = 1;
+        continue;
       }
     }
     if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;

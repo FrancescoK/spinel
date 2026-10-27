@@ -221,10 +221,20 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | `analysis_renarrow` | the loop that re-narrows poly slots once the fixpoint has settled (`rounds=N`); inside `analysis_fixpoint` |
 | `an_post_fixpoint`, `an_procs`, `an_method_backstops`, `an_late_widen`, `an_nullable_returns`, `an_proc_returns`, `an_storage`, `an_value_types`, `an_reconcile_check` | the analysis phases after it |
 | `analysis` | all of `analyze_program`; includes the phases above |
-| `codegen_program` | analysis and C generation; includes `analysis` |
+| `cg_prepare` | after the analysis, ahead of the C: name clashes, the program's feature scan, the refusals made before any emission |
+| `cg_preamble` | the runtime include and the tables and dispatchers emitted ahead of the program's code |
+| `cg_classes` | the constructors and the Marshal dispatchers |
+| `cg_methods` | the methods, procs and blocks of the program (`methods=N`, the reachable ones) |
+| `cg_dispatch` | the dispatchers that call the program's methods (`<=>`, `==`, `hash`, ...) and the `END` blocks |
+| `cg_main` | the top-level statements |
+| `cg_assemble` | the regexps, the poly dispatch helpers the C uses, and joining the parts |
+| `cg_write_barriers` | the GC write barriers, inserted over the whole program |
+| `cg_finish` | the rest: frozen literals, line map, the refusal count |
+| `codegen_program` | analysis and C generation; includes `analysis` and the `cg_*` phases |
 | `write_c` | writing the C file |
-| `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit): the preprocess and the split into parts |
-| `cc_compile` | a split build: the wall span of the parallel object compiles (`jobs=N`), not the sum of the workers |
+| `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit) or an `--incremental` build: the preprocess and the split into parts or units |
+| `cache_lookup` | an `--incremental` build: the cache keys and the lookup of every unit's object |
+| `cc_compile` | a split build: the wall span of the parallel object compiles (`jobs=N`), not the sum of the workers; an `--incremental` build adds `units=N miss=M`, and compiles only the misses |
 | `cc_link` | a split build: the link |
 | `cc_total` | the whole native step, single unit or split |
 
@@ -238,6 +248,14 @@ the rounds, longest first, right after `analysis_fixpoint`:
 spinel-timing: pass=infer_write_types ms=47.2 calls=15 changed=12
 ```
 
+The ten methods whose emission took longest follow `cg_finish`, slowest
+first, one line each, named as Ruby names them (`Class#name`, `Class.name`,
+a top-level method by its name):
+
+```
+spinel-timing: cg_method=Parser#parse_expr ms=812.4
+```
+
 `calls` is how often it ran, `changed` how many of those calls reported a
 change to the fixpoint (a pass the fixpoint calls only for its effect counts
 none). The name is the C function's. The passes are a part of
@@ -246,6 +264,66 @@ the remainder is the fixpoint's own bookkeeping. With the flag off a pass call
 costs a flag test. A phase that did not run (a `-c` build has no `cc_*`) or failed prints
 nothing, so a failed build is not a sample. Record the compiler, the input,
 the flags, the host and the cache state beside the lines; they are not in them.
+
+### Incremental builds
+
+`--incremental` cuts the generated C into units of about `--unit-bytes=N`
+(default `256K`) of preprocessed text, takes the object of every unit whose
+text is unchanged from a cache, compiles the misses in parallel (`--jobs=N`,
+default the cores up to 16) and links. `--cache-stats` prints
+`units=N hit=H miss=M`, the hits per kind and one line per miss. The cache is
+`SPINEL_CACHE_DIR`, else `$XDG_CACHE_HOME/spinel`, else
+`$HOME/.cache/spinel`; `SPINEL_NO_CACHE=1` compiles everything without
+touching it, `SPINEL_KEEP_UNITS=1` keeps the units. A body edit that keeps
+its types misses the one unit that holds its class; a changed type misses
+the callers' units too; an added instance variable or class misses every
+unit of the program but none of the runtime's, which are shared by every
+program built with the same flags. The frontend runs in full every time, so
+a warm build costs the frontend, a few unit compiles and the link. What it
+gives up against a release build is in [limitations.md](limitations.md).
+
+`make incremental-bench` measures it on the scale program. On a 4-core VM,
+`gen.sh 100` (`INCREMENTAL_BENCH_K=100`):
+
+| build | wall (s), 256K | units / miss, 256K | wall (s), 512K | units / miss, 512K |
+|---|---|---|---|---|
+| plain (default) | 40.3 | - | | |
+| --jobs=4 | 40.4 | - | | |
+| --incremental, cold | 34.9 | 24 / 24 | 33.2 | 12 / 12 |
+| warm, a literal in a body | 15.9 | 24 / 1 | 20.4 | 12 / 1 |
+| warm, a constant a method returns | 16.8 | 24 / 1 | 20.7 | 12 / 1 |
+| warm, a return type Integer -> Float | 17.3 | 24 / 2 | 21.8 | 12 / 2 |
+| warm, a method added (and called) | 17.3 | 24 / 2 | 20.8 | 12 / 1 |
+| warm, a literal added | 16.6 | 24 / 2 | 21.3 | 12 / 2 |
+| warm, an instance variable added | 26.6 | 24 / 20 | 28.9 | 12 / 10 |
+| no-op rebuild | 15.9 | 24 / 0 | 14.7 | 12 / 0 |
+
+The C of `gen.sh 100` is over 4 MB, so the plain build is already the
+`--jobs` split and the first two rows coincide. About 14 s of every warm
+build is the frontend.
+
+`gen.sh 400` (26,000 lines of Ruby, 9.3 MB of C) on the same machine, with
+nothing else running:
+
+| build | wall (s), 256K | units / miss, 256K | wall (s), 512K | units / miss, 512K |
+|---|---|---|---|---|
+| plain (default) | 208.5 | - | | |
+| --jobs=4 | 202.1 | - | | |
+| --incremental, cold | 176.9 | 79 / 79 | 176.9 | 41 / 41 |
+| warm, a literal in a body | 120.3 | 79 / 1 | 127.3 | 41 / 1 |
+| warm, a constant a method returns | 118.2 | 79 / 1 | 130.0 | 41 / 1 |
+| warm, a return type Integer -> Float | 131.0 | 79 / 2 | 128.9 | 41 / 2 |
+| warm, a method added (and called) | 127.7 | 79 / 2 | 128.4 | 41 / 2 |
+| warm, a literal added | 127.1 | 79 / 2 | 127.9 | 41 / 2 |
+| warm, an instance variable added | 188.6 | 79 / 75 | 172.1 | 41 / 39 |
+| no-op rebuild | 127.7 | 79 / 0 | 118.6 | 41 / 0 |
+
+Here the frontend is about 115 s of every build (this VM runs the s400
+frontend three times slower than the machine the design was measured on),
+so a warm build after a one- or two-unit edit is 118 to 131 s against 208 s
+for the plain build, and the two unit sizes are within the run-to-run noise
+of each other except on the instance-variable edit, which recompiles every
+program and tagged unit and favours the larger units.
 
 ## Source positions of a generated .rb
 

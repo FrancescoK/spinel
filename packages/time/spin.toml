@@ -1,5 +1,6 @@
 [package]
 name = "time"
+rides = "time"   # an add-on: `require "time"` makes it available (tools/gen_package_facts.rb)
 
 # Pre-installed spin package: ships with the compiler, versioned with it.
 # CRuby's lib/time.rb, vendored unchanged (README.md names the version).
