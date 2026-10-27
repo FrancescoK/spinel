@@ -1338,6 +1338,10 @@ int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, L
   while (h && i < h->n && !(h->v[i].node == node && lr_is_version(&h->v[i]))) i++;
   LoadPoint p = elab_point_of(c, node);
   if (!h || i == h->n || p.region < 0) return ELAB_UNKNOWN;
+  /* a version in another region runs at a time the record does not know: it
+     may fall inside the interval, and the history lists it after region 0 */
+  for (int j = 0; j < h->n; j++)
+    if (j != i && lr_is_version(&h->v[j]) && elab_point_of(c, h->v[j].node).region != p.region) return ELAB_UNKNOWN;
   for (int j = i + 1; j < h->n; j++) {
     const LrDef *v = &h->v[j];
     if (!lr_is_version(v)) continue;

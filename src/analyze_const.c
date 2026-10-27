@@ -282,14 +282,16 @@ static const char *cw_read_name(const NodeTable *nt, int id) {
    statement starts before the statement completes, and that is after the
    bodies it runs (a class builder's block in its value). A node in a method
    body, a lambda or a block run later starts with the statement that
-   defines or makes it. 0: a node the program does not run in its load
-   order (under no file, in a file no load places, or in one of the
-   compiler's constant tables, whose reads of every constant of a body are
-   not the program's). */
+   defines or makes it. A node of a file no load places (a region of its
+   own) starts at a time the order does not fix: before everything, for a
+   read to be early. 0: a node the program does not run in its load order
+   (under no file, or in one of the compiler's constant tables, whose reads
+   of every constant of a body are not the program's). */
 static int cw_key(ConstWalk *w, int id, int post) {
   for (int a = id; a >= 0; a = w->par[a])
     if (nt_kind(w->nt, a) == NK_DefNode && is_const_table_def_name(nt_str(w->nt, a, "name"))) return 0;
   LoadPoint p = post ? elab_point_done(w->c, id) : elab_point_from(w->c, id);
+  if (p.region > 0) return post ? 0 : 1;
   return p.region != 0 ? 0 : 2 * p.seq + 1 + post;
 }
 
