@@ -1741,6 +1741,24 @@ int c_split_units_manifest(const char *path) {
   return 1;
 }
 
+char *c_link_flags(const char *flags) {
+  size_t n = strlen(flags);
+  char *out = malloc(n + 1);
+  if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  size_t w = 0;
+  for (size_t i = 0; i < n; ) {
+    if ((i == 0 || flags[i - 1] == ' ') && strncmp(flags + i, "-mllvm ", 7) == 0) {
+      i += 7;
+      while (i < n && flags[i] != ' ') i++;
+      while (i < n && flags[i] == ' ') i++;
+      continue;
+    }
+    out[w++] = flags[i++];
+  }
+  out[w] = 0;
+  return out;
+}
+
 void c_split_result_free(CSplitResult *res) {
   for (int k = 0; k < res->n; k++) free(res->units[k].groups);
   free(res->units);
