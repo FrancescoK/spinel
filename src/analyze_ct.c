@@ -430,11 +430,6 @@ static void ct_made_objects(Mv v, const void ***ids, int *n, int *cap) {
   for (int i = 0; v.k == MV_ARR && i < v.n; i++) ct_made_objects(v.a[i], ids, n, cap);
 }
 
-static int ct_ptr_cmp(const void *a, const void *b) {
-  const char *x = *(const char *const *)a, *y = *(const char *const *)b;
-  return x < y ? -1 : x > y;
-}
-
 /* Is every object the loop made written at one place? Each place writes a
    new object, where CRuby's places would hold the one the loop made. */
 static int ct_objects_written_once(const CtEnv *e) {
@@ -445,8 +440,8 @@ static int ct_objects_written_once(const CtEnv *e) {
     if (f->k == CT_FX_INDEX_SET) ct_made_objects(f->key.mv, &ids, &n, &cap);
     if (f->k != CT_FX_CLASS_NEW && !f->names) ct_made_objects(f->val.mv, &ids, &n, &cap);
   }
-  if (n > 1) qsort(ids, (size_t)n, sizeof *ids, ct_ptr_cmp);
-  for (int i = 1; i < n && ok; i++) ok = ids[i] != ids[i - 1];
+  for (int i = 1; i < n && ok; i++)   /* by equality: a loop makes few objects */
+    for (int j = 0; j < i && ok; j++) ok = ids[i] != ids[j];
   free(ids);
   return ok;
 }
