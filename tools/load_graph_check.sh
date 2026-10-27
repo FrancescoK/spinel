@@ -239,6 +239,18 @@ else
   fail "lean did not compile"
 fi
 
+# A file's loaded flag and function are declared ahead of every body, since a
+# load may stand in a method or a proc defined before the file's own code.
+mkdir "$tmp/decls"
+printf 'puts "lib"\n' > "$tmp/decls/lib.rb"
+printf 'def run = 1\nrequire_relative "lib"\np run\n' > "$tmp/decls/main.rb"
+if "$SPINEL" --load-model=graph -S --no-line-map "$tmp/decls/main.rb" > "$tmp/decls/out.c" 2>/dev/null; then
+  awk '/sp_file_1_top\(void\);/ && !d { d = NR } /sp_run\(void\) \{/ && !r { r = NR } END { exit !(d && r && d < r) }' "$tmp/decls/out.c" ||
+    fail "a file's function is declared after the method bodies"
+else
+  fail "decls did not compile"
+fi
+
 # g_require_unread (spinel_parse.c): may the program load a file the compiler
 # did not read? The load, autoload and load-path nodes of the trees set it, a
 # require that names no file does, and the word in a comment or a String

@@ -12,6 +12,9 @@
        and locals (prog_file_scopes; the load record walks them, elab_program);
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
+     - which files the program runs (prog_drop_dead_files: one no live
+       require reaches is taken out) and which have a function of their own
+       when loaded (prog_file_tops);
      - the program's top-level statements in load order (prog_top_stmts):
        a load at the top level runs its file's top level there, once; and
        with them the files no load there places (prog_visit_files);
@@ -304,6 +307,65 @@ static int prog_root_of(const Compiler *c, const int *parent, int id) {
   return prog_is_root(c, id) ? id : -1;
 }
 
+/* The nodes the program runs: those under the entry's root, and under the
+   root of each file a LoadNode among them loads, as the tree has them. A
+   node a fold left in a dead branch, or a file only such nodes load, is
+   under none. seen[] (one byte per node) is set for them; live[] (one per
+   file) for the files. A node's parent is not the way up: a statement a
+   fold spliced out of a dead branch has that branch for its parent too. */
+static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *live) {
+  int n = nt_nroots(nt), top = 0;
+  int *stack = malloc(sizeof(int) * ((size_t)nt->count + 1));
+  if (!stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  live[0] = 1;
+  if (nt_root(nt, 0) >= 0) { seen[nt_root(nt, 0)] = 1; stack[top++] = nt_root(nt, 0); }
+  while (top > 0) {
+    int id = stack[--top];
+    if (nt_kind(nt, id) == NK_LoadNode) {
+      int t = (int)nt_int(nt, id, "target_file", -1);
+      if (t > 0 && t < n && !live[t]) {
+        live[t] = 1;
+        if (nt_root(nt, t) >= 0 && !seen[nt_root(nt, t)]) { seen[nt_root(nt, t)] = 1; stack[top++] = nt_root(nt, t); }
+      }
+    }
+    for (int j = 0; j < nt_num_refs(nt, id); j++) {
+      int ch = nt_ref_at(nt, id, j);
+      if (ch >= 0 && ch < nt->count && !seen[ch]) { seen[ch] = 1; stack[top++] = ch; }
+    }
+    for (int j = 0; j < nt_num_arrs(nt, id); j++) {
+      int an = 0; const int *ids = nt_arr_at(nt, id, j, &an);
+      for (int k = 0; k < an; k++)
+        if (ids[k] >= 0 && ids[k] < nt->count && !seen[ids[k]]) { seen[ids[k]] = 1; stack[top++] = ids[k]; }
+    }
+  }
+  free(stack);
+}
+
+/* Which required files run a function of their own when loaded
+   (sp_file_N_top, emit_file_tops): has[i] for each file i below nt_nroots.
+   A file that does more than define things has one. One that only defines
+   things has nothing to run, and a load whose value nothing reads is
+   nothing; but a load that is emitted as an expression (anywhere but as a
+   statement whose value nothing reads) answers whether it ran the file, once,
+   so the file has its loaded flag and an empty function for that load to
+   call. */
+void prog_file_tops(Compiler *c, unsigned char *has) {
+  const NodeTable *nt = c->nt;
+  int n = nt_nroots(nt);
+  for (int i = 0; i < n; i++) has[i] = i > 0 && !prog_defines_only(c, i);
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
+  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_reach(nt, seen, live);
+  const int *parent = comp_parent_map(c);
+  NT_FOREACH_KIND(nt, NK_LoadNode, id) {
+    int f = (int)nt_int(nt, id, "target_file", -1);
+    if (f <= 0 || f >= n || has[f] || !seen[id]) continue;
+    int stmt = parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_StatementsNode;
+    if (!stmt || !an_node_dropped(c, id)) has[f] = 1;
+  }
+  free(seen); free(live);
+}
+
 /* What --load-model=graph does not load yet, refused by name (#9898), asked
    once the load sites are known, ahead of the desugaring:
      - a require that is not a statement of a file's top level: its file
@@ -367,6 +429,31 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, v[k], "--load-model=graph: `class Class` in a required file (desugar_class_reopen reads one file), for now");
   }
   free(parent);
+}
+
+/* A required file that no load able to run reaches is not part of the
+   program (#9898). A fold of a constant condition (RUBY_VERSION, the engine
+   checks) leaves a `require` in the branch it decided dead under no root's
+   tree, and a file only such requires name, or only the requires of a file
+   so dropped, is never loaded. The inline model splices a file at its
+   require, so a dead branch takes the file along; here the file's
+   statements are taken out of the tree, and nothing registers its classes,
+   methods and constants (ruby_version_fold's `const_defined?`). A file named
+   by an autoload or a computed require has no LoadNode: both are refused
+   (prog_refuse_loads) until their own steps. Asked after the folds, ahead
+   of the readers of the program's order. */
+void prog_drop_dead_files(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n = nt_nroots(nt);
+  if (!prog_graph(c) || n < 2) return;
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
+  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_reach(nt, seen, live);
+  for (int f = 1; f < n; f++) {
+    int st = live[f] ? -1 : prog_root_stmts(c, f);
+    if (st >= 0) nt_node_set_arr(nt, st, "body", NULL, 0);
+  }
+  free(seen); free(live);
 }
 
 /* A definition at a file's top level, by name, for the definitions two files

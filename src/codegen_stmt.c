@@ -15696,12 +15696,21 @@ void emit_synth_line_marker(Buf *b) {
    the method the call makes so a backtrace shows the load's frame as CRuby
    does: it runs the file's top level (sp_file_N_top, emit_file_tops) the
    first time and answers whether it did. One that names no file raises
-   LoadError for the feature it was given, wherever it stands. */
+   LoadError for the feature it was given, wherever it stands. One of a
+   core capability, which CRuby has loaded before the program runs, runs
+   nothing and answers false. */
 void emit_load_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
+  const char *how = nt_str(nt, id, "how");
   int f = (int)nt_int(nt, id, "target_file", -1);
+  if (is_load_how_core(how)) { buf_puts(b, "0"); return; }
+  if (is_load_how_native(how)) {
+    unsupported_feature(c, id, "--load-model=graph: a native library's require standing as a value, for now");
+    buf_puts(b, "0");
+    return;
+  }
   buf_printf(b, "sp_Kernel_%s(", mc(nt_str(nt, id, "method")));
-  if (is_load_how_missing(nt_str(nt, id, "how"))) {
+  if (is_load_how_missing(how)) {
     emit_str_literal(b, nt_str(nt, id, "feature"));
     buf_puts(b, ", NULL, NULL)");
   }

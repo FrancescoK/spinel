@@ -21215,29 +21215,49 @@ static double cg_phase(double t0, const char *phase) {
 /* --load-model=graph (#9898): each required file's top level as a function
    of its own, which the first load of the file runs (sp_load_file), with
    the file's own locals and frame; its BEGIN blocks run first, when it
-   loads. A file that only defines things has none, and no loaded flag
-   either while no load of it is a value. Every file's flag comes first,
-   since a load in one file may name any other. */
+   loads. A file that only defines things has none while no load of it is a
+   value; one that is has an empty function (prog_file_tops). --debug: the
+   function is external, as a method is (emit_method_signature), so its
+   frame has a symbol in an ELF backtrace, which names it `<top (required)>`
+   in its own file (lib/sp_cold.c, sp_bt_symbol). */
+static const char *file_top_storage(void) { return g_debug ? "" : "static "; }
+
+/* Every file's flag and function are declared ahead of every body, since a
+   load may stand in any of them -- a method, a proc, another file's top
+   level -- and may name any file. */
+static void emit_file_top_decls(Compiler *c, Buf *b) {
+  int n = nt_nroots(c->nt);
+  if (n < 2) return;
+  unsigned char *has = calloc((size_t)n, 1);
+  if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_file_tops(c, has);
+  for (int f = 1; f < n; f++)
+    if (has[f]) buf_printf(b, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, file_top_storage(), f);
+  free(has);
+}
 static void emit_file_tops(Compiler *c, Buf *body) {
   int n = nt_nroots(c->nt);
-  /* --debug: external, as a method is (emit_method_signature), so its frame
-     has a symbol in an ELF backtrace, which names it `<top (required)>`
-     in its own file (lib/sp_cold.c, sp_bt_symbol) */
-  const char *stor = g_debug ? "" : "static ";
-  for (int f = 1; f < n; f++)
-    if (!prog_defines_only(c, f)) buf_printf(body, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, stor, f);
+  if (n < 2) return;
+  const char *stor = file_top_storage();
+  unsigned char *has = calloc((size_t)n, 1);
+  if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_file_tops(c, has);
   /* a void function: a top-level `return` ends the file's load, as a void
      method's return ends the method, not the program's main body */
   int sv_cv = g_c_ret_void;
   TyKind sv_rt = g_ret_type;
   g_c_ret_void = 1; g_ret_type = TY_VOID;
   for (int f = 1; f < n; f++) {
-    if (prog_defines_only(c, f)) continue;
+    if (!has[f]) continue;
     Scope *s = &c->scopes[c->file_scope[f]];
     char tag[32], group[UNIT_TAG_MAX + 8];
     snprintf(tag, sizeof tag, "file_%d", f);
     /* --incremental: with the file's top-level methods (class_unit_group) */
     unit_begin_in(body, tag, class_unit_group(c, -1, nt_root(c->nt, f), group, sizeof group));
+    if (prog_defines_only(c, f)) {
+      buf_printf(body, "%svoid sp_file_%d_top(void) { }\n", stor, f);
+      continue;
+    }
     buf_printf(body, "%svoid sp_file_%d_top(void) {\n    SP_GC_SAVE();\n", stor, f);
     if (g_debug) {
       char *sym = malloc(32);
@@ -21256,6 +21276,7 @@ static void emit_file_tops(Compiler *c, Buf *body) {
     if (!g_no_root_frame) gc_frame_build(c, body, frame_ins, tag);
   }
   g_c_ret_void = sv_cv; g_ret_type = sv_rt;
+  free(has);
 }
 
 /* The top-level bodies that run as functions of their own: each required
@@ -21877,6 +21898,7 @@ char *codegen_program(const NodeTable *nt) {
                  "static sp_RbVal sp_cls_allocate(sp_RbVal v);\n"
                  "static sp_PolyArray *sp_cls_members(sp_RbVal v);\n"
                  "static sp_RbVal sp_cls_keyword_init_p(sp_RbVal v);\n");
+  emit_file_top_decls(c, &b);
   /* Constructor defs, method defs, and main go into a separate buffer. Any
      proc literals they contain accumulate static functions into g_procs /
      g_proc_protos; we splice those in ahead of these bodies, since a proc
