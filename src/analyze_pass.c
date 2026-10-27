@@ -3257,6 +3257,27 @@ static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an)
 static void wbas_share_begin(int *changed, int *any);
 static void wbas_share_step(int *changed, int *any);
 static void wbas_share_end(void);
+/* A Hash subclass instance's merge, compact, dup ... answers a copy that
+   is an instance of its class (BOPF_COPY_CLASS): the Hash the call builds
+   goes into the class's Hash, so a Hash of another variant (a merge with a
+   block answers the PolyPoly Hash) widens the class's Hash */
+static int widen_hashsub_copy_answer(Compiler *c, int id) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv < 0) return 0;
+  TyKind rt = infer_type(c, recv), rk = TY_UNKNOWN;
+  int root = comp_ty_ary_root(c, rt);
+  if (root < 0 || !c->classes[root].ary_hash) return 0;
+  if (!comp_arysub_call(c, id, rt, &rk) || rk == TY_UNKNOWN) return 0;
+  if (!(comp_arysub_answer(c, id, 1) & BOPF_COPY_CLASS)) return 0;
+  an_face_push(recv, rk);
+  TyKind r = infer_call(c, id);
+  an_face_pop();
+  TyKind *slot = &c->classes[root].ary_kind;
+  if (!ty_is_hash(r) || !ty_is_hash(*slot) || r == *slot || *slot == TY_POLY_POLY_HASH) return 0;
+  *slot = TY_POLY_POLY_HASH; comp_touch_class(root);
+  return 1;
+}
+
 static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb, int *fb, LWIndex lw_ix, LWIndex ivw_ix) {
   int changed = 0, any = 0;
   /* the walks the stores start share what they found unchanged, until a
@@ -3285,6 +3306,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
       int args = nt_ref(nt, id, "arguments");
       int an = 0;
       const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (c->has_arysub && widen_hashsub_copy_answer(c, id)) changed = 1;
       if (name && (((sp_streq(name, "push") || sp_streq(name, "append")) && an >= 1) ||
                    (sp_streq(name, "<<") && an == 1))) {
         /* `<<` is ambiguous (Array#push vs Integer#<< shift): a numeric-assigned
