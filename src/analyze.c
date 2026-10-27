@@ -358,8 +358,9 @@ static int an_own_block_passes(const NodeTable *nt, int n, const char *bp) {
   }
   return cnt;
 }
-static void an_note_written_names(const NodeTable *nt) {
-  int by_value = g_require_unread, passes = 0, own_passes = 0, erb = 0;
+static void an_note_written_names(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int by_value = 0, passes = 0, own_passes = 0, erb = 0, mixes = 0, loads = g_require_unread;
   for (int k = 0; an_by_name[k].nm; k++)
     if (!anh_has(&g_by_name_words, an_by_name[k].nm)) anh_add(&g_by_name_words, an_by_name[k].nm);
   for (int id = 0; id < nt->count; id++) {
@@ -379,14 +380,14 @@ static void an_note_written_names(const NodeTable *nt) {
         an_written_add(&g_symbol_names, nm);
         an_written_add(&g_written, nm);
         an_written_add(&g_written_twice, nm);
-        if (an_mixes(nm)) by_value = 1;
+        if (an_mixes(nm)) mixes = 1;
         break;
       }
       case NK_DefNode: {
         const char *nm = nt_str(nt, id, "name");
         if (nm && anh_has(&g_written, nm)) an_written_add(&g_written_twice, nm);
         an_written_add(&g_written, nm);
-        if (an_mixes(nm)) by_value = 1;
+        if (an_mixes(nm)) mixes = 1;
         const char *bp = nt_str(nt, nt_ref(nt, nt_ref(nt, id, "parameters"), "block"), "name");
         int own = bp ? an_own_block_passes(nt, nt_ref(nt, id, "body"), bp) : 0;
         if (own > 0) own_passes += own;
@@ -462,13 +463,16 @@ static void an_note_written_names(const NodeTable *nt) {
             break;
         }
         if (by_value && (how == AN_GIVES || how == AN_GIVES_ALL || how == AN_RENAMES || how == AN_VIS)) g_meta_by_value = 1;
+        if (by_value && (how == AN_MIX || how == AN_MIX_HOOK)) { mixes = 1; by_value = 0; }
+        if (by_value && is_file_load_name(nt_str(nt, id, "name"))) { loads = 1; by_value = 0; }
         by_value |= by_value_before;
         break;
       }
       default: break;
     }
   }
-  if (by_value || passes > own_passes || erb > 0) g_written_by_value = 1;
+  c->names_by_value = by_value || passes > own_passes || erb > 0;
+  if (c->names_by_value || mixes || loads) g_written_by_value = 1;
 }
 /* Does the program, as written, give no class or module a method named
    `nm`, beyond `defs` (0 or 1) defs of that name? Proved by what it does not
@@ -53806,7 +53810,7 @@ static void an_phase_enum_late(Compiler *c) {
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   g_an_src_nodes = c->nt->count;
-  an_note_written_names(c->nt);
+  an_note_written_names(c);
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
   if (c->n_cext_extensions) { AN_STEP_V("register_cext_layouts", register_cext_layouts(c)); inherit_cext_layouts(c); }

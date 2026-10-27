@@ -1265,6 +1265,11 @@ typedef struct {
   /* the load-phase record: where each statement of the load phase runs
      (analyze_elab.c), rebuilt when the node table changes */
   struct LoadRecord *lrec;
+  /* the program names or makes a method by something its text does not
+     spell -- a send, a method object or a define_method of a computed name,
+     text it evaluates -- as an_note_written_names reads the tree; a module
+     mixed in and a file loaded are not counted (elab_runs_unseen) */
+  int names_by_value;
 
   /* the subset of `classes` synthesized for an anonymous Struct/Data, so
      resolving one does not walk every user class; invalidated wherever

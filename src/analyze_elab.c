@@ -89,6 +89,7 @@ struct LoadRecord {
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
   /* the method histories by name (lr_vers_index), as of nentries entries */
   long nentries, indexed;
+  unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   struct LrVers *vers; int nvers, cvers, *vers_head;
 };
 
@@ -900,7 +901,7 @@ void elab_program(Compiler *c) {
    define_method, an attr, an alias, a module_function copy, an undef or
    remove), not a visibility change. lr_vers_index indexes the histories as
    they stand, again once more entries have been recorded. */
-typedef struct LrVers { const char *name; int first, nver, next; } LrVers;
+typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes */
 
 static int lr_is_version(const LrDef *v) { return v->kind <= LR_REMOVE; }
 
@@ -919,7 +920,7 @@ static void lr_vers_index(LoadRecord *r) {
     if (k < 0) {
       r->vers = lr_grow(r->vers, &r->cvers, r->nvers, sizeof *r->vers);
       k = r->nvers++;
-      r->vers[k] = (LrVers){ h->name, -1, 0, r->vers_head[b] };
+      r->vers[k] = (LrVers){ h->name, -1, 0, r->vers_head[b], 0 };
       r->vers_head[b] = k;
     }
     h->nlink = r->vers[k].first;
@@ -929,7 +930,7 @@ static void lr_vers_index(LoadRecord *r) {
   r->indexed = r->nentries;
 }
 
-static const LrVers *lr_vers(LoadRecord *r, const char *name) {
+static LrVers *lr_vers(LoadRecord *r, const char *name) {
   if (!name) return NULL;
   lr_vers_index(r);
   for (int k = r->vers_head[lr_hash(0, 0, name)]; k >= 0; k = r->vers[k].next)
@@ -1109,6 +1110,50 @@ int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p
   }
   int o = lr_search(c, cls, sg, name, -1, p1, 0, 0, out, 0);
   return o == LR_STOP ? ELAB_NO : o;
+}
+
+/* Can the program run code the record has not seen? Only through a load
+   whose target it could not resolve: under --load-model=graph a LoadNode
+   whose path is computed when it runs, inline a require, require_relative,
+   load or autoload the parse left in the tree (one it resolved it spliced
+   away). Read from the tree, once. */
+int elab_runs_unseen(Compiler *c) {
+  LoadRecord *r = lr_get(c);
+  if (!r->unseen) {
+    const NodeTable *nt = c->nt;
+    int hit = 0, n = 0;
+    const int *v = nt_nodes_of_kind(nt, NK_LoadNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = is_load_how_computed(nt_str(nt, v[i], "how"));
+    v = nt_nodes_of_kind(nt, NK_CallNode, &n);
+    for (int i = 0; !hit && i < n; i++) {
+      int recv = nt_ref(nt, v[i], "receiver");
+      hit = is_file_load_name(nt_str(nt, v[i], "name")) &&
+            (recv < 0 || (nt_kind(nt, recv) == NK_ConstantReadNode && is_object_root(nt_str(nt, recv, "name"))));
+    }
+    r->unseen = hit ? 2 : 1;
+  }
+  return r->unseen == 2;
+}
+
+/* May a version of `name` run outside its interval? Only the calls bound
+   to it reach it while nothing else names the method: no Symbol or String
+   in the program spells the name (an alias, a method object, a send, a
+   respond_to?, an enum_for), the program names or makes no method by a
+   name it computes (Compiler.names_by_value), and it runs no code the
+   record has not seen (elab_runs_unseen). */
+int elab_version_captured(Compiler *c, const char *name) {
+  LrVers *x = c->lrec && c->lrec->recorded ? lr_vers(c->lrec, name) : NULL;
+  if (!x) return 1;
+  if (!x->captured) {
+    const NodeTable *nt = c->nt;
+    int hit = c->names_by_value || elab_runs_unseen(c), n = 0;
+    const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
+    v = nt_nodes_of_kind(nt, NK_StringNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "unescaped"), name);
+    x->captured = hit ? 2 : 1;
+  }
+  return x->captured == 2;
 }
 
 int elab_mixed_at(Compiler *c, int cls, int sg, int mod, LoadPoint p) {
