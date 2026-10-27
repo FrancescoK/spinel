@@ -234,7 +234,7 @@ spinel-timing: phase=analysis_fixpoint ms=3.2 rounds=4
 | `write_c` | writing the C file |
 | `cc_preprocess`, `cc_split` | a split build (`--jobs=N`, or a large unit) or an `--incremental` build: the preprocess and the split into parts or units |
 | `cache_lookup` | an `--incremental` build: the cache keys and the lookup of every unit's object |
-| `cc_compile` | a split build: the wall span of the parallel object compiles (`jobs=N`), not the sum of the workers; an `--incremental` build adds `units=N miss=M`, and compiles only the misses |
+| `cc_compile` | a split build: the wall span of the parallel object compiles (`jobs=N parts=M`; `--split-parts=M` cuts more parts than the N compiles at once and starts the biggest first), not the sum of the workers; an `--incremental` build adds `units=N miss=M`, and compiles only the misses |
 | `cc_link` | a split build: the link |
 | `cc_total` | the whole native step, single unit or split |
 

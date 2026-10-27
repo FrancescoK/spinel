@@ -42,6 +42,12 @@ for p in cc_preprocess cc_split cc_link cc_total; do
   grep -q "phase=$p ms=" "$tmp/cc2.err" || fail "split: no $p"
 done
 grep -q 'phase=cc_compile ms=[0-9.]* jobs=2' "$tmp/cc2.err" || fail "split: no cc_compile jobs=2"
+# more parts than compile slots (--split-parts, #10325): the parts go through
+# the slots as a queue, and the program is the one a plain split builds
+$SPINEL --timing --jobs=2 --split-parts=5 -o "$tmp/c.out" $src 2>"$tmp/cc5.err" || fail "split-parts compile"
+grep -q 'phase=cc_compile ms=[0-9.]* jobs=2 parts=5' "$tmp/cc5.err" || fail "split-parts: no cc_compile jobs=2 parts=5"
+"$tmp/c.out" > "$tmp/c.txt" 2>&1; "$tmp/b.out" > "$tmp/b.txt" 2>&1
+cmp -s "$tmp/b.txt" "$tmp/c.txt" || fail "split-parts: the program answers otherwise"
 # and of an --incremental build, whose cache stays in the temp directory
 SPINEL_CACHE_DIR="$tmp/cache" SPINEL_INCREMENTAL_STRICT=1 $SPINEL --timing --incremental -o "$tmp/c.out" $src 2>"$tmp/cc3.err" ||
   fail "incremental compile"

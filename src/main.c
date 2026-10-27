@@ -361,9 +361,26 @@ static int refuse_log_overwrite(const char *path) {
 /* the generated unit's size from which a build splits unasked */
 #define SPLIT_AUTO_BYTES (4L << 20)
 
+/* --split-parts=M: the parts the split cuts, apart from the compiles that
+   run at once (--jobs); 0 or below --jobs is --jobs. More parts than slots
+   go through the slots as a queue, the biggest first, so the slowest part
+   does not run alone at the end of the build (#10325). */
+static int g_split_parts = 0;
+
+/* the order to start parts in: by preprocessed size, biggest first (ties
+   keep the part order) */
+static off_t *cc_part_bytes;
+static int cc_part_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  if (cc_part_bytes[x] != cc_part_bytes[y]) return cc_part_bytes[x] < cc_part_bytes[y] ? 1 : -1;
+  return x - y;
+}
+
 static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
                           const char *c_path, int jobs) {
   if (jobs > 64) jobs = 64;
+  int nparts = g_split_parts > jobs ? g_split_parts : jobs;
+  if (nparts > 256) nparts = 256;
   /* the scratch goes where TMPDIR says, /tmp by default: a large program's
      preprocessed unit and parts take several GB (#9267) */
   const char *tmpd = getenv("TMPDIR");
@@ -384,36 +401,54 @@ static int cc_split_build(const char *cmd, size_t src_at, size_t src_end,
   free(c1);
   sp_timing_end(tm_pre, "cc_preprocess", "");
   double tm_split = sp_timing_now();
-  char (*parts)[4096] = malloc(sizeof(*parts) * (size_t)jobs);
+  char (*parts)[4096] = malloc(sizeof(*parts) * (size_t)nparts);
   char hdr[4200];
-  if (rc == 0 && c_split(pre, dir, jobs, parts, hdr, sizeof hdr) != jobs) rc = -1;
+  if (rc == 0 && c_split(pre, dir, nparts, parts, hdr, sizeof hdr) != nparts) rc = -1;
   sp_timing_end(tm_split, "cc_split", "");
   double tm_cc = sp_timing_now();
-  pid_t *pids = calloc((size_t)jobs, sizeof(pid_t));
-  for (int k = 0; rc == 0 && k < jobs; k++) {
-    size_t ql = strlen(flags) + 2 * strlen(parts[k]) + 64;
-    char *q = malloc(ql);
-    snprintf(q, ql, "%s -c '%s' -o '%s.o'", flags, parts[k], parts[k]);
-    pid_t p = fork();
-    if (p == 0) { execl("/bin/sh", "sh", "-c", q, (char *)NULL); _exit(127); }
-    free(q);
-    if (p < 0) { rc = -1; break; }
-    pids[k] = p;
+  /* the parts through `jobs` slots, the biggest first */
+  int *order = malloc(sizeof(int) * (size_t)nparts);
+  off_t *bytes = calloc((size_t)nparts, sizeof(off_t));
+  pid_t *pids = calloc((size_t)nparts, sizeof(pid_t));
+  if (!order || !bytes || !pids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < nparts; k++) {
+    struct stat pst;
+    order[k] = k;
+    if (rc == 0 && stat(parts[k], &pst) == 0) bytes[k] = pst.st_size;
   }
-  for (int k = 0; k < jobs; k++) {
-    if (pids[k] <= 0) continue;
+  cc_part_bytes = bytes;
+  qsort(order, (size_t)nparts, sizeof order[0], cc_part_cmp);
+  int next = 0, running = 0;
+  while (rc == 0 && (next < nparts || running > 0)) {
+    while (rc == 0 && next < nparts && running < jobs) {
+      int k = order[next++];
+      size_t ql = strlen(flags) + 2 * strlen(parts[k]) + 64;
+      char *q = malloc(ql);
+      snprintf(q, ql, "%s -c '%s' -o '%s.o'", flags, parts[k], parts[k]);
+      pid_t p = fork();
+      if (p == 0) { execl("/bin/sh", "sh", "-c", q, (char *)NULL); _exit(127); }
+      free(q);
+      if (p < 0) { rc = -1; break; }
+      pids[k] = p; running++;
+    }
+    if (running == 0) break;
     int st = 0;
-    if (waitpid(pids[k], &st, 0) < 0 || !WIFEXITED(st) || WEXITSTATUS(st) != 0) rc = -1;
+    pid_t done = wait(&st);
+    if (done < 0) { rc = -1; break; }
+    for (int k = 0; k < nparts; k++)
+      if (pids[k] == done) { pids[k] = 0; running--; if (!WIFEXITED(st) || WEXITSTATUS(st) != 0) rc = -1; break; }
   }
-  free(pids);
-  { char ex[32]; snprintf(ex, sizeof ex, " jobs=%d", jobs); sp_timing_end(tm_cc, "cc_compile", ex); }
+  /* (a failure stops starting parts; the ones still running are waited for) */
+  for (int k = 0; k < nparts; k++) if (pids[k] > 0) { int st = 0; waitpid(pids[k], &st, 0); }
+  free(pids); free(order); free(bytes);
+  { char ex[48]; snprintf(ex, sizeof ex, " jobs=%d parts=%d", jobs, nparts); sp_timing_end(tm_cc, "cc_compile", ex); }
   double tm_lk = sp_timing_now();
   if (rc == 0) {
-    size_t ll = strlen(cmd) + (size_t)jobs * 4200 + 16;
+    size_t ll = strlen(cmd) + (size_t)nparts * 4200 + 16;
     char *lk = malloc(ll);
     size_t w = 0;
     memcpy(lk, cmd, src_at); w = src_at;
-    for (int k = 0; k < jobs; k++) w += (size_t)snprintf(lk + w, ll - w, "'%s.o' ", parts[k]);
+    for (int k = 0; k < nparts; k++) w += (size_t)snprintf(lk + w, ll - w, "'%s.o' ", parts[k]);
     snprintf(lk + w, ll - w, "%s", cmd + src_end);
     rc = system(lk);
     free(lk);
@@ -493,6 +528,8 @@ static void usage(void) {
     "  --cc=CMD    C compiler (default: cc)\n"
     "  --jobs=N    compile the generated C as N units in parallel\n"
     "              (default: split only a unit of 4 MB or more; --jobs=1 never)\n"
+    "  --split-parts=M  With a split: cut M parts and compile them N at a time,\n"
+    "              the biggest first (default: M = N)\n"
     "  --incremental  Development build: compile the C in units, reuse the cached\n"
     "              objects of units whose text did not change (not with -S, --emit-*)\n"
     "  --unit-bytes=N[K|M]  With --incremental: the target size of one unit\n"
@@ -893,6 +930,7 @@ int main(int argc, char **argv) {
     else if (!strncmp(a, "--output=", 9)) { output = a + 9; i++; }
     else if (!strncmp(a, "--cc=", 5))     { cc_cmd = a + 5; i++; }
     else if (!strncmp(a, "--jobs=", 7))   { cc_jobs = atoi(a + 7); i++; }
+    else if (!strncmp(a, "--split-parts=", 14)) { g_split_parts = atoi(a + 14); i++; }
     else if (incremental_opt(a))           { i++; }
     else if (!strncmp(a, "--target=", 9)) {
       if (sp_streq(a + 9, "wasm32-wasi")) target_wasi = 1;
