@@ -1920,7 +1920,7 @@ static void cf_bind_args(CF *f, int mi, const int *argv, int argc) {
    value (yval_used): a read of it as a proc's value counts as one. */
 static void cf_proc_value_ready(CF *f, int e) {
   const NodeTable *nt = f->nt;
-  if (!CF_CLOSED(f) || e < 0 || e >= f->nnodes || nt_kind(nt, e) != NK_LocalVariableReadNode) return;
+  if (e < 0 || e >= f->nnodes || nt_kind(nt, e) != NK_LocalVariableReadNode) return;
   int om = cf_owner_def(f, e, 1, NULL);
   const char *en = nt_str(nt, e, "name");
   if (om < 0 || !en || !f->c->scopes[om].blk_param || !sp_streq(en, f->c->scopes[om].blk_param)) return;
