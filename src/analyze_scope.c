@@ -2360,11 +2360,10 @@ static void register_method_visibility_body(Compiler *c, ClassInfo *cls, int bod
 /* Record per-method visibility for every class/module body, including reopened
    bodies (each `class Foo ... end` opening starts public, like CRuby). */
 void register_method_visibility(Compiler *c) {
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb; b++) register_method_visibility_body(c, &c->classes[bci[b]], bnode[b], 0);
-  free(bci);
-  free(bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
+  for (int b = 0; b < nb; b++) register_method_visibility_body(c, &c->classes[bo[b].cls], bo[b].body, 0);
+  free(bo);
   /* `class << Foo`, wherever it stands: Foo's class methods, as a
      `class << self` in Foo's body declares them */
   NT_FOREACH_KIND(c->nt, NK_SingletonClassNode, sc) {
@@ -3953,15 +3952,14 @@ static int body_stmt_assigns_civ(const NodeTable *nt, int n, const char *ivname)
 /* Does a body of class ci assign the class-level ivar `ivname` as one of its
    own statements (`class OK < Status; @code = 200; end`), under an if or
    unless included? */
-/* Does a body of class ci (in the class_body_list bci / bnode, nb long)
-   assign ivname as a statement of its own? */
-static int body_assigns_civ(const NodeTable *nt, const int *bci, const int *bnode, int nb, int ci,
-                            const char *ivname) {
+static int body_assigns_civ(Compiler *c, int ci, const char *ivname) {
+  int nb = 0;
+  const LrOpen *o = elab_class_bodies(c, ci, &nb);
   for (int b = 0; b < nb; b++) {
-    if (bci[b] != ci || bnode[b] < 0) continue;
-    int n = 0; const int *st = nt_arr(nt, bnode[b], "body", &n);
+    if (o[b].body < 0) continue;
+    int n = 0; const int *st = nt_arr(c->nt, o[b].body, "body", &n);
     for (int k = 0; k < n; k++)
-      if (body_stmt_assigns_civ(nt, st[k], ivname)) return 1;
+      if (body_stmt_assigns_civ(c->nt, st[k], ivname)) return 1;
   }
   return 0;
 }
@@ -4075,11 +4073,10 @@ void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
 
 void register_attrs(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb; b++) register_attrs_body(c, &c->classes[bci[b]], bnode[b]);
-  free(bci);
-  free(bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
+  for (int b = 0; b < nb; b++) register_attrs_body(c, &c->classes[bo[b].cls], bo[b].body);
+  free(bo);
   /* `class << Const; attr_accessor :x; end`, at the top level or in another
      class's body: the accessors are the named class's own */
   for (int n = comp_kind_first(c, NK_SingletonClassNode); n >= 0; n = comp_kind_next(c, n)) {
@@ -4493,14 +4490,13 @@ static int mixin_arg_module(Compiler *c, int arg) {
    included before it (the later first), then the superclass. -1 when the
    class does not answer the name there, or the answer is not a def. The
    bodies are the class's, in source order. */
-static int alias_def_in_effect(Compiler *c, int k, const char *od, int at,
-                               int nb, const int *bci, const int *bnode) {
+static int alias_def_in_effect(Compiler *c, int k, const char *od, int at) {
   const NodeTable *nt = c->nt;
-  int inc_def = -1, inc_at = -1, pre_def = -1, pre_at = -1;
+  int inc_def = -1, inc_at = -1, pre_def = -1, pre_at = -1, nb = 0;
+  const LrOpen *ob = elab_class_bodies(c, k, &nb);
   for (int b = 0; b < nb; b++) {
-    if (bci[b] != k) continue;
     int n = 0;
-    const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &n) : NULL;
+    const int *stmts = ob[b].body >= 0 ? nt_arr(nt, ob[b].body, "body", &n) : NULL;
     for (int j = 0; j < n; j++) {
       int st = stmts[j];
       if (prog_cmp_run(c, st, at, at, "the alias reading") >= 0 || nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) continue;
@@ -4598,7 +4594,6 @@ static const char *alias_body_copy(Compiler *c, int k, int want, const char *od)
 }
 
 void settle_mixin_aliases(Compiler *c) {
-  int nb = 0, *bci = NULL, *bnode = NULL;
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *cls = &c->classes[k];
     if (comp_class_is_module(c, cls) || is_builtin_reopen(cls->name)) continue;
@@ -4615,10 +4610,9 @@ void settle_mixin_aliases(Compiler *c) {
       if (replaced) continue;
       int fm = comp_method_in_chain(c, k, nw, NULL);
       if (fm < 0) continue;
-      if (!bci) nb = class_body_list(c, &bci, &bnode);
       char od[256];
       snprintf(od, sizeof od, "%s", cls->alias_old[i]);
-      int want = alias_def_in_effect(c, k, od, at, nb, bci, bnode);
+      int want = alias_def_in_effect(c, k, od, at);
       if (want < 0) continue;
       int ok = c->scopes[fm].def_node == want;
       if (!ok) {
@@ -4681,7 +4675,6 @@ void settle_mixin_aliases(Compiler *c) {
       unsupported_feature(c, at, msg);
     }
   }
-  free(bci); free(bnode);
 }
 
 /* Does a statement after stmts[k] declare the accessor `nw` -- a reader
@@ -4793,11 +4786,10 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
 
 void register_aliases(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb; b++) register_aliases_body(c, &c->classes[bci[b]], bnode[b]);
-  free(bci);
-  free(bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
+  for (int b = 0; b < nb; b++) register_aliases_body(c, &c->classes[bo[b].cls], bo[b].body);
+  free(bo);
   /* A constant singleton body need not have an enclosing class reopening. */
   for (int n = comp_kind_first(c, NK_SingletonClassNode); n >= 0; n = comp_kind_next(c, n)) {
     int recv = nt_ref(nt, n, "expression");
@@ -4852,11 +4844,10 @@ void register_undefs_body(Compiler *c, ClassInfo *cls, int body) {
 }
 
 void register_undefs(Compiler *c) {
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb; b++) register_undefs_body(c, &c->classes[bci[b]], bnode[b]);
-  free(bci);
-  free(bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
+  for (int b = 0; b < nb; b++) register_undefs_body(c, &c->classes[bo[b].cls], bo[b].body);
+  free(bo);
 }
 
 int is_c_ident(const char *s) {
@@ -6990,7 +6981,6 @@ void resolve_parents(Compiler *c) {
      the subclass runs -- its own, or one inherited from any ancestor --
      naming `@x` reads the subclass's class-level ivar, so the inherited
      accessor shares that slot (sg_civ), as the declaring class's own does. */
-  int *bl_ci = NULL, *bl_node = NULL, nbl = -1;   /* the class bodies, listed when first asked */
   for (int i = 0; i < c->nclasses; i++) {
     for (int k = c->classes[i].parent, guard = 0; k >= 0 && guard < 256; k = c->classes[k].parent, guard++) {
       ClassInfo *pc = &c->classes[k];
@@ -7006,8 +6996,7 @@ void resolve_parents(Compiler *c) {
         snprintf(ivname, sizeof ivname, "@%s", base);
         /* the subclass's own body assigning `@x` sets what the inherited
            reader answers through it */
-        if (nbl < 0) nbl = class_body_list(c, &bl_ci, &bl_node);
-        if (body_assigns_civ(c->nt, bl_ci, bl_node, nbl, i, ivname)) { comp_add_sg_civ(&c->classes[i], base); continue; }
+        if (body_assigns_civ(c, i, ivname)) { comp_add_sg_civ(&c->classes[i], base); continue; }
         for (int a = i, g2 = 0; a >= 0 && g2 < 256; a = c->classes[a].parent, g2++) {
           if (cmethod_names_ivar(c, a, ivname)) { comp_add_sg_civ(&c->classes[i], base); break; }
           if (a == c->classes[a].parent) break;
@@ -7016,8 +7005,6 @@ void resolve_parents(Compiler *c) {
       if (k == c->classes[k].parent) break;
     }
   }
-  free(bl_ci);
-  free(bl_node);
   resolve_inherited_aliases(c);
   mark_anon_superclass_reflection(c);
 }
@@ -7629,35 +7616,35 @@ void register_includes(Compiler *c) {
      `class C; include M; end` in the walk, C copied M before M had Inner's
      methods and could not reach them (#4517). A cycle (mutual includes)
      falls back to source order. */
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
   int *remaining = calloc((size_t)c->nclasses, sizeof(int));
-  char *done = calloc((size_t)nb, 1);
-  for (int b = 0; b < nb; b++) remaining[bci[b]]++;
+  char *done = calloc((size_t)(nb > 0 ? nb : 1), 1);
+  for (int b = 0; b < nb; b++) remaining[bo[b].cls]++;
   int left = nb;
   while (left > 0) {
     int progress = 0;
     for (int b = 0; b < nb; b++) {
       if (done[b]) continue;
       int ready = 1;
-      /* this class's earlier bodies first (the definition before a reopening) */
+      /* this class's earlier bodies first, in the order they run */
       for (int b2 = 0; b2 < b && ready; b2++)
-        if (!done[b2] && bci[b2] == bci[b]) ready = 0;
-      if (ready) ready = body_mixin_dependencies_ready(c, bci[b], bnode[b], remaining);
+        if (!done[b2] && bo[b2].cls == bo[b].cls) ready = 0;
+      if (ready) ready = body_mixin_dependencies_ready(c, bo[b].cls, bo[b].body, remaining);
       if (!ready) continue;
-      process_include_body(c, bci[b], bnode[b]);
-      done[b] = 1; remaining[bci[b]]--; left--; progress = 1;
+      process_include_body(c, bo[b].cls, bo[b].body);
+      done[b] = 1; remaining[bo[b].cls]--; left--; progress = 1;
     }
-    if (!progress) {   /* a cycle: take the first body left, in source order */
+    if (!progress) {   /* a cycle: take the first body left */
       for (int b = 0; b < nb; b++) {
         if (done[b]) continue;
-        process_include_body(c, bci[b], bnode[b]);
-        done[b] = 1; remaining[bci[b]]--; left--;
+        process_include_body(c, bo[b].cls, bo[b].body);
+        done[b] = 1; remaining[bo[b].cls]--; left--;
         break;
       }
     }
   }
-  free(bci); free(bnode); free(remaining); free(done);
+  free(bo); free(remaining); free(done);
   /* What the program adds to Struct or Data by reopening it, every
      Struct.new / Data.define class answers, each with its own self: copied
      like an include into the root of each record class (a subclass reaches
@@ -7711,24 +7698,21 @@ static int subtree_defs_name(const NodeTable *nt, int n, const char *name, int d
   }
   return 0;
 }
-/* Does a body of class ci (bodies from class_body_list) define `name` with
-   a def of its own, bare, under a visibility call (`private def x`), or in a
-   branch or block of the body (`if cond; def x; end; end`)? */
-static int body_defs_name(Compiler *c, int nb, const int *bci, const int *bnode, int ci, const char *name) {
+/* Does a body of class ci define `name` with a def of its own, bare, under
+   a visibility call (`private def x`), or in a branch or block of the body
+   (`if cond; def x; end; end`)? */
+static int body_defs_name(Compiler *c, int ci, const char *name) {
+  int nb = 0;
+  const LrOpen *o = elab_class_bodies(c, ci, &nb);
   for (int b = 0; b < nb; b++)
-    if (bci[b] == ci && subtree_defs_name(c->nt, bnode[b], name, 0)) return 1;
+    if (subtree_defs_name(c->nt, o[b].body, name, 0)) return 1;
   return 0;
 }
 
 void register_include_attrs(Compiler *c) {
   /* a class's own def of a name answers before an alias of it a module
      brings (CRuby looks in the class before its modules): the alias is not
-     copied over it. The bodies are listed once, and only if some module
-     has an alias at all. */
-  int nb = 0, *bci = NULL, *bnode = NULL;
-  for (int k = 0; k < c->nclasses && !bci; k++)
-    if (c->classes[k].naliases > 0 && comp_class_is_module(c, &c->classes[k]))
-      nb = class_body_list(c, &bci, &bnode);
+     copied over it */
   int grew = 1;
   while (grew) {
   grew = 0;
@@ -7755,7 +7739,7 @@ void register_include_attrs(Compiler *c) {
         /* a singleton alias names a class method of the module, which an
            include does not bring (#9177) */
         if (mod->alias_sg && mod->alias_sg[a]) continue;
-        if (bci && body_defs_name(c, nb, bci, bnode, ci, mod->alias_new[a])) continue;
+        if (body_defs_name(c, ci, mod->alias_new[a])) continue;
         /* the module's body of the name, where the class has one of its own;
            an alias of an alias names the module's method below both */
         const char *old_nm = module_alias_root(mod, mod->alias_old[a]);
@@ -7767,7 +7751,6 @@ void register_include_attrs(Compiler *c) {
     if (cls->nreaders + cls->nwriters + cls->naliases != n0) grew = 1;
   }
   }
-  free(bci); free(bnode);
 }
 
 /* The class a `super` from class `ci`'s method `mname` lands on answers it with
@@ -8154,22 +8137,25 @@ static int extend_arg_module(Compiler *c, int arg) {
   return mname ? comp_class_index(c, mname) : -1;
 }
 
-/* Whether class body `cn` has a bare `extend` naming mod_id. */
-static int body_extends_module(Compiler *c, int cn, int mod_id) {
+/* Whether a body of class ci has a bare `extend` naming mod_id. */
+static int class_extends_module(Compiler *c, int ci, int mod_id) {
   const NodeTable *nt = c->nt;
-  int body = class_def_body(c, cn);
-  int n = 0;
-  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
-    const char *nm = nt_str(nt, s, "name");
-    if (!nm || !sp_streq(nm, "extend")) continue;
-    int anode = nt_ref(nt, s, "arguments");
-    int an = 0;
-    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    for (int j = 0; j < an; j++)
-      if (extend_arg_module(c, args[j]) == mod_id) return 1;
+  int nb = 0;
+  const LrOpen *ob = elab_class_bodies(c, ci, &nb);
+  for (int b = 0; b < nb; b++) {
+    int n = 0;
+    const int *stmts = ob[b].body >= 0 ? nt_arr(nt, ob[b].body, "body", &n) : NULL;
+    for (int k = 0; k < n; k++) {
+      int s = stmts[k];
+      if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
+      const char *nm = nt_str(nt, s, "name");
+      if (!nm || !is_extend_name(nm)) continue;
+      int anode = nt_ref(nt, s, "arguments");
+      int an = 0;
+      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
+      for (int j = 0; j < an; j++)
+        if (extend_arg_module(c, args[j]) == mod_id) return 1;
+    }
   }
   return 0;
 }
@@ -8195,17 +8181,15 @@ static int mixin_arg_class(Compiler *c, int arg) {
 static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
   const NodeTable *nt = c->nt;
   if (mod_id < 0 || !comp_class_is_module(c, &c->classes[mod_id])) return 0;
-  int n = 0;
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
+  int n = 0, nb = 0;
+  const LrOpen *ob = elab_class_bodies(c, mod_id, &nb);
   for (int b = 0; b < nb; b++) {
-    if (bci[b] != mod_id) continue;
     int sn = 0;
-    const int *stmts = bnode[b] >= 0 ? nt_arr(nt, bnode[b], "body", &sn) : NULL;
+    const int *stmts = ob[b].body >= 0 ? nt_arr(nt, ob[b].body, "body", &sn) : NULL;
     for (int k = 0; k < sn; k++) {
       int s = stmts[k];
       const char *nm = nt_kind(nt, s) == NK_CallNode ? nt_str(nt, s, "name") : NULL;
-      if (!nm || !sp_streq(nm, "prepend") || nt_ref(nt, s, "receiver") >= 0) continue;
+      if (!nm || !is_prepend_name(nm) || nt_ref(nt, s, "receiver") >= 0) continue;
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
       const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
@@ -8220,7 +8204,6 @@ static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
       n += na;
     }
   }
-  free(bci); free(bnode);
   return n;
 }
 
@@ -8290,31 +8273,6 @@ void desugar_module_prepends(Compiler *c) {
 void register_extends(Compiler *c) {
   const NodeTable *nt = c->nt;
   int did_clone = 0;
-  /* Every class and module body, with the class it defines, collected once in
-     node order. Asking each class to rescan the whole table and look every
-     body's name up again was classes x nodes x (a linear name lookup, the
-     index is not frozen yet): the largest single cost of analysis on a
-     program with many classes (#4847). The per-class walk below visits the
-     same bodies in the same order. Names do not change here, and a class
-     this pass creates has no body of its own. */
-  int nbody = 0, capbody = 16;
-  int *body_node = malloc(sizeof(int) * (size_t)capbody);
-  int *body_cls = malloc(sizeof(int) * (size_t)capbody);
-  if (!body_node || !body_cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int cn = 0; cn < nt->count; cn++) {
-    /* the body this class is defined by, named the way every other pass
-       reads a ClassNode's name */
-    const char *cnm = class_body_name(c, cn);
-    int bci = cnm ? comp_class_index(c, cnm) : -1;
-    if (bci < 0) continue;
-    if (nbody == capbody) {
-      capbody *= 2;
-      body_node = realloc(body_node, sizeof(int) * (size_t)capbody);
-      body_cls = realloc(body_cls, sizeof(int) * (size_t)capbody);
-      if (!body_node || !body_cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    }
-    body_node[nbody] = cn; body_cls[nbody] = bci; nbody++;
-  }
   int cls_mod = comp_class_index(c, class_reopen_mod);
   int nseen = 0, capseen = 8;
   int *seen = malloc(sizeof(int) * (size_t)capseen);
@@ -8336,10 +8294,10 @@ void register_extends(Compiler *c) {
       commonly written in a REOPENING of the class, and reading def_node alone
       never saw it, so the module's methods were never transplanted and a call
       to one did not resolve (#3802). */
-   for (int bi = 0; bi < nbody; bi++) {
-    if (body_cls[bi] != ci) continue;
-    int cn = body_node[bi];
-    int body = class_def_body(c, cn);
+   int nb = 0;
+   const LrOpen *ob = elab_class_bodies(c, ci, &nb);
+   for (int bi = 0; bi < nb; bi++) {
+    int body = ob[bi].body;
     int n = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     /* a singleton prepend in a reopening (prepend_late_stmt, asked once, at
@@ -8352,7 +8310,7 @@ void register_extends(Compiler *c) {
       NodeKind sk = nt_kind(nt, s);
       if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, s, "name");
-      if (!nm || !sp_streq(nm, "extend")) continue;
+      if (!nm || !is_extend_name(nm)) continue;
       if (nt_ref(nt, s, "receiver") >= 0) continue;
       int anode = nt_ref(nt, s, "arguments");
       int an = 0;
@@ -8383,8 +8341,7 @@ void register_extends(Compiler *c) {
           xc->extended_mods[xc->nextended_mods++] = mod_id; }
         int inherited = 0;
         for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
-          for (int bj = 0; bj < nbody && !inherited; bj++)
-            if (body_cls[bj] == p) inherited = body_extends_module(c, body_node[bj], mod_id);
+          inherited = class_extends_module(c, p, mod_id);
         int sprep = (int)nt_int(nt, s, "sclass_prepend", 0);
         if (sprep && late == -2) late = prepend_late_stmt(c, ci, body);
         did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? flag : NULL);
@@ -8401,7 +8358,7 @@ void register_extends(Compiler *c) {
      before this pass: a local first assigned in the clone had no slot, so
      it was never declared and every read of it answered nil (#4535). The
      include and inherited-class-method clones re-register the same way. */
-  free(body_node); free(body_cls); free(seen);
+  free(seen);
   if (did_clone) register_locals(c);
 }
 
@@ -9366,11 +9323,10 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
 /* For each class, find `prepend M` in ALL class bodies, the reopenings
    included, the same two passes register_includes makes (#4200). */
 void register_prepends(Compiler *c) {
-  int *bci, *bnode;
-  int nb = class_body_list(c, &bci, &bnode);
-  for (int b = 0; b < nb; b++) process_prepend_body(c, bci[b], bnode[b]);
-  free(bci);
-  free(bnode);
+  int nb = 0;
+  ElabBody *bo = elab_all_bodies(c, &nb);
+  for (int b = 0; b < nb; b++) process_prepend_body(c, bo[b].cls, bo[b].body);
+  free(bo);
 }
 
 /* Merge inherited ivar/reader/writer NAMES into subclasses so the struct

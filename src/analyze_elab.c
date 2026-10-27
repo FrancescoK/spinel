@@ -1829,9 +1829,44 @@ int elab_opaque_before(Compiler *c, int cls, LoadPoint p) {
 
 /* The bodies and mixins of a class, once the record is made */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n) {
-  const LrClass *k = c->lrec && c->lrec->recorded ? lr_class(c->lrec, cls) : NULL;
+  LrClass *k = c->lrec && c->lrec->recorded ? lr_class(c->lrec, cls) : NULL;
   *n = k ? k->nopen : 0;
+  /* each body as the tree has it now: a pass after the walk may give an
+     empty class its statements */
+  for (int i = 0; i < *n; i++) k->open[i].body = class_def_body(c, k->open[i].node);
   return k ? k->open : NULL;
+}
+
+static int lr_body_cmp(const void *a, const void *b) {
+  const int *x = a, *y = b;
+  return x[0] < y[0] ? -1 : x[0] > y[0];
+}
+
+ElabBody *elab_all_bodies(Compiler *c, int *n) {
+  LoadRecord *r = elab_fresh(c);
+  int tot = 0, k = 0, nr = 0;
+  for (int ci = 0; ci < c->nclasses; ci++) { int no = 0; elab_class_bodies(c, ci, &no); tot += no + 1; }
+  ElabBody *v = malloc(sizeof *v * (size_t)(tot > 0 ? tot : 1));
+  int (*rest)[3] = malloc(sizeof *rest * (size_t)(tot > 0 ? tot : 1));   /* (seq, class, body) */
+  if (!v || !rest) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int no = 0, d = -1;
+    const LrOpen *o = elab_class_bodies(c, ci, &no);
+    int dn = c->classes[ci].def_node, own = 0;
+    for (int i = 0; i < no; i++) if (o[i].node == dn) { d = i; own = 1; }
+    /* every class has its definition's body, an empty one too, also where
+       the record holds no opening of it (a class a pass makes) */
+    if (!own) v[k++] = (ElabBody){ ci, class_def_body(c, dn) };
+    for (int i = 0; i < no; i++) {
+      if (i <= d) v[k++] = (ElabBody){ ci, o[i].body };
+      else { rest[nr][0] = r->at[o[i].node]; rest[nr][1] = ci; rest[nr][2] = o[i].body; nr++; }
+    }
+  }
+  qsort(rest, (size_t)nr, sizeof *rest, lr_body_cmp);
+  for (int i = 0; i < nr; i++) v[k++] = (ElabBody){ rest[i][1], rest[i][2] };
+  free(rest);
+  *n = k;
+  return v;
 }
 
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n) {
