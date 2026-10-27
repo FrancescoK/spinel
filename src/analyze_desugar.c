@@ -15764,7 +15764,7 @@ int mark_range_locals_at(Compiler *c, LowerCtx *lc, int id) {
   const char *nm = nt_str(nt, w, "name");
   if (v < 0 || !nm || nt_kind(nt, v) != NK_RangeNode || nt_int(nt, v, "index_of", 0)) return 0;
   for (int u = 0; u < nt->count; u++) {
-    if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") && is_seq_index_call(nt_str(nt, u, "name"))) continue;
+    if (nt_kind(nt, u) != NK_CallNode || !nt_str(nt, u, "name") || !is_seq_index_call(nt_str(nt, u, "name"))) continue;
     int args = nt_ref(nt, u, "arguments"), an = 0;
     const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
     int ix = an >= 1 ? nt_paren_single(c->nt, av[0]) : -1;
