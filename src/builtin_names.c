@@ -1308,6 +1308,11 @@ int is_file_load_name(const char *n) {
    the node carries), or a path the require computes when it runs. */
 int is_load_how_missing(const char *how) { return how && sp_streq(how, "none"); }
 int is_load_how_computed(const char *how) { return how && sp_streq(how, "run-time"); }
+/* ...and the two the runtime provides without a file: a core capability
+   (Thread, Enumerator, Rational: CRuby has it loaded already) and a native
+   library (io/console, time, socket, ostruct, monitor). */
+int is_load_how_core(const char *how) { return how && sp_streq(how, "core"); }
+int is_load_how_native(const char *how) { return how && sp_streq(how, "native"); }
 
 int is_enumerable_module_name(const char *n) {
   return n && sp_streq(n, "Enumerable");

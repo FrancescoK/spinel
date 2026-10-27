@@ -12,6 +12,7 @@
        and locals (prog_file_scopes; the load record walks them, elab_program);
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
+     - which files have a function of their own when loaded (prog_file_tops);
      - the program's top-level statements in load order (prog_top_stmts):
        a load at the top level runs its file's top level there, once; and
        with them the files no load there places (prog_visit_files);
@@ -284,6 +285,65 @@ int prog_defines_only(const Compiler *c, int i) {
 static int prog_root_of(const Compiler *c, const int *parent, int id) {
   while (id >= 0 && parent[id] >= 0) id = parent[id];
   return prog_is_root(c, id) ? id : -1;
+}
+
+/* The nodes the program runs: those under the entry's root, and under the
+   root of each file a LoadNode among them loads, as the tree has them. A
+   node a fold left in a dead branch, or a file only such nodes load, is
+   under none. seen[] (one byte per node) is set for them; live[] (one per
+   file) for the files. A node's parent is not the way up: a statement a
+   fold spliced out of a dead branch has that branch for its parent too. */
+static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *live) {
+  int n = nt_nroots(nt), top = 0;
+  int *stack = malloc(sizeof(int) * ((size_t)nt->count + 1));
+  if (!stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  live[0] = 1;
+  if (nt_root(nt, 0) >= 0) { seen[nt_root(nt, 0)] = 1; stack[top++] = nt_root(nt, 0); }
+  while (top > 0) {
+    int id = stack[--top];
+    if (nt_kind(nt, id) == NK_LoadNode) {
+      int t = (int)nt_int(nt, id, "target_file", -1);
+      if (t > 0 && t < n && !live[t]) {
+        live[t] = 1;
+        if (nt_root(nt, t) >= 0 && !seen[nt_root(nt, t)]) { seen[nt_root(nt, t)] = 1; stack[top++] = nt_root(nt, t); }
+      }
+    }
+    for (int j = 0; j < nt_num_refs(nt, id); j++) {
+      int ch = nt_ref_at(nt, id, j);
+      if (ch >= 0 && ch < nt->count && !seen[ch]) { seen[ch] = 1; stack[top++] = ch; }
+    }
+    for (int j = 0; j < nt_num_arrs(nt, id); j++) {
+      int an = 0; const int *ids = nt_arr_at(nt, id, j, &an);
+      for (int k = 0; k < an; k++)
+        if (ids[k] >= 0 && ids[k] < nt->count && !seen[ids[k]]) { seen[ids[k]] = 1; stack[top++] = ids[k]; }
+    }
+  }
+  free(stack);
+}
+
+/* Which required files run a function of their own when loaded
+   (sp_file_N_top, emit_file_tops): has[i] for each file i below nt_nroots.
+   A file that does more than define things has one. One that only defines
+   things has nothing to run, and a load whose value nothing reads is
+   nothing; but a load that is emitted as an expression (anywhere but as a
+   statement whose value nothing reads) answers whether it ran the file, once,
+   so the file has its loaded flag and an empty function for that load to
+   call. */
+void prog_file_tops(Compiler *c, unsigned char *has) {
+  const NodeTable *nt = c->nt;
+  int n = nt_nroots(nt);
+  for (int i = 0; i < n; i++) has[i] = i > 0 && !prog_defines_only(c, i);
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
+  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_reach(nt, seen, live);
+  const int *parent = comp_parent_map(c);
+  NT_FOREACH_KIND(nt, NK_LoadNode, id) {
+    int f = (int)nt_int(nt, id, "target_file", -1);
+    if (f <= 0 || f >= n || has[f] || !seen[id]) continue;
+    int stmt = parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_StatementsNode;
+    if (!stmt || !an_node_dropped(c, id)) has[f] = 1;
+  }
+  free(seen); free(live);
 }
 
 /* What --load-model=graph does not load yet, refused by name (#9898), asked

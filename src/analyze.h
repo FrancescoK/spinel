@@ -125,6 +125,7 @@ int prog_is_root(const Compiler *c, int id);
 int prog_is_root_stmts(const Compiler *c, int st);
 int prog_root_stmts(const Compiler *c, int i);
 int prog_defines_only(const Compiler *c, int i);
+void prog_file_tops(Compiler *c, unsigned char *has);
 int prog_ordered_load(const Compiler *c, int id);
 void prog_top_stmts(const Compiler *c, void (*fn)(void *ud, int stmt), void *ud);
 int *prog_top_seq(const Compiler *c, int *n, int **file);

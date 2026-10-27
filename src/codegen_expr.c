@@ -5802,7 +5802,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     return;
   }
   if (ty_k == NK_TrueNode)  { buf_puts(b, "1"); return; }
-  if (ty_k == NK_LoadNode)  { emit_load_call(c, id, b); return; }   /* (only one naming no file stands as a value) */
+  if (ty_k == NK_LoadNode)  { emit_load_call(c, id, b); return; }
   if (ty_k == NK_FalseNode) { buf_puts(b, "0"); return; }
   if (ty_k == NK_NilNode)   { buf_puts(b, "0"); return; }  /* default in numeric/bool context */
   if (ty_k == NK_SymbolNode) {
