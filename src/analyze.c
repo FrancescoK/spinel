@@ -8439,7 +8439,11 @@ static int hash_brackets_desugar(Compiler *c, int id, int late) {
     nt_node_set_int(nt, id, "hash_brackets", 1);
     return 1;
   }
-  if (an >= 2 && an % 2 == 0 && an <= 64) {
+  /* a splat among them (`Hash[*a, *b]`, `Hash[k, *rest]`) makes the count
+     known only at run time: the list below */
+  int splat = 0;
+  for (int j = 0; j < an; j++) splat |= nt_kind(nt, av0[j]) == NK_SplatNode;
+  if (an >= 2 && an % 2 == 0 && an <= 64 && !splat) {
     /* Hash[k1, v1, k2, v2, ...] == [[k1, v1], [k2, v2], ...].to_h */
     int base = nt->count;
     int av[64];
@@ -8461,8 +8465,8 @@ static int hash_brackets_desugar(Compiler *c, int id, int late) {
     return 1;
   }
   if (an >= 2) {
-    /* an odd count (or past 64): the runtime reads the list as the
-       arguments and raises Hash[]'s ArgumentError for an odd one */
+    /* an odd count, a splat, or past 64: the runtime reads the list as
+       the arguments and raises Hash[]'s ArgumentError for an odd one */
     int base = nt->count;
     int list = nt_new_node(nt, "ArrayNode");
     if (list < 0) return 0;

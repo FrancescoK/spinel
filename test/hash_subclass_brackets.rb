@@ -68,3 +68,11 @@ p f.frozen?, f.class
 
 class A < Array; end
 p A[1, 2], A[1, 2].class
+
+# splats among the arguments: the count is known at run time
+sa = [1, 2]; sb = [3, 4]
+p Hash[*sa, *sb], H[*sa, *sb], H[*sa, *sb].class
+sr = [:v]
+p Hash[:k, *sr], H[:k, *sr].class
+se = []
+p Hash[*se, *se], H[*se, *se].class
