@@ -988,11 +988,47 @@ int comp_class_index(Compiler *c, const char *name) {
   return -1;
 }
 
+static unsigned name_idx_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+  return h;
+}
+
+/* The probe alone, over the entries already in the table */
+static int name_idx_find_in(const NameIdx *x, char *const *list, const char *name) {
+  if (!x->cap) return -1;
+  unsigned m = (unsigned)x->cap - 1;
+  for (unsigned k = name_idx_hash(name) & m; x->slot[k]; k = (k + 1) & m)
+    if (sp_streq(list[x->slot[k] - 1], name)) return x->slot[k] - 1;
+  return -1;
+}
+
+static void name_idx_put(NameIdx *x, const char *name, int i) {
+  unsigned m = (unsigned)x->cap - 1;
+  for (unsigned k = name_idx_hash(name) & m; ; k = (k + 1) & m)
+    if (!x->slot[k]) { x->slot[k] = i + 1; return; }
+}
+
+/* The position of name in list[0..n), or -1 */
+int name_idx_find(NameIdx *x, char *const *list, int n, const char *name) {
+  if (!name || n <= 0) return -1;
+  if (x->list != list || x->n > n) { x->list = list; x->n = 0; if (x->slot) memset(x->slot, 0, sizeof(int) * (size_t)x->cap); }
+  if (n * 2 > x->cap) {
+    int cap = x->cap ? x->cap : 16;
+    while (n * 2 > cap) cap *= 2;
+    free(x->slot);
+    x->slot = calloc((size_t)cap, sizeof(int));
+    x->cap = cap;
+    x->n = 0;
+  }
+  for (; x->n < n; x->n++)
+    if (name_idx_find_in(x, list, list[x->n]) < 0) name_idx_put(x, list[x->n], x->n);
+  return name_idx_find_in(x, list, name);
+}
+
 int comp_ivar_index(ClassInfo *ci, const char *name) {
   IMEMO_DEP_CLASS(ci->idx);
-  for (int i = 0; i < ci->nivars; i++)
-    if (sp_streq(ci->ivars[i], name)) return i;
-  return -1;
+  return name_idx_find(&ci->ivars_ix, ci->ivars, ci->nivars, name);
 }
 
 int comp_ivar_intern(ClassInfo *ci, const char *name) {
@@ -2272,8 +2308,17 @@ int name_list_has(char **list, int n, const char *name) {
   for (int i = 0; i < n; i++) if (sp_streq(list[i], name)) return 1;
   return 0;
 }
+static void name_append(char ***list, int *n, int *cap, const char *name);
 static void name_add(char ***list, int *n, int *cap, const char *name) {
   if (name_list_has(*list, *n, name)) return;
+  name_append(list, n, cap, name);
+}
+/* name_add over a list with an index: the index answers whether it is there */
+static void name_add_ix(char ***list, int *n, int *cap, NameIdx *x, const char *name) {
+  if (name_idx_find(x, *list, *n, name) >= 0) return;
+  name_append(list, n, cap, name);
+}
+static void name_append(char ***list, int *n, int *cap, const char *name) {
   if (*n >= *cap) {
     *cap = *cap ? *cap * 2 : 4;
     *list = realloc(*list, sizeof(char *) * (size_t)*cap);
@@ -2283,20 +2328,20 @@ static void name_add(char ***list, int *n, int *cap, const char *name) {
 unsigned comp_table_gen = 0;   /* bumped when a reader or alias table grows (poly-candidate memo stamp) */
 void comp_add_reader(ClassInfo *ci, const char *name) {
   comp_table_gen++;
-  name_add(&ci->readers, &ci->nreaders, &ci->creaders, name);
+  name_add_ix(&ci->readers, &ci->nreaders, &ci->creaders, &ci->readers_ix, name);
   comp_touch_class(ci->idx);
 }
 void comp_add_writer(ClassInfo *ci, const char *name) {
-  name_add(&ci->writers, &ci->nwriters, &ci->cwriters, name);
+  name_add_ix(&ci->writers, &ci->nwriters, &ci->cwriters, &ci->writers_ix, name);
   comp_touch_class(ci->idx);
 }
-int comp_is_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->readers, ci->nreaders, name); }
+int comp_is_reader(ClassInfo *ci, const char *name) { return name_idx_find(&ci->readers_ix, ci->readers, ci->nreaders, name) >= 0; }
 void comp_add_own_reader(ClassInfo *ci, const char *name) {
   comp_add_reader(ci, name);
-  name_add(&ci->own_readers, &ci->nown_readers, &ci->cown_readers, name);
+  name_add_ix(&ci->own_readers, &ci->nown_readers, &ci->cown_readers, &ci->own_readers_ix, name);
 }
-int comp_is_own_reader(ClassInfo *ci, const char *name) { return name_list_has(ci->own_readers, ci->nown_readers, name); }
-int comp_is_writer(ClassInfo *ci, const char *name) { return name_list_has(ci->writers, ci->nwriters, name); }
+int comp_is_own_reader(ClassInfo *ci, const char *name) { return name_idx_find(&ci->own_readers_ix, ci->own_readers, ci->nown_readers, name) >= 0; }
+int comp_is_writer(ClassInfo *ci, const char *name) { return name_idx_find(&ci->writers_ix, ci->writers, ci->nwriters, name) >= 0; }
 
 /* A plain setter name: `x=`, but not the operators that also end in `=`
    (`==`, `!=`, `<=`, `>=`, `===`) and not `[]=`, whose value form is its own. */

@@ -681,6 +681,18 @@ static inline int scope_set_blk_ret(Scope *s, int t) {
   return t;
 }
 
+/* A hashed index over one of a class's append-only name lists (ivars,
+   readers, writers): the position of a name. It indexes the list as it
+   grows and starts over when the list is another (a rebuild) or shorter.
+   A class with N attributes asked N names took N*N compares (#10325). */
+typedef struct {
+  char *const *list;   /* the list it indexes */
+  int n;               /* how many of its entries are in the table */
+  int cap;             /* table slots, a power of two, or 0 */
+  int *slot;           /* entry index + 1, 0 empty */
+} NameIdx;
+int name_idx_find(NameIdx *x, char *const *list, int n, const char *name);
+
 typedef struct {
   char *name;          /* class name ("Point"); also drives semantic checks
                           (builtin reopen, name matching) and Ruby-visible output */
@@ -692,6 +704,7 @@ typedef struct {
   int def_node;        /* ClassNode id */
   int parent;          /* superclass index, or -1 */
   char **ivars;        /* instance variable names, incl. leading '@' */
+  NameIdx ivars_ix;    /* comp_ivar_index's index of ivars */
   SP_TY_FIELD TyKind *ivar_types;
   unsigned char *ivar_str_shared; /* (#3227) the slot is a shared-mutable
                                      string handle (sp_String *): survives
@@ -784,8 +797,10 @@ typedef struct {
   int ncvars, ccvars;
   char **readers;      /* attr reader method names (no '@') */
   int nreaders, creaders;
+  NameIdx readers_ix;
   char **writers;      /* attr writer base names (no '@', no '=') */
   int nwriters, cwriters;
+  NameIdx writers_ix;
   char **undefs;       /* method names removed via `undef` */
   int nundefs, cundefs;
   /* Method visibility: parallel name/kind arrays (SP_VIS_*). Covers both
@@ -974,6 +989,7 @@ typedef struct {
      superclass bring. */
   char **own_readers;
   int nown_readers, cown_readers;
+  NameIdx own_readers_ix;
   /* Modules this class extends (class indices), in the order register_extends
      meets them: its singleton's ancestors, which `Klass.is_a?(M)` asks. */
   int *extended_mods;
