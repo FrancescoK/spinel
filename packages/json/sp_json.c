@@ -490,9 +490,11 @@ const char *sp_json_pretty(sp_RbVal v) {
    ruby/json's per-parse name cache: a sorted array searched by length and
    bytes, for keys of at most JP_KEY_MAX bytes that begin with a letter (an
    identifier, where an id or a number key would only fill it), with no
-   eviction once it is full. It lives for one parse, in the reader. Every
-   key in it is held by a Hash the parse is still building, which the
-   containers' roots keep, and nothing in the parse runs the program's code. */
+   eviction once it is full. It lives for one parse, in the reader, and
+   nothing in the parse runs the program's code. A Hash need not keep a key
+   the cache hands it (one with the same bytes written with an escape came
+   first; symbolize_names: makes a Symbol of it), so the cache holds its keys
+   itself: `held`, an array the parse roots, made at the first key cached. */
 #define JP_KEYS 63
 #define JP_KEY_MAX 55
 typedef struct { const char *key; size_t len; } jkey;
@@ -500,6 +502,7 @@ typedef struct {
   const char *p, *end;
   int in_array;                 /* arrays open around the read */
   int nkeys; jkey keys[JP_KEYS];   /* by length, then bytes */
+  sp_RbVal *held;               /* the cached keys, kept alive for the parse */
 } jrd;
 
 static SP_NORETURN void jp_err(const char *msg) {
@@ -608,8 +611,11 @@ static const char *jp_key(jrd *j) {
     if (c == 0) return e->key;
     if (c < 0) lo = mid + 1; else hi = mid;
   }
+  if (j->nkeys < JP_KEYS && j->held->tag == SP_TAG_NIL) *j->held = sp_box_poly_array(sp_PolyArray_new());
   const char *k = sp_hash_key_from_bytes(s, n, 0);
   if (j->nkeys < JP_KEYS) {
+    SP_GC_ROOT_STR(k);
+    sp_PolyArray_push((sp_PolyArray *)j->held->v.p, sp_box_str(k));
     memmove(&j->keys[lo + 1], &j->keys[lo], sizeof(jkey) * (size_t)(j->nkeys - lo));
     j->keys[lo].key = k; j->keys[lo].len = n;
     j->nkeys++;
@@ -739,8 +745,10 @@ sp_RbVal sp_json_parse(const char *s) {
      the cursor reading freed memory -- a parse error whose message varies by
      run on a small document, a segfault on a large one. */
   SP_GC_ROOT_STR(s);
+  sp_RbVal held = sp_box_nil();
+  SP_GC_ROOT_RBVAL(held);
   jrd j;
-  j.in_array = 0; j.nkeys = 0;
+  j.in_array = 0; j.nkeys = 0; j.held = &held;
   j.p = s ? s : "";
   j.end = j.p + (s ? sp_str_byte_len(s) : 0);
   sp_RbVal v = jp_value(&j, 0);
