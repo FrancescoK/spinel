@@ -1,0 +1,38 @@
+load record: 22 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 ModuleNode Loud line 8
+  r0 #2 f0 DefNode speak line 9
+r0 #3 f0 ModuleNode Plain line 12
+  r0 #4 f0 DefNode speak line 13
+r0 #5 f0 ClassNode Dog line 16
+  r0 #6 f0 DefNode speak line 17
+r0 #7 f0 ClassNode Cat line 20
+  r0 #8 f0 DefNode speak line 21
+  r0 #9 f0 CallNode extend line 23
+  r0 #10 f0 SingletonClassNode line 22
+r0 #11 f0 ClassNode Bird line 27
+  r0 #12 f0 DefNode speak line 28
+r0 #13 f0 CallNode puts line 31
+r0 #14 f0 ClassNode Dog line 32
+  r0 #15 f0 CallNode extend line 33
+  r0 #16 f0 SingletonClassNode line 32
+r0 #17 f0 CallNode puts line 35
+r0 #18 f0 CallNode puts line 36
+r0 #19 f0 ClassNode Bird line 37
+  r0 #20 f0 CallNode extend line 37
+r0 #21 f0 CallNode puts line 38
+class Loud: body#1
+class Plain: body#3
+class Dog: body#5 body#14 singleton_prepend Loud#15
+class Cat: body#7 singleton_prepend Loud#9
+class Bird: body#11 body#19 singleton_prepend Plain#20
+const Loud: write#1
+Loud#speak: def#2 end=yes
+const Plain: write#3
+Plain#speak: def#4 end=yes
+const Dog: write#5
+Dog.speak: def#6 end=yes
+const Cat: write#7
+Cat.speak: def#8 end=yes
+const Bird: write#11
+Bird.speak: def#12 end=yes

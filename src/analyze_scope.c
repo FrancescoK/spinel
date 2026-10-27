@@ -7648,7 +7648,11 @@ void register_includes(Compiler *c) {
 }
 
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
-static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci);
+static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, const char *guard);
+static int prepend_late_stmt(Compiler *c, int ci, int body);
+static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line);
+static const char *mixin_flag_name(Compiler *c, char flag[64]);
+static void mixin_guard_flag_write(Compiler *c, int late, const char *flag);
 
 /* attr_reader/attr_accessor/attr_writer and alias_method in a MODULE body
    belong to every class that includes it, just like a plain def. The transplant
@@ -7961,8 +7965,11 @@ static void extend_alias_refuse_own(Compiler *c, int mod_id, int ci, const char 
    copy here. */
 /* `prepend`: the module goes in front of the class's own class methods
    (`singleton_class.prepend M`), as a later extend goes in front of an
-   earlier one's copy. */
-static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int prepend) {
+   earlier one's copy.
+   `flag`: the flag buffer of a prepend that a later top-level reopening
+   makes (prepend_late_stmt), NULL otherwise; the copies hand the call to the
+   class's own method until that statement has run, as a prepend's do. */
+static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int prepend, char flag[64]) {
   int did_clone = 0;
   int snap = c->nscopes;
   for (int ms = 0; ms < snap; ms++) {
@@ -7982,6 +7989,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
        copied in under a shadow name, in front of any module extended
        earlier. With no super there, nothing can reach the copy. */
     char *own_name = NULL;
+    const char *guard = NULL;
     char behind[256] = "";
     if (own >= 0 && !c->scopes[own].is_extend_copy && !prepend) {
       extend_alias_refuse_own(c, mod_id, ci, src->name);
@@ -8022,6 +8030,11 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(shadow);
       int reached = scope_body_has_super(c, ms);
+      if (prepend && flag) {
+        /* the copy's own super reaches the method it stands in front of */
+        guard = mixin_flag_name(c, flag);
+        reached = 1;
+      }
       if (reached) comp_cprep_chain_add(cif, src->name, shadow);
       /* an earlier body of the name an alias captured, renamed to the alias
          (alias_capture_earlier_def: activesupport's `alias
@@ -8060,7 +8073,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         NT_FOREACH_KIND(nt2, ow[k], ivid)
           if (c->nscope[ivid] == ms && nt_str(nt2, ivid, "name"))
             comp_ivar_intern(&c->classes[ci], nt_str(nt2, ivid, "name")); }
-    specialize_cmethod_for(c, ms, mod_id, ci);
+    specialize_cmethod_for(c, ms, mod_id, ci, guard);
     src = &c->scopes[ms];  /* realloc-safe */
     { int cp = comp_cmethod_in_class(c, ci, src->name);
       if (cp >= 0) c->scopes[cp].is_extend_copy = 1;
@@ -8273,12 +8286,12 @@ void register_extends(Compiler *c) {
       of Class among the singleton's ancestors, so its copies, made after,
       take the place of these */
    if (cls_mod >= 0 && (ci == cls_mod || class_is_root(c, ci))) {
-     did_clone |= extend_class_with(c, ci, cls_mod, 0, 0);
+     did_clone |= extend_class_with(c, ci, cls_mod, 0, 0, NULL);
      /* `class Class; prepend P; end`: P in front of the reopening, as an
         `extend` of it would put it (see desugar_module_prepends) */
      int pre[64];
      int np = module_prepend_list(c, cls_mod, pre, 64);
-     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0, 0);
+     for (int q = np - 1; q >= 0; q--) did_clone |= extend_class_with(c, ci, pre[q], 0, 0, NULL);
    }
    /* Every body that defines this class, not only the first: `extend M` is
       commonly written in a REOPENING of the class, and reading def_node alone
@@ -8290,6 +8303,11 @@ void register_extends(Compiler *c) {
     int body = class_def_body(c, cn);
     int n = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    /* a singleton prepend in a reopening (prepend_late_stmt, asked once, at
+       the first): its copies answer as the class's own until that
+       statement has run */
+    int late = -2;
+    char flag[64] = "";
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
       NodeKind sk = nt_kind(nt, s);
@@ -8328,9 +8346,12 @@ void register_extends(Compiler *c) {
         for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
           for (int bj = 0; bj < nbody && !inherited; bj++)
             if (body_cls[bj] == p) inherited = body_extends_module(c, body_node[bj], mod_id);
-        did_clone |= extend_class_with(c, ci, mod_id, inherited, (int)nt_int(nt, s, "sclass_prepend", 0));
+        int sprep = (int)nt_int(nt, s, "sclass_prepend", 0);
+        if (sprep && late == -2) late = prepend_late_stmt(c, ci, body);
+        did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? flag : NULL);
       }
     }
+    if (flag[0]) mixin_guard_flag_write(c, late, flag);
    }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
@@ -8583,7 +8604,7 @@ static int body_tail_is_bare_new(const NodeTable *nt, int body) {
   int r = nt_ref(nt, tail, "receiver");
   return nm && sp_streq(nm, "new") && (r < 0 || nt_kind(nt, r) == NK_SelfNode);
 }
-static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
+static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, const char *guard) {
   if (comp_cmethod_in_class(c, ci, c->scopes[mi].name) >= 0) return;
   NodeTable *nt = (NodeTable *)c->nt;
   int has_new = 0;
@@ -8592,6 +8613,12 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
   int new_body = src_body >= 0 ? nt_clone_subtree(nt, src_body) : -1;
   if (src_body >= 0 && new_body < 0) return;  /* clone failed: skip */
   comp_grow_node_arrays(c);
+  /* a copy a later top-level reopening makes hands the call to the class's
+     own method until that statement has run (mixin_guard_body) */
+  if (guard && new_body >= 0) {
+    new_body = mixin_guard_body(nt, new_body, guard, (int)nt_int(nt, c->scopes[mi].def_node, "node_line", 0));
+    comp_grow_node_arrays(c);
+  }
   Scope *src = &c->scopes[mi];
   Scope *dst = comp_scope_new(c, src->name, src->def_node);
   src = &c->scopes[mi];  /* realloc-safe */
@@ -8640,7 +8667,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
     if (sub_def == ci) continue;
     int sub_new = 0;
     if (cmethod_needs_specialization(c, sub_mi, ci, sub_def, &sub_new))
-      specialize_cmethod_for(c, sub_mi, sub_def, ci);
+      specialize_cmethod_for(c, sub_mi, sub_def, ci, NULL);
   }
 }
 
@@ -8777,7 +8804,7 @@ static void specialize_super_cmethod(Compiler *c, int own, int snap) {
     if (pm < 0 || pdef < 0 || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) break;
     char behind[256];
     snprintf(behind, sizeof behind, "__inc %d %s", c->classes[ci].prep_shadow_count++, own_name);
-    specialize_cmethod_for(c, pm, pdef, ci);
+    specialize_cmethod_for(c, pm, pdef, ci, NULL);
     int cp = comp_cmethod_in_class(c, ci, own_name);
     if (cp < 0 || cp == own || cp == cur) break;
     free(c->scopes[cp].name);
@@ -8861,7 +8888,7 @@ void specialize_inherited_cls_new(Compiler *c) {
           }
           int has_new = 0;
           if (cmethod_needs_specialization(c, mi, k, def_cls, &has_new))
-            specialize_cmethod_for(c, mi, def_cls, k);
+            specialize_cmethod_for(c, mi, def_cls, k, NULL);
         }
       }
       continue;
@@ -8907,7 +8934,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (!cmethod_needs_specialization(c, mi, ci, def_cls, &has_new)) continue;
     /* Clone mi for ci and, transitively, the inherited intermediates it reaches
        (#1451). nscopes growth below stands in for the old did_clone flag. */
-    specialize_cmethod_for(c, mi, def_cls, ci);
+    specialize_cmethod_for(c, mi, def_cls, ci, NULL);
   }
   /* A Class value the analysis cannot pin (`CONTAINERS.fetch(ext).open`)
      runs an inherited class method on whichever class it holds, so its bare
@@ -8934,7 +8961,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       tgt = nt2; tgt[ntgt++] = k;
     }
     if (ntgt > 0 && name_called_on_dynamic_recv(c, mi, tgt, ntgt, node_count, &an))
-      for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t]);
+      for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t], NULL);
     free(tgt);
   }
   /* a class's own class method whose super reaches its parent's */
@@ -9115,6 +9142,11 @@ static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line)
   nt_node_set_int(nt, seq, "node_line", line);
   return seq;
 }
+/* The flag a body's guarded copies read, named on first use. */
+static const char *mixin_flag_name(Compiler *c, char flag[64]) {
+  if (!flag[0]) snprintf(flag, 64, "$__spinel_mixin_ran_%d", ++c->n_mixin_flags);
+  return flag;
+}
 /* ...and the write that sets the flag, after top-level statement `late`, in
    its file's top level, which the load record records (the global's
    readers ask it) */
@@ -9239,8 +9271,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
                 desugar_included_bare_builtin(c, nb, c->classes[ci].name);
               }
               if (nb >= 0 && guard) {
-                if (!flag[0]) snprintf(flag, sizeof flag, "$__spinel_mixin_ran_%d", ++c->n_mixin_flags);
-                nb = mixin_guard_body((NodeTable *)nt, nb, flag, (int)nt_int(nt, sc->def_node, "node_line", 0));
+                nb = mixin_guard_body((NodeTable *)nt, nb, mixin_flag_name(c, flag), (int)nt_int(nt, sc->def_node, "node_line", 0));
                 comp_grow_node_arrays(c);
                 sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
                 dst->mixin_guarded = 1;

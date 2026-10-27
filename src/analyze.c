@@ -43336,7 +43336,7 @@ static void refuse_mixin_after_calls(Compiler *c) {
     for (int i = 0; i < nmx; i++) {
       int own = 0;
       for (int q = 0; q < bn && !own; q++) own = bv[q] == mx[i].node;
-      if (own || mx[i].kind == LR_EXTEND || mx[i].mod < 0 || elab_point_may(c, mx[i].node)) continue;
+      if (own || elab_mix_on_singleton(mx[i].kind) || mx[i].mod < 0 || elab_point_may(c, mx[i].node)) continue;
       if (nev == cev) {
         cev = cev ? cev * 2 : 16;
         ev = realloc(ev, sizeof *ev * (size_t)cev);
@@ -48048,7 +48048,7 @@ static void an_phase_class_structure(Compiler *c) {
     int nmx = 0;
     const LrMixin *mx = elab_class_mixins(c, -1, &nmx);
     for (int i = 0; i < nmx; i++) {
-      if (mx[i].mod < 0 || mx[i].kind == LR_PREPEND || elab_point_may(c, mx[i].node)) continue;
+      if (mx[i].mod < 0 || mx[i].kind == LR_PREPEND || mx[i].kind == LR_SG_PREPEND || elab_point_may(c, mx[i].node)) continue;
       c->toplevel_includes = realloc(c->toplevel_includes, sizeof(int) * (size_t)(c->ntoplevel_includes + 1));
       c->toplevel_extends = realloc(c->toplevel_extends, (size_t)(c->ntoplevel_includes + 1));
       if (!c->toplevel_includes || !c->toplevel_extends) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
