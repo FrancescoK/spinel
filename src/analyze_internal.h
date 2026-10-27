@@ -385,6 +385,10 @@ typedef struct {
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);
 int elab_ref_last(const NodeTable *nt, int id, int ref);
+int elab_walk_enter(Compiler *c, int ch, ElabPos *pos);
+void elab_walk_leave(Compiler *c, int e);
+void elab_walk_rest(Compiler *c, int id, ElabPos pos);
+void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos);
 int scope_own_defaults(Compiler *c, int di);
 void register_module_functions(Compiler *c);
 void register_method_visibility(Compiler *c);

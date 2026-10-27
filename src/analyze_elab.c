@@ -75,7 +75,8 @@ struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
   int *at;                   /* [n] each node's statement; -1 under no file's root */
   unsigned char *bits;       /* [n] LR_* */
-  int n, nregion;
+  int n, ncap, nregion;
+  struct ElabWalk *walk;     /* the registration's walk, while it runs (elab_walk_enter) */
   unsigned ver;              /* the node table the map is of */
   int check, shown;
   LrCheck fam[LR_CHECK_MAX];
@@ -103,7 +104,23 @@ static LoadRecord *lr_get(Compiler *c) {
   return c->lrec;
 }
 
-typedef struct { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank; } ElabWalk;
+/* reg: the scope walk registers each statement as the record reaches it
+   (elab_program); otherwise the record alone is rebuilt (elab_fresh) */
+typedef struct ElabWalk { Compiler *c; LoadRecord *r; unsigned char *entered; int region, rank, reg; } ElabWalk;
+
+/* The map covers nodes [0, n): the ones made since join unplaced */
+static void lr_fit(LoadRecord *r, int n) {
+  if (n > r->ncap) {
+    int cap = r->ncap ? r->ncap : 256;
+    while (cap < n) cap *= 2;
+    r->at = realloc(r->at, sizeof(int) * (size_t)cap);
+    r->bits = realloc(r->bits, (size_t)cap);
+    if (!r->at || !r->bits) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    r->ncap = cap;
+  }
+  for (int id = r->n; id < n; id++) { r->at[id] = -2; r->bits[id] = 0; }
+  if (n > r->n) r->n = n;
+}
 
 /* Statement `node` joins the record where the walk stands, *pos; pos then
    stands on its path (EP_SPINE), as statement e */
@@ -279,27 +296,65 @@ static void elab_walk(ElabWalk *w, int id, ElabPos pos) {
   if (e >= 0) w->r->st[e].last = w->r->nst - 1;
 }
 
+/* Under the registration's walk (elab_program), the scope walk enters
+   node ch at *pos: a statement joins the record (lr_add) and its index is
+   returned, for elab_walk_leave; a subtree two lists share, entered again,
+   is entered with the record off (e -1, as a walk outside it). */
+int elab_walk_enter(Compiler *c, int ch, ElabPos *pos) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->walk || pos->kind != EP_NEW || ch < 0) return -1;
+  lr_fit(r, c->nt->count);
+  if (r->at[ch] == -2) return lr_add(r->walk, ch, pos);
+  pos->kind = EP_NODE; pos->e = -1;
+  return -1;
+}
+
+/* ...and leaves it: statement e completes with the last one its bodies ran */
+void elab_walk_leave(Compiler *c, int e) {
+  if (e >= 0) c->lrec->st[e].last = c->lrec->nst - 1;
+}
+
+/* The statements under node id, which stands at pos, that the scope walk
+   does not enter (a part it handles wholesale), joined as elab_walk joins
+   them */
+void elab_walk_rest(Compiler *c, int id, ElabPos pos) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->walk || id < 0 || (pos.e < 0 && pos.kind != EP_NEW)) return;
+  lr_fit(r, c->nt->count);
+  elab_walk(r->walk, id, pos);
+}
+
 /* File f's top level, entered at its load: its root, its BEGIN blocks (run
    first, when the file loads), then its statements, each placed file right
-   after the statement that loads it. */
+   after the statement that loads it. Under the registration's walk, the
+   scope walk enters each statement in the file's scope, as it runs. */
 static void elab_file(ElabWalk *w, int f) {
-  const Compiler *c = w->c;
+  Compiler *c = w->c;
   const NodeTable *nt = c->nt;
-  int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0;
+  int root = nt_root(nt, f), st = prog_root_stmts(c, f), n = 0, sc = c->file_scope[f];
   w->entered[f] = 1;
   if (root < 0 || w->r->at[root] != -2) return;
+  if (w->reg) {   /* the file's root and statement list, as a walk of the root claims them */
+    c->nscope[root] = sc; c->node_cbody[root] = -1;
+    if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
+  }
   ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .kind = EP_NEW }, rp = at;
   int e = lr_add(w, root, &rp);
   w->r->st[e].rank = w->region == 0 ? w->rank++ : -1;
   if (st >= 0) w->r->at[st] = e;
   const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
-  for (int k = 0; k < n; k++)
-    if (v[k] >= 0 && nt_kind(nt, v[k]) == NK_PreExecutionNode) elab_walk(w, v[k], at);
+  for (int k = 0; k < n; k++) {
+    if (v[k] < 0 || nt_kind(nt, v[k]) != NK_PreExecutionNode) continue;
+    if (w->reg) walk_scope_stmt(c, v[k], sc, at);
+    else elab_walk(w, v[k], at);
+  }
   for (int k = 0; k < n; k++) {
     if (v[k] < 0) continue;
     if (nt_kind(nt, v[k]) != NK_PreExecutionNode) {
-      if (w->r->at[v[k]] != -2) continue;
-      elab_walk(w, v[k], at);
+      int seen = w->r->at[v[k]] != -2;   /* a statement two lists share joins once */
+      if (w->reg) walk_scope_stmt(c, v[k], sc, at);
+      if (seen) continue;
+      if (!w->reg) elab_walk(w, v[k], at);
     }
     int s = w->r->at[v[k]];
     if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? w->rank++ : -1;
@@ -315,23 +370,29 @@ static int lr_defers(const NodeTable *nt, const int *par, int p) {
   return k == NK_DefNode || k == NK_LambdaNode || (k == NK_BlockNode && par[p] >= 0 && elab_block_runs(nt, par[p]) < 0);
 }
 
-static void elab_points_build(Compiler *c) {
+/* The record's statements, walked from the roots (reg: by the scope walk,
+   registering as it goes), then every other node's point */
+static void elab_points_walk(Compiler *c, int reg) {
   double t0 = sp_timing_now();
   LoadRecord *r = lr_get(c);
   const NodeTable *nt = c->nt;
-  const int *par = comp_parent_map(c);
-  int n = nt->count, nroots = nt_nroots(nt);
-  free(r->at); free(r->bits);
-  r->at = malloc(sizeof(int) * (size_t)(n ? n : 1));
-  r->bits = calloc((size_t)(n ? n : 1), 1);
-  int *stack = malloc(sizeof(int) * (size_t)(n ? n : 1));
-  ElabWalk w = { c, r, calloc((size_t)nroots, 1), 0, 0 };
-  if (!r->at || !r->bits || !stack || !w.entered) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int id = 0; id < n; id++) r->at[id] = -2;
-  r->nst = 0; r->n = n; r->ver = nt->version; r->nregion = 1;
+  int nroots = nt_nroots(nt);
+  ElabWalk w = { c, r, calloc((size_t)nroots, 1), 0, 0, reg };
+  if (!w.entered) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  r->n = 0; r->nst = 0; r->nregion = 1;
+  lr_fit(r, nt->count);
+  if (reg) r->walk = &w;
   elab_file(&w, 0);
   for (int f = 1; f < nroots; f++)   /* the files no load places, a region each */
     if (!w.entered[f] && nt_root(nt, f) >= 0) { w.region = r->nregion++; elab_file(&w, f); }
+  r->walk = NULL;
+  if (reg) t0 = sp_timing_now();   /* the walk is the registration's; the map's own cost from here */
+  lr_fit(r, nt->count);
+  r->ver = nt->version;
+  const int *par = comp_parent_map(c);
+  int n = r->n;
+  int *stack = malloc(sizeof(int) * (size_t)(n ? n : 1));
+  if (!stack) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* The rest from their nearest walked statement, up each node's parent:
      the parent map's, unless no file's root reaches that one (a node a
      desugaring left hung nowhere still holds the child it shares with its
@@ -372,9 +433,11 @@ static void elab_points_build(Compiler *c) {
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
 }
 
+/* The record as of the table's current nodes: rebuilt when they changed,
+   except while the registration's walk makes it */
 static LoadRecord *elab_fresh(Compiler *c) {
   LoadRecord *r = lr_get(c);
-  if (!r->at || r->n != c->nt->count || r->ver != c->nt->version) elab_points_build(c);
+  if (!r->walk && (!r->at || r->n != c->nt->count || r->ver != c->nt->version)) elab_points_walk(c, 0);
   return r;
 }
 
@@ -877,11 +940,13 @@ void elab_record_write(Compiler *c, int stmt) {
 
 static void elab_check_record(Compiler *c);
 
-/* The scope walk of each file's top level (prog_walk_files), then the
-   record of what the load phase defines, in the order it runs. */
+/* The scope walk of each file's top level, in the order the load phase
+   runs them, which places each statement in the record as it reaches it
+   (elab_file), then the record of what the load phase defines, in that
+   order. */
 void elab_program(Compiler *c) {
-  prog_walk_files(c);
-  double t0 = sp_timing_now();   /* the record's own cost, the map's build included */
+  elab_points_walk(c, 1);
+  double t0 = sp_timing_now();   /* the record's own cost (the map's is an_elab_points) */
   LoadRecord *r = elab_fresh(c);
   r->ncls = c->nclasses + 1;
   r->cls = calloc((size_t)r->ncls, sizeof *r->cls);

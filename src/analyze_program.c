@@ -9,7 +9,7 @@
 
      - one top-level scope per file, shaped as main's (no name, no def, no
        class: the Toplevel), whose walk registers the file's classes, methods
-       and locals (prog_file_scopes, prog_walk_files);
+       and locals (prog_file_scopes; the load record walks them, elab_program);
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
      - the program's top-level statements in load order (prog_top_stmts):
@@ -64,39 +64,6 @@ void prog_file_scopes(Compiler *c) {
     { s->body = prog_root_stmts(c, i); comp_touch_scope(s->idx); }
     c->file_scope[i] = c->nscopes - 1;
   }
-}
-
-/* The walk of the files' top levels, each in its own scope, as main's is
-   walked in scope 0 (walk_scope). Under --load-model=graph it goes in load
-   order (prog_visit_files), so what a later statement defines is registered
-   after what an earlier one does, whichever file holds each: an alias of a
-   method a required file defines, a reopening's methods. A file's BEGIN
-   blocks are walked as it is entered, as they run. A LoadNode names its
-   file and holds no node of it, so no walk enters another file. */
-typedef struct { Compiler *c; unsigned char *claimed; } ProgWalk;
-static void prog_walk_node(void *ud, int node, int f) {
-  ProgWalk *w = ud;
-  Compiler *c = w->c;
-  int r = nt_root(c->nt, f);
-  if (node != r && !w->claimed[f]) {   /* the file's root and statement list, as a walk of the root claims them */
-    int st = prog_root_stmts(c, f), n = 0;
-    c->nscope[r] = c->file_scope[f]; c->node_cbody[r] = -1;
-    if (st >= 0) { c->nscope[st] = c->file_scope[f]; c->node_cbody[st] = -1; }
-    const int *v = st >= 0 ? nt_arr(c->nt, st, "body", &n) : NULL;
-    for (int k = 0; k < n; k++)
-      if (v[k] >= 0 && nt_kind(c->nt, v[k]) == NK_PreExecutionNode) walk_scope(c, v[k], c->file_scope[f], -1);
-  }
-  w->claimed[f] = 1;
-  if (node != r && nt_kind(c->nt, node) == NK_PreExecutionNode) return;
-  walk_scope(c, node, c->file_scope[f], -1);
-}
-void prog_walk_files(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  if (!prog_graph(c)) { walk_scope(c, nt->root_id, 0, -1); return; }
-  ProgWalk w = { c, calloc((size_t)nt_nroots(nt), 1) };
-  if (!w.claimed) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  prog_visit_files(c, prog_walk_node, &w);
-  free(w.claimed);
 }
 
 /* The LoadNode that first runs file f's top level, in the load order the
