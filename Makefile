@@ -989,7 +989,7 @@ wasm-test: $(SPINEL) wasm-rt
 	  if [ -n "$(WASM_ENGINE_REQUIRED)" ]; then echo "wasm-test: FAIL (no $(WASMTIME), and WASM_ENGINE_REQUIRED is set)"; exit 1; fi; \
 	  echo "wasm-test: skipped (no $(WASMTIME))"; exit 0; fi; \
 	tmp=$$(mktemp -d /tmp/spinel-wasm.XXXXXX); ok=1; \
-	export SPINEL_SPLIT_STRICT=1 SPINEL_INCREMENTAL_STRICT=1 SPINEL_CACHE_DIR=$$tmp/cache; \
+	unset SPINEL_NO_CACHE; export SPINEL_SPLIT_STRICT=1 SPINEL_INCREMENTAL_STRICT=1 SPINEL_CACHE_DIR=$$tmp/cache; \
 	for t in $(WASM_TESTS); do \
 	  bn=$$(basename $$t .rb); \
 	  for mode in plain --jobs=2 --incremental; do \
@@ -998,9 +998,10 @@ wasm-test: $(SPINEL) wasm-rt
 	      echo "wasm-test: FAIL (build$$lbl) $$t"; head -3 $$tmp/$$bn.build; ok=0; continue; fi; \
 	    if grep -q 'unused' $$tmp/$$bn.build; then \
 	      echo "wasm-test: FAIL (a flag the compile or the link does not use$$lbl) $$t"; grep 'unused' $$tmp/$$bn.build | head -3; ok=0; continue; fi; \
-	    $(WASMTIME) run -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; \
-	    if cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: pass$$lbl $$t"; \
-	    else echo "wasm-test: FAIL$$lbl $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; fi; \
+	    $(WASMTIME) run -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; rc=$$?; \
+	    if ! cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: FAIL$$lbl $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; \
+	    elif [ $$rc -ne 0 ]; then echo "wasm-test: FAIL (exit $$rc$$lbl) $$t"; head -3 $$tmp/$$bn.err; ok=0; \
+	    else echo "wasm-test: pass$$lbl $$t"; fi; \
 	  done; \
 	done; \
 	for t in $(WASM_ABORT_TESTS); do \
@@ -1009,6 +1010,8 @@ wasm-test: $(SPINEL) wasm-rt
 	    case $$mode in plain) m=; lbl="--exceptions=abort";; *) m=$$mode; lbl="--exceptions=abort $$mode";; esac; \
 	    if ! WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --exceptions=abort $$m --no-line-map $$t -o $$tmp/$$bn.wasm >/dev/null 2>$$tmp/$$bn.build; then \
 	      echo "wasm-test: FAIL (build, $$lbl) $$t"; head -3 $$tmp/$$bn.build; ok=0; continue; fi; \
+	    if grep -q 'unused' $$tmp/$$bn.build; then \
+	      echo "wasm-test: FAIL ($$lbl: a flag the compile or the link does not use) $$t"; grep 'unused' $$tmp/$$bn.build | head -3; ok=0; continue; fi; \
 	    $(WASMTIME) run -W exceptions=n -W max-wasm-stack=16777216 --dir=. $$tmp/$$bn.wasm >$$tmp/$$bn.out 2>$$tmp/$$bn.err </dev/null; rc=$$?; \
 	    want=$$(sed -n 's/^# spinel: wasm-abort-raises: //p' $$t); \
 	    if ! cmp -s $$tmp/$$bn.out $$t.expected; then echo "wasm-test: FAIL ($$lbl) $$t"; diff -u $$t.expected $$tmp/$$bn.out | head -6; head -3 $$tmp/$$bn.err; ok=0; \
@@ -1019,9 +1022,9 @@ wasm-test: $(SPINEL) wasm-rt
 	  done; \
 	done; \
 	for t in $(firstword $(WASM_TESTS)); do \
-	  WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --incremental --cache-stats --no-line-map $$t -o $$tmp/warm.wasm >/dev/null 2>$$tmp/warm.build; \
-	  if grep -q '^spinel: cache: units=[0-9]* hit=[1-9][0-9]* miss=0 ' $$tmp/warm.build; then echo "wasm-test: pass (--incremental, warm: every unit from the cache) $$t"; \
-	  else echo "wasm-test: FAIL (--incremental, warm: a unit missed the cache) $$t"; grep '^spinel: cache:' $$tmp/warm.build | head -3; ok=0; fi; \
+	  WASI_SDK=$(WASI_SDK) $(SPINEL) --target=wasm32-wasi --incremental --cache-stats --no-line-map $$t -o $$tmp/warm.wasm >/dev/null 2>$$tmp/warm.build; rc=$$?; \
+	  if [ $$rc -eq 0 ] && grep -q '^spinel: cache: units=[0-9]* hit=[1-9][0-9]* miss=0 ' $$tmp/warm.build; then echo "wasm-test: pass (--incremental, warm: every unit from the cache) $$t"; \
+	  else echo "wasm-test: FAIL (--incremental, warm: rc=$$rc, or a unit missed the cache) $$t"; grep '^spinel: cache:' $$tmp/warm.build | head -3; head -3 $$tmp/warm.build; ok=0; fi; \
 	done; \
 	unset SPINEL_SPLIT_STRICT SPINEL_INCREMENTAL_STRICT SPINEL_CACHE_DIR; \
 	for t in $(WASM_ABORT_REFUSE_TESTS); do \

@@ -1749,6 +1749,7 @@ char *c_link_flags(const char *flags) {
   for (size_t i = 0; i < n; ) {
     if ((i == 0 || flags[i - 1] == ' ') && strncmp(flags + i, "-mllvm ", 7) == 0) {
       i += 7;
+      while (i < n && flags[i] == ' ') i++;
       while (i < n && flags[i] != ' ') i++;
       while (i < n && flags[i] == ' ') i++;
       continue;
