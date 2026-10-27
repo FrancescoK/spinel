@@ -2882,6 +2882,10 @@ static TyKind kconv_integer_kind(Compiler *c, int arg, int noraise) {
 static TyKind kconv_hash_kind(Compiler *c, int arg) {
   TyKind at = infer_type(c, arg);
   if (ty_is_hash(at)) return at;                 /* Hash(hash) -> the hash */
+  /* a Hash subclass instance is a Hash already: CRuby answers it as it is
+     and never calls its own #to_hash. A nil there answers {}, so the value
+     is boxed (the nil fact is not known yet). */
+  if (ty_is_object(at) && comp_ary_is_hash(c, ty_object_class(at))) return TY_POLY;
   /* an object answers through its own #to_hash (#3721) */
   if (ty_is_object(at)) {
     int hci2 = ty_object_class(at), hmi = comp_method_in_chain(c, hci2, "to_hash", NULL);

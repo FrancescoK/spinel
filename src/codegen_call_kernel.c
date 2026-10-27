@@ -644,6 +644,13 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         if (_hn == 0) empty_arr_lit = 1;
       }
       if (ty_is_hash(at)) { emit_expr(c, av[0], b); }
+      /* a Hash subclass instance is itself (kconv_hash_kind types it poly);
+         only a nil answers a new {} */
+      else if (ty_is_object(at) && comp_ary_is_hash(c, ty_object_class(at))) {
+        int th = ++g_tmp;
+        buf_printf(b, "({ sp_RbVal _t%d = ", th); emit_boxed(c, av[0], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d.tag == SP_TAG_NIL ? sp_box_obj(sp_PolyPolyHash_new(), SP_BUILTIN_POLY_POLY_HASH) : _t%d; })", th, th, th);
+      }
       else if (ty_is_object(at) && emit_kconv_obj_nil(c, av[0], ty_object_class(at), "to_hash", NULL, b)) {}
       /* an object answers through its own #to_hash (#3721) */
       else if (ty_is_object(at) &&

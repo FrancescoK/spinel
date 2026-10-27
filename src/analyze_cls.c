@@ -3529,6 +3529,8 @@ static void cf_call(CF *f, int v) {
           int a = ak == NK_SplatNode ? nt_ref(nt, argv[i], "expression") : argv[i];
           cf_flow(f, a, cont);
           cf_load(f, a, cont);
+          /* Hash(h) answers a Hash subclass instance h itself */
+          if (sp_streq(nm, "Hash")) cf_flow(f, a, v);
           static const char *const convs[] = { "to_ary", "to_a", "to_hash", "to_h", NULL };
           for (int q = 0; convs[q]; q++) {
             CFByName *b = cf_byname(f, convs[q]);
