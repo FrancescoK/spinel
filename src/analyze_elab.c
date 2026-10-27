@@ -1462,6 +1462,18 @@ int elab_method_replaced(Compiler *c, const char *name) {
   return x && x->replaced;
 }
 
+int elab_method_holder(Compiler *c, const char *name, int i, int *cls, int *sg) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return -1;
+  if (i < 0) {
+    const LrVers *x = lr_vers(r, name);
+    i = x ? x->first : -1;
+  }
+  else i = r->hist[i].nlink;
+  if (i >= 0) { *cls = r->hist[i].a; *sg = r->hist[i].b; }
+  return i;
+}
+
 /* Each method scope's version facts (analyze.h):
    Scope.versioned when the record holds more than one version of its name;
    Scope.replaced when it is a def's scope that a later scope of the same

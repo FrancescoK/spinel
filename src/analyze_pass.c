@@ -18960,22 +18960,24 @@ void cr_class_only_names(Compiler *c, ANameHash *out) {
 /* A replaced method version is reached only by the calls call_target binds
    to it (Scope.replaced), as is one an alias's capture renamed. For call
    node id of a name with replaced versions or an alias, the "\x01<scope>"
-   marks of the versions it binds to, asked
-   for every class the call may run on: main and self's class (a method's,
-   or the class body's) and its descendants (either side) for a
-   receiverless or `self.` call, a class's
+   marks of the versions it binds to, asked for every class the call may
+   run on: main and self's class (a method's, or the class body's) and its
+   descendants (either side) for a receiverless or `self.` call, a class's
    side for a constant receiver, an object's class and its descendants;
-   "\x04<name>", every version, where the receiver is anything else. */
+   for any other receiver, main and each class the load record holds a
+   history of the name for (elab_method_holder), on that side (a class
+   that holds none answers as its nearest ancestor that does). */
+static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned flags, char ***out, int *n, int *cap) {
+  int mi = call_target(c, id, k, nm, flags, NULL);
+  char mark[24];
+  if (mi < 0) return;
+  snprintf(mark, sizeof mark, "\x01%d", mi);
+  cr_add_name(out, n, cap, mark);
+}
 static void cr_mark_class_versions(Compiler *c, int id, const char *nm, int k, unsigned flags, char ***out, int *n, int *cap) {
   int nd = 0;
   const int *ds = k >= 0 ? comp_descendants(c, k, &nd) : NULL;
-  for (int i = -1; i < nd; i++) {
-    int mi = call_target(c, id, i < 0 ? k : ds[i], nm, flags, NULL);
-    char mark[24];
-    if (mi < 0) continue;
-    snprintf(mark, sizeof mark, "\x01%d", mi);
-    cr_add_name(out, n, cap, mark);
-  }
+  for (int i = -1; i < nd; i++) cr_mark_version(c, id, nm, i < 0 ? k : ds[i], flags, out, n, cap);
 }
 static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
   const char *names[2];
@@ -19001,9 +19003,9 @@ static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char *
     else if (ty_is_object(rt))
       cr_mark_class_versions(c, id, nm, ty_object_class(rt), 0, out, n, cap);
     else {
-      char all[300];
-      snprintf(all, sizeof all, "\x04%s", nm);
-      cr_add_name(out, n, cap, all);
+      cr_mark_version(c, id, nm, -1, CT_TOP, out, n, cap);
+      for (int h = -1, k, sg; (h = elab_method_holder(c, nm, h, &k, &sg)) >= 0;)
+        if (k >= 0) cr_mark_version(c, id, nm, k, sg ? CT_CMETHOD : 0, out, n, cap);
     }
   }
 }
@@ -19141,10 +19143,12 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   }
   int var_opw = k0 == NK_LocalVariableOperatorWriteNode || k0 == NK_InstanceVariableOperatorWriteNode ||
                 k0 == NK_ClassVariableOperatorWriteNode || k0 == NK_GlobalVariableOperatorWriteNode;
-  if (g_cr_typed && (k0 == NK_CallNode || var_opw) && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm))
-    names[0] = NULL;
+  /* a call on a builtin value reaches no method of the program's (nor any
+     version of one) */
+  int builtin_recv = g_cr_typed && (k0 == NK_CallNode || var_opw) && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm);
+  if (builtin_recv) names[0] = NULL;
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
-  cr_collect_versions(c, nt, id, out, n, cap);
+  if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);
   int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap, inner_self); }

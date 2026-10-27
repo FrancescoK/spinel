@@ -210,6 +210,10 @@ int elab_method_versions(Compiler *c, const char *name);
    main's) history of it hold more than one version, or an alias, which
    names the version it captured? */
 int elab_method_replaced(Compiler *c, const char *name);
+/* The record's histories of method `name`, one class and side at a time:
+   the first with i -1, then the one after i; -1 past the last. *cls the
+   class (-1 main's), *sg 1 for its singleton side. */
+int elab_method_holder(Compiler *c, const char *name, int i, int *cls, int *sg);
 /* Sets each method scope's version facts (Scope.versioned, .replaced) from
    the record: as it is made, and again once the passes after it have
    copied (mixins), renamed (prepend shadows, alias captures) and made

@@ -683,8 +683,7 @@ void compute_reachable(Compiler *c, int typed) {
      or `self.` call in a class's instance method): every scope of the name
      but the class methods, which no instance can reach. None of these
      reaches a replaced method version, which only the calls bound to it
-     reach ("\x01<scope>", cr_collect_versions); "\x04<name>" is every
-     version of the name, replaced ones too. */
+     reach ("\x01<scope>", cr_collect_versions). */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
       if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
@@ -701,10 +700,6 @@ void compute_reachable(Compiler *c, int typed) {
     else if(_mn && _mn[0]=='\x03'){ if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_mn+1)){ CN_ADD(_mn); \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
-          { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
-    else if(_mn && _mn[0]=='\x04'){ if(!anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
-      for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
-        if(!c->scopes[_t].reachable) \
           { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
