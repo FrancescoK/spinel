@@ -4822,6 +4822,10 @@ void sp_require_computed(const char *path, const char *const *features, int n) {
   sp_raise_load_error(path);
 }
 SP_NORETURN void sp_raise_load_error(const char *feature) {
+  /* (a computed require's path is often a temporary no frame roots, and a
+     copy longer than sp_sprintf's stack buffer allocates before it reads
+     the path again) */
+  SP_GC_ROOT_STR(feature);
   const char *f = sp_sprintf("%s", feature ? feature : "");
   SP_GC_ROOT_STR(f);
   sp_exc_stage_key(sp_box_str(f));
