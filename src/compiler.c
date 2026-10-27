@@ -577,6 +577,8 @@ void comp_free(Compiler *c) {
     free(c->classes[i].prep_to);
   }
   free(c->classes);
+  free(c->class_head);
+  free(c->class_next);
   free(c->cls_value);
   for (int i = 0; i < c->ngvars; i++) free(c->gvars[i].name);
   free(c->gvars);
@@ -920,6 +922,40 @@ static char *sp_class_c_name(const char *name) {
   m[0] = 'u'; m[1] = '_'; memcpy(m + 2, name, n + 1);
   return m;
 }
+/* name -> class index: chains over the classes' names, each name linked
+   once, at its lowest index. comp_class_index is called per node during
+   the fixpoint and per class header during the walk, and a scan over the
+   classes made each O(classes). A class keeps the name comp_class_new
+   gives it, so each class is linked as it is made, and the chains are
+   relinked, ascending, when the classes outgrow the buckets. */
+static int class_hash_find(const Compiler *c, const char *name) {
+  if (!c->class_buckets) return -1;
+  for (int i = c->class_head[sp_strhash(name) % (unsigned)c->class_buckets]; i >= 0; i = c->class_next[i])
+    if (sp_streq(c->classes[i].name, name)) return i;
+  return -1;
+}
+static void class_hash_link(Compiler *c, int i) {
+  const char *n = c->classes[i].name;
+  if (!n || class_hash_find(c, n) >= 0) return;
+  unsigned b = sp_strhash(n) % (unsigned)c->class_buckets;
+  c->class_next[i] = c->class_head[b];
+  c->class_head[b] = i;
+}
+static void class_hash_add(Compiler *c, int i) {
+  if (c->nclasses > c->class_buckets) {
+    if (!c->class_buckets) c->class_hash_check = elab_check_on(c);
+    int nb = c->class_buckets ? c->class_buckets * 2 : 64;
+    free(c->class_head);
+    c->class_head = malloc(sizeof(int) * (size_t)nb);
+    c->class_next = realloc(c->class_next, sizeof(int) * (size_t)nb);
+    if (!c->class_head || !c->class_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int b = 0; b < nb; b++) c->class_head[b] = -1;
+    c->class_buckets = nb;
+    for (int k = 0; k < i; k++) class_hash_link(c, k);
+  }
+  class_hash_link(c, i);
+}
+
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   if (c->nclasses >= c->cclasses) {
     c->cclasses = c->cclasses ? c->cclasses * 2 : 8;
@@ -934,6 +970,7 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   { ci->ctor_reachable = 1; comp_touch_class(ci->idx); }   /* conservatively, until compute_instantiated's early pass has looked */
   ci->ctor_site = 1;
   ci->name = name ? strdup(name) : NULL;
+  class_hash_add(c, ci->idx);
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
   { ci->def_node = def_node; comp_touch_class(ci->idx); }
@@ -943,29 +980,6 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   return ci;
 }
 
-/* name -> class index, frozen index (shares the scope-index freeze signal; see
-   comp_scope_index_set_frozen). comp_class_index is a linear scan over classes
-   called per node during the fixpoint -- O(lookups * classes). Built descending
-   so the chain head is the lowest class index (first definition wins, matching
-   the forward scan). While unfrozen (walk_scope / register passes add and rename
-   classes with the count unchanged), fall back to the linear scan. */
-static int ci_frozen = 0, ci_nclasses = -1, ci_buckets = 0;
-static int *ci_next = NULL, *ci_head = NULL;
-static void ci_build(Compiler *c) {
-  int nc = c->nclasses;
-  free(ci_next); free(ci_head);
-  ci_buckets = nc > 0 ? nc : 1;
-  ci_next = malloc((size_t)(nc > 0 ? nc : 1) * sizeof(int));
-  ci_head = malloc((size_t)ci_buckets * sizeof(int));
-  ci_nclasses = nc;
-  if (!ci_next || !ci_head) { ci_buckets = 0; return; }
-  for (int i = 0; i < ci_buckets; i++) ci_head[i] = -1;
-  for (int i = nc - 1; i >= 0; i--) {
-    if (!c->classes[i].name) continue;
-    unsigned b = sp_strhash(c->classes[i].name) % (unsigned)ci_buckets;
-    ci_next[i] = ci_head[b]; ci_head[b] = i;
-  }
-}
 /* can a computed instance_variable_set reach an instance of some class (or
    main)? Then names no class declares live in the object-keyed table, and
    the by-name reads consult it (#8219) */
@@ -974,18 +988,19 @@ int comp_any_computed_ivar_set(Compiler *c) {
   return 0;
 }
 
+/* The class named `name`, its lowest index (the first definition) when
+   two have it; -1 for none. SPINEL_ELAB_CHECK=1 also scans the classes
+   and reports where the hash answers otherwise. */
 int comp_class_index(Compiler *c, const char *name) {
   if (!name) return -1;
-  if (!ci_frozen) {
-    for (int i = 0; i < c->nclasses; i++)
-      if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
-    return -1;
+  int i = class_hash_find(c, name);
+  if (c->class_hash_check) {
+    int k = 0;
+    while (k < c->nclasses && !(c->classes[k].name && sp_streq(c->classes[k].name, name))) k++;
+    if (k == c->nclasses) k = -1;
+    if (k != i) fprintf(stderr, "spinel: class index check: %s is class %d, the scan finds %d\n", name, i, k);
   }
-  if (ci_nclasses != c->nclasses) ci_build(c);
-  if (!ci_buckets) return -1;
-  for (int i = ci_head[sp_strhash(name) % (unsigned)ci_buckets]; i >= 0; i = ci_next[i])
-    if (c->classes[i].name && sp_streq(c->classes[i].name, name)) return i;
-  return -1;
+  return i;
 }
 
 static unsigned name_idx_hash(const char *s) {
@@ -1253,7 +1268,7 @@ static int *tm_next = NULL, *tm_head = NULL;
    which is only stable while scope shape is fixed (e.g. hash_new_default_arg's
    per-node memo) can stamp their cache and discard it when the epoch changes. */
 static unsigned sm_gen = 0;
-void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) { sm_gen++; comp_touch_global(); } sm_frozen = f; sm_nscopes = -1; ci_frozen = f; ci_nclasses = -1; }
+void comp_scope_index_set_frozen(int f) { if (sm_frozen != f) { sm_gen++; comp_touch_global(); } sm_frozen = f; sm_nscopes = -1; }
 int comp_scope_index_is_frozen(void) { return sm_frozen; }
 unsigned comp_scope_index_gen(void) { return sm_gen; }
 /* Scopes from `from` on into the chains, ascending so the highest scope

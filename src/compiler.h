@@ -1357,6 +1357,8 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
+  int *class_head, *class_next, class_buckets;   /* name -> class index (comp_class_index) */
+  unsigned char class_hash_check;   /* SPINEL_ELAB_CHECK: each lookup also scans the classes */
   int object_standin;   /* +1-based index (0 = none) of the empty root class an
                           `o = Object.new` binding's singleton subclass stands
                           on: Object has no user class to subclass. It answers
