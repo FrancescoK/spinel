@@ -14042,6 +14042,17 @@ void emit_exc_reopen_construct(Compiler *c, int ci, int initm, int args, int msg
    class is known only at run time, so the runtime answers by the class's
    name, as it does for a class known only at run time. A typed x the
    emitters below answer statically. */
+/* An Array, Hash or String subclass instance (emb as comp_arysub_emb) is
+   one already: its builtin's try_convert answers it as it is, and never
+   calls the class's own conversion. */
+static int try_convert_arysub(Compiler *c, int arg, int emb, Buf *b) {
+  TyKind at = comp_ntype(c, arg);
+  if (!ty_is_object(at) || comp_ary_root(c, ty_object_class(at)) < 0 ||
+      comp_arysub_emb(c, ty_object_class(at)) != emb) return 0;
+  emit_boxed(c, arg, b);
+  return 1;
+}
+
 int emit_try_convert_boxed(Compiler *c, const char *cname, int arg, Buf *b) {
   if (repr_of(c, arg).kind != RK_BOXED) return 0;
   buf_printf(b, "sp_poly_class_try_convert(sp_box_class_name(SPL(\"%s\")), ", cname);
@@ -15305,6 +15316,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
       nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (ty_is_array(at)) { emit_boxed(c, argv[0], b); return 1; }
+    if (try_convert_arysub(c, argv[0], 0, b)) return 1;
     if (emit_try_convert_boxed(c, "Array", argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
@@ -15334,6 +15346,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
       sp_streq(name, "try_convert")) {
     TyKind at = comp_ntype(c, argv[0]);
     if (ty_is_hash(at)) { emit_boxed(c, argv[0], b); return 1; }
+    if (try_convert_arysub(c, argv[0], 1, b)) return 1;
     if (emit_try_convert_boxed(c, "Hash", argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
@@ -15349,6 +15362,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
     TyKind at = comp_ntype(c, argv[0]);
     int ok = want_str ? (at == TY_STRING || at == TY_STRBUF) : (at == TY_IO);
     if (ok) { emit_boxed(c, argv[0], b); return 1; }
+    if (want_str && try_convert_arysub(c, argv[0], 2, b)) return 1;
     if (emit_try_convert_boxed(c, nt_str(nt, recv, "name"), argv[0], b)) return 1;
     buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_puts(b, "), sp_box_nil())");
     return 1;
