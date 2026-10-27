@@ -3111,6 +3111,12 @@ build/rbs-seed-results/%.res: FORCE | rbs-seed-extractor $(SP_RT_LIB) $(SPINEL_T
 	elif ! grep -q 'seed contradicted' "$$tmp/nsc.err"; then \
 	  echo "rbs-seed-test: FAIL (#4484: nested seed conflict refused for another reason)"; sed -n 1,2p "$$tmp/nsc.err"; ok=0; fi; \
 	;; \
+	nested_array_literal_rows_conflict) \
+	if $(SPINEL) test/rbs-seed/nested_array_literal_rows_conflict.rb --rbs test/rbs-seed/sig -o "$$tmp/nlrc" >"$$tmp/nlrc.err" 2>&1; then \
+	  echo "rbs-seed-test: FAIL (the literal rows of a nested seed took a String and were not refused)"; ok=0; \
+	elif ! grep -q 'an Array push given a String' "$$tmp/nlrc.err" || grep -q 'did not converge' "$$tmp/nlrc.err"; then \
+	  echo "rbs-seed-test: FAIL (literal rows against a nested seed refused for another reason)"; sed -n 1,2p "$$tmp/nlrc.err"; ok=0; fi; \
+	;; \
 	boundary) \
 	$(SPINEL) test/rbs-seed/boundary.rb --rbs test/rbs-seed/sig \
 	  -c --no-line-map -o "$$tmp/b.c" 2>/dev/null; \

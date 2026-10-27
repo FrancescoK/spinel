@@ -14657,8 +14657,8 @@ static char *oa_walk_disc(Compiler *c, int nc) {
    before the row has a kind. The seed is that kind: where the pushes into
    its rows (oa_row_use) are of no other kind, the literal is built at it.
    A row held in a local or passed on is the seed's to type, as the empty
-   rows of `Array.new(n) { [] }` are. Otherwise the table stays the poly
-   array its rows are, instead of reading boxed rows back as typed ones. */
+   rows of `Array.new(n) { [] }` are. A push of another kind contradicts
+   the seed, and is refused there as it is into those rows. */
 static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
   for (int i = 0; i < n; i++) {
     if (oa_uf_find(sl, i) != i || !OA_CLS_IS_NESTED(sl[i].cls)) continue;
@@ -14670,12 +14670,12 @@ static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
       }
     if (!seeded || !c->arr_want) continue;
     TyKind rk = sl[i].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
-    int fits = sl[i].row_cls == -1 || sl[i].row_cls == sl[i].cls;
+    if (sl[i].row_cls != -1 && sl[i].row_cls != sl[i].cls) continue;
     for (int e = 0; e < g_oa_empt_n && sl[i].cls != -1; e++) {
       if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
       int lit = g_oa_empt_node[e];
       if (lit >= c->node_cap || c->arr_want[lit] == TY_UNKNOWN || c->arr_want[lit] == rk) continue;
-      if (fits && c->arr_want[lit] == TY_POLY_ARRAY) { comp_set_arr_want(c, lit, rk); oa_mark_empty_mine(lit); }
+      if (c->arr_want[lit] == TY_POLY_ARRAY) { comp_set_arr_want(c, lit, rk); oa_mark_empty_mine(lit); }
       else sl[i].cls = -1;
     }
   }
