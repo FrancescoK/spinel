@@ -318,6 +318,24 @@ static bool ir_is_attr_call(const ir_file *f, const pm_call_node_t *call) {
 
 static bool ir_visit(const pm_node_t *n, void *data);
 
+/* Is constant c the word lit? */
+static bool ir_tok_is(const pm_constant_t *c, const char *lit) {
+    return c != NULL && c->length == strlen(lit) && memcmp(c->start, lit, c->length) == 0;
+}
+
+/* A value that makes a class: `Data.define(...)`, `Struct.new(...)`,
+   `Class.new(...)` or `Module.new(...)`, a block or not. */
+static bool ir_makes_class(const ir_file *f, const pm_node_t *v) {
+    if (v == NULL || !PM_NODE_TYPE_P(v, PM_CALL_NODE)) return false;
+    const pm_call_node_t *call = (const pm_call_node_t *) v;
+    if (call->receiver == NULL || !PM_NODE_TYPE_P(call->receiver, PM_CONSTANT_READ_NODE)) return false;
+    pm_constant_t *r = pm_constant_pool_id_to_constant(
+        &f->pm->constant_pool, ((const pm_constant_read_node_t *) call->receiver)->name);
+    pm_constant_t *m = pm_constant_pool_id_to_constant(&f->pm->constant_pool, call->name);
+    return (ir_tok_is(r, "Data") && ir_tok_is(m, "define")) || (ir_tok_is(r, "Struct") && ir_tok_is(m, "new")) ||
+           (ir_tok_is(r, "Class") && ir_tok_is(m, "new")) || (ir_tok_is(r, "Module") && ir_tok_is(m, "new"));
+}
+
 static void ir_class_body(ir_ctx *cx, const pm_node_t *container, const pm_node_t *body,
                           const char *leaf_path) {
     char *owner = ir_join(cx->owner, leaf_path);
@@ -384,6 +402,19 @@ static bool ir_visit(const pm_node_t *n, void *data) {
             ir_container_add(w, n, 3, cx->owner, cx->lookup);
             return !cx->in_def;
         case PM_CONSTANT_WRITE_NODE:
+            /* `CType = Data.define(...)` makes a class as `class CType` does:
+               a relative type name finds it by its scope (#10370) */
+            if (!cx->in_def && ir_makes_class(f, ((const pm_constant_write_node_t *) n)->value)) {
+                pm_constant_t *cn = pm_constant_pool_id_to_constant(
+                    &f->pm->constant_pool, ((const pm_constant_write_node_t *) n)->name);
+                if (cn) {
+                    char *leaf = ir_strndup((const char *) cn->start, cn->length);
+                    char *qn = ir_join(cx->owner, leaf);
+                    known_names_add(qn, strlen(qn));
+                    free(qn); free(leaf);
+                }
+            }
+            /* fall through */
         case PM_CONSTANT_PATH_WRITE_NODE:
             ir_target_new(w, IT_CONST_WRITE, n, cx);
             return true;

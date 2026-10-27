@@ -1,0 +1,12 @@
+module Stage
+  module ControlMessage
+    class CType
+    end
+  end
+
+  class X
+    def echo: (untyped) -> untyped
+    def a: () -> ControlMessage::CType
+    def b: () -> Stage::ControlMessage::CType
+  end
+end
