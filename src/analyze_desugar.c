@@ -22275,7 +22275,7 @@ int desugar_index_assign_value(Compiler *c) {
     if (!self_recv) {
       int rw = ixa_hold(nt, rname, recv);
       if (rw < 0 || (recv2 = ixw_read(nt, rname)) < 0) ok = 0;
-      else { body[nb++] = rw; scope_local_intern(sc, rname); }
+      else { body[nb++] = rw; scope_local_intern(sc, rname); cls_fact_same(c, recv2, recv); }
     }
     for (int i = 0; i < nkeys && ok; i++) {
       if (ixa_literal(nt, keys[i])) continue;

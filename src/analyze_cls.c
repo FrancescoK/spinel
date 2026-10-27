@@ -2083,11 +2083,12 @@ static void cf_protocol_returns(CF *f, int v, int el) {
 }
 /* a builtin whose value is a scalar no program class is: a comparison, a
    count or size, a conversion to a String, a number or a Symbol, a
-   predicate. It keeps none of its arguments. */
+   predicate, a match's MatchData (whose groups are Strings). It keeps none
+   of its arguments. */
 static int cf_scalar_answer(const char *nm) {
   static const char *const names[] = { "==", "!=", "<", "<=", ">", ">=", "<=>", "===", "eql?", "equal?",
     "=~", "!~", "size", "length", "bytesize", "count", "hash", "to_i", "to_f", "to_s", "to_str", "to_sym",
-    "inspect", NULL };
+    "inspect", "match", NULL };
   if (!nm) return 0;
   for (int i = 0; names[i]; i++) if (sp_streq(nm, names[i])) return 1;
   size_t l = strlen(nm);
@@ -4434,6 +4435,9 @@ static void cf_collect_dyn(CF *f) {
     if (!is_method_name_reflection(cn)) continue;
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    /* with no argument the call names no method: `req.method` is a reader
+       the program defines (Object#method and the sends need a name) */
+    if (an == 0) continue;
     int any = 0;
     /* a send of a literal name is that call (cf_call), and an alias_method
        of two literal names an alias the class table has: neither leaves a
@@ -5750,6 +5754,17 @@ int cls_fact_idx(Compiler *c, int node) {
   if (!c->cls_fact || node < 0 || node >= c->cls_fact_n) return -1;
   int p = c->cls_fact[node];
   return p <= 0 || p >= c->ncls_pool ? -1 : p;
+}
+
+/* See compiler.h. The nodes between the pass's last and node have no fact
+   (every class), as they had none before. */
+void cls_fact_same(Compiler *c, int node, int as) {
+  if (!c->cls_fact || as < 0 || as >= c->cls_fact_n || node < c->cls_fact_n) return;
+  int *g = realloc(c->cls_fact, sizeof(int) * ((size_t)node + 1));
+  if (!g) cf_oom();
+  for (int v = c->cls_fact_n; v < node; v++) g[v] = CF_ALL;
+  g[node] = g[as];
+  c->cls_fact = g; c->cls_fact_n = node + 1;
 }
 
 /* See compiler.h. The closed world's value from anywhere (f->every): each

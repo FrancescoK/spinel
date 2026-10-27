@@ -2126,6 +2126,9 @@ int cls_fact_may_ostruct(Compiler *c, int node);
 /* the fact's own index for recv's set, which names the set uniquely: 0 or -1
    for every class (nothing to filter by) */
 int cls_fact_idx(Compiler *c, int node);
+/* node, made after the pass, holds the value node `as` holds (a desugar's
+   read of a temporary it stored as into): it takes as's fact */
+void cls_fact_same(Compiler *c, int node, int as);
 /* Does node's fact say nothing of its classes: every class, or the closed
    world's value from anywhere (every class, Class object and builtin)? */
 int cls_fact_unbounded(Compiler *c, int node);
