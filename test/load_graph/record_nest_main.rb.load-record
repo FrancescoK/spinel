@@ -1,0 +1,30 @@
+load record: 20 points, 1 regions
+r0 #0 f0 ProgramNode line 6
+r0 #1 f0 ModuleNode A line 6
+  r0 #2 f0 ClassNode A__Inner line 7
+    r0 #3 f0 DefNode who line 8
+r0 #4 f0 ModuleNode B line 11
+  r0 #5 f0 ClassNode B__Inner line 12
+    r0 #6 f0 DefNode who line 13
+r0 #7 f0 LoadNode line 16
+r0 #8 f1 ProgramNode line 1
+r0 #9 f1 CallNode public line 1
+r0 #10 f1 DefNode lib_helper line 2
+r0 #11 f0 ClassNode A__Inner line 17
+  r0 #12 f0 DefNode more line 18
+r0 #13 f0 DefNode entry_helper line 20
+r0 #14 f0 CallNode puts line 21
+r0 #15 f0 CallNode puts line 22
+r0 #16 f0 CallNode puts line 23
+r0 #17 f0 CallNode puts line 24
+r0 #18 f0 CallNode puts line 25
+r0 #19 f0 CallNode puts line 26
+class A: body#1
+class A__Inner: body#2 body#11
+class B: body#4
+class B__Inner: body#5
+A__Inner#who: def#3
+B__Inner#who: def#6
+main#lib_helper: def#10
+A__Inner#more: def#12
+main#entry_helper: def#13 private

@@ -427,23 +427,63 @@ static LrClass *lr_class(LoadRecord *r, int cls) {
   return cls >= LR_MAIN && cls + 1 < r->ncls ? &r->cls[cls + 1] : NULL;
 }
 
-/* The class a constant names, LR_UNKNOWN_CLASS when none */
-static int lr_class_named(Compiler *c, int node) {
-  const char *nm = node >= 0 ? nt_str(c->nt, node, "name") : NULL;
-  int ci = nm ? comp_class_index(c, nm) : -1;
+/* The class a class or module header opens, as the scope walk decided it:
+   the class of its header's own class body (node_cbody) */
+static int lr_class_opened(Compiler *c, int node) {
+  int cp = nt_ref(c->nt, node, "constant_path");
+  int ci = cp >= 0 && cp < c->node_cap ? c->node_cbody[cp] : -1;
   return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
+}
+
+/* elab_program's state: each statement's frame class (fc) and singleton
+   flag (fs), each frame's visibility state (vs) and each file's top
+   level's (vmain); for lr_class_ref, the top-level classes by name and
+   the nested classes by the constant name their headers declare, each
+   sorted once (comp_class_index scans the classes at this phase) */
+typedef struct { const char *name; int ci; } LrName;
+typedef struct { Compiler *c; LoadRecord *r; int *fc; unsigned char *fs, *vs, *vmain; LrName *top, *leaf; int ntop, nleaf; } ElabRec;
+
+static int lr_name_cmp(const void *a, const void *b) { return strcmp(((const LrName *)a)->name, ((const LrName *)b)->name); }
+
+/* The constant name class ci's header declares, as the program wrote it:
+   `class Inner`'s or `class A::Inner`'s last name, or a builder's
+   `Inner = Struct.new(...)`. A header the qualify passes renamed keeps the
+   Ruby path it resolved to (qc_ruby_name), whose last name it is. NULL for
+   a class no header of the program declares, which no constant of the
+   program names either. */
+static const char *lr_declared_name(const Compiler *c, int ci) {
+  const NodeTable *nt = c->nt;
+  int d = c->classes[ci].def_node;
+  NodeKind k = d >= 0 ? nt_kind(nt, d) : NK_NilNode;
+  if (k == NK_ConstantWriteNode) return nt_str(nt, d, "qc_orig_name") ? nt_str(nt, d, "qc_orig_name") : nt_str(nt, d, "name");
+  int cp = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, d, "constant_path") : -1;
+  const char *rn = cp >= 0 ? nt_str(nt, cp, "qc_ruby_name") : NULL, *q = rn;
+  for (const char *p = rn ? strstr(rn, "::") : NULL; p; p = strstr(p + 2, "::")) q = p + 2;
+  return rn ? q : cp >= 0 ? nt_str(nt, cp, "name") : NULL;
+}
+
+/* The class a constant reference names (a mixin's argument, `class << K`,
+   `def K.m`, `K.class_eval`): only a plain top-level name that no nested
+   class shares, LR_UNKNOWN_CLASS for any other. The analysis resolves
+   class names without their lexical nesting at this phase; constant
+   resolution from a lexical scope at a point is the record's next query. */
+static int lr_class_ref(ElabRec *x, int node) {
+  const char *nm = node >= 0 && nt_kind(x->c->nt, node) == NK_ConstantReadNode ? nt_str(x->c->nt, node, "name") : NULL;
+  LrName key = { nm, -1 };
+  const LrName *t = nm && x->ntop ? bsearch(&key, x->top, (size_t)x->ntop, sizeof *x->top, lr_name_cmp) : NULL;
+  if (!t || (x->nleaf && bsearch(&key, x->leaf, (size_t)x->nleaf, sizeof *x->leaf, lr_name_cmp))) return LR_UNKNOWN_CLASS;
+  return t->ci;
 }
 
 /* The class a call's receiver names: none or self, the frame's; a
    constant, its class (not singleton) */
-static int lr_receiver(Compiler *c, int recv, int fc, int fs, int *sg) {
-  NodeKind k = recv >= 0 ? nt_kind(c->nt, recv) : NK_SelfNode;
+static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
+  NodeKind k = recv >= 0 ? nt_kind(x->c->nt, recv) : NK_SelfNode;
   *sg = k == NK_SelfNode ? fs : 0;
   if (k == NK_SelfNode) return fc;
-  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? lr_class_named(c, recv) : LR_UNKNOWN_CLASS;
+  return lr_class_ref(x, recv);
 }
 
-typedef struct { Compiler *c; LoadRecord *r; int *fc; unsigned char *fs, *vs; } ElabRec;
 
 /* The frame entry e's body opens: its class in fc[e], singleton in fs[e];
    for any other statement, the frame it stands in. */
@@ -454,24 +494,21 @@ static void lr_frame(ElabRec *x, int e) {
   NodeKind k = nt_kind(nt, node);
   int call = k == NK_CallNode ? node : nt_ref(nt, node, "value");
   x->vs[e] = BVIS_PUBLIC;
-  if (k == NK_ClassNode || k == NK_ModuleNode) { cls = lr_class_named(x->c, nt_ref(nt, node, "constant_path")); sg = 0; }
+  if (k == NK_ClassNode || k == NK_ModuleNode) { cls = lr_class_opened(x->c, node); sg = 0; }
   else if (k == NK_SingletonClassNode) {
     int ex = nt_ref(nt, node, "expression");
-    cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_named(x->c, ex);
+    cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_ref(x, ex);
     sg = 1;
   }
-  else if (k == NK_ConstantWriteNode && class_def_body(x->c, node) >= 0) {
-    cls = comp_class_index(x->c, nt_str(nt, node, "name")); sg = 0;
-    if (cls < 0) cls = LR_UNKNOWN_CLASS;
-  }
-  else if (k == NK_LocalVariableWriteNode && class_def_body(x->c, node) >= 0) {
+  else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c, node) >= 0) {
+    /* `X = Struct.new(:a) do`: the class registration homes there, once it has */
     cls = LR_UNKNOWN_CLASS; sg = 0;
     for (int ci = 0; ci < x->c->nclasses; ci++) if (x->c->classes[ci].def_node == node) cls = ci;
   }
   else if (call >= 0 && nt_kind(nt, call) == NK_CallNode && nt_ref(nt, call, "block") >= 0 && elab_opens_frame(nt, call)) {
     const char *nm = nt_str(nt, call, "name");
     int rsg;
-    cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x->c, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
+    cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
     sg = is_instance_eval_family(nm) ? 1 : 0;
   }
   if (cls < LR_MAIN) cls = LR_UNKNOWN_CLASS;
@@ -495,7 +532,7 @@ static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, L
 
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
   int recv = nt_ref(x->c->nt, def, "receiver"), sg = fs, cls = fc;
-  if (recv >= 0) { cls = lr_receiver(x->c, recv, fc, 1, &sg); sg = 1; }
+  if (recv >= 0) { cls = lr_receiver(x, recv, fc, 1, &sg); sg = 1; }
   lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
 }
 
@@ -513,7 +550,7 @@ static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, i
 static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int may) {
   const NodeTable *nt = x->c->nt;
   const char *nm = nt_str(nt, node, "name");
-  int sg, cls = lr_receiver(x->c, nt_ref(nt, node, "receiver"), fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
+  int sg, cls = lr_receiver(x, nt_ref(nt, node, "receiver"), fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
   if (!nm || cls < LR_MAIN) return;
   int bvis = visibility_of_name(nm);
@@ -533,7 +570,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       if (!k) continue;
       k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
       k->mix[k->nmix++] = (LrMixin){ node, is_include_name(nm) ? LR_INCLUDE : is_prepend_name(nm) ? LR_PREPEND : LR_EXTEND,
-                                     nt_kind(nt, av[i]) == NK_ConstantReadNode || nt_kind(nt, av[i]) == NK_ConstantPathNode ? lr_class_named(x->c, av[i]) : LR_UNKNOWN_CLASS };
+                                     lr_class_ref(x, av[i]) };
     }
     else if (is_undef_method_name(nm) || is_remove_method_name(nm))
       lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
@@ -551,7 +588,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
   const LrStmt *s = &r->st[e];
   int node = s->node, f = s->frame, may = s->may;
   int fc = f >= 0 ? x->fc[f] : LR_MAIN, fs = f >= 0 ? x->fs[f] : 0;
-  unsigned char *vs = f >= 0 ? &x->vs[f] : &x->vs[r->nst];
+  unsigned char *vs = f >= 0 ? &x->vs[f] : &x->vmain[s->file];
   NodeKind k = nt_kind(nt, node);
   lr_frame(x, e);
   if ((k == NK_ClassNode || k == NK_ModuleNode || k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) &&
@@ -606,12 +643,24 @@ void elab_program(Compiler *c) {
   r->ncls = c->nclasses + 1;
   r->cls = calloc((size_t)r->ncls, sizeof *r->cls);
   r->hhead = malloc(sizeof(int) * LR_BUCKETS);
-  ElabRec x = { c, r, malloc(sizeof(int) * (size_t)(r->nst + 1)), calloc((size_t)r->nst + 1, 1), calloc((size_t)r->nst + 1, 1) };
-  if (!r->cls || !r->hhead || !x.fc || !x.fs || !x.vs) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int nroots = nt_nroots(c->nt);
+  ElabRec x = { c, r, malloc(sizeof(int) * (size_t)(r->nst + 1)), calloc((size_t)r->nst + 1, 1), calloc((size_t)r->nst + 1, 1),
+                malloc((size_t)nroots) };
+  x.top = malloc(sizeof *x.top * (size_t)(c->nclasses ? c->nclasses : 1));
+  x.leaf = malloc(sizeof *x.leaf * (size_t)(c->nclasses ? c->nclasses : 1));
+  if (!r->cls || !r->hhead || !x.fc || !x.fs || !x.vs || !x.vmain || !x.top || !x.leaf) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    const char *nm = c->classes[ci].name, *leaf = c->classes[ci].enclosing_class >= 0 ? lr_declared_name(c, ci) : NULL;
+    if (nm && c->classes[ci].enclosing_class < 0) x.top[x.ntop++] = (LrName){ nm, ci };
+    if (leaf) x.leaf[x.nleaf++] = (LrName){ leaf, ci };
+  }
+  if (x.ntop > 1) qsort(x.top, (size_t)x.ntop, sizeof *x.top, lr_name_cmp);
+  if (x.nleaf > 1) qsort(x.leaf, (size_t)x.nleaf, sizeof *x.leaf, lr_name_cmp);
   for (int b = 0; b < LR_BUCKETS; b++) r->hhead[b] = -1;
-  x.vs[r->nst] = BVIS_PRIVATE;   /* main's methods are Object's private ones */
+  /* each file's top level starts private: its methods are Object's private ones */
+  for (int f = 0; f < nroots; f++) x.vmain[f] = BVIS_PRIVATE;
   for (int e = 0; e < r->nst; e++) lr_record_stmt(&x, e);
-  free(x.fc); free(x.fs); free(x.vs);
+  free(x.fc); free(x.fs); free(x.vs); free(x.vmain); free(x.top); free(x.leaf);
   r->recorded = 1;
   sp_timing_end(t0, "an_elab_record", "");
   if (r->check) elab_check_record(c);
