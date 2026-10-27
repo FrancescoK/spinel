@@ -1469,6 +1469,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   NodeKind ty_k = nt_kind(c->nt, id);
   int child = scope_idx;
   int child_class = class_id;
+  if (ty_k == NK_LoadNode) elab_walk_site(c, id, &w.pos);   /* a require that places its file runs it here */
 
   /* `class << self; def X; ...; end; end` -- treat body defs as class methods. */
   if (ty_k == NK_SingletonClassNode) {

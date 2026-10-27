@@ -12,7 +12,7 @@
        and locals (prog_file_scopes; the load record walks them, elab_program);
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
-     - which files the program runs (prog_drop_dead_files: one no live
+     - which files the program runs (prog_settle_files: one no live
        require reaches is taken out) and which have a function of their own
        when loaded (prog_file_tops);
      - the program's top-level statements in load order (prog_top_stmts):
@@ -91,23 +91,57 @@ int prog_ordered_load(const Compiler *c, int id) {
   return f > 0 && prog_load_by(c, f) == id ? f : -1;
 }
 
+/* The file a require that is not a statement of a file's top level runs:
+   the target of the LoadNode prog_settle_files placed at its site, else -1.
+   The record enters it where it reaches the require, so that the file's
+   statements run in place, as the inline model splices them; the top-level
+   statement holding the require is the root's `load_stmt`. */
+int prog_site_places(const Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || nt_kind(nt, id) != NK_LoadNode) return -1;
+  int f = (int)nt_int(nt, id, "target_file", -1);
+  int r = f > 0 && f < nt->nfile_roots ? nt_root(nt, f) : -1;
+  return r >= 0 && prog_load_by(c, f) == id && nt_int(nt, r, "load_stmt", -1) >= 0 ? f : -1;
+}
+
 /* The program's top-level statements in load order: the entry's, and after
    the statement that first loads a file at the top level (prog_ordered_load)
-   that file's. A file loaded only elsewhere -- under a condition, in a
-   method, block or class body -- has no place in this order. Each statement
+   that file's. A file loaded only elsewhere -- in a method, or a block kept to
+   run later -- has no place in this order. Each statement
    comes with the file whose top level holds it. */
 typedef void (*ProgStmtFn)(void *ud, int stmt, int file);
-static void prog_top_walk(const Compiler *c, int f, ProgStmtFn fn, void *ud) {
+/* ...and after a statement holding a require that places a file
+   (prog_site_places), that file's too; pl lists those files in the order
+   their requires stand */
+typedef struct { int *f, n; } ProgPlaced;
+static void prog_top_walk(const Compiler *c, int f, ProgStmtFn fn, void *ud, const ProgPlaced *pl) {
   int st = prog_root_stmts(c, f), n = 0;
   const int *v = st >= 0 ? nt_arr(c->nt, st, "body", &n) : NULL;
   for (int k = 0; k < n; k++) {
     fn(ud, v[k], f);
     int t = prog_ordered_load(c, v[k]);
-    if (t >= 0) prog_top_walk(c, t, fn, ud);
+    if (t >= 0) prog_top_walk(c, t, fn, ud, pl);
+    for (int i = 0; i < pl->n; i++)
+      if (nt_int(c->nt, nt_root(c->nt, pl->f[i]), "load_stmt", -1) == v[k]) prog_top_walk(c, pl->f[i], fn, ud, pl);
   }
 }
 static void prog_top_from(const Compiler *c, ProgStmtFn fn, void *ud) {
-  prog_top_walk(c, 0, fn, ud);
+  ProgPlaced pl = { NULL, 0 };
+  for (int f = 1; f < nt_nroots(c->nt); f++)
+    if (nt_root(c->nt, f) >= 0 && nt_int(c->nt, nt_root(c->nt, f), "load_stmt", -1) >= 0) pl.n++;
+  if (pl.n) {
+    pl.f = malloc(sizeof(int) * (size_t)pl.n);
+    if (!pl.f) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int m = 0;
+    for (int f = 1; f < nt_nroots(c->nt); f++)
+      if (nt_root(c->nt, f) >= 0 && nt_int(c->nt, nt_root(c->nt, f), "load_stmt", -1) >= 0) {
+        int i = m++;   /* by the require's node id: the order they stand in */
+        while (i > 0 && prog_load_by(c, pl.f[i - 1]) > prog_load_by(c, f)) { pl.f[i] = pl.f[i - 1]; i--; }
+        pl.f[i] = f;
+      }
+  }
+  prog_top_walk(c, 0, fn, ud, &pl);
+  free(pl.f);
 }
 typedef struct { void (*fn)(void *, int); void *ud; } ProgStmtOnly;
 static void prog_stmt_only(void *ud, int stmt, int file) {
@@ -188,6 +222,8 @@ static int prog_order_now(Compiler *c, int a, int b) {
      ahead of the entry's statements) has ids past the file's own */
   if (ra >= 0 && rb >= 0 && ra != rb) return ra < rb ? PROG_BEFORE : PROG_AFTER;
   if (fa == fb) return a < b ? PROG_BEFORE : PROG_AFTER;   /* one statement's nodes, as flatten numbered them */
+  /* a file a require inside the statement places runs within it: the record's order */
+  if (ra >= 0 && ra == rb) return elab_order(c, a, b);
   return PROG_UNKNOWN;
 }
 static int prog_order_for(Compiler *c, int a, int b, const char *reader) {
@@ -238,6 +274,19 @@ void prog_sort(Compiler *c, int *v, int n, const int *node_of) {
     key[i] = ((long long)(r >= 0 ? r : INT_MAX) << 32) | (unsigned)id;
   }
   prog_sort_keyed(v, key, n);
+  /* statements of a file a require places share the rank of the statement
+     holding it: within a rank, by the statement the record runs first (the
+     id order above stays within one statement) */
+  for (int f = 1; prog_graph(c) && f < nt_nroots(c->nt); f++) {
+    if (nt_root(c->nt, f) < 0 || nt_int(c->nt, nt_root(c->nt, f), "load_stmt", -1) < 0) continue;
+    for (int i = 0; i < n; i++) {
+      int id = node_of ? node_of[v[i]] : v[i], fl = -1, r = 0;
+      elab_top_place(c, id, &fl, &r);
+      key[i] = ((long long)(fl >= 0 && r >= 0 ? r : INT_MAX) << 32) | (unsigned)(elab_sort_key(c, id) >> 32);
+    }
+    prog_sort_keyed(v, key, n);
+    break;
+  }
   if (was) {   /* SPINEL_ELAB_CHECK: the record's order of the same nodes */
     for (int i = 0; i < n; i++) key[i] = elab_sort_key(c, node_of ? node_of[was[i]] : was[i]);
     prog_sort_keyed(was, key, n);
@@ -413,29 +462,57 @@ void prog_refuse_loads(Compiler *c) {
   free(parent);
 }
 
-/* A required file that no load able to run reaches is not part of the
-   program (#9898). A fold of a constant condition (RUBY_VERSION, the engine
-   checks) leaves a `require` in the branch it decided dead under no root's
-   tree, and a file only such requires name, or only the requires of a file
-   so dropped, is never loaded. The inline model splices a file at its
-   require, so a dead branch takes the file along; here the file's
-   statements are taken out of the tree, and nothing registers its classes,
-   methods and constants (ruby_version_fold's `const_defined?`). A file named
-   by an autoload or a computed require has no LoadNode: both are refused
-   (prog_refuse_loads) until their own steps. Asked after the folds, ahead
-   of the readers of the program's order. */
-void prog_drop_dead_files(Compiler *c) {
+/* What each file the entry reaches is loaded by, once the folds have run
+   (#9898).
+   - A file that no load able to run reaches is not part of the program. A
+     fold of a constant condition (RUBY_VERSION, the engine checks) leaves a
+     `require` in the branch it decided dead under no root's tree, and a file
+     only such requires name, or only the requires of a file so dropped, is
+     never loaded. The inline model splices a file at its require, so a dead
+     branch takes the file along; here the file's statements are taken out
+     of the tree, and nothing registers its classes, methods and constants
+     (ruby_version_fold's `const_defined?`). A file named by an autoload or a
+     computed require has no LoadNode: both are refused (prog_refuse_loads)
+     until their own steps.
+   - A file the parse does not place (it has no require that is a statement
+     of a top level) and that has one require in all, where the load phase's
+     walk reaches it (elab_load_sites: under a condition, a loop, a rescue,
+     a class body, an iterator's block, an assignment's value), is placed at
+     that require: `load_by` the LoadNode, `load_stmt` the top-level
+     statement holding it. The record enters it there, with the require's
+     may, as the inline model splices it. Any other file keeps a region of
+     its own.
+   Asked after the folds, ahead of the readers of the program's order. */
+typedef struct { Compiler *c; int stmt, n; int *nsite, *site, *at; unsigned char *ok; } ProgSites;
+static void prog_site_note(void *ud, int load, int in_place) {
+  ProgSites *q = ud;
+  int t = (int)nt_int(q->c->nt, load, "target_file", -1);
+  if (t <= 0 || t >= q->n) return;
+  q->nsite[t]++; q->site[t] = load; q->at[t] = q->stmt; q->ok[t] = (unsigned char)in_place;
+}
+void prog_settle_files(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n = nt_nroots(nt);
   if (!prog_graph(c) || n < 2) return;
-  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
-  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1), *ok = calloc((size_t)n, 1);
+  int *nsite = calloc((size_t)n, sizeof(int)), *site = calloc((size_t)n, sizeof(int)), *at = calloc((size_t)n, sizeof(int));
+  if (!seen || !live || !ok || !nsite || !site || !at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   prog_reach(nt, seen, live);
+  ProgSites q = { c, -1, n, nsite, site, at, ok };
+  for (int f = 0; f < n; f++) {
+    int st = prog_root_stmts(c, f), m = 0;
+    const int *v = st >= 0 && live[f] ? nt_arr(nt, st, "body", &m) : NULL;
+    for (int k = 0; k < m; k++) { q.stmt = v[k]; elab_load_sites(c, v[k], prog_site_note, &q); }
+  }
   for (int f = 1; f < n; f++) {
     int st = live[f] ? -1 : prog_root_stmts(c, f);
     if (st >= 0) nt_node_set_arr(nt, st, "body", NULL, 0);
+    else if (live[f] && prog_load_by(c, f) < 0 && nsite[f] == 1 && ok[f]) {
+      nt_node_set_int(nt, nt_root(nt, f), "load_by", site[f]);
+      nt_node_set_int(nt, nt_root(nt, f), "load_stmt", at[f]);
+    }
   }
-  free(seen); free(live);
+  free(seen); free(live); free(ok); free(nsite); free(site); free(at);
 }
 
 /* A definition at a file's top level, by name, for the definitions two files

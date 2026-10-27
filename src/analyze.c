@@ -47984,7 +47984,7 @@ static void an_phase_desugar_register(Compiler *c) {
   /* builtins/integer.rb, float.rb, comparable.rb: the same idea, one more
      container per file (analyze_desugar.c's sp_bx_* table) */
   AN_STEP_V("desugar_builtin_scalar_defs", desugar_builtin_scalar_defs(c));
-  prog_drop_dead_files(c);               /* (--load-model=graph: a file no live require reaches) */
+  prog_settle_files(c);                  /* (--load-model=graph: a file no live require reaches is dropped; one a nested require places is placed) */
   prog_refuse_order(c);                  /* (--load-model=graph: what these read across files) */
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
