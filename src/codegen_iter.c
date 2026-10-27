@@ -5292,7 +5292,11 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
      the block changes the element; the loop reads and writes the handles) */
   int one_h = et == TY_STRING && flv && repr_of_slot(c, flv).kind == RK_STRBUF &&
               !block_binds_gathered(c, block) && !(g_face_live_box && g_face_live_recv == recv);
-  if (flv && !one_h) {
+  /* a boxed parameter that a nested block captures lives in a cell, which
+     the frame declares boxed. A shadow cannot retype that cell, so an
+     object element binds boxed into the parameter (as in emit_collect_expr). */
+  int boxed_cell = flv && !one_h && flv->is_cell && fsaved == TY_POLY && ty_is_object(et);
+  if (flv && !one_h && !boxed_cell) {
     /* a widened parameter shadowed at a numeric element type still holds
        the element's nil */
     if (fsaved == TY_POLY && (et == TY_INT || et == TY_FLOAT)) flv->nullable_int = 1;
@@ -5423,6 +5427,7 @@ int emit_array_filter_loop(Compiler *c, int recv, int block, TyKind rt, const ch
     emit_indent(b, li + 1);
     buf_printf(b, "lv_%s = _t%d;\n", bp, te);
   }
+  else if (bp && boxed_cell) emit_iter_param_assign(c, block, bp0, bp, et, es, b, li + 1);
   else if (bp) {
     /* a poly parameter is the hoisted local, rooted where it is declared; a
        typed one shadows it at the element type, and a String is rooted */
