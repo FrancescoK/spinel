@@ -603,7 +603,12 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     lr_version(x->r, LR_KEY_VIS, fnode, "", (LrDef){ node, LR_VIS, (unsigned char)bvis, (unsigned char)may, 0, NULL });
     return;
   }
-  for (int i = 0; i < ac; i++) {
+  /* `include A, B` puts A nearest the class (ancestors [C, A, B]), as
+     `include B` then `include A` would, and so do prepend and extend: the
+     arguments of a mixin are recorded last first */
+  int mix = is_mixin_call(nm);
+  for (int j = 0; j < ac; j++) {
+    int i = mix ? ac - 1 - j : j;
     const char *an_ = vis_arg_name(nt, av[i]);
     if (!an_ && nt_kind(nt, av[i]) != NK_DefNode && naming && (!dm || i == 0)) opaque = 1;   /* a computed name */
     if (bvis && nt_kind(nt, av[i]) == NK_DefNode) lr_def(x, av[i], cls, sg, bvis, may);
@@ -614,7 +619,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       if (an_ && is_attr_writer_family(nm) && snprintf(w, sizeof w, "%s=", an_) < (int)sizeof w)
         lr_method(x, cls, sg, w, node, LR_WRITER, *vs, may, NULL);
     }
-    else if (is_mixin_call(nm)) {
+    else if (mix) {
       LrClass *k = lr_class(x->r, cls);
       int mod = lr_class_ref(x->c, av[i]);
       opaque |= mod < 0;
@@ -633,7 +638,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
      String, or a method of the program called on the class (its singleton
      method, from its body or through its constant) or from its body (a
      top-level one) */
-  if (!naming && !is_mixin_call(nm)) {
+  if (!naming && !mix) {
     LoadPoint p = elab_point_of(x->c, node);
     int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
     opaque = is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||

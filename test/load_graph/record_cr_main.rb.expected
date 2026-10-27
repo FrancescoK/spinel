@@ -1,4 +1,5 @@
 bar
-[C, A, B]
+[C, A::Kind, A]
 A
+A kind
 2
