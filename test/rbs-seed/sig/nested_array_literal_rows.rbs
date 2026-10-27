@@ -6,3 +6,7 @@ end
 class NilRows
   @rows: Array[Array[Integer]]
 end
+
+class MixedFloatRows
+  @rows: Array[Array[Float]]
+end
