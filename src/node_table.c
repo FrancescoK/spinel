@@ -569,7 +569,7 @@ void nt_node_set_arr(NodeTable *nt, int id, const char *key, const int *ids, int
   while (j < nd->na && !sp_streq(nd->a[j].key, key)) j++;
   if (j < nd->na) { free(nd->a[j].ids); nd->a[j].ids = copy; nd->a[j].n = n; }
   else node_add_arr(nd, key, strlen(key), copy, n);
-  for (int e = 0; e < n; e++) nt_place(nt, id, ids[e], 'a', j);
+  for (int e = 0; e < n; e++) nt_place(nt, id, copy[e], 'a', j);
 }
 
 void nt_free(NodeTable *nt) {
