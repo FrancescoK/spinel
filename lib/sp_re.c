@@ -374,6 +374,14 @@ const char *sp_str_slice_re(mrb_regexp_pattern *pat, const char *s, const char *
   if (rest_out) *rest_out = sp_sprintf("%.*s%s", mb, s, s + me);
   return m;
 }
+/* The character index of byte offset `byteoff` in a match's subject: a
+   BINARY string's characters are its bytes, whatever they spell in UTF-8
+   (sp_str_byte_to_char); counted as UTF-8, "\xc3\xa9" was one character
+   and rindex, index(re, start) and MatchData#begin answered early. */
+static sp_int sp_re_char_index(const char *s, size_t byteoff) {
+  if (sp_str_is_binary(s)) return (sp_int)byteoff;
+  return sp_str_count_chars(s, byteoff);
+}
 sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str);
   sp_re_check_subject(str);
   int64_t slen = (int64_t)sp_str_byte_len(str);
@@ -391,7 +399,7 @@ sp_int sp_re_rindex(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(st
     pos = at + 1;
   }
   /* the result is a character index; caps[] holds byte offsets */
-  return last < 0 ? -1 : sp_str_count_chars(str, (size_t)last);
+  return last < 0 ? -1 : sp_re_char_index(str, (size_t)last);
 }
 sp_StrArray *sp_re_rpartition(mrb_regexp_pattern *pat, const char *str) {
   sp_re_check_subject(str);
@@ -1015,7 +1023,7 @@ sp_oint sp_re_index_from_opt(mrb_regexp_pattern *pat, const char *str, sp_int st
   int caps[64];
   int n = spinel_re_exec(pat, str, (int64_t)sp_str_byte_len(str), (sp_int)boff, caps, 64, sp_str_is_binary(str));
   if (n <= 0 || caps[0] < 0) return sp_oint_nil();
-  return sp_oint_of(sp_str_count_chars(str, (size_t)caps[0]));
+  return sp_oint_of(sp_re_char_index(str, (size_t)caps[0]));
 }
 /* String#rindex(regexp, start): last match whose start is at or before char
    position `start`, as a char index (nil on miss). */
@@ -1040,7 +1048,7 @@ sp_oint sp_re_rindex_from_opt(mrb_regexp_pattern *pat, const char *str, sp_int s
        is 1), and jumping to the match end skipped it */
     pos = (int64_t)at + 1;
   }
-  return last < 0 ? sp_oint_nil() : sp_oint_of(sp_str_count_chars(str, (size_t)last));
+  return last < 0 ? sp_oint_nil() : sp_oint_of(sp_re_char_index(str, (size_t)last));
 }
 sp_RbVal sp_re_match_poly(mrb_regexp_pattern *pat, const char *str) {SP_GC_ROOT_STR(str); sp_int n = sp_re_match(pat, str); return n < 0 ? sp_box_nil() : sp_box_int(sp_str_byte_to_char(str, n)); }  /* char offset (#3056) */
 /* Value of the named group `name` from the most recent match registers (set by
@@ -1489,7 +1497,7 @@ sp_PolyArray *sp_MatchData_aref_len(sp_MatchData *m, sp_int start, sp_int len) {
 /* char offset of a byte position within source */
 sp_oint sp_md_char_off(sp_MatchData *m, int byteoff) {SP_GC_ROOT(m);
   if (byteoff < 0) return sp_oint_nil();
-  return sp_oint_of(sp_str_count_chars(m->source, (size_t)byteoff));
+  return sp_oint_of(sp_re_char_index(m->source, (size_t)byteoff));
 }
 /* An index outside the match's groups is CRuby's IndexError, not nil (#3626). */
 static void sp_md_check_index(sp_MatchData *m, sp_int i) {
