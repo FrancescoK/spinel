@@ -2270,6 +2270,11 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
     if (cf_scalar_answer(nm)) {
       cf_add_set(f, v, cf_bv_set(f));
       cf_kval(f, v);
+      /* an OpenStruct reads such a name as its member (ostruct_member_name),
+         whose value is one of its contents (an OpenStruct of a parsed
+         document's, `doc.size.max`) */
+      int rs = recv_el >= 0 ? cf_set_of(f, recv_el) : CF_EMPTY;
+      if (rs != CF_EMPTY && (rs == CF_ALL || f->pool[rs].os) && ostruct_member_name(nm)) cf_load(f, recv_el, v);
       return;
     }
     if (cf_element_answer(nm)) {

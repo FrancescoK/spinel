@@ -3,8 +3,8 @@
 # OpenStruct, beside an Array or a String: the receiver's dispatch answered
 # the containers' size 0, first nil or max NoMethodError for it. That holds
 # for JSON.parse(s, object_class: OpenStruct), which makes every object of
-# the document an OpenStruct: on the document, a nested object and an
-# object inside an Array.
+# the document an OpenStruct: on the document, a nested object, an object
+# inside an Array and a member that is itself an OpenStruct.
 require "json"
 require "ostruct"
 
@@ -23,3 +23,7 @@ list = JSON.parse('[{"sum": 5}, {"sum": 6}]', object_class: OpenStruct)
 p list[0].sum
 p list.size
 p list.map(&:sum)
+
+nested = JSON.parse('{"size": {"max": 7}}', object_class: OpenStruct)
+p nested.size.max
+p [OpenStruct.new(size: OpenStruct.new(max: 9)), [1, 2]].first.size.max
