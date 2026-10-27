@@ -47428,6 +47428,190 @@ static void desugar_literal_const_get(Compiler *c) {
   }
 }
 
+/* A step of an analysis phase: `call` runs with the pass's name `nm` on the
+   node table, the name the nodes it appends are named after (nt_set_pass).
+   The name before the step is back after it, so a step inside a step names
+   what it appends itself. AN_STEP is an int expression, AN_STEP_V a
+   statement. The phase lists call their passes through these rather than
+   through AN_PASS, whose memo boundaries, tree skip and --timing rows are
+   the fixpoint's: around the phase lists' calls they would change what the
+   memo keeps, which passes run, and the --timing report. */
+#define AN_STEP(nm, call) ({ const char *_stp = nt_set_pass((NodeTable *)c->nt, (nm)); int _str = (call); \
+  nt_set_pass((NodeTable *)c->nt, _stp); _str; })
+#define AN_STEP_V(nm, call) do { const char *_stp = nt_set_pass((NodeTable *)c->nt, (nm)); call; \
+  nt_set_pass((NodeTable *)c->nt, _stp); } while (0)
+
+/* `Struct.send(:new, :a)`, `Data.public_send(:define, :x)`: a class
+   maker reached through a literal-name send. The send is retargeted onto
+   the direct call only inside the fixpoint, after the passes that register
+   the class it makes have run, so `P = Data.send(:define, :x)` left P
+   undefined and its first use raised NameError. Retarget these here, as
+   the later pass would. */
+static void desugar_send_class_makers(Compiler *c) {
+  NodeTable *ntm = (NodeTable *)c->nt;
+  int n0 = ntm->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(ntm, id) != NK_CallNode) continue;
+    const char *nm = nt_str(ntm, id, "name");
+    if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__"))) continue;
+    int rv = nt_ref(ntm, id, "receiver");
+    if (rv < 0 || nt_kind(ntm, rv) != NK_ConstantReadNode) continue;
+    const char *rn = nt_str(ntm, rv, "name");
+    int sa = nt_ref(ntm, id, "arguments"), sac = 0;
+    const int *sav = sa >= 0 ? nt_arr(ntm, sa, "arguments", &sac) : NULL;
+    if (sac < 1 || nt_kind(ntm, sav[0]) != NK_SymbolNode) continue;
+    const char *mn = nt_str(ntm, sav[0], "value");
+    if (!rn || !mn) continue;
+    int maker = (sp_streq(mn, "new") && (sp_streq(rn, "Struct") || sp_streq(rn, "Class"))) ||
+                (sp_streq(mn, "define") && sp_streq(rn, "Data"));
+    if (!maker) continue;
+    int rest[64], nrest = sac - 1;
+    if (nrest > 64) continue;
+    for (int k = 0; k < nrest; k++) rest[k] = sav[k + 1];
+    int na = nt_new_node(ntm, "ArgumentsNode");
+    if (na < 0) continue;
+    comp_grow_node_arrays(c);
+    c->nscope[na] = c->nscope[id];
+    nt_node_set_arr(ntm, na, "arguments", rest, nrest);
+    char mbuf[16]; snprintf(mbuf, sizeof mbuf, "%s", mn);
+    nt_node_set_str(ntm, id, "name", mbuf);
+    nt_node_set_ref(ntm, id, "arguments", nrest > 0 ? na : -1);
+  }
+}
+/* `class Inner < self` written in a class's body: self is that class,
+   so the superclass names it (activerecord's Promise::Complete <
+   Promise). Classes are registered under their last name, and the name
+   resolves to the class inside its own body. In a module's body, or in
+   `class << self`, self is no superclass and is refused below. */
+static void desugar_self_superclass(Compiler *c) {
+  NodeTable *ntc = (NodeTable *)c->nt;
+  int n0 = ntc->count;
+  for (int p = 0; p < n0; p++) {
+    if (nt_kind(ntc, p) != NK_ClassNode) continue;
+    int cp = nt_ref(ntc, p, "constant_path");
+    const char *pn = cp >= 0 ? nt_str(ntc, cp, "name") : NULL;
+    int body = nt_ref(ntc, p, "body");
+    if (!pn || body < 0 || nt_kind(ntc, body) != NK_StatementsNode) continue;
+    int bn = 0; const int *bb = nt_arr(ntc, body, "body", &bn);
+    for (int k = 0; k < bn; k++) {
+      int st = bb[k];
+      if (nt_kind(ntc, st) != NK_ClassNode) continue;
+      int sc = nt_ref(ntc, st, "superclass");
+      if (sc < 0 || nt_kind(ntc, sc) != NK_SelfNode) continue;
+      int cr = nt_new_node(ntc, "ConstantReadNode");
+      if (cr < 0) continue;
+      nt_node_set_str(ntc, cr, "name", pn);
+      comp_grow_node_arrays(c);
+      c->nscope[cr] = c->nscope[sc];
+      nt_node_set_ref(ntc, st, "superclass", cr);
+      bb = nt_arr(ntc, body, "body", &bn);   /* the table may have moved */
+    }
+  }
+}
+/* `RetryOptions = Options.new(:max, :interval)` where Options < Struct:
+   the Struct.new class below Options, as in superclass position below */
+static void desugar_struct_subclass_new_write(Compiler *c) {
+  NodeTable *ntc = (NodeTable *)c->nt;
+  int n0 = ntc->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(ntc, id) != NK_ConstantWriteNode) continue;
+    int v = nt_ref(ntc, id, "value");
+    if (v < 0 || nt_kind(ntc, v) != NK_CallNode || !sp_streq(nt_str(ntc, v, "name"), "new")) continue;
+    int rv = nt_ref(ntc, v, "receiver");
+    if (rv < 0 || (nt_kind(ntc, rv) != NK_ConstantReadNode && nt_kind(ntc, rv) != NK_ConstantPathNode)) continue;
+    if (!struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) continue;
+    char kbuf[256];
+    snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
+    int st = nt_new_node(ntc, "ConstantReadNode");
+    if (st < 0) continue;
+    nt_node_set_str(ntc, st, "name", "Struct");
+    comp_grow_node_arrays(c);
+    c->nscope[st] = c->nscope[rv];
+    nt_node_set_ref(ntc, v, "receiver", st);
+    nt_node_set_str(ntc, id, "struct_parent", kbuf);
+  }
+}
+/* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
+   parentheses around one expression. Anything else -- `(A rescue B)`,
+   `(x; Base)`, a local variable -- was read as no superclass and the class
+   silently became a subclass of Object: refuse it. Of the calls, only the
+   class makers are read: `Struct.new(..)`, `Data.define(..)`, and
+   `Class.new` / `Class.new(Base)` without a block, whose anonymous class
+   adds nothing, so the class inherits Base directly. Any other call
+   (`class A < f`) was Object as well. */
+static void refuse_superclass_exprs(Compiler *c) {
+  NodeTable *ntc = (NodeTable *)c->nt;
+  for (int id = 0; id < ntc->count; id++) {
+    if (nt_kind(ntc, id) != NK_ClassNode) continue;
+    int sc = nt_ref(ntc, id, "superclass");
+    if (sc < 0) continue;
+    NodeKind sk = nt_kind(ntc, sc);
+    if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) continue;
+    const char *what = nt_type(ntc, sc);
+    if (sk == NK_CallNode) {
+      if (is_struct_call(c, sc)) continue;
+      int rv = nt_ref(ntc, sc, "receiver");
+      const char *mn = nt_str(ntc, sc, "name");
+      /* `class RetryOptions < Options.new(:max, :interval)` where Options <
+         Struct: the Struct.new class below Options, which becomes its
+         parent (#9292) */
+      if (rv >= 0 && (nt_kind(ntc, rv) == NK_ConstantReadNode || nt_kind(ntc, rv) == NK_ConstantPathNode) &&
+          mn && sp_streq(mn, "new") && struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) {
+        char kbuf[256];
+        snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
+        int st = nt_new_node(ntc, "ConstantReadNode");
+        if (st >= 0) {
+          nt_node_set_str(ntc, st, "name", "Struct");
+          comp_grow_node_arrays(c);
+          c->nscope[st] = c->nscope[rv];
+          nt_node_set_ref(ntc, sc, "receiver", st);
+          nt_node_set_str(ntc, id, "struct_parent", kbuf);
+          continue;
+        }
+      }
+      int ca = nt_ref(ntc, sc, "arguments"), ac = 0;
+      const int *av = ca >= 0 ? nt_arr(ntc, ca, "arguments", &ac) : NULL;
+      if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
+          sp_streq(nt_str(ntc, rv, "name"), "Class") && mn && sp_streq(mn, "new") &&
+          nt_ref(ntc, sc, "block") < 0) {
+        /* the anonymous class in between is remembered: reflection
+           that would name it is refused (resolve_parents) */
+        if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); nt_node_set_int(ntc, id, "anon_super", 1); continue; }
+        if (ac == 1 && (nt_kind(ntc, av[0]) == NK_ConstantReadNode ||
+                        nt_kind(ntc, av[0]) == NK_ConstantPathNode)) {
+          nt_node_set_ref(ntc, id, "superclass", av[0]);
+          nt_node_set_int(ntc, id, "anon_super", 1);
+          continue;
+        }
+      }
+      what = "a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)";
+    }
+    int ln = (int)nt_int(ntc, id, "node_line", 0);
+    const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
+    if (!file || !*file) file = ntc->source_file;
+    if (!file || !*file) file = "source.rb";
+    fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
+                    "write the superclass as a constant\n", file, ln, what);
+    exit(1);
+  }
+}
+/* A block written with its own rescue clause (`do ... rescue ... end`) has a
+   BeginNode where every other block has a StatementsNode, so the body read as
+   empty and the block's value was nil. Wrap it once here (#3710). */
+static void desugar_rescue_block_bodies(Compiler *c) {
+  NodeTable *ntm = (NodeTable *)c->nt;
+  int n0 = ntm->count;
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(ntm, id) != NK_BlockNode) continue;
+    int bd = nt_ref(ntm, id, "body");
+    if (bd < 0 || nt_kind(ntm, bd) == NK_StatementsNode) continue;
+    int st = nt_new_node(ntm, "StatementsNode");
+    if (st < 0) continue;
+    nt_node_set_arr(ntm, st, "body", &bd, 1);
+    nt_node_set_ref(ntm, id, "body", st);
+    comp_grow_node_arrays(c);
+  }
+}
 static void an_phase_desugar_register(Compiler *c) {
   comp_poly_candidates_reset();
   comp_descendants_reset();
@@ -47441,10 +47625,10 @@ static void an_phase_desugar_register(Compiler *c) {
   if (g_exc_abort) reject_exc_abort_constructs(c);
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
-  desugar_static_class_eval(c);
+  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c));
   /* a class body's loop over a constant table that defines constants and
      classes, run now: its classes are written ones for every pass below */
-  desugar_table_loops(c);
+  AN_STEP_V("desugar_table_loops", desugar_table_loops(c));
   /* `m(&nil)` is the blockless call */
   desugar_nil_block_arg(c);
   desugar_thread_start(c);               /* Thread.start / .fork -> Thread.new */
@@ -47452,14 +47636,14 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_socket_open(c);                /* TCPSocket.open(h, p) -> TCPSocket.new(h, p) */
   desugar_system_options(c);             /* system(..., out:) -> spawn + wait */
   desugar_io_popen_block(c);             /* IO.popen(cmd) { } -> pipe + spawn + wait */
-  desugar_user_backtick(c);              /* `cmd` -> `("cmd") beside a def of ` */
-  desugar_literal_undef_method(c);       /* undef_method :a in a body -> undef a */
-  desugar_explicit_initialize_calls(c);  /* initialize(x) in a method -> a copy of it as a method */
-  desugar_noarg_display_wrappers(c);     /* def inspect(i = 0) -> + `__noarg inspect` = inspect */
+  AN_STEP_V("desugar_user_backtick", desugar_user_backtick(c));              /* `cmd` -> `("cmd") beside a def of ` */
+  AN_STEP_V("desugar_literal_undef_method", desugar_literal_undef_method(c));       /* undef_method :a in a body -> undef a */
+  AN_STEP_V("desugar_explicit_initialize_calls", desugar_explicit_initialize_calls(c));  /* initialize(x) in a method -> a copy of it as a method */
+  AN_STEP_V("desugar_noarg_display_wrappers", desugar_noarg_display_wrappers(c));     /* def inspect(i = 0) -> + `__noarg inspect` = inspect */
   /* a bare constant CRuby's lookup cannot reach, bound by its leaf name to a
      nested definition: refused while the source still says where each
      reference is written */
-  refuse_unreachable_bare_constants(c);
+  AN_STEP_V("refuse_unreachable_bare_constants", refuse_unreachable_bare_constants(c));
 
   /* `&(expr)`: the parentheses carry no meaning for a block argument, but they
      hide the expression from every shape check downstream (`&blk` as a proc
@@ -47504,319 +47688,153 @@ static void an_phase_desugar_register(Compiler *c) {
       }
     }
   }
-  /* `Struct.send(:new, :a)`, `Data.public_send(:define, :x)`: a class
-     maker reached through a literal-name send. The send is retargeted onto
-     the direct call only inside the fixpoint, after the passes that register
-     the class it makes have run, so `P = Data.send(:define, :x)` left P
-     undefined and its first use raised NameError. Retarget these here, as
-     the later pass would. */
-  {
-    NodeTable *ntm = (NodeTable *)c->nt;
-    int n0 = ntm->count;
-    for (int id = 0; id < n0; id++) {
-      if (nt_kind(ntm, id) != NK_CallNode) continue;
-      const char *nm = nt_str(ntm, id, "name");
-      if (!nm || !(sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__"))) continue;
-      int rv = nt_ref(ntm, id, "receiver");
-      if (rv < 0 || nt_kind(ntm, rv) != NK_ConstantReadNode) continue;
-      const char *rn = nt_str(ntm, rv, "name");
-      int sa = nt_ref(ntm, id, "arguments"), sac = 0;
-      const int *sav = sa >= 0 ? nt_arr(ntm, sa, "arguments", &sac) : NULL;
-      if (sac < 1 || nt_kind(ntm, sav[0]) != NK_SymbolNode) continue;
-      const char *mn = nt_str(ntm, sav[0], "value");
-      if (!rn || !mn) continue;
-      int maker = (sp_streq(mn, "new") && (sp_streq(rn, "Struct") || sp_streq(rn, "Class"))) ||
-                  (sp_streq(mn, "define") && sp_streq(rn, "Data"));
-      if (!maker) continue;
-      int rest[64], nrest = sac - 1;
-      if (nrest > 64) continue;
-      for (int k = 0; k < nrest; k++) rest[k] = sav[k + 1];
-      int na = nt_new_node(ntm, "ArgumentsNode");
-      if (na < 0) continue;
-      comp_grow_node_arrays(c);
-      c->nscope[na] = c->nscope[id];
-      nt_node_set_arr(ntm, na, "arguments", rest, nrest);
-      char mbuf[16]; snprintf(mbuf, sizeof mbuf, "%s", mn);
-      nt_node_set_str(ntm, id, "name", mbuf);
-      nt_node_set_ref(ntm, id, "arguments", nrest > 0 ? na : -1);
-    }
-  }
-  /* A superclass is a constant or a call (`Struct.new(:a)`); the parser peels
-     parentheses around one expression. Anything else -- `(A rescue B)`,
-     `(x; Base)`, a local variable -- was read as no superclass and the class
-     silently became a subclass of Object: refuse it. Of the calls, only the
-     class makers are read: `Struct.new(..)`, `Data.define(..)`, and
-     `Class.new` / `Class.new(Base)` without a block, whose anonymous class
-     adds nothing, so the class inherits Base directly. Any other call
-     (`class A < f`) was Object as well. */
-  /* `class Inner < self` written in a class's body: self is that class,
-     so the superclass names it (activerecord's Promise::Complete <
-     Promise). Classes are registered under their last name, and the name
-     resolves to the class inside its own body. In a module's body, or in
-     `class << self`, self is no superclass and is refused below. */
-  {
-    NodeTable *ntc = (NodeTable *)c->nt;
-    int n0 = ntc->count;
-    for (int p = 0; p < n0; p++) {
-      if (nt_kind(ntc, p) != NK_ClassNode) continue;
-      int cp = nt_ref(ntc, p, "constant_path");
-      const char *pn = cp >= 0 ? nt_str(ntc, cp, "name") : NULL;
-      int body = nt_ref(ntc, p, "body");
-      if (!pn || body < 0 || nt_kind(ntc, body) != NK_StatementsNode) continue;
-      int bn = 0; const int *bb = nt_arr(ntc, body, "body", &bn);
-      for (int k = 0; k < bn; k++) {
-        int st = bb[k];
-        if (nt_kind(ntc, st) != NK_ClassNode) continue;
-        int sc = nt_ref(ntc, st, "superclass");
-        if (sc < 0 || nt_kind(ntc, sc) != NK_SelfNode) continue;
-        int cr = nt_new_node(ntc, "ConstantReadNode");
-        if (cr < 0) continue;
-        nt_node_set_str(ntc, cr, "name", pn);
-        comp_grow_node_arrays(c);
-        c->nscope[cr] = c->nscope[sc];
-        nt_node_set_ref(ntc, st, "superclass", cr);
-        bb = nt_arr(ntc, body, "body", &bn);   /* the table may have moved */
-      }
-    }
-  }
-  /* `RetryOptions = Options.new(:max, :interval)` where Options < Struct:
-     the Struct.new class below Options, as in superclass position below */
-  {
-    NodeTable *ntc = (NodeTable *)c->nt;
-    int n0 = ntc->count;
-    for (int id = 0; id < n0; id++) {
-      if (nt_kind(ntc, id) != NK_ConstantWriteNode) continue;
-      int v = nt_ref(ntc, id, "value");
-      if (v < 0 || nt_kind(ntc, v) != NK_CallNode || !sp_streq(nt_str(ntc, v, "name"), "new")) continue;
-      int rv = nt_ref(ntc, v, "receiver");
-      if (rv < 0 || (nt_kind(ntc, rv) != NK_ConstantReadNode && nt_kind(ntc, rv) != NK_ConstantPathNode)) continue;
-      if (!struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) continue;
-      char kbuf[256];
-      snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
-      int st = nt_new_node(ntc, "ConstantReadNode");
-      if (st < 0) continue;
-      nt_node_set_str(ntc, st, "name", "Struct");
-      comp_grow_node_arrays(c);
-      c->nscope[st] = c->nscope[rv];
-      nt_node_set_ref(ntc, v, "receiver", st);
-      nt_node_set_str(ntc, id, "struct_parent", kbuf);
-    }
-  }
-  {
-    NodeTable *ntc = (NodeTable *)c->nt;
-    for (int id = 0; id < ntc->count; id++) {
-      if (nt_kind(ntc, id) != NK_ClassNode) continue;
-      int sc = nt_ref(ntc, id, "superclass");
-      if (sc < 0) continue;
-      NodeKind sk = nt_kind(ntc, sc);
-      if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) continue;
-      const char *what = nt_type(ntc, sc);
-      if (sk == NK_CallNode) {
-        if (is_struct_call(c, sc)) continue;
-        int rv = nt_ref(ntc, sc, "receiver");
-        const char *mn = nt_str(ntc, sc, "name");
-        /* `class RetryOptions < Options.new(:max, :interval)` where Options <
-           Struct: the Struct.new class below Options, which becomes its
-           parent (#9292) */
-        if (rv >= 0 && (nt_kind(ntc, rv) == NK_ConstantReadNode || nt_kind(ntc, rv) == NK_ConstantPathNode) &&
-            mn && sp_streq(mn, "new") && struct_subclass_maker(ntc, nt_str(ntc, rv, "name"), 0)) {
-          char kbuf[256];
-          snprintf(kbuf, sizeof kbuf, "%s", nt_str(ntc, rv, "name"));
-          int st = nt_new_node(ntc, "ConstantReadNode");
-          if (st >= 0) {
-            nt_node_set_str(ntc, st, "name", "Struct");
-            comp_grow_node_arrays(c);
-            c->nscope[st] = c->nscope[rv];
-            nt_node_set_ref(ntc, sc, "receiver", st);
-            nt_node_set_str(ntc, id, "struct_parent", kbuf);
-            continue;
-          }
-        }
-        int ca = nt_ref(ntc, sc, "arguments"), ac = 0;
-        const int *av = ca >= 0 ? nt_arr(ntc, ca, "arguments", &ac) : NULL;
-        if (rv >= 0 && nt_kind(ntc, rv) == NK_ConstantReadNode &&
-            sp_streq(nt_str(ntc, rv, "name"), "Class") && mn && sp_streq(mn, "new") &&
-            nt_ref(ntc, sc, "block") < 0) {
-          /* the anonymous class in between is remembered: reflection
-             that would name it is refused (resolve_parents) */
-          if (ac == 0) { nt_node_set_ref(ntc, id, "superclass", -1); nt_node_set_int(ntc, id, "anon_super", 1); continue; }
-          if (ac == 1 && (nt_kind(ntc, av[0]) == NK_ConstantReadNode ||
-                          nt_kind(ntc, av[0]) == NK_ConstantPathNode)) {
-            nt_node_set_ref(ntc, id, "superclass", av[0]);
-            nt_node_set_int(ntc, id, "anon_super", 1);
-            continue;
-          }
-        }
-        what = "a call other than Struct.new, Data.define, a Struct subclass's new or a blockless Class.new(Constant)";
-      }
-      int ln = (int)nt_int(ntc, id, "node_line", 0);
-      const char *file = nt_file_path(ntc, (int)nt_int(ntc, id, "node_file", 0));
-      if (!file || !*file) file = ntc->source_file;
-      if (!file || !*file) file = "source.rb";
-      fprintf(stderr, "spinel: %s:%d: unsupported superclass expression (%s): "
-                      "write the superclass as a constant\n", file, ln, what);
-      exit(1);
-    }
-  }
-  /* A block written with its own rescue clause (`do ... rescue ... end`) has a
-     BeginNode where every other block has a StatementsNode, so the body read as
-     empty and the block's value was nil. Wrap it once here (#3710). */
-  {
-    NodeTable *ntm = (NodeTable *)c->nt;
-    int n0 = ntm->count;
-    for (int id = 0; id < n0; id++) {
-      if (nt_kind(ntm, id) != NK_BlockNode) continue;
-      int bd = nt_ref(ntm, id, "body");
-      if (bd < 0 || nt_kind(ntm, bd) == NK_StatementsNode) continue;
-      int st = nt_new_node(ntm, "StatementsNode");
-      if (st < 0) continue;
-      nt_node_set_arr(ntm, st, "body", &bd, 1);
-      nt_node_set_ref(ntm, id, "body", st);
-      comp_grow_node_arrays(c);
-    }
-  }
-  desugar_cext_decls(c);
+  AN_STEP_V("desugar_send_class_makers", desugar_send_class_makers(c));
+  AN_STEP_V("desugar_self_superclass", desugar_self_superclass(c));
+  AN_STEP_V("desugar_struct_subclass_new_write", desugar_struct_subclass_new_write(c));
+  AN_STEP_V("refuse_superclass_exprs", refuse_superclass_exprs(c));
+  AN_STEP_V("desugar_rescue_block_bodies", desugar_rescue_block_bodies(c));
+  AN_STEP_V("desugar_cext_decls", desugar_cext_decls(c));
   mark_sym_proc_blocks(c);               /* { |_spx| _spx.m } is `&:m` */
   desugar_body_local_scopes(c);          /* a class body local -> a name of its own */
   desugar_root_scoped_constants(c);      /* ::Name -> Name (#4801) */
   desugar_errno_aliases(c);             /* Errno::EWOULDBLOCK -> Errno::EAGAIN where they share a number */
   desugar_builtin_reopen_named_superclass(c); /* class Rational < Numeric -> class Rational */
   desugar_builtin_reopen_self_class(c);  /* self.class in a reopened Hash -> Hash */
-  desugar_time_singleton_bare_ctor(c);   /* bare `at` in a Time class method -> Time.at */
+  AN_STEP_V("desugar_time_singleton_bare_ctor", desugar_time_singleton_bare_ctor(c));   /* bare `at` in a Time class method -> Time.at */
   desugar_builtin_method_defined_conds(c);  /* unless String.method_defined?(:m) -> unless true */
-  desugar_builtin_reopen_self_cmethods(c); /* self.sqrt in an Integer class method -> Integer.sqrt */
-  desugar_engine_branches(c);
+  AN_STEP_V("desugar_builtin_reopen_self_cmethods", desugar_builtin_reopen_self_cmethods(c)); /* self.sqrt in an Integer class method -> Integer.sqrt */
+  AN_STEP_V("desugar_engine_branches", desugar_engine_branches(c));
   desugar_paren_def_body(c);            /* def m = (a; b) -> def m; a; b; end */
   desugar_def_unless_method_defined(c); /* def m .. end unless method_defined?(:m), answered in program order --
                                            ahead of the runtime-condition defs, which it answers statically */
-  desugar_class_body_self_calls(c);     /* self.v = x / v in a class body -> Cls.v = x / Cls.v */
-  desugar_conditional_defs(c);
+  AN_STEP_V("desugar_class_body_self_calls", desugar_class_body_self_calls(c));     /* self.v = x / v in a class body -> Cls.v = x / Cls.v */
+  AN_STEP_V("desugar_conditional_defs", desugar_conditional_defs(c));
   mark_match_ranges(c);                  /* when 0..0.05 matches as 0.0..0.05 */
-  desugar_duplicate_underscore_params(c); /* |_, _| -> |_, _dup1| */
-  desugar_encoding_queries(c);          /* Encoding.default_internal -> nil, find("x") -> a constant */
+  AN_STEP_V("desugar_duplicate_underscore_params", desugar_duplicate_underscore_params(c)); /* |_, _| -> |_, _dup1| */
+  AN_STEP_V("desugar_encoding_queries", desugar_encoding_queries(c));          /* Encoding.default_internal -> nil, find("x") -> a constant */
   desugar_alias_method_string_names(c); /* alias_method "k", "y" -> alias_method :k, :y */
-  desugar_alias_method_values(c);       /* r = alias_method :a, :b -> alias_method :a, :b; r = :a */
-  desugar_inherited_aliases(c);         /* alias_method :next, :inherited_m -> a forwarding def */
-  desugar_reader_aliases_before_redef(c); /* attr_reader :v; alias w v; def v -> def w = @v */
-  desugar_readers_over_inherited_defs(c); /* def r in Base; attr_reader :r in Sub < Base -> Sub: def r = @r */
-  desugar_reassigned_block_params(c);   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
-  desugar_instance_eval_defs(c);         /* K.instance_eval { def m } -> K.class_eval { def K.m } */
+  AN_STEP_V("desugar_alias_method_values", desugar_alias_method_values(c));       /* r = alias_method :a, :b -> alias_method :a, :b; r = :a */
+  AN_STEP_V("desugar_inherited_aliases", desugar_inherited_aliases(c));         /* alias_method :next, :inherited_m -> a forwarding def */
+  AN_STEP_V("desugar_reader_aliases_before_redef", desugar_reader_aliases_before_redef(c)); /* attr_reader :v; alias w v; def v -> def w = @v */
+  AN_STEP_V("desugar_readers_over_inherited_defs", desugar_readers_over_inherited_defs(c)); /* def r in Base; attr_reader :r in Sub < Base -> Sub: def r = @r */
+  AN_STEP_V("desugar_reassigned_block_params", desugar_reassigned_block_params(c));   /* |p| p = other -> |p__bpin| p = p__bpin; p = other */
+  AN_STEP_V("desugar_instance_eval_defs", desugar_instance_eval_defs(c));         /* K.instance_eval { def m } -> K.class_eval { def K.m } */
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
-  desugar_inline_struct_blocks(c);      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
-  desugar_singleton_class_meta(c);      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
-  desugar_class_new_blocks(c);           /* X = Class.new(B) do..end -> class X < B; ..; end */
+  AN_STEP_V("desugar_inline_struct_blocks", desugar_inline_struct_blocks(c));      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
+  AN_STEP_V("desugar_singleton_class_meta", desugar_singleton_class_meta(c));      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
+  AN_STEP_V("desugar_class_new_blocks", desugar_class_new_blocks(c));           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_struct_block_anonymous(c);    /* Point = Struct.new do p self end: anonymous until written */
-  desugar_singleton_body_self(c);       /* class << X; p self; end -> refused */
-  desugar_included_hooks(c);             /* include M / extend M -> M.included/extended(base)'s body */
-  desugar_eval_method_block(c);          /* k.class_eval(&o.method(:m)) -> o.m(k) */
-  desugar_inherited_hooks(c);            /* class A < B -> B.inherited(A) first in A's body */
+  AN_STEP_V("desugar_singleton_body_self", desugar_singleton_body_self(c));       /* class << X; p self; end -> refused */
+  AN_STEP_V("desugar_included_hooks", desugar_included_hooks(c));             /* include M / extend M -> M.included/extended(base)'s body */
+  AN_STEP_V("desugar_eval_method_block", desugar_eval_method_block(c));          /* k.class_eval(&o.method(:m)) -> o.m(k) */
+  AN_STEP_V("desugar_inherited_hooks", desugar_inherited_hooks(c));            /* class A < B -> B.inherited(A) first in A's body */
   /* a hook body spliced into its includer can carry a class_eval "<text>"
      of its own (`base.class_eval do class_eval "..." end`): graft it as the
      first pass did the includer's own */
-  desugar_static_class_eval(c);
-  desugar_class_body_object_acts(c);     /* class B; tap { } -> self.tap { } */
+  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c));
+  AN_STEP_V("desugar_class_body_object_acts", desugar_class_body_object_acts(c));     /* class B; tap { } -> self.tap { } */
   desugar_nil_block_arg(c);
-  desugar_literal_const_get(c);          /* Object.const_get("A::B") -> A::B */
+  AN_STEP_V("desugar_literal_const_get", desugar_literal_const_get(c));          /* Object.const_get("A::B") -> A::B */
   desugar_itself_receiver(c);           /* x.itself -> x (--share-strings) */
-  desugar_tap_value_write(c);            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
-  desugar_self_const_get(c);            /* const_get(:X) / self::X in a class method -> per subclass */
-  desugar_dynamic_const_get(c);          /* M.const_get(expr) -> a table of M's constants */
-  desugar_builtin_reopen_self_calls(c);  /* class Hash; def m = each {..} -> self.each */
-  desugar_builtin_ivars(c);              /* class Array; def m = @x -> self.__bivar_get(:@x) */
-  desugar_object_method_builtin_overrides(c); /* Hash#m + Object#m -> Object#m branching on self */
-  desugar_builtin_reopen_methods(c);     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
-  desugar_const_ivar_access(c);          /* C.instance_variable_set(:@x, v) -> C.__spinel_civset_x(v) */
-  desugar_class_eval_ivars(c);           /* C.class_eval { @x = v } -> C.class_eval { C.__spinel_civset_x(v) } */
-  desugar_body_ivars(c);                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
-  desugar_extended_module_attrs(c);
-  desugar_blk_param_writes(c);           /* `blk = proc {}` on a &blk param -> a fresh local */
-  desugar_rest_param_writes(c);          /* `args = args.first` on a *args param -> a fresh local */
-  desugar_yield_in_closure(c);           /* `yield` inside proc { } -> blk.call(...) */
-  desugar_safe_nav_attr_write(c);        /* r&.a op= v -> (t = r; t.nil? ? nil : t.a op= v) */
-  desugar_const_attr_op_assign(c);       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
+  AN_STEP_V("desugar_tap_value_write", desugar_tap_value_write(c));            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
+  AN_STEP_V("desugar_self_const_get", desugar_self_const_get(c));            /* const_get(:X) / self::X in a class method -> per subclass */
+  AN_STEP_V("desugar_dynamic_const_get", desugar_dynamic_const_get(c));          /* M.const_get(expr) -> a table of M's constants */
+  AN_STEP_V("desugar_builtin_reopen_self_calls", desugar_builtin_reopen_self_calls(c));  /* class Hash; def m = each {..} -> self.each */
+  AN_STEP_V("desugar_builtin_ivars", desugar_builtin_ivars(c));              /* class Array; def m = @x -> self.__bivar_get(:@x) */
+  AN_STEP_V("desugar_object_method_builtin_overrides", desugar_object_method_builtin_overrides(c)); /* Hash#m + Object#m -> Object#m branching on self */
+  AN_STEP_V("desugar_builtin_reopen_methods", desugar_builtin_reopen_methods(c));     /* class Hash; def m -> Object#m guarded by is_a?(Hash) */
+  AN_STEP_V("desugar_const_ivar_access", desugar_const_ivar_access(c));          /* C.instance_variable_set(:@x, v) -> C.__spinel_civset_x(v) */
+  AN_STEP_V("desugar_class_eval_ivars", desugar_class_eval_ivars(c));           /* C.class_eval { @x = v } -> C.class_eval { C.__spinel_civset_x(v) } */
+  AN_STEP_V("desugar_body_ivars", desugar_body_ivars(c));                 /* module-body @x read / in a block -> Mod.__spinel_civget_x */
+  AN_STEP_V("desugar_extended_module_attrs", desugar_extended_module_attrs(c));
+  AN_STEP_V("desugar_blk_param_writes", desugar_blk_param_writes(c));           /* `blk = proc {}` on a &blk param -> a fresh local */
+  AN_STEP_V("desugar_rest_param_writes", desugar_rest_param_writes(c));          /* `args = args.first` on a *args param -> a fresh local */
+  AN_STEP_V("desugar_yield_in_closure", desugar_yield_in_closure(c));           /* `yield` inside proc { } -> blk.call(...) */
+  AN_STEP_V("desugar_safe_nav_attr_write", desugar_safe_nav_attr_write(c));        /* r&.a op= v -> (t = r; t.nil? ? nil : t.a op= v) */
+  AN_STEP_V("desugar_const_attr_op_assign", desugar_const_attr_op_assign(c));       /* Klass.a op= v -> Klass.a = Klass.a op v (a class-level accessor) */
   desugar_body_module_eval(c);           /* self.module_eval do S end in a body -> S */
-  desugar_extend_self(c);                /* `extend self` -> a def self.m twin per def */
-  desugar_kernel_reopen(c);              /* module Kernel; def m -> a top-level def m */
-  desugar_ffi_library_functions(c);   /* attach_function :f -> def self.f (the ffi gem) */
-  desugar_native_func_defs(c);          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
-  desugar_explicit_receiver_mixin(c);    /* K.prepend(M) as a statement -> class K; prepend M; end */
+  AN_STEP_V("desugar_extend_self", desugar_extend_self(c));                /* `extend self` -> a def self.m twin per def */
+  AN_STEP_V("desugar_kernel_reopen", desugar_kernel_reopen(c));              /* module Kernel; def m -> a top-level def m */
+  AN_STEP_V("desugar_ffi_library_functions", desugar_ffi_library_functions(c));   /* attach_function :f -> def self.f (the ffi gem) */
+  AN_STEP_V("desugar_native_func_defs", desugar_native_func_defs(c));          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
+  AN_STEP_V("desugar_explicit_receiver_mixin", desugar_explicit_receiver_mixin(c));    /* K.prepend(M) as a statement -> class K; prepend M; end */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M), class << self; include M -> extend M */
-  desugar_attr_const_splat(c);           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
-  desugar_singleton_attr(c);             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
-  desugar_sclass_readers_through_class(c); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
-  desugar_handle_attr_accessor(c);       /* Thread.attr_accessor :x -> a Thread reopening on its store */
-  desugar_fiber_prepended_init(c);       /* a prepended Fiber#initialize -> __spinel_init run on the new fiber */
-  desugar_handle_ivars(c);               /* @x in a Fiber / Thread reopening or its mixin -> the same store */
+  AN_STEP_V("desugar_attr_const_splat", desugar_attr_const_splat(c));           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
+  AN_STEP_V("desugar_singleton_attr", desugar_singleton_attr(c));             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
+  AN_STEP_V("desugar_sclass_readers_through_class", desugar_sclass_readers_through_class(c)); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
+  AN_STEP_V("desugar_handle_attr_accessor", desugar_handle_attr_accessor(c));       /* Thread.attr_accessor :x -> a Thread reopening on its store */
+  AN_STEP_V("desugar_fiber_prepended_init", desugar_fiber_prepended_init(c));       /* a prepended Fiber#initialize -> __spinel_init run on the new fiber */
+  AN_STEP_V("desugar_handle_ivars", desugar_handle_ivars(c));               /* @x in a Fiber / Thread reopening or its mixin -> the same store */
   desugar_constant_path_self_alias(c);   /* A::B::C = remove_const(:C) (C a class) -> dropped */
   /* builtins/enumerable.rb, spliced by the parser: its definitions become
      the receiver-taking top-level functions before any scope is built */
-  desugar_builtins(c);
-  desugar_stored_enum_each(c);
+  AN_STEP_V("desugar_builtins", desugar_builtins(c));
+  AN_STEP_V("desugar_stored_enum_each", desugar_stored_enum_each(c));
   /* ahead of the per-call-site copies below, which its calls take as a
      written `v + x` does */
-  desugar_reopened_op_write(c);          /* v += x with Integer#+ reopened -> v = v + x */
+  AN_STEP_V("desugar_reopened_op_write", desugar_reopened_op_write(c));          /* v += x with Integer#+ reopened -> v = v + x */
   /* builtins/integer.rb, float.rb, comparable.rb: the same idea, one more
      container per file (analyze_desugar.c's sp_bx_* table) */
-  desugar_builtin_scalar_defs(c);
+  AN_STEP_V("desugar_builtin_scalar_defs", desugar_builtin_scalar_defs(c));
   prog_refuse_order(c);                  /* (--load-model=graph: what these read across files) */
   rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
   version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   scope_numbered_block_params(c);
   desugar_singleton_class_define_method(c); /* singleton_class.define_method -> define_singleton_method */
-  desugar_empty_hash_compare_by_identity(c); /* {}.compare_by_identity -> Hash.new.compare_by_identity */
-  desugar_define_method_proc_arg(c);     /* define_method(:m, -> { }) -> define_method(:m) { } */
-  desugar_module_function_aliases(c);    /* alias_method :n, :x + module_function :n -> def n (x's body) */
+  AN_STEP_V("desugar_empty_hash_compare_by_identity", desugar_empty_hash_compare_by_identity(c)); /* {}.compare_by_identity -> Hash.new.compare_by_identity */
+  AN_STEP_V("desugar_define_method_proc_arg", desugar_define_method_proc_arg(c));     /* define_method(:m, -> { }) -> define_method(:m) { } */
+  AN_STEP_V("desugar_module_function_aliases", desugar_module_function_aliases(c));    /* alias_method :n, :x + module_function :n -> def n (x's body) */
   desugar_define_method_captures(c);     /* class body local a define_method reads -> a global */
-  desugar_define_method_keywords(c);     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
+  AN_STEP_V("desugar_define_method_keywords", desugar_define_method_keywords(c));     /* define_method(:m) { |k: 1| } -> def m(k: 1) */
   name_anon_block_kwrest(c);
   rename_shadowing_block_params(c);
   /* `:m.to_proc.call(r, a)` -> `r.m(a)`, before the to_proc rewrite below
      turns the receiver into a fixed-arity lambda (#3097). */
-  desugar_sym_to_proc_call(c);
-  desugar_enum_chain_shapes(c);          /* each_char.with_index / each.with_object */
-  desugar_enum_chain_shapes(c);          /* 2nd pass: shapes the 1st created (e.g.
+  AN_STEP_V("desugar_sym_to_proc_call", desugar_sym_to_proc_call(c));
+  AN_STEP_V("desugar_enum_chain_shapes", desugar_enum_chain_shapes(c));          /* each_char.with_index / each.with_object */
+  AN_STEP_V("desugar_enum_chain_shapes", desugar_enum_chain_shapes(c));          /* 2nd pass: shapes the 1st created (e.g.
                                             map(&:sym.to_proc): to_proc->lambda first,
                                             then the lambda block attaches) */
-  desugar_builtin_kwsplat(c);
-  desugar_rightward_pattern(c);          /* `x => pat` -> one-arm case/in */
-  desugar_match_predicate(c);            /* `x in pat` -> case/in true/else false */
-  desugar_sort_by_with_index(c);         /* sort_by.with_index -> each_with_index.sort_by */
-  desugar_forwarding_to_rest_callee(c);  /* def m(...) = f(*a, **k) -> anon *, ** */
-  desugar_anon_block_param(c);           /* def m(&) = f(&) -> &__anon_block */
-  desugar_block_implicit_rest(c);        /* |x,| -> |x, __implicit_rest| (destructures) */
-  desugar_multi_value_jump(c);           /* return *a, b -> return [*a, b] */
-  desugar_block_destructure_params(c);   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
-  desugar_for_nonlocal_index(c);         /* for $g in xs -> for __for in xs; $g = __for */
-  desugar_enum_for_with_args(c);         /* return enum_for(__method__, a) unless block_given? -> Enumerator.new { m(a) { } } */
-  desugar_enumerator_produce(c);         /* Enumerator.produce -> fiber generator */
-  desugar_param_default_assigns_local(c); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
-  desugar_recursive_param_defaults(c);   /* def m(x, y = m(..)) -> default helper method */
+  AN_STEP_V("desugar_builtin_kwsplat", desugar_builtin_kwsplat(c));
+  AN_STEP_V("desugar_rightward_pattern", desugar_rightward_pattern(c));          /* `x => pat` -> one-arm case/in */
+  AN_STEP_V("desugar_match_predicate", desugar_match_predicate(c));            /* `x in pat` -> case/in true/else false */
+  AN_STEP_V("desugar_sort_by_with_index", desugar_sort_by_with_index(c));         /* sort_by.with_index -> each_with_index.sort_by */
+  AN_STEP_V("desugar_forwarding_to_rest_callee", desugar_forwarding_to_rest_callee(c));  /* def m(...) = f(*a, **k) -> anon *, ** */
+  AN_STEP_V("desugar_anon_block_param", desugar_anon_block_param(c));           /* def m(&) = f(&) -> &__anon_block */
+  AN_STEP_V("desugar_block_implicit_rest", desugar_block_implicit_rest(c));        /* |x,| -> |x, __implicit_rest| (destructures) */
+  AN_STEP_V("desugar_multi_value_jump", desugar_multi_value_jump(c));           /* return *a, b -> return [*a, b] */
+  AN_STEP_V("desugar_block_destructure_params", desugar_block_destructure_params(c));   /* |a,(b,c),d| -> flat param + `b,c = __destr` */
+  AN_STEP_V("desugar_for_nonlocal_index", desugar_for_nonlocal_index(c));         /* for $g in xs -> for __for in xs; $g = __for */
+  AN_STEP_V("desugar_enum_for_with_args", desugar_enum_for_with_args(c));         /* return enum_for(__method__, a) unless block_given? -> Enumerator.new { m(a) { } } */
+  AN_STEP_V("desugar_enumerator_produce", desugar_enumerator_produce(c));         /* Enumerator.produce -> fiber generator */
+  AN_STEP_V("desugar_param_default_assigns_local", desugar_param_default_assigns_local(c)); /* def m(p = (x = e)) reading x -> sentinel + callee guard */
+  AN_STEP_V("desugar_recursive_param_defaults", desugar_recursive_param_defaults(c));   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
-  elab_program(c);   /* walk_scope of each file's top level, and the load record */
+  AN_STEP_V("elab_program", elab_program(c));   /* walk_scope of each file's top level, and the load record */
   if (g_dump_load_record) { elab_dump(c, stdout); exit(0); }   /* the load phase's points, as the walk leaves them */
-  expand_static_splat_args(c, 0, c->nt->count);
-  register_singleton_defs(c);   /* def CONST.m / def x.m -> synthesized subclass */
+  AN_STEP_V("expand_static_splat_args", expand_static_splat_args(c, 0, c->nt->count));
+  AN_STEP_V("register_singleton_defs", register_singleton_defs(c));   /* def CONST.m / def x.m -> synthesized subclass */
   register_structs(c);
   desugar_struct_index_ctor(c);
   fix_struct_block_scopes(c);
   register_module_functions(c);
   register_locals(c);
-  desugar_block_arg_order(c);   /* recv.m(a, &expr): receiver, args, then the block (#4992) */
+  AN_STEP_V("desugar_block_arg_order", desugar_block_arg_order(c));   /* recv.m(a, &expr): receiver, args, then the block (#4992) */
   register_attrs(c);
   register_method_visibility(c);
   register_aliases(c);
-  rewrite_builtin_alias_self_calls(c, 0);  /* plus_without(o) -> self.+(o), the builtin's */
+  AN_STEP_V("rewrite_builtin_alias_self_calls", rewrite_builtin_alias_self_calls(c, 0));  /* plus_without(o) -> self.+(o), the builtin's */
   register_undefs(c);
   register_globals_consts(c);
-  rewrite_const_alias_receivers(c);
-  rewrite_builtin_cm_alias_calls(c);   /* Time.stamp -> Time.now, the builtin's */
+  AN_STEP_V("rewrite_const_alias_receivers", rewrite_const_alias_receivers(c));
+  AN_STEP_V("rewrite_builtin_cm_alias_calls", rewrite_builtin_cm_alias_calls(c));   /* Time.stamp -> Time.now, the builtin's */
   desugar_env_values(c);
-  register_ffi_decls(c);
-  register_cext_layouts(c);
+  AN_STEP_V("register_ffi_decls", register_ffi_decls(c));
+  AN_STEP_V("register_cext_layouts", register_cext_layouts(c));
   an_const_presence(c);
-  rewrite_const_alias_raise_targets(c);
+  AN_STEP_V("rewrite_const_alias_raise_targets", rewrite_const_alias_raise_targets(c));
 }
 
 /* Rescue-variable typing: each `rescue X => e` binding's slot. */
@@ -47876,38 +47894,38 @@ static void type_rescue_bindings(Compiler *c) {
 static void an_phase_class_structure(Compiler *c) {
   type_rescue_bindings(c);
 
-  resolve_parents(c);
-  desugar_data_positional_new(c);
+  AN_STEP_V("resolve_parents", resolve_parents(c));
+  AN_STEP_V("desugar_data_positional_new", desugar_data_positional_new(c));
   topup_forwarding_arity(c);
-  expand_struct_forwarding_super(c);
+  AN_STEP_V("expand_struct_forwarding_super", expand_struct_forwarding_super(c));
   refuse_super_init_value(c);
   refuse_readonly_global_write(c);
   inherit_members(c);
   reject_dynamic_mixin_args(c);
-  desugar_module_prepends(c);
-  register_includes(c);
+  AN_STEP_V("desugar_module_prepends", desugar_module_prepends(c));
+  AN_STEP_V("register_includes", register_includes(c));
   register_include_attrs(c);
-  register_extends(c);
-  register_prepends(c);
+  AN_STEP_V("register_extends", register_extends(c));
+  AN_STEP_V("register_prepends", register_prepends(c));
   /* again, for the bodies the mixins cloned into their includers: a clone's
      binding is a slot of the copy's own, which the first pass never saw */
   type_rescue_bindings(c);
-  rewrite_prepended_builtin_supers(c);   /* super in a module prepended into Range -> Range's own */
-  rewrite_ivar_reflection_supers(c);     /* super in the program's own ivar reflection -> Object's */
-  desugar_method_added_hook(c);   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
-  desugar_reader_index_write(c);  /* all[k] = v through a reader of @all -> (all; @all[k] = v) */
+  AN_STEP_V("rewrite_prepended_builtin_supers", rewrite_prepended_builtin_supers(c));   /* super in a module prepended into Range -> Range's own */
+  AN_STEP_V("rewrite_ivar_reflection_supers", rewrite_ivar_reflection_supers(c));     /* super in the program's own ivar reflection -> Object's */
+  AN_STEP_V("desugar_method_added_hook", desugar_method_added_hook(c));   /* def in a class body -> def; method_added(:name): needs the parents and extends, and runs before class methods are specialized per class */
+  AN_STEP_V("desugar_reader_index_write", desugar_reader_index_write(c));  /* all[k] = v through a reader of @all -> (all; @all[k] = v) */
   /* again, now that modules have put their methods in: an alias can take an
      inherited method an ancestor got from one */
   resolve_inherited_aliases(c);
   settle_object_builtin_aliases(c);   /* alias original_dup dup: the builtin's, or an ancestor's */
-  settle_mixin_aliases(c);            /* include A; alias_method :b, :a; include B: A's a */
-  rewrite_builtin_alias_self_calls(c, 1);
+  AN_STEP_V("settle_mixin_aliases", settle_mixin_aliases(c));            /* include A; alias_method :b, :a; include B: A's a */
+  AN_STEP_V("rewrite_builtin_alias_self_calls", rewrite_builtin_alias_self_calls(c, 1));
   /* super into Array, X.new / X[], implicit self, in the class's methods and
      the copies its modules put in (#7449) */
-  rewrite_array_subclass_calls(c);
-  rewrite_attr_supers(c);
+  AN_STEP_V("rewrite_array_subclass_calls", rewrite_array_subclass_calls(c));
+  AN_STEP_V("rewrite_attr_supers", rewrite_attr_supers(c));
   rewrite_self_attr_empty_writes(c);
-  specialize_inherited_cls_new(c);
+  AN_STEP_V("specialize_inherited_cls_new", specialize_inherited_cls_new(c));
 
   /* the modules main includes or extends at a file's top level, in the
      order the load phase runs them (the load record's), so bare method
@@ -47928,7 +47946,7 @@ static void an_phase_class_structure(Compiler *c) {
     }
   }
 
-  rewrite_ffi_dynamic_calls(c);   /* Mod.Name / bare Name with no def -> the attached-function table */
+  AN_STEP_V("rewrite_ffi_dynamic_calls", rewrite_ffi_dynamic_calls(c));   /* Mod.Name / bare Name with no def -> the attached-function table */
 
   /* `iterator?` is the deprecated alias of `block_given?`; rename it up front
      (implicit/self receiver) so the block-aware marking and codegen below serve
@@ -48059,15 +48077,15 @@ static void an_phase_class_structure(Compiler *c) {
     }
   }
 
-  synth_struct_each(c);
-  synth_enum_to_a(c);
-  synth_to_enum_generators(c);
+  AN_STEP_V("synth_struct_each", synth_struct_each(c));
+  AN_STEP_V("synth_enum_to_a", synth_enum_to_a(c));
+  AN_STEP_V("synth_to_enum_generators", synth_to_enum_generators(c));
   /* pre-fixpoint: an empty `{}` block-method receiver types as the STR_POLY
      hash so infer_block_params declares its |k, v| params (#2336). */
   mark_empty_hash_receivers(c);
   mark_empty_hash_enum_locals(c);
   mark_empty_literal_tails(c);
-  mark_empty_literal_args(c);
+  AN_STEP_V("mark_empty_literal_args", mark_empty_literal_args(c));
   /* after the arg/receiver marks: a bare `{}` with no other context takes its
      variant from the peer it is compared against (#3040) or from the key it is
      indexed with (#3028, #3029) */
@@ -48075,123 +48093,126 @@ static void an_phase_class_structure(Compiler *c) {
      alongside: none of them creates or renames a scope either, and each crosses
      the node table with method lookups underneath. */
   comp_scope_index_set_frozen(1);
-  mark_mixed_key_hash_locals(c);
-  mark_empty_hash_cmp_peers(c);
+  AN_STEP_V("mark_mixed_key_hash_locals", mark_mixed_key_hash_locals(c));
+  AN_STEP_V("mark_empty_hash_cmp_peers", mark_empty_hash_cmp_peers(c));
   g_eh_pre_infer = 1; comp_touch_global();   /* (a mode inference reads) */
   (void)mark_empty_hash_key_ctx(c);
   g_eh_pre_infer = 0; comp_touch_global();   /* (a mode inference reads) */
-  mark_empty_hash_const_writes(c);
+  AN_STEP_V("mark_empty_hash_const_writes", mark_empty_hash_const_writes(c));
   comp_scope_index_set_frozen(0);
 }
 
 /* Explicit self receivers for implicit-self reads, then the block-forward inlining: a callee whose block is only called or forwarded is inlined at its call sites (analyze_program's steps, in their order) */
+/* A bare identifier inside a class method that names a `class << self`
+   attr reader is an implicit-self read of that singleton attribute; give it
+   an explicit self receiver so it resolves like `self.reader` instead of
+   failing as an undefined local/method (#3108). */
+static void desugar_sclass_reader_self_recv(Compiler *c) {
+  NodeTable *ntm = (NodeTable *)c->nt;
+  int nend = ntm->count;
+  for (int id = 0; id < nend; id++) {
+    if (nt_kind(ntm, id) != NK_CallNode) continue;
+    if (nt_ref(ntm, id, "receiver") >= 0) continue;
+    int args = nt_ref(ntm, id, "arguments"); int ac = 0;
+    if (args >= 0) nt_arr(ntm, args, "arguments", &ac);
+    if (ac != 0 || nt_ref(ntm, id, "block") >= 0) continue;
+    const char *nm = nt_str(ntm, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || !s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+    if (!comp_is_sg_reader(&c->classes[s->class_id], nm)) continue;
+    nt_set_self_receiver(ntm, id, nt_new_node(ntm, "SelfNode"));
+  }
+  if (ntm->count != nend) comp_grow_node_arrays(c);
+}
+/* A receiverless `instance_variable_get`/`_set`/`_defined?` inside an
+   instance method operates on self; give it an explicit self receiver so it
+   lowers through the object-receiver handler instead of failing as an
+   unsupported bare call (#3059). The synthesized SelfNode must inherit the
+   call's scope so infer_type resolves self to the instance (not top-level
+   main), which the return-type fixpoint depends on. */
+static void desugar_ivar_reflection_self_recv(Compiler *c) {
+  NodeTable *ntm = (NodeTable *)c->nt;
+  int nend = ntm->count;
+  int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
+  for (int id = 0; id < nend; id++) {
+    if (nt_kind(ntm, id) != NK_CallNode) continue;
+    if (nt_ref(ntm, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(ntm, id, "name");
+    if (!nm || (!sp_streq(nm, "instance_variable_get") &&
+                !sp_streq(nm, "instance_variable_set") &&
+                !sp_streq(nm, "instance_variable_defined?") &&
+                !sp_streq(nm, "remove_instance_variable"))) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+    int sid = nt_new_node(ntm, "SelfNode");
+    nt_set_self_receiver(ntm, id, sid);
+    if (npend == cap) { cap = cap ? cap * 2 : 8;
+      self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
+      self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
+    self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
+  }
+  if (ntm->count != nend) comp_grow_node_arrays(c);
+  for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
+  free(self_ids); free(self_scopes);
+}
+/* A receiverless call to a Struct/Data-inherited builtin (to_h, with, to_a,
+   members, deconstruct, ...) inside an instance method of that Struct/Data
+   class operates on self; give it an explicit self receiver so it lowers
+   through the object-receiver struct emit instead of failing as an undefined
+   method (to_h) or an unsupported bare call (with) (#3226). Skip names the
+   class shadows with a member accessor or a user method -- those already
+   resolve. The SelfNode inherits the call's scope so self infers as the
+   instance (mirrors the instance_variable_get rewrite above). */
+static void desugar_struct_builtin_self_recv(Compiler *c) {
+  /* Data and Struct expose different inherited surfaces: `with` is Data-only,
+     while to_a/values/size/length/dig/each_pair are Struct-only. Rewriting a
+     name the class does not actually inherit would turn a correct NameError
+     into a bad self-dispatch, so gate each list by the class kind. */
+  static const char *const data_native[] = {
+    "to_h", "with", "members", "deconstruct", "deconstruct_keys", NULL };
+  static const char *const struct_native[] = {
+    "to_h", "to_a", "values", "members", "size", "length",
+    "dig", "deconstruct", "deconstruct_keys", "each_pair", NULL };
+  NodeTable *ntm = (NodeTable *)c->nt;
+  int nend = ntm->count;
+  int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
+  for (int id = 0; id < nend; id++) {
+    if (nt_kind(ntm, id) != NK_CallNode) continue;
+    if (nt_ref(ntm, id, "receiver") >= 0) continue;
+    const char *nm = nt_str(ntm, id, "name");
+    if (!nm) continue;
+    Scope *s = comp_scope_of(c, id);
+    if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
+    if (!c->classes[s->class_id].is_struct) continue;
+    const char *const *native = c->classes[s->class_id].is_data ? data_native : struct_native;
+    int is_native = 0;
+    for (int t = 0; native[t]; t++) if (sp_streq(nm, native[t])) { is_native = 1; break; }
+    if (!is_native) continue;
+    /* a member accessor of that name beats the inherited builtin */
+    char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
+    if (comp_ivar_index(&c->classes[s->class_id], mn) >= 0) continue;
+    /* a user method of that name is dispatched directly, not as self.builtin */
+    if (call_target(c, id, s->class_id, nm, 0, NULL) >= 0) continue;
+    int sid = nt_new_node(ntm, "SelfNode");
+    nt_set_self_receiver(ntm, id, sid);
+    if (npend == cap) { cap = cap ? cap * 2 : 8;
+      self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
+      self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
+    self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
+  }
+  if (ntm->count != nend) comp_grow_node_arrays(c);
+  for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
+  free(self_ids); free(self_scopes);
+}
 static void an_phase_block_inline(Compiler *c) {
-  desugar_begin_args(c);
-  desugar_diverging_args(c);
-  /* A bare identifier inside a class method that names a `class << self`
-     attr reader is an implicit-self read of that singleton attribute; give it
-     an explicit self receiver so it resolves like `self.reader` instead of
-     failing as an undefined local/method (#3108). */
-  {
-    NodeTable *ntm = (NodeTable *)c->nt;
-    int nend = ntm->count;
-    for (int id = 0; id < nend; id++) {
-      if (nt_kind(ntm, id) != NK_CallNode) continue;
-      if (nt_ref(ntm, id, "receiver") >= 0) continue;
-      int args = nt_ref(ntm, id, "arguments"); int ac = 0;
-      if (args >= 0) nt_arr(ntm, args, "arguments", &ac);
-      if (ac != 0 || nt_ref(ntm, id, "block") >= 0) continue;
-      const char *nm = nt_str(ntm, id, "name");
-      if (!nm) continue;
-      Scope *s = comp_scope_of(c, id);
-      if (!s || !s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
-      if (!comp_is_sg_reader(&c->classes[s->class_id], nm)) continue;
-      nt_set_self_receiver(ntm, id, nt_new_node(ntm, "SelfNode"));
-    }
-    if (ntm->count != nend) comp_grow_node_arrays(c);
-  }
+  AN_STEP_V("desugar_begin_args", desugar_begin_args(c));
+  AN_STEP_V("desugar_diverging_args", desugar_diverging_args(c));
+  AN_STEP_V("desugar_sclass_reader_self_recv", desugar_sclass_reader_self_recv(c));
 
-  /* A receiverless `instance_variable_get`/`_set`/`_defined?` inside an
-     instance method operates on self; give it an explicit self receiver so it
-     lowers through the object-receiver handler instead of failing as an
-     unsupported bare call (#3059). The synthesized SelfNode must inherit the
-     call's scope so infer_type resolves self to the instance (not top-level
-     main), which the return-type fixpoint depends on. */
-  {
-    NodeTable *ntm = (NodeTable *)c->nt;
-    int nend = ntm->count;
-    int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
-    for (int id = 0; id < nend; id++) {
-      if (nt_kind(ntm, id) != NK_CallNode) continue;
-      if (nt_ref(ntm, id, "receiver") >= 0) continue;
-      const char *nm = nt_str(ntm, id, "name");
-      if (!nm || (!sp_streq(nm, "instance_variable_get") &&
-                  !sp_streq(nm, "instance_variable_set") &&
-                  !sp_streq(nm, "instance_variable_defined?") &&
-                  !sp_streq(nm, "remove_instance_variable"))) continue;
-      Scope *s = comp_scope_of(c, id);
-      if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
-      int sid = nt_new_node(ntm, "SelfNode");
-      nt_set_self_receiver(ntm, id, sid);
-      if (npend == cap) { cap = cap ? cap * 2 : 8;
-        self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
-        self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
-      self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
-    }
-    if (ntm->count != nend) comp_grow_node_arrays(c);
-    for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
-    free(self_ids); free(self_scopes);
-  }
+  AN_STEP_V("desugar_ivar_reflection_self_recv", desugar_ivar_reflection_self_recv(c));
 
-  /* A receiverless call to a Struct/Data-inherited builtin (to_h, with, to_a,
-     members, deconstruct, ...) inside an instance method of that Struct/Data
-     class operates on self; give it an explicit self receiver so it lowers
-     through the object-receiver struct emit instead of failing as an undefined
-     method (to_h) or an unsupported bare call (with) (#3226). Skip names the
-     class shadows with a member accessor or a user method -- those already
-     resolve. The SelfNode inherits the call's scope so self infers as the
-     instance (mirrors the instance_variable_get rewrite above). */
-  {
-    /* Data and Struct expose different inherited surfaces: `with` is Data-only,
-       while to_a/values/size/length/dig/each_pair are Struct-only. Rewriting a
-       name the class does not actually inherit would turn a correct NameError
-       into a bad self-dispatch, so gate each list by the class kind. */
-    static const char *const data_native[] = {
-      "to_h", "with", "members", "deconstruct", "deconstruct_keys", NULL };
-    static const char *const struct_native[] = {
-      "to_h", "to_a", "values", "members", "size", "length",
-      "dig", "deconstruct", "deconstruct_keys", "each_pair", NULL };
-    NodeTable *ntm = (NodeTable *)c->nt;
-    int nend = ntm->count;
-    int *self_ids = NULL, *self_scopes = NULL, npend = 0, cap = 0;
-    for (int id = 0; id < nend; id++) {
-      if (nt_kind(ntm, id) != NK_CallNode) continue;
-      if (nt_ref(ntm, id, "receiver") >= 0) continue;
-      const char *nm = nt_str(ntm, id, "name");
-      if (!nm) continue;
-      Scope *s = comp_scope_of(c, id);
-      if (!s || s->is_cmethod || s->class_id < 0 || s->class_id >= c->nclasses) continue;
-      if (!c->classes[s->class_id].is_struct) continue;
-      const char *const *native = c->classes[s->class_id].is_data ? data_native : struct_native;
-      int is_native = 0;
-      for (int t = 0; native[t]; t++) if (sp_streq(nm, native[t])) { is_native = 1; break; }
-      if (!is_native) continue;
-      /* a member accessor of that name beats the inherited builtin */
-      char mn[272]; snprintf(mn, sizeof mn, "@%s", nm);
-      if (comp_ivar_index(&c->classes[s->class_id], mn) >= 0) continue;
-      /* a user method of that name is dispatched directly, not as self.builtin */
-      if (call_target(c, id, s->class_id, nm, 0, NULL) >= 0) continue;
-      int sid = nt_new_node(ntm, "SelfNode");
-      nt_set_self_receiver(ntm, id, sid);
-      if (npend == cap) { cap = cap ? cap * 2 : 8;
-        self_ids = realloc(self_ids, (size_t)cap * sizeof(int));
-        self_scopes = realloc(self_scopes, (size_t)cap * sizeof(int)); }
-      self_ids[npend] = sid; self_scopes[npend] = c->nscope[id]; npend++;
-    }
-    if (ntm->count != nend) comp_grow_node_arrays(c);
-    for (int k = 0; k < npend; k++) c->nscope[self_ids[k]] = self_scopes[k];
-    free(self_ids); free(self_scopes);
-  }
+  AN_STEP_V("desugar_struct_builtin_self_recv", desugar_struct_builtin_self_recv(c));
 
   /* `&block` + block.call: a method whose block parameter never escapes
      (every read is a `.call` receiver or a `&block` forward) is inlined at
@@ -49121,7 +49142,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      compute_instantiated): reachability is a matter of names and a
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
-  compute_reachable(c, 0);
+  AN_STEP_V("compute_reachable", compute_reachable(c, 0));
   compute_instantiated(c, 1);
 }
 
@@ -49497,17 +49518,17 @@ static void an_tree_ran(Compiler *c, int slot) {
   ({ int _si = an_shadow_begin(c, (nm)); int _sr = AN_MEMO_REGION(call); an_shadow_end(c, _si, _sr); _sr; }))
 #define AN_TREE_SKIPPED(nm, call) \
   ({ int _ts; int _tr = an_tree_skip(c, (nm), &_ts) ? 0 : AN_MEMO_REGION(call); if (!_tr || _ts >= 0) an_tree_ran(c, _ts); _tr; })
-#define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, call) : \
-  ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
+#define AN_PASS(nm, call) (!sp_timing_on() ? AN_SHADOWED(nm, AN_STEP(nm, call)) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = AN_SHADOWED(nm, AN_STEP(nm, call)); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 #define AN_PASS_V(nm, call) do { infer_memo_boundary(); \
-  if (!sp_timing_on()) { call; } \
+  if (!sp_timing_on()) { AN_STEP_V(nm, call); } \
   else { \
-  double _pt0 = sp_timing_now(); call; an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
+  double _pt0 = sp_timing_now(); AN_STEP_V(nm, call); an_pass_note((nm), _pt0, 0); } infer_memo_boundary(); } while (0)
 /* A pass timed but not framed: the re-narrow runs its inner passes without
    the memo boundary and the tree skip a round's passes get (they read the
    slots the loop re-clears), and the pass table missed them. */
-#define AN_PASS_T(nm, call) (!sp_timing_on() ? (call) : \
-  ({ double _pt0 = sp_timing_now(); int _pr = (call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
+#define AN_PASS_T(nm, call) (!sp_timing_on() ? AN_STEP(nm, call) : \
+  ({ double _pt0 = sp_timing_now(); int _pr = AN_STEP(nm, call); an_pass_note((nm), _pt0, _pr != 0); _pr; }))
 static int an_pass_cmp(const void *a, const void *b) {
   double x = ((const typeof(g_an_pass[0]) *)a)->ms, y = ((const typeof(g_an_pass[0]) *)b)->ms;
   return x < y ? 1 : x > y ? -1 : 0;
@@ -49525,13 +49546,13 @@ static void an_pass_report(void) {
 static void an_phase_infer_fixpoint(Compiler *c) {
   g_fixpoint_rounds = 0;
   g_fixpoint_capped = 0;
-  mark_ie_rebindable_literals(c);
+  AN_STEP_V("mark_ie_rebindable_literals", mark_ie_rebindable_literals(c));
   /* Two rounds. The proc-form clones are made between them: knowing which
      methods a poly dispatch will name needs settled receiver types, and the
      clones' own bodies then need inferring like any other. The second round is
      a no-op when nothing was cloned. (#3399) */
   for (int pf_round = 0; pf_round < 2; pf_round++) {
-  if (pf_round == 1 && !make_yield_proc_forms(c)) break;
+  if (pf_round == 1 && !AN_STEP("make_yield_proc_forms", make_yield_proc_forms(c))) break;
   g_infer_optimistic = 1; comp_touch_global();   /* (a mode inference reads) */
   AnRoundCap rc = { 128, 0, 0, NULL, 0 };
   for (int iter = 0; iter < rc.cap; iter++) {
@@ -49750,7 +49771,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         ch = infer_param_types(c);
         g_final_bind_pass = 0;
       }
-      if (!ch && !desugar_mutator_recv_rebind(c)) break;
+      if (!ch && !AN_STEP("desugar_mutator_recv_rebind", desugar_mutator_recv_rebind(c))) break;
     }
     an_round_cap_step(c, &rc, iter);
     if (iter + 1 == rc.cap) g_fixpoint_capped = 1;
@@ -49882,7 +49903,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         if (an2 && sp_streq(an2, ivn) && comp_ivar_owner(c, aV[k]) == icid) selfref = 1;
       }
       if (!selfref) continue;
-      an_call_targets_of(c, wv, &rtg);
+      AN_STEP_V("an_call_targets_of", an_call_targets_of(c, wv, &rtg));
       for (int k = 0; k < rtg.n; k++) {
         int mi = rtg.v[k];
         if (mi < 0 || mi >= c->nscopes) continue;
@@ -50484,8 +50505,8 @@ static void an_phase_post_fixpoint(Compiler *c) {
      param after the guard take its non-nil type (#1661). Post-fixpoint so
      param and argument types are final; before the return recompute below so
      narrowed tails type the enclosing method's return. */
-  narrow_nil_guard_params(c);
-  narrow_nil_guard_locals(c);
+  AN_STEP_V("narrow_nil_guard_params", narrow_nil_guard_params(c));
+  AN_STEP_V("narrow_nil_guard_locals", narrow_nil_guard_locals(c));
   /* `if v.is_a?(K)` occurrence typing: reads of a poly v inside the guard's
      then-arm narrow to K's concrete type (post-fixpoint, same read-site unbox
      as the nil guards above). */
@@ -50496,7 +50517,7 @@ static void an_phase_post_fixpoint(Compiler *c) {
   /* Post-backstop: re-run write type inference so multi-write locals whose
      RHS chains through a now-typed ivar (e.g. @h[bank][idx] where @h was
      just promoted from UNKNOWN to POLY) get their types resolved. */
-  infer_write_types(c);
+  AN_STEP_V("infer_write_types", infer_write_types(c));
   /* recompute returns: a method returning such a param is now poly */
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
 
@@ -50677,7 +50698,7 @@ static void an_phase_post_fixpoint(Compiler *c) {
 
   /* Promote loop-multiplication variables to bigint */
   detect_bigint_loop_vars(c);
-  propagate_bigint_cascade(c);
+  AN_STEP_V("propagate_bigint_cascade", propagate_bigint_cascade(c));
 }
 
 /* The lowering of yielding methods into functions taking their block as a
@@ -50842,14 +50863,14 @@ static void an_phase_procs(Compiler *c) {
   }
 
   /* mark locals captured by escaping procs (they need heap cells) */
-  mark_proc_captures(c);
+  AN_STEP_V("mark_proc_captures", mark_proc_captures(c));
 
   /* Reachability: an instance/free method is live only if its name is
      referenced somewhere -- as a call name, an alias target, or a symbol
      literal (covering send/method/define_method). Names never mentioned
      are dead code; skipping them avoids type-checking uninvoked methods
      (e.g. a never-called method with an uninferrable param). */
-  compute_reachable(c, 1);
+  AN_STEP_V("compute_reachable", compute_reachable(c, 1));
   /* a module method named by Mod.instance_method(:m) is referenced directly */
   unmark_referenced_module_sources(c);
   /* Which exact cls_ids can appear at runtime -- lets the poly-dispatch switch
@@ -50865,7 +50886,7 @@ static void an_phase_procs(Compiler *c) {
      that only does blk.call/&blk-forward never reaches here (the
      blk_param pass above already kept it yields=0 when self-recursive);
      this loop covers bodies with literal `yield`s (an_lower_yielders). */
-  an_lower_yielders(c);
+  AN_STEP_V("an_lower_yielders", an_lower_yielders(c));
   for (int again = 1; again; ) {
     again = 0;
     for (int mi = 1; mi < c->nscopes; mi++) {
@@ -51077,7 +51098,7 @@ static void an_phase_method_backstops(Compiler *c) {
      just above) can finally bind foo's params. Without this the bound method
      would stay TY_UNKNOWN and be dropped below, leaving an undefined function at
      the poly-dispatch call site. */
-  build_ie_map(c);
+  AN_STEP_V("build_ie_map", build_ie_map(c));
   /* Seed the synthesized compiler_state IR-emit helpers' signature types. They
      are called only by the synthesized dump_compiler_state_ir (which has no
      AST), so the param backstop below can't bind them from a call site;
@@ -51296,8 +51317,8 @@ static void an_phase_method_backstops(Compiler *c) {
      re-run above (which would re-narrow it from its empty-`[]` write) so the
      poly widening sticks, then re-derive return types only so a manual reader
      (`def flags; @flags; end`) reports the now-poly array (#3154). */
-  widen_ivars_from_pushed_params(c);
-  widen_ivars_read_into_poly(c);
+  AN_STEP_V("widen_ivars_from_pushed_params", widen_ivars_from_pushed_params(c));
+  AN_STEP_V("widen_ivars_read_into_poly", widen_ivars_read_into_poly(c));
   g_ret_no_new_poly = 1;
   for (int iter = 0; iter < 8; iter++) if (!infer_return_types(c)) break;
   g_ret_no_new_poly = 0;
@@ -51321,7 +51342,7 @@ static void an_phase_method_backstops(Compiler *c) {
   /* infer_write_types resets non-param locals, undoing the earlier bigint
      loop-variable promotion, so re-apply it. */
   detect_bigint_loop_vars(c);
-  propagate_bigint_cascade(c);
+  AN_STEP_V("propagate_bigint_cascade", propagate_bigint_cascade(c));
 }
 
 /* The late widening and narrowing: unresolved locals and returns to poly, ivars fed by nil-only params, the arithmetic widen, the object-array and poly-int narrowing, then the gc-root marks and the full node type cache (analyze_program's steps, in their order) */
@@ -51493,14 +51514,14 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
   /* narrow monomorphic object arrays (POLY_ARRAY -> obj-pointer array) before
      the node cache is finalized so the rebuild below propagates the new element
      types to every `arr[i]` / `arr[i].field` site. */
-  narrow_int_table_ivars(c, 0);
-  narrow_object_arrays(c);
-  narrow_locals_from_arrays(c);
+  AN_STEP_V("narrow_int_table_ivars", narrow_int_table_ivars(c, 0));
+  AN_STEP_V("narrow_object_arrays", narrow_object_arrays(c));
+  AN_STEP_V("narrow_locals_from_arrays", narrow_locals_from_arrays(c));
   /* after the locals: a parameter can be fed an element the local rule has
      just narrowed, and both read the settled array types */
-  narrow_params_from_arrays(c);
+  AN_STEP_V("narrow_params_from_arrays", narrow_params_from_arrays(c));
   /* and a block parameter a splat of such a row binds (`yield(*row)`) */
-  narrow_site_boxed_block_params(c);
+  AN_STEP_V("narrow_site_boxed_block_params", narrow_site_boxed_block_params(c));
   /* An --rbs `Array[Class]` ivar seed the pass could not honour is said so,
      rather than dropped without a word (#4444): the array is used in a way
      its unboxed form has no emitter for, or read from outside the class's
@@ -51567,20 +51588,20 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
 
   /* narrow poly locals that are only ever used as ints (drop per-use boxing);
      the rebuild below re-infers their reads/ops at the narrowed int type. */
-  narrow_poly_int_locals(c);
+  AN_STEP_V("narrow_poly_int_locals", narrow_poly_int_locals(c));
 
   /* `@v.between?(lo, hi)` went onto the Integer copy while @v was an Integer,
      and a backstop above has widened @v since */
-  revert_widened_builtin_scalar_calls(c);
+  AN_STEP_V("revert_widened_builtin_scalar_calls", revert_widened_builtin_scalar_calls(c));
 
   /* finalize: gc-root needs + full node type cache */
   for (int s = 0; s < c->nscopes; s++)
     for (int i = 0; i < c->scopes[s].nlocals; i++)
       c->scopes[s].locals[i].gc_root = (c->scopes[s].locals[i].type == TY_STRING);
 
-  mark_empty_array_operands(c);
+  AN_STEP_V("mark_empty_array_operands", mark_empty_array_operands(c));
   for (int id = 0; id < c->nt->count; id++)
-    infer_type(c, id);
+    AN_STEP_V("infer_type", infer_type(c, id));
 }
 
 /* The only calls an_call_targets_scope can answer yes for, given a scope's
@@ -52084,7 +52105,7 @@ static void an_phase_proc_returns(Compiler *c) {
           if (un && sp_streq(un, "instance_exec")) {
             int a = nt_ref(nt, u, "arguments"); int an = 0;
             const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-            block_site_types(c, &bsig, av, an, pos, absent, pos + np);
+            AN_STEP_V("block_site_types", block_site_types(c, &bsig, av, an, pos, absent, pos + np));
           }
           else for (int q = 0, nq = prci_scopes_for(c, &ix, un); nq < 0 ? q < c->nscopes - 1 : q < nq; q++) {
             int s = nq < 0 ? q + 1 : ix.sbuf[q];
@@ -52095,7 +52116,7 @@ static void an_phase_proc_returns(Compiler *c) {
             for (int k = 0; k < ns; k++) {
               int a = block_site_args(c, s, sites[k], u); int an = 0;
               const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-              block_site_types(c, &bsig, av, an, pos, absent, pos + np);
+              AN_STEP_V("block_site_types", block_site_types(c, &bsig, av, an, pos, absent, pos + np));
             }
           }
           for (int i = 0; i < nb; i++) {
@@ -52254,7 +52275,7 @@ static void an_phase_proc_returns(Compiler *c) {
        reads scope-local types only -- it does not mutate them, so the widen
        stands. */
     for (int id = 0; id < nt->count; id++)
-      infer_type(c, id);
+      AN_STEP_V("infer_type", infer_type(c, id));
   }
 }
 
@@ -52301,15 +52322,15 @@ static void an_phase_storage(Compiler *c) {
     /* refresh the splice call's own type from the now-rebound body so a
        consumer (e.g. truthiness) sees the poly result, not the stale type
        computed before an_ie_class_id was bound. */
-    infer_type(c, id);
+    AN_STEP_V("infer_type", infer_type(c, id));
     an_ie_class_id = saved2;
   }
 
   /* Byref string out-params: must run before the STRBUF promotion below so
      the promotion can exclude locals whose address is passed to a byref slot
      (a STRBUF local is an sp_String*, not the const char* slot byref needs). */
-  compute_byref_out_params(c);
-  strbuf_arg_index_build(c);
+  AN_STEP_V("compute_byref_out_params", compute_byref_out_params(c));
+  AN_STEP_V("strbuf_arg_index_build", strbuf_arg_index_build(c));
   /* handle args cannot ride byref's const char** slot: convert such params
      to the handle representation, cascading through transitive passes. A
      parameter RETAINED in a shared-handle ivar demands the handle for the
@@ -52400,7 +52421,7 @@ static void an_phase_storage(Compiler *c) {
      before the lifts were decided. Under the rule, a lift whose variable
      cannot hold a String is dropped first, asking once per variable rather
      than per read. */
-  strbuf_reconcile_lifted_reads(c, &hat);
+  AN_STEP_V("strbuf_reconcile_lifted_reads", strbuf_reconcile_lifted_reads(c, &hat));
   NT_FOREACH_KIND(c->nt, NK_LocalVariableReadNode, r) {
     if (c->nilnarrow[r] != TY_STRING) continue;
     if (c->poly_strbuf_lift[r]) {
@@ -52417,7 +52438,7 @@ static void an_phase_storage(Compiler *c) {
     }
   }
   handle_arg_tab_free(&hat);
-  mark_reader_read_only_operands(c);
+  AN_STEP_V("mark_reader_read_only_operands", mark_reader_read_only_operands(c));
 
   /* Promote `<<`-appended string locals to mutable strings (TY_STRBUF) so the
      append is amortized O(1) instead of an O(n) copy-concat (which makes a
@@ -52966,7 +52987,7 @@ static void an_phase_value_types(Compiler *c) {
      slot may hold nil, from the settled types, ahead of the layout choice
      below, which a value that may be nil cannot take (vt_nil_fact_classes).
      It changes no type and no flag the passes before it read. */
-  an_nil_facts(c);
+  AN_STEP_V("an_nil_facts", an_nil_facts(c));
   /* Value-type object detection (Stage 1, conservative). A user class is
      represented by value (sp_X, no heap/GC) when it is a small, immutable,
      scalar-only leaf whose instances never need a heap pointer (never boxed,
@@ -53525,9 +53546,9 @@ static void an_phase_reconcile_check(Compiler *c) {
 
   /* An --rbs seed the settled types statically contradict is a compile error,
      not something to emit a reinterpretation for. */
-  mark_nullable_int_locals(c);
+  AN_STEP_V("mark_nullable_int_locals", mark_nullable_int_locals(c));
   sync_captured_nullable(c);
-  widen_nullable_keyed_hash_literals(c);
+  AN_STEP_V("widen_nullable_keyed_hash_literals", widen_nullable_keyed_hash_literals(c));
   mark_array_or_nil_slots(c);
   /* A local's array KIND has to agree with what its writes actually build. A
      value whose type widens to a poly array LATE -- a map whose block value
@@ -53569,7 +53590,7 @@ static void an_phase_reconcile_check(Compiler *c) {
     }
   }
 
-  check_seed_contradictions(c);
+  AN_STEP_V("check_seed_contradictions", check_seed_contradictions(c));
 
   /* A global the program only ever mentions holding nil -- `$log = nil` and
      nothing else, or a read of one never assigned at all -- settles at no type,
@@ -53607,12 +53628,12 @@ static void an_phase_reconcile_check(Compiler *c) {
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   mark_scan_rtchecks(c);
-  mark_struct_aset_targets(c);
-  share_struct_aset_handles(c);
+  AN_STEP_V("mark_struct_aset_targets", mark_struct_aset_targets(c));
+  AN_STEP_V("share_struct_aset_handles", share_struct_aset_handles(c));
 
   /* Refuse lent ivar copies through calls and super only after sharing
      analysis settles (#6998). */
-  refuse_set_identity_members(c);
+  AN_STEP_V("refuse_set_identity_members", refuse_set_identity_members(c));
   refuse_mixin_after_calls(c);
   refuse_reinit_mismatch(c);
 
@@ -53621,7 +53642,7 @@ static void an_phase_reconcile_check(Compiler *c) {
      earlier run answered no then and yes now -- so codegen routes the call to
      the cls_id dispatch (a real proc) while analyze left its captures
      uncelled, and the emit refuses. Only sets is_cell, and is idempotent. */
-  mark_proc_captures(c);
+  AN_STEP_V("mark_proc_captures", mark_proc_captures(c));
   /* ...and a local it cells there may hold a value-type instance the
      detection above let through: a receiver typed poly only by the late
      widenings (a parameter every caller passes nil) lifts the block now.
@@ -53639,8 +53660,10 @@ static void an_phase_reconcile_check(Compiler *c) {
             g_fixpoint_rounds);
 }
 
-/* an analysis phase under --timing: `phase=an_<name>` */
-#define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); infer_memo_boundary(); call; infer_memo_boundary(); sp_timing_end(_ph0, "an_" nm, ""); } while (0)
+/* an analysis phase under --timing: `phase=an_<name>`; a step named
+   `an_<name>` around the passes of its list that are no step of their own */
+#define AN_PHASE(nm, call) do { double _ph0 = sp_timing_now(); infer_memo_boundary(); AN_STEP_V("an_" nm, call); \
+  infer_memo_boundary(); sp_timing_end(_ph0, "an_" nm, ""); } while (0)
 /* Does a node hold a Hash of another shape than at the snapshots: one the
    marks, or promote's widening before them, made poly-valued? */
 static int an_hash_reshaped(Compiler *c, const NodeTypes *settled, const NodeTypes *calls) {
@@ -53671,7 +53694,7 @@ static void an_phase_nullable_returns(Compiler *c, const NodeTypes *promoted) {
   NodeTypes settled;
   node_types_take(c, &settled);
   const NodeTypes *calls = promoted->ty ? promoted : &settled;
-  mark_nullable_int_locals(c);
+  AN_STEP_V("mark_nullable_int_locals", mark_nullable_int_locals(c));
   sync_captured_nullable(c);
   infer_memo_boundary();
   if (!an_hash_reshaped(c, &settled, calls)) { free(settled.ty); return; }
@@ -53741,8 +53764,8 @@ static void an_phase_enum_late(Compiler *c) {
       if (iter + 1 < rc.cap) continue;
       break;
     }
-    if (!desugar_builtin_enum_calls(c)) break;
-    mark_empty_literal_args(c);
+    if (!AN_STEP("desugar_builtin_enum_calls", desugar_builtin_enum_calls(c))) break;
+    AN_STEP_V("mark_empty_literal_args", mark_empty_literal_args(c));
   }
   free(rc.seen);
   infer_memo_boundary();
@@ -53754,14 +53777,14 @@ void analyze_program(Compiler *c) {
   an_note_written_names(c->nt);
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
-  if (c->n_cext_extensions) { register_cext_layouts(c); inherit_cext_layouts(c); }
+  if (c->n_cext_extensions) { AN_STEP_V("register_cext_layouts", register_cext_layouts(c)); inherit_cext_layouts(c); }
   AN_PHASE("block_inline", an_phase_block_inline(c));
   AN_PHASE("pre_fixpoint", an_phase_pre_fixpoint(c));
   /* the classes a value can hold, decided once from the program's shape
      (#8530): the fixpoint's binding of a boxed receiver's call reads it */
   AN_PHASE("cls_facts", an_cls_facts(c));
   double tm_fp = sp_timing_now();
-  an_phase_infer_fixpoint(c);
+  AN_STEP_V("an_phase_infer_fixpoint", an_phase_infer_fixpoint(c));
   { char ex[64]; snprintf(ex, sizeof ex, " rounds=%d%s", g_fixpoint_rounds, g_fixpoint_capped ? " capped=1" : ""); sp_timing_end(tm_fp, "analysis_fixpoint", ex); }
   an_pass_report();
   an_shadow_report();
@@ -53783,7 +53806,7 @@ void analyze_program(Compiler *c) {
   AN_PHASE("reconcile_check", an_phase_reconcile_check(c));
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */
-  compute_reachable(c, 2);
+  AN_STEP_V("compute_reachable", compute_reachable(c, 2));
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
@@ -53792,11 +53815,11 @@ void analyze_program(Compiler *c) {
      read off the final types and flags */
   share_mark_borrows(c);
   /* --share-strings: the methods whose value is a shared String's handle */
-  an_mark_handle_returns(c);
+  AN_STEP_V("an_mark_handle_returns", an_mark_handle_returns(c));
   /* the String methods whose value no call reads, once the handle flags are */
   an_mark_unread_returns(c);
   /* Identity operands can ask the settled call-return fact now. */
-  mark_reader_identity_operands(c);
+  AN_STEP_V("mark_reader_identity_operands", mark_reader_identity_operands(c));
   /* the representation flags are final from here (repr.h) */
   /* The final share query sees every caller without rebuilding per receiver. */
   HandleArgTab hat;

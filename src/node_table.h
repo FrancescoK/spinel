@@ -87,6 +87,8 @@ typedef struct {
   struct NtAux *aux;
   int aux_cap, orig_lo;
   unsigned clone_gen;
+  /* the analysis pass appending nodes now (nt_set_pass), NULL outside one */
+  const char *pass;
 } NodeTable;
 
 /* The roots of the program's files, entry first (see file_roots). */
@@ -210,6 +212,7 @@ int nt_clone_subtree(NodeTable *nt, int root);
    appended node from this, so the name is the same whenever it is asked. */
 int nt_origin(const NodeTable *nt, int id, char *how, int *a, int *b);
 void nt_track_origins(NodeTable *nt);   /* from the nodes appended next on */
+const char *nt_set_pass(NodeTable *nt, const char *pass);   /* the one before */
 void nt_subtree_blank(NodeTable *nt, int id);   /* every node of the subtree a NilNode */
 void nt_swap_nodes(NodeTable *nt, int a, int b);
 /* Copy the subtree at root of src into dst; the new root's id, or -1. */

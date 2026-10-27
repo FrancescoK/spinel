@@ -113,6 +113,12 @@ static void nt_place(NodeTable *nt, int parent, int child, char how, int a, int 
 
 void nt_track_origins(NodeTable *nt) { nt->orig_lo = nt->count > 0 ? nt->count : 1; }
 
+const char *nt_set_pass(NodeTable *nt, const char *pass) {
+  const char *was = nt->pass;
+  nt->pass = pass;
+  return was;
+}
+
 int nt_origin(const NodeTable *nt, int id, char *how, int *a, int *b) {
   if (!nt->orig_lo || id < nt->orig_lo || id >= nt->aux_cap || !nt->aux[id].how) return -1;
   const struct NtAux *x = &nt->aux[id];
