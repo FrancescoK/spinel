@@ -115,6 +115,8 @@ static void comp_ver_grow(unsigned long **ver, int *cap, int need) {
   *ver = nv; *cap = ncap;
 }
 
+static void comp_node_ords(Compiler *c);
+
 Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;
@@ -152,8 +154,8 @@ Compiler *comp_new(const NodeTable *nt) {
      "0" or "" means off. */
   c->share_strings = 1;
   comp_node_pbases(c);
-  comp_node_ord(c, 0, NULL);   /* number the parsed nodes before any rewrite */
-  c->node_ord_parsed = nt->count;
+  comp_node_ords(c);   /* the parsed nodes, before any rewrite */
+  nt_track_origins((NodeTable *)nt);   /* the appended ones, by origin */
   return c;
 }
 
@@ -168,10 +170,8 @@ Compiler *comp_new(const NodeTable *nt) {
    one builtin method renames nothing outside it. A program node counts the
    same way within the def, class or module it is in (comp_node_pbases), so
    an edit to one method renames nothing in another; only a node outside
-   every def and class is numbered among the program's such nodes. A number
-   once given is kept: the table is extended over the nodes appended since,
-   never refilled, so a node a rewrite resets keeps its number and cannot
-   hand it to another. */
+   every def and class is numbered among the program's such nodes. A node a
+   rewrite appends is named after its origin instead (appended_tag). */
 static void bi_base_reserve(Compiler *c, int b) {
   if (b < c->bi_base_cap) return;
   int cap = c->bi_base_cap ? c->bi_base_cap : 64;
@@ -346,79 +346,94 @@ static void comp_node_base_key(Compiler *c, int b) {
   c->bi_base_key[b] = strdup(key);
 }
 
-/* The base a node counts in, or -1 for a program node: its own stamp, or,
-   for a node a rewrite made with none, the builtin method whose copy it
-   was made in. */
+/* The base a parsed node counts in, or -1 for a program node outside every
+   def and class: its builtin stamp, or its program base. */
 static int comp_node_base(Compiler *c, int k) {
   const NodeTable *nt = c->nt;
   int b = (int)nt_int(nt, k, "node_bi", 0) - 1;
   if (b < 0 && k < c->node_pbase_n) b = c->node_pbase[k];
-  if (b < 0 && k >= c->node_ord_parsed && c->nscope && k < c->node_cap) {
-    int si = c->nscope[k];
-    int dn = si > 0 && si < c->nscopes ? c->scopes[si].def_node : -1;
-    if (dn >= 0 && dn < nt->count) {
-      b = (int)nt_int(nt, dn, "node_bi", 0) - 1;
-      /* a program's def: the node counts in it; a block or a lambda, or a
-         def a rewrite made, in the base that one counts in */
-      if (b < 0 && dn != k) b = dn < c->node_pbase_n ? c->node_pbase[dn] : comp_node_base(c, dn);
-    }
-  }
   return b >= 0 && b < nt->count ? b : -1;
 }
 
-static void comp_node_ord_assign(Compiler *c, int k) {
-  int b = comp_node_base(c, k);
-  c->node_base[k] = b;
-  if (b < 0) { c->node_ord[k] = c->node_ord_prog++ << 1; return; }
-  bi_base_reserve(c, b);
-  if (!c->bi_base_key[b]) comp_node_base_key(c, b);
-  c->node_ord[k] = (c->bi_base_cnt[b]++ << 1) | 1;
-}
-
-/* The parsed nodes are numbered in table order when the compiler is made. A
-   node a rewrite appends is numbered when a name is first asked of it, in the
-   order the names are asked for: the builtins' rewrites append nodes as
-   well, and counting those in table order moved every later program name. */
-int comp_node_ord(Compiler *c, int id, int *builtin) {
-  const NodeTable *nt = c->nt;
-  if (nt->count > c->node_ord_n) {
-    /* by doubling: the rewrites append a few nodes between asks, and a
-       resize to the count each time copied the arrays per append */
-    if (nt->count > c->node_ord_cap) {
-      int cap = nt->count > 2 * c->node_ord_cap ? nt->count : 2 * c->node_ord_cap;
-      int *g = realloc(c->node_ord, sizeof(int) * (size_t)cap);
-      int *gb = g ? realloc(c->node_base, sizeof(int) * (size_t)cap) : NULL;
-      if (!g || !gb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      c->node_ord = g; c->node_base = gb; c->node_ord_cap = cap;
-    }
-    for (int k = c->node_ord_n; k < nt->count; k++) {
-      c->node_ord[k] = -1;
-      if (!c->node_ord_parsed) comp_node_ord_assign(c, k);
-    }
-    c->node_ord_n = nt->count;
+/* The parsed nodes, numbered in table order when the compiler is made */
+static void comp_node_ords(Compiler *c) {
+  int n = c->nt->count;
+  c->node_ord = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  c->node_base = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!c->node_ord || !c->node_base) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < n; k++) {
+    int b = comp_node_base(c, k);
+    c->node_base[k] = b;
+    if (b < 0) { c->node_ord[k] = c->node_ord_prog++ << 1; continue; }
+    bi_base_reserve(c, b);
+    if (!c->bi_base_key[b]) comp_node_base_key(c, b);
+    c->node_ord[k] = (c->bi_base_cnt[b]++ << 1) | 1;
   }
-  if (id < 0 || id >= c->node_ord_n) { if (builtin) *builtin = 0; return 0; }
-  if (c->node_ord[id] < 0) comp_node_ord_assign(c, id);
-  int v = c->node_ord[id];
-  if (builtin) *builtin = (v & 1) && c->node_base[id] >= 0 && nt_int(c->nt, c->node_base[id], "node_bi", 0) > 0;
-  return v >> 1;
+  c->node_ord_parsed = n;
 }
 
-/* comp_node_ord as the text a name carries: "12" for a program node outside
-   every def and class, "p5Model_5label_3" for one in a method (its base's key
-   and its number there), and for a builtin's "q", its method's name and its
-   number there ("qmin_by_12"), so no two name the same thing. The text lives
-   until eight more have been asked for. */
-const char *comp_node_tag(Compiler *c, int id) {
-  static char ring[8][200];
-  static int next = 0;
-  char *t = ring[next++ & 7];
-  int b = 0;
-  int ord = comp_node_ord(c, id, &b);
-  int base = id >= 0 && id < c->node_ord_n && (c->node_ord[id] & 1) ? c->node_base[id] : -1;
+/* A parsed node's tag: "12" for a program node outside every def and class,
+   "p5Model_5label_3" for one in a method (its base's key and its number
+   there), and for a builtin's "q", its method's name and its number there
+   ("qmin_by_12"), so no two name the same thing. */
+static void parsed_tag(Compiler *c, int id, char *t, size_t n) {
+  int v = id >= 0 && id < c->node_ord_parsed ? c->node_ord[id] : 0;
+  int base = (v & 1) ? c->node_base[id] : -1;
   if (base >= 0 && base < c->bi_base_cap && c->bi_base_key[base])
-    snprintf(t, sizeof ring[0], "%c%s_%d", b ? 'q' : 'p', c->bi_base_key[base], ord);
-  else snprintf(t, sizeof ring[0], "%d", ord);
+    snprintf(t, n, "%c%s_%d", nt_int(c->nt, base, "node_bi", 0) > 0 ? 'q' : 'p', c->bi_base_key[base], v >> 1);
+  else snprintf(t, n, "%d", v >> 1);
+}
+
+/* An appended node's tag: its origin's (nt_origin) and the step from there,
+   "qcount_34c2" for the second copy of count's node 34, "12r1" for a node
+   first linked as node 12's second ref, "12a0e3" as the fourth element of
+   its first array. The text is a function of where the node came from, so
+   neither the order rewrites append nodes in nor the order names are asked
+   in moves it. One past 32 characters keeps its head and a hash of the
+   whole, as a long base key does, and one another node already has takes
+   `dN`. A node linked nowhere when it is named has no origin and is
+   numbered by when it is asked ("u4"). */
+static const char *appended_tag(Compiler *c, int id, int depth) {
+  int i = id - c->node_ord_parsed;
+  if (i >= c->node_tag_cap) {
+    int cap = c->node_tag_cap ? c->node_tag_cap : 256;
+    while (cap <= i) cap *= 2;
+    char **g = realloc(c->node_tag, sizeof(char *) * (size_t)cap);
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = c->node_tag_cap; k < cap; k++) g[k] = NULL;
+    c->node_tag = g; c->node_tag_cap = cap;
+  }
+  if (c->node_tag[i]) return c->node_tag[i];
+  c->node_tag[i] = "";   /* in progress: an origin that leads back here has none */
+  char t[256], ft[64], how = 0;
+  int a = 0, b = 0;
+  int from = depth < 64 ? nt_origin(c->nt, id, &how, &a, &b) : -1;
+  const char *f = NULL;
+  if (from >= 0 && from < c->node_ord_parsed) { parsed_tag(c, from, ft, sizeof ft); f = ft; }
+  else if (from >= 0) f = appended_tag(c, from, depth + 1);
+  if (!f || !*f) snprintf(t, sizeof t, "u%d", c->node_tag_lost++);
+  else if (how == 'c') snprintf(t, sizeof t, "%sc%d", f, a);
+  else if (how == 'r') snprintf(t, sizeof t, "%sr%d", f, a);
+  else snprintf(t, sizeof t, "%sa%de%d", f, a, b);
+  if (strlen(t) > 32) {
+    unsigned h = 2166136261u;
+    for (const char *q = t; *q; q++) h = (h ^ (unsigned char)*q) * 16777619u;
+    snprintf(t + 20, sizeof t - 20, "h%08x", h);
+  }
+  int dup = pbase_key_count(c, t);
+  if (dup) { size_t o = strlen(t); snprintf(t + o, sizeof t - o, "d%d", dup); }
+  c->node_tag[i] = strdup(t);
+  if (!c->node_tag[i]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return c->node_tag[i];
+}
+
+/* The text a name the compiler invents from node `id` carries. A parsed
+   node's lives until eight more have been asked for, an appended node's
+   as long as the compiler. */
+const char *comp_node_tag(Compiler *c, int id) {
+  if (id >= c->node_ord_parsed && id < c->nt->count) return appended_tag(c, id, 0);
+  char *t = c->node_tag_ring[c->node_tag_next++ & 7];
+  parsed_tag(c, id, t, sizeof c->node_tag_ring[0]);
   return t;
 }
 
@@ -505,6 +520,8 @@ void comp_free(Compiler *c) {
   free(c->cls_fact); cls_pool_free(c->cls_pool, c->ncls_pool); free(c->cls_kind);
   free(c->send_param_memo);
   free(c->node_ord); free(c->node_base); free(c->node_pbase);
+  for (int k = 0; k < c->node_tag_cap; k++) if (c->node_tag[k] && *c->node_tag[k]) free(c->node_tag[k]);
+  free(c->node_tag);
   for (int k = 0; k < c->pbase_key_slots; k++) free(c->pbase_keys[k]);
   free(c->pbase_keys); free(c->pbase_key_cnt);
   for (int k = 0; k < c->bi_base_cap; k++) free(c->bi_base_key[k]);

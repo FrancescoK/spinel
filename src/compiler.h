@@ -1443,13 +1443,18 @@ typedef struct {
   int *blk_body_map;
   int blk_body_map_n;
   struct ReprChannelCheck *repr_channel_check; /* --repr-check return-channel shadow */
-  /* node id -> the number a name invented from the node carries
-     (comp_node_ord), bit 0 set for a builtin's. Extended over appended
-     nodes, never refilled. A builtin node counts within its base, the
-     builtin def (or top-level statement) it was spliced in: per base id, the
-     count so far and the text it is named by. */
+  /* parsed node id -> the number a name invented from the node carries
+     (comp_node_tag), bit 0 set for one counted in a base, and that base. A
+     node counts within its base, the def, class or module it is in or the
+     builtin def it was spliced in: per base id, the count so far and the
+     text it is named by. */
   int *node_ord, *node_base;
-  int node_ord_n, node_ord_cap, node_ord_prog, node_ord_parsed;
+  int node_ord_prog, node_ord_parsed;
+  /* appended node id - node_ord_parsed -> its tag (appended_tag), and how
+     many were named with no origin */
+  char **node_tag; int node_tag_cap, node_tag_lost;
+  /* the texts of the last eight parsed nodes named, and the next to reuse */
+  char node_tag_ring[8][64]; int node_tag_next;
   int *bi_base_cnt;
   char **bi_base_key;
   int bi_base_cap;
@@ -1587,7 +1592,6 @@ int name_list_has(char **list, int n, const char *name);
 
 /* Resize per-node arrays (ntype/nscope) after the node table grew. */
 void comp_grow_node_arrays(Compiler *c);
-int comp_node_ord(Compiler *c, int id, int *builtin);
 void comp_node_pbases(Compiler *c);   /* the parsed program nodes' bases (comp_new) */
 const char *comp_node_tag(Compiler *c, int id);
 

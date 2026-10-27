@@ -1002,7 +1002,7 @@ static int sp_lower_body(const pm_node_list_t *body, pm_node_list_t *out, pm_nod
 
 /* ---- Main flattening ---- */
 /* The builtin node the names invented from the node being flattened count
-   from (`node_bi`, comp_node_ord): its enclosing def, or, outside every def,
+   from (`node_bi`, comp_node_tag): its enclosing def, or, outside every def,
    its top-level statement. -1 outside builtins/. */
 /* `def m(a, ...)` in a class that inherits Hash or Array, whose `...`
    only a bare `super` uses (faraday's Headers#fetch): the method is
@@ -2796,7 +2796,7 @@ static void sp_includes_free(void) {
    A node inside one is stamped `node_bi`, so the names the compiler invents
    from nodes number a builtin's nodes apart from the program's, and each
    builtin method's apart from the others': a builtin that grows or shrinks
-   then moves only its own names (comp_node_ord).
+   then moves only its own names (comp_node_tag).
    Read off the splice markers, which every build keeps, not off the line
    map, which only a build with line maps has. */
 static size_t *sp_bi_lo = NULL, *sp_bi_hi = NULL;
