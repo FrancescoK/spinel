@@ -1311,14 +1311,14 @@ XXX
   # Version
   #
   def version
-    @version || (defined?(::Version) && ::Version)
+    (defined?(@version) && @version) || (defined?(::Version) && ::Version)
   end
 
   #
   # Release code
   #
   def release
-    @release || (defined?(::Release) ? ::Release : nil) || (defined?(::RELEASE) ? ::RELEASE : nil)
+    (defined?(@release) && @release) || (defined?(::Release) && ::Release) || (defined?(::RELEASE) && ::RELEASE)
   end
 
   #
@@ -2311,7 +2311,7 @@ XXX
       "#{reason}: #{args.join(' ')}#{additional[@arg0] if additional}"
     end
 
-    def to_s; message; end
+    alias to_s message
   end
 
   #
