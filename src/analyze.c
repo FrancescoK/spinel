@@ -3098,8 +3098,7 @@ static int ie_param_literals(Compiler *c, int blk, int cls) {
     if (!kw) return -1;
   }
   /* a write to it in the body could hand instance_exec another proc */
-  for (int w = comp_lvw_first_sc(c, (int)(sc - c->scopes), pn); w >= 0; w = comp_lvw_next_sc(c, w))
-    if (comp_scope_of(c, w) == sc) return 0;
+  if (comp_lvw_any_sc(c, (int)(sc - c->scopes), pn)) return 0;
   int traced = 1;
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     if (!sp_streq(nt_str(nt, u, "name"), sc->name)) continue;
@@ -14065,7 +14064,7 @@ static int narrow_walk_block_params(Compiler *c) {
       if (!lv->is_block_param || lv->rbs_seeded) continue;
       int gi = off[s] + li;
       int fits = !bad[gi] && ty_is_object(elem[gi]) &&
-                 comp_lvw_first_sc(c, s, lv->name) < 0;   /* not written in the body */
+                 !comp_lvw_any_sc(c, s, lv->name);   /* not written in the body */
       /* a pin whose walk no longer qualifies (the array widened, another
          block binds the name) goes, and the parameter is the walk's boxed
          element again */

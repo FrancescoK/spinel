@@ -1638,6 +1638,7 @@ int comp_class_extends_any(Compiler *c, int ci);
 int comp_lvw_next(const Compiler *c, int w);
 int comp_lvw_first_sc(Compiler *c, int scope_idx, const char *name);
 int comp_lvw_next_sc(const Compiler *c, int w);
+int comp_lvw_any_sc(Compiler *c, int scope_idx, const char *name);
 int comp_scall_first(Compiler *c, int scope_idx);
 int comp_scall_next(const Compiler *c, int u);
 int comp_bcall_first(Compiler *c, int scope_idx);
