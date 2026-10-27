@@ -1910,15 +1910,23 @@ static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
     NK_ClassVariableWriteNode, NK_ConstantWriteNode };
   const NodeTable *nt = c->nt;
   AliasSide *ev = NULL;   /* pairs: ev[2i] the written name, ev[2i+1] the read one */
-  int n = 0, cap = 0;
+  int n = 0, cap = 0, *big = NULL;
   for (int wk = 0; wk < (int)(sizeof alias_writes / sizeof alias_writes[0]); wk++)
     NT_FOREACH_KIND(nt, alias_writes[wk], id) {
       /* the value is a read of the other name, or a conditional or logical
          operator whose arms read them, each its own alias (a write's value, `$b = $a = [1]`, is not taken: an ivar
          write read as a value is emitted at its value's type, not its
          slot's) */
-      int arms[16];
+      int arms_s[16], *arms = arms_s;
       int na = value_leaves_ex(c, nt_ref(nt, id, "value"), arms, 0, 16, VL_NIL);
+      /* -1 is also a full buffer: a `case` of more arms takes one as large
+         as the program, so no arm is left without its alias */
+      if (na < 0) {
+        if (!big) big = (int *)malloc(sizeof(int) * (size_t)(nt->count + 1));
+        if (!big) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        arms = big;
+        na = value_leaves_ex(c, nt_ref(nt, id, "value"), arms, 0, nt->count + 1, VL_NIL);
+      }
       AliasSide d;
       if (na <= 0 || !alias_side(c, id, &d)) continue;
       for (int a = 0; a < na; a++) {
@@ -1953,7 +1961,7 @@ static int propagate_alias_widening(Compiler *c, const LWIndex *ivw) {
       alias_ivar_widened(c, ivw, w, top);
     }
   }
-  free(ev);
+  free(ev); free(big);
   return changed;
 }
 
