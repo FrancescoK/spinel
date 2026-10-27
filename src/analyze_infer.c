@@ -1987,11 +1987,12 @@ int range_enum_redispatch(Compiler *c, int id) {
      `cycle` never ends, so it keeps its own emitter. */
   if (block < 0 && sp_streq(name, "cycle") && argc == 1) return 1;
   if (block < 0 && sp_streq(name, "each_entry") && argc == 0) return 1;
-  /* blockless select/reject/map: an Enumerator over the range's own ints,
+  /* blockless select/reject/sort_by: an Enumerator over the range's own ints,
      which the materialized array builds identically (#3062). */
   if (block < 0 && argc == 0 &&
       (sp_streq(name, "select") || sp_streq(name, "filter") ||
-       sp_streq(name, "find_all") || sp_streq(name, "reject"))) return 1;
+       sp_streq(name, "find_all") || sp_streq(name, "reject") ||
+       sp_streq(name, "sort_by"))) return 1;
   return 0;
 }
 
