@@ -11,6 +11,13 @@
    entry, in ascending id, the nodes no root reaches included (a pass that
    reads the whole table afterwards reads what they hold). A row appends nodes
    past that count and never visits them, as the loops it replaces did not.
+   A row that decides from the whole program whether it applies at all has a
+   gate, asked once at the start of a run. A row that works on the statements
+   of class and module bodies (LF_STMT) is entered at each statement, the
+   owner and the body in the lowering context. A row that reads a node's
+   parent asks lower_parents, which makes the map of every node's parent when
+   a row first needs it in a run. A row that makes shapes it must itself lower
+   runs again while a run changes the table (fix).
 
    SPINEL_LOWER_CHECK=1 checks the rows instead of compiling. After each row
    it reports a node still in the row's shape, and a second run of the row
@@ -24,7 +31,8 @@
 #include "analyze_internal.h"
 
 enum {
-  LF_MARKS = 1    /* sets marks only: no shape is eliminated, so no left */
+  LF_MARKS = 1,   /* sets marks only: no shape is eliminated, so no left */
+  LF_STMT = 2     /* enters at the statements of the bodies of its kinds, not at the nodes */
 };
 enum { LW_MAX_KINDS = 6 };
 
@@ -35,6 +43,8 @@ typedef struct {
   LowerFn *visit;                   /* rewrites the shape at id: 1 when it did */
   LowerFn *left;                    /* the shape is at id; NULL: only a second run is checked */
   const char *shape;                /* the shape it eliminates, for the check's report */
+  LowerGate *gate;                  /* NULL: none. Asked once at the start of a run; 0 skips it. */
+  int fix;                          /* 0: one run. n: runs again while a run changed the table, n runs at most */
 } Lowering;
 
 /* In the order the stage runs the rows; a row run twice (nil_block_arg) is
@@ -43,6 +53,20 @@ typedef struct {
 static const Lowering lowerings[LW__COUNT] = {
   [LW_NIL_BLOCK_ARG] = { "desugar_nil_block_arg", 0, { NK_CallNode },
     desugar_nil_block_arg_at, desugar_nil_block_arg_left, "`m(&nil)`" },
+  [LW_THREAD_START] = { "desugar_thread_start", 0, { NK_CallNode },
+    desugar_thread_start_at, desugar_thread_start_left, "`Thread.start`, `Thread.fork`", desugar_thread_start_gate },
+  [LW_MARSHAL_RESTORE] = { "desugar_marshal_restore", 0, { NK_CallNode },
+    desugar_marshal_restore_at, desugar_marshal_restore_left, "`Marshal.restore`", desugar_marshal_restore_gate },
+  [LW_SOCKET_OPEN] = { "desugar_socket_open", 0, { NK_CallNode },
+    desugar_socket_open_at, desugar_socket_open_left, "a blockless `TCPSocket.open` and the other socket classes'", desugar_socket_open_gate },
+  [LW_SYSTEM_OPTIONS] = { "desugar_system_options", 0, { NK_CallNode },
+    desugar_system_options_at, desugar_system_options_left, "`system(cmd, out: ..)`", desugar_system_options_gate },
+  [LW_IO_POPEN_BLOCK] = { "desugar_io_popen_block", 0, { NK_CallNode },
+    desugar_io_popen_block_at, desugar_io_popen_block_left, "`IO.popen(cmd) { }` in read mode", desugar_io_popen_block_gate },
+  [LW_LITERAL_UNDEF_METHOD] = { "desugar_literal_undef_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+    desugar_literal_undef_method_at, desugar_literal_undef_method_left, "`undef_method :a` in a body" },
+  [LW_NOARG_DISPLAY_WRAPPERS] = { "desugar_noarg_display_wrappers", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+    desugar_noarg_display_wrappers_at, desugar_noarg_display_wrappers_left, "`def inspect(i = 0)` in a body" },
   [LW_PAREN_BLOCK_ARG] = { "desugar_paren_block_arg", 0, { NK_BlockArgumentNode },
     desugar_paren_block_arg_at, desugar_paren_block_arg_left, "`&(e)`: a block argument in parentheses" },
   [LW_PAREN_OPERANDS] = { "desugar_paren_operands", 0,
@@ -50,6 +74,12 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_paren_operands_at, desugar_paren_operands_left, "`(e).m`, `x = (e)`: a receiver or value in parentheses" },
   [LW_SEND_CLASS_MAKERS] = { "desugar_send_class_makers", 0, { NK_CallNode },
     desugar_send_class_makers_at, desugar_send_class_makers_left, "`Struct.send(:new, ..)`, `Data.send(:define, ..)`" },
+  [LW_SELF_SUPERCLASS] = { "desugar_self_superclass", LF_STMT, { NK_ClassNode },
+    desugar_self_superclass_at, desugar_self_superclass_left, "`class I < self` in a class body" },
+  [LW_STRUCT_SUBCLASS_NEW_WRITE] = { "desugar_struct_subclass_new_write", 0, { NK_ConstantWriteNode },
+    desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left, "`X = K.new(..)` where K < Struct" },
+  [LW_REFUSE_SUPERCLASS_EXPRS] = { "refuse_superclass_exprs", 0, { NK_ClassNode },
+    refuse_superclass_exprs_at, NULL, "a superclass that is not a constant" },
   [LW_RESCUE_BLOCK_BODIES] = { "desugar_rescue_block_bodies", 0, { NK_BlockNode },
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
@@ -69,8 +99,12 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_encoding_queries_at, desugar_encoding_queries_left, "`Encoding.default_internal`, `Encoding.find(\"utf-8\")`" },
   [LW_ALIAS_METHOD_STRING_NAMES] = { "desugar_alias_method_string_names", 0, { NK_CallNode },
     desugar_alias_method_string_names_at, desugar_alias_method_string_names_left, "`alias_method \"a\", \"b\"`" },
+  [LW_ALIAS_METHOD_VALUES] = { "desugar_alias_method_values", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+    desugar_alias_method_values_at, desugar_alias_method_values_left, "a value-used `alias_method` in a body" },
   [LW_REASSIGNED_BLOCK_PARAMS] = { "desugar_reassigned_block_params", 0, { NK_BlockNode },
     desugar_reassigned_block_params_at, desugar_reassigned_block_params_left, "a block parameter the body assigns" },
+  [LW_ITSELF_RECEIVER] = { "desugar_itself_receiver", 0, { NK_CallNode },
+    desugar_itself_receiver_at, desugar_itself_receiver_left, "`x.itself` on a variable", desugar_itself_receiver_gate },
   [LW_TAP_VALUE_WRITE] = { "desugar_tap_value_write", 0, { NK_LocalVariableWriteNode },
     desugar_tap_value_write_at, NULL, "`x = e.tap { }`" },
   [LW_BLK_PARAM_WRITES] = { "desugar_blk_param_writes", 0, { NK_DefNode },
@@ -85,10 +119,24 @@ static const Lowering lowerings[LW__COUNT] = {
   [LW_CONST_ATTR_OP_ASSIGN] = { "desugar_const_attr_op_assign", 0,
     { NK_CallOperatorWriteNode, NK_CallOrWriteNode, NK_CallAndWriteNode },
     desugar_const_attr_op_assign_at, desugar_const_attr_op_assign_left, "`Klass.a op= v`" },
+  [LW_STORED_ENUM_EACH] = { "desugar_stored_enum_each", 0, { NK_CallNode },
+    desugar_stored_enum_each_at, NULL, "`e.each { }` on a stored enumerator" },
+  [LW_SINGLETON_CLASS_DEFINE_METHOD] = { "desugar_singleton_class_define_method", LF_STMT, { NK_ClassNode, NK_ModuleNode },
+    desugar_singleton_class_define_method_at, desugar_singleton_class_define_method_left, "`singleton_class.define_method` in a body" },
   [LW_EMPTY_HASH_COMPARE_BY_IDENTITY] = { "desugar_empty_hash_compare_by_identity", 0, { NK_CallNode },
     desugar_empty_hash_compare_by_identity_at, desugar_empty_hash_compare_by_identity_left, "`{}.compare_by_identity`" },
+  [LW_DEFINE_METHOD_PROC_ARG] = { "desugar_define_method_proc_arg", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+    desugar_define_method_proc_arg_at, NULL, "`define_method(:m, proc)` in a body" },
+  [LW_DEFINE_METHOD_KEYWORDS] = { "desugar_define_method_keywords", LF_STMT, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+    desugar_define_method_keywords_at, NULL, "a `define_method` block with keyword or rest parameters" },
   [LW_NAME_ANON_BLOCK_KWREST] = { "name_anon_block_kwrest", 0, { NK_BlockNode, NK_LambdaNode },
     name_anon_block_kwrest_at, name_anon_block_kwrest_left, "an anonymous `**` block parameter" },
+  [LW_SYM_TO_PROC_CALL] = { "desugar_sym_to_proc_call", 0, { NK_CallNode },
+    desugar_sym_to_proc_call_at, NULL, "`:m.to_proc.call(r, a)`" },
+  [LW_ENUM_CHAIN_SHAPES] = { "desugar_enum_chain_shapes", 0, { NK_CallNode },
+    desugar_enum_chain_shapes_at, NULL, "an iterator chain: each_char.with_index, each.with_object, ..", NULL, 2 },
+  [LW_BUILTIN_KWSPLAT] = { "desugar_builtin_kwsplat", 0, { NK_CallNode },
+    desugar_builtin_kwsplat_at, NULL, "`**h` into step, sample and the other keyword builtins", desugar_builtin_kwsplat_gate },
   [LW_RIGHTWARD_PATTERN] = { "desugar_rightward_pattern", 0, { NK_MatchRequiredNode },
     desugar_rightward_pattern_at, desugar_rightward_pattern_left, "`x => pattern`" },
   [LW_MATCH_PREDICATE] = { "desugar_match_predicate", 0, { NK_MatchPredicateNode },
@@ -97,6 +145,8 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_sort_by_with_index_at, desugar_sort_by_with_index_left, "`sort_by.with_index { }`" },
   [LW_ANON_BLOCK_PARAM] = { "desugar_anon_block_param", 0, { NK_DefNode },
     desugar_anon_block_param_at, desugar_anon_block_param_left, "an anonymous `&`, `*` or `**` method parameter" },
+  [LW_BLOCK_IMPLICIT_REST] = { "desugar_block_implicit_rest", 0, { NK_BlockParametersNode },
+    desugar_block_implicit_rest_at, desugar_block_implicit_rest_left, "`|x,|` outside a lambda" },
   [LW_MULTI_VALUE_JUMP] = { "desugar_multi_value_jump", 0,
     { NK_ReturnNode, NK_BreakNode, NK_NextNode, NK_YieldNode, NK_CallNode },
     desugar_multi_value_jump_at, desugar_multi_value_jump_left, "`return *a, b`: a jump or call handing out several values" },
@@ -125,31 +175,114 @@ static KindSet kind_set_of(const Lowering *w) {
 
 static int kind_set_has(const KindSet *s, NodeKind k) { return (int)(s->w[k >> 6] >> (k & 63) & 1); }
 
+/* ---- the parent map ---- */
+
+/* Every node's parent (an_parent_map's: -1 for a root and for the root of a
+   subtree no root reaches), made when a row first asks within a run and kept
+   for the rest of it, as the maps the rows made for themselves were. A run
+   after one that left the table as it found it asks the same map. */
+const int *lower_parents(Compiler *c, LowerCtx *lc) {
+  const NodeTable *nt = c->nt;
+  if (!lc->parent_live) {
+    lc->parent_live = 1;
+    if (lc->parent && lc->parent_n == nt->count && lc->parent_version == nt->version && lc->parent_edits == nt->edits)
+      return lc->parent;
+    free(lc->parent);
+    lc->parent_n = nt->count;
+    lc->parent = an_parent_map(nt);
+    if (!lc->parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    lc->parent_version = nt->version;
+    lc->parent_edits = nt->edits;
+  }
+  return lc->parent;
+}
+
 /* ---- the driver ---- */
+
+int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt) {
+  int n = 0;
+  const int *st = nt_arr(nt, lc->body, "body", &n);
+  for (int i = 0; i < n; i++) if (st[i] == stmt) return i;
+  return -1;
+}
 
 static void lower_scratch_reset(LowerCtx *lc) {
   lc->serial = 0;
+  for (int i = 0; i < 3; i++) lc->prog_memo[i] = -1;
   for (int i = 0; i < lc->nused; i++) free(lc->used[i]);
   free(lc->used);
   lc->used = NULL;
   lc->nused = 0;
   lc->used_built = 0;
+  free(lc->ids);
+  lc->ids = NULL;
+  lc->nids = 0;
 }
 
-/* One run of a row over the program: the rows below its count at entry that
-   are of its kinds, in ascending id. The arrays that follow the table grow
-   once, at the end. */
-static int lower_pass(Compiler *c, LowerCtx *lc, const Lowering *w) {
+/* Every site of a row, in the order the loops it replaces took them: with
+   `ask` 0 its visit rewrites each and the answer is how many it did; with 1
+   its left answers for each and the answer is how many are in the shape
+   (*first the first of them). A row that enters at nodes takes the nodes below
+   the count at entry (the current count when asking) that are of its kinds,
+   in ascending id. A row that enters at statements (LF_STMT) takes the nodes
+   of its kinds, each a body owner, in ascending id, and the statements the
+   owner's body held when it was reached, in order: a statement a visit
+   inserts is not visited, one it moves is visited where it stood. */
+static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, int *first) {
   const NodeTable *nt = c->nt;
   KindSet set = kind_set_of(w);
-  lc->n0 = nt->count;
-  lower_scratch_reset(lc);
-  int rewrote = 0;
-  for (int id = 0; id < lc->n0; id++) {
+  int n = 0, end = ask ? nt->count : lc->n0;
+  for (int id = 0; id < end; id++) {
     if (!kind_set_has(&set, nt_kind(nt, id))) continue;
-    rewrote += w->visit(c, lc, id);
+    if (w->flags & LF_STMT) {
+      int body = nt_ref(nt, id, "body");
+      if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
+      int sn = 0;
+      const int *sv = nt_arr(nt, body, "body", &sn);
+      if (sn == 0) continue;
+      int *st = malloc(sizeof(int) * (size_t)sn);
+      if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      memcpy(st, sv, sizeof(int) * (size_t)sn);
+      for (int i = 0; i < sn; i++) {
+        lc->owner = id;
+        lc->body = body;
+        int r = ask ? w->left(c, lc, st[i]) : w->visit(c, lc, st[i]);
+        if (r && first && *first < 0) *first = st[i];
+        n += ask ? r != 0 : r;
+      }
+      free(st);
+      continue;
+    }
+    int r = ask ? w->left(c, lc, id) : w->visit(c, lc, id);
+    if (r && first && *first < 0) *first = id;
+    n += ask ? r != 0 : r;
   }
+  return n;
+}
+
+/* One run of a row: its gate, its sites. The arrays that follow the table grow
+   once, at the end. */
+static int lower_once(Compiler *c, LowerCtx *lc, const Lowering *w) {
+  lc->n0 = c->nt->count;
+  lc->parent_live = 0;
+  lower_scratch_reset(lc);
+  if (w->gate && !w->gate(c, lc)) return 0;
+  int rewrote = lower_sites(c, lc, w, 0, NULL);
   comp_grow_node_arrays(c);
+  return rewrote;
+}
+
+/* A row with a run cap (fix) runs again while a run changed the table, up to
+   that many runs. */
+static int lower_pass(Compiler *c, LowerCtx *lc, const Lowering *w) {
+  const NodeTable *nt = c->nt;
+  unsigned long edits = nt->edits;
+  int count = nt->count, rewrote = lower_once(c, lc, w);
+  for (int run = 1; run < w->fix && (nt->edits != edits || nt->count != count); run++) {
+    edits = nt->edits;
+    count = nt->count;
+    rewrote += lower_once(c, lc, w);
+  }
   return rewrote;
 }
 
@@ -174,15 +307,10 @@ static void lower_check_left(Compiler *c, LowerCtx *lc, int row, const char *whe
   const Lowering *w = &lowerings[row];
   if (!w->left) return;
   const NodeTable *nt = c->nt;
-  KindSet set = kind_set_of(w);
   lc->n0 = nt->count;
-  int n = 0, first = -1;
-  for (int id = 0; id < nt->count; id++) {
-    if (!kind_set_has(&set, nt_kind(nt, id))) continue;
-    if (!w->left(c, lc, id)) continue;
-    if (first < 0) first = id;
-    n++;
-  }
+  lower_scratch_reset(lc);
+  if (w->gate && !w->gate(c, lc)) return;   /* the row does not apply to this program */
+  int first = -1, n = lower_sites(c, lc, w, 1, &first);
   if (!n) return;
   char where[600], what[1000];
   lower_where(nt, first, where, sizeof where);
@@ -211,16 +339,32 @@ void lower_begin(Compiler *c, LowerCtx *lc) {
   lc->check = e && *e && *e != '0';
 }
 
-void lower_run(Compiler *c, LowerCtx *lc, int row) {
+int lower_run(Compiler *c, LowerCtx *lc, int row) {
   NodeTable *nt = (NodeTable *)c->nt;
   const Lowering *w = &lowerings[row];
   const char *was = nt_set_pass(nt, w->name);
-  lc->rewrote[row] += lower_pass(c, lc, w);
+  int rewrote = lower_pass(c, lc, w);
+  lc->rewrote[row] += rewrote;
   if (lc->check) {
     lower_check_left(c, lc, row, "after its run");
     lower_check_again(c, lc, row);
   }
   nt_set_pass(nt, was);
+  return rewrote;
+}
+
+static void lower_release(LowerCtx *lc) {
+  lower_scratch_reset(lc);
+  free(lc->parent);
+}
+
+int lower_row_once(Compiler *c, int row) {
+  LowerCtx lc;
+  lower_begin(c, &lc);
+  lc.check = 0;   /* the check is of the stage's run */
+  int rewrote = lower_run(c, &lc, row);
+  lower_release(&lc);
+  return rewrote;
 }
 
 /* The end of the stage: every row's shape, then the rows once more in the
@@ -249,5 +393,5 @@ void lower_finish(Compiler *c, LowerCtx *lc) {
     lower_check_end(c, lc);
     exit(0);
   }
-  lower_scratch_reset(lc);
+  lower_release(lc);
 }

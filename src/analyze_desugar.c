@@ -9642,52 +9642,49 @@ int desugar_value_callable_forwards(Compiler *c) {
    Give the list a trailing parameter nobody names, which is what the rest is,
    and every multi-parameter path destructures it from there. A method
    definition's trailing comma means nothing and is left alone. */
-int desugar_block_implicit_rest(Compiler *c) {
+/* Is the BlockParametersNode bp, hanging from owner, a lambda's? A lambda is
+   strict about its parameter list, and there the trailing comma changes
+   nothing: `lambda { |a,| }` takes exactly one argument and raises on two.
+   Only a block (or a proc, which is lenient) destructures. */
+static int lambda_params(Compiler *c, LowerCtx *lc, int bp) {
+  const NodeTable *nt = c->nt;
+  const int *par = lower_parents(c, lc);
+  int owner = par[bp];
+  if (owner < 0) return 0;
+  if (nt_kind(nt, owner) == NK_LambdaNode) return nt_ref(nt, owner, "parameters") == bp;
+  int call = par[owner];
+  const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  return cn && sp_streq(cn, "lambda") && nt_ref(nt, call, "block") == owner && nt_ref(nt, owner, "parameters") == bp;
+}
+/* the required parameters of the `|x,|` block parameter list at id that need a
+   rest parameter of their own, else -1 */
+static int implicit_rest_params(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int pn = nt_ref(nt, id, "parameters");
+  if (pn < 0 || nt_kind(nt, nt_ref(nt, pn, "rest")) != NK_ImplicitRestNode) return -1;
+  int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+  if (!reqs || rn < 1 || rn > 30) return -1;
+  return lambda_params(c, lc, id) ? -1 : pn;
+}
+int desugar_block_implicit_rest_left(Compiler *c, LowerCtx *lc, int id) {
+  return implicit_rest_params(c, lc, id) >= 0;
+}
+int desugar_block_implicit_rest_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  /* A lambda is strict about its parameter list, and there the trailing comma
-     changes nothing: `lambda { |a,| }` takes exactly one argument and raises
-     on two. Only a block (or a proc, which is lenient) destructures. */
-  char *is_lambda_params = (char *)calloc(n0 > 0 ? (size_t)n0 : 1, 1);
-  if (!is_lambda_params) return 0;
-  for (int id = 0; id < n0; id++) {
-    NodeKind ty_k = nt_kind(nt, id);
-    int bp = -1;
-    if (ty_k == NK_LambdaNode) bp = nt_ref(nt, id, "parameters");
-    else if (ty_k == NK_CallNode) {
-      const char *cn = nt_str(nt, id, "name");
-      if (!cn || !sp_streq(cn, "lambda")) continue;
-      int blk = nt_ref(nt, id, "block");
-      if (blk >= 0) bp = nt_ref(nt, blk, "parameters");
-    }
-    if (bp >= 0 && bp < n0) is_lambda_params[bp] = 1;
-  }
-  for (int id = 0; id < n0; id++) {
-    NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_BlockParametersNode) continue;
-    if (is_lambda_params[id]) continue;
-    int pn = nt_ref(nt, id, "parameters");
-    if (pn < 0) continue;
-    int rest = nt_ref(nt, pn, "rest");
-    NodeKind rk = nt_kind(nt, rest);
-    if (rk != NK_ImplicitRestNode) continue;
-    int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
-    if (!reqs || rn < 1 || rn > 30) continue;
-    int copy[32];
-    for (int k = 0; k < rn; k++) copy[k] = reqs[k];
-    int p = nt_new_node(nt, "RequiredParameterNode");
-    if (p < 0) continue;
-    char nm[64]; snprintf(nm, sizeof nm, "__implicit_rest_%s", comp_node_tag(c, id));
-    nt_node_set_str(nt, p, "name", nm);
-    copy[rn] = p;
-    nt_node_set_arr(nt, pn, "requireds", copy, rn + 1);
-    nt_node_set_ref(nt, pn, "rest", -1);
-    comp_grow_node_arrays(c);
-    changed = 1;
-  }
-  free(is_lambda_params);
-  return changed;
+  int pn = implicit_rest_params(c, lc, id);
+  if (pn < 0) return 0;
+  int rn = 0; const int *reqs = nt_arr(nt, pn, "requireds", &rn);
+  int copy[32];
+  for (int k = 0; k < rn; k++) copy[k] = reqs[k];
+  int p = nt_new_node(nt, "RequiredParameterNode");
+  if (p < 0) return 0;
+  char nm[64]; snprintf(nm, sizeof nm, "__implicit_rest_%s", comp_node_tag(c, id));
+  nt_node_set_str(nt, p, "name", nm);
+  copy[rn] = p;
+  nt_node_set_arr(nt, pn, "requireds", copy, rn + 1);
+  nt_node_set_ref(nt, pn, "rest", -1);
+  comp_grow_node_arrays(c);
+  return 1;
 }
 
 /* `return a, *b, c` / `break a, *b` / `next a, b` hand back one array:
@@ -10956,32 +10953,28 @@ int desugar_empty_hash_compare_by_identity_at(Compiler *c, LowerCtx *lc, int id)
   return 1;
 }
 
-int desugar_singleton_class_define_method(Compiler *c) {
+/* the `singleton_class.define_method` call statement st is: its receiver's node, else -1 */
+static int singleton_define_method_recv(const NodeTable *nt, int id) {
+  const char *cn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  int recv = nt_ref(nt, id, "receiver");
+  if (!cn || !sp_streq(cn, "define_method") || recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  const char *rn = nt_str(nt, recv, "name");
+  int rr = nt_ref(nt, recv, "receiver");
+  if (!rn || !sp_streq(rn, "singleton_class") || nt_ref(nt, recv, "arguments") >= 0 ||
+      nt_ref(nt, recv, "block") >= 0 || (rr >= 0 && nt_kind(nt, rr) != NK_SelfNode)) return -1;
+  return recv;
+}
+int desugar_singleton_class_define_method_left(Compiler *c, LowerCtx *lc, int id) {
+  return singleton_define_method_recv(c->nt, id) >= 0;
+}
+int desugar_singleton_class_define_method_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int cls = 0; cls < n0; cls++) {
-    NodeKind ck = nt_kind(nt, cls);
-    if (ck != NK_ClassNode && ck != NK_ModuleNode) continue;
-    int body = nt_ref(nt, cls, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
-    for (int i = 0; i < bn; i++) {
-      int id = bv[i];
-      const char *cn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
-      int recv = nt_ref(nt, id, "receiver");
-      if (!cn || !sp_streq(cn, "define_method") || recv < 0 || nt_kind(nt, recv) != NK_CallNode) continue;
-      const char *rn = nt_str(nt, recv, "name");
-      int rr = nt_ref(nt, recv, "receiver");
-      if (!rn || !sp_streq(rn, "singleton_class") || nt_ref(nt, recv, "arguments") >= 0 ||
-          nt_ref(nt, recv, "block") >= 0 || (rr >= 0 && nt_kind(nt, rr) != NK_SelfNode)) continue;
-      nt_node_set_ref(nt, id, "receiver", -1);
-      nt_node_set_str(nt, id, "name", "define_singleton_method");
-      nt_node_reset(nt, recv, "NilNode");
-      changed = 1;
-    }
-  }
-  return changed;
+  int recv = singleton_define_method_recv(nt, id);
+  if (recv < 0) return 0;
+  nt_node_set_ref(nt, id, "receiver", -1);
+  nt_node_set_str(nt, id, "name", "define_singleton_method");
+  nt_node_reset(nt, recv, "NilNode");
+  return 1;
 }
 
 /* The BlockNode a Proc literal (`-> { }`, `lambda { }`, `proc { }`,
@@ -11234,106 +11227,90 @@ int method_body_next_to_return(NodeTable *nt, int id) {
    local assigned one once, earlier in the body -> `define_method(:m) { }`
    with that literal's block. A local keeps its own literal; the method gets
    a copy. */
-int desugar_define_method_proc_arg(Compiler *c) {
+int desugar_define_method_proc_arg_at(Compiler *c, LowerCtx *lc, int stmt) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int cls = 0; cls < n0; cls++) {
-    NodeKind ck = nt_kind(nt, cls);
-    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
-    int body = nt_ref(nt, cls, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
-    for (int i = 0; i < bn; i++) {
-      int id = dm_stmt_call(nt, bv[i]);
-      if (id < 0) continue;
-      const char *cn = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver");
-      if (!cn || (!sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method")) ||
-          (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
-      int args = nt_ref(nt, id, "arguments");
-      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      int blk = nt_ref(nt, id, "block");
-      int src = -1;
-      if (an == 2 && blk < 0) src = av[1];
-      else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode)
-        src = nt_ref(nt, blk, "expression");
-      if (src < 0) continue;
-      if (bv[i] == id) {
-        int copy = dmo_copy_module_def(nt, id, cn, src, blk);
-        if (copy >= 0) {
-          int *nb = malloc(sizeof(int) * (size_t)bn);
-          if (!nb) continue;
-          memcpy(nb, bv, sizeof(int) * (size_t)bn);
-          nb[i] = copy;
-          nt_node_set_arr(nt, body, "body", nb, bn);
-          free(nb);
-          bv = nt_arr(nt, body, "body", &bn);
-          changed = 1;
-          continue;
-        }
-      }
-      if (dmp_instance_method_alias(nt, id, cn, src, blk)) {
-        changed = 1;
-        if (bv[i] == id) continue;
-        /* `private define_method(:m, ...)` -> `alias_method(:m, :x); private :m` */
-        int vis = bv[i];
-        int aa = nt_ref(nt, id, "arguments");
-        int an2 = 0; const int *av2 = nt_arr(nt, aa, "arguments", &an2);
-        int name = nt_clone_subtree(nt, av2[0]);
-        int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
-        if (!nb || name < 0) { free(nb); continue; }
-        memcpy(nb, bv, sizeof(int) * (size_t)i);
-        nb[i] = id;
-        nb[i + 1] = vis;
-        memcpy(nb + i + 2, bv + i + 1, sizeof(int) * (size_t)(bn - i - 1));
-        nt_node_set_arr(nt, body, "body", nb, bn + 1);
-        free(nb);
-        nt_node_set_arr(nt, nt_ref(nt, vis, "arguments"), "arguments", &name, 1);
-        bv = nt_arr(nt, body, "body", &bn);
-        i++;
-        continue;
-      }
-      int lit = dmp_literal_block(nt, src), copy = 0;
-      if (lit < 0 && nt_kind(nt, src) == NK_LocalVariableReadNode &&
-          nt_int(nt, src, "depth", 0) == 0) {
-        const char *ln = nt_str(nt, src, "name");
-        for (int j = 0; j < i && ln; j++) {
-          int w = bv[j];
-          if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !sp_streq(nt_str(nt, w, "name"), ln) ||
-              dmp_literal_block(nt, nt_ref(nt, w, "value")) < 0) continue;
-          if (dmp_local_writes(nt, body, 0, ln) != 1) break;
-          int cv = nt_clone_subtree(nt, nt_ref(nt, w, "value"));
-          lit = dmp_literal_block(nt, cv);
-          if (lit >= 0 && lit != cv) nt_node_reset(nt, cv, "NilNode");
-          copy = 1;
-          break;
-        }
-      }
-      if (lit < 0) continue;
-      if (!copy && lit != src) nt_node_reset(nt, src, "NilNode");
-      if (blk >= 0) nt_node_reset(nt, blk, "NilNode");
-      if (nt_kind(nt, lit) == NK_LambdaNode) {
-        /* a lambda holds its ParametersNode directly, a block through a
-           BlockParametersNode */
-        int lp = nt_ref(nt, lit, "parameters");
-        if (lp >= 0 && nt_kind(nt, lp) == NK_ParametersNode) {
-          int bp = fwd_new_node_like(nt, lp, "BlockParametersNode");
-          if (bp >= 0) {
-            nt_node_set_ref(nt, bp, "parameters", lp);
-            nt_node_set_ref(nt, lit, "parameters", bp);
-          }
-        }
-        nt_node_set_type(nt, lit, "BlockNode");
-      }
-      nt_node_set_arr(nt, args, "arguments", av, 1);
-      nt_node_set_ref(nt, id, "block", lit);
-      bv = nt_arr(nt, body, "body", &bn);
-      changed = 1;
+  int body = lc->body;
+  int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+  int i = lower_stmt_at(nt, lc, stmt);
+  int id = dm_stmt_call(nt, stmt);
+  if (id < 0) return 0;
+  const char *cn = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!cn || (!sp_streq(cn, "define_method") && !sp_streq(cn, "define_singleton_method")) ||
+      (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  int blk = nt_ref(nt, id, "block");
+  int src = -1;
+  if (an == 2 && blk < 0) src = av[1];
+  else if (an == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode)
+    src = nt_ref(nt, blk, "expression");
+  if (src < 0) return 0;
+  if (bv[i] == id) {
+    int copy = dmo_copy_module_def(nt, id, cn, src, blk);
+    if (copy >= 0) {
+      int *nb = malloc(sizeof(int) * (size_t)bn);
+      if (!nb) return 0;
+      memcpy(nb, bv, sizeof(int) * (size_t)bn);
+      nb[i] = copy;
+      nt_node_set_arr(nt, body, "body", nb, bn);
+      free(nb);
+      return 1;
     }
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  if (dmp_instance_method_alias(nt, id, cn, src, blk)) {
+    if (bv[i] == id) return 1;
+    /* `private define_method(:m, ...)` -> `alias_method(:m, :x); private :m` */
+    int vis = bv[i];
+    int aa = nt_ref(nt, id, "arguments");
+    int an2 = 0; const int *av2 = nt_arr(nt, aa, "arguments", &an2);
+    int name = nt_clone_subtree(nt, av2[0]);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
+    if (!nb || name < 0) { free(nb); return 1; }
+    memcpy(nb, bv, sizeof(int) * (size_t)i);
+    nb[i] = id;
+    nb[i + 1] = vis;
+    memcpy(nb + i + 2, bv + i + 1, sizeof(int) * (size_t)(bn - i - 1));
+    nt_node_set_arr(nt, body, "body", nb, bn + 1);
+    free(nb);
+    nt_node_set_arr(nt, nt_ref(nt, vis, "arguments"), "arguments", &name, 1);
+    return 1;
+  }
+  int lit = dmp_literal_block(nt, src), copy = 0;
+  if (lit < 0 && nt_kind(nt, src) == NK_LocalVariableReadNode &&
+      nt_int(nt, src, "depth", 0) == 0) {
+    const char *ln = nt_str(nt, src, "name");
+    for (int j = 0; j < i && ln; j++) {
+      int w = bv[j];
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !sp_streq(nt_str(nt, w, "name"), ln) ||
+          dmp_literal_block(nt, nt_ref(nt, w, "value")) < 0) continue;
+      if (dmp_local_writes(nt, body, 0, ln) != 1) break;
+      int cv = nt_clone_subtree(nt, nt_ref(nt, w, "value"));
+      lit = dmp_literal_block(nt, cv);
+      if (lit >= 0 && lit != cv) nt_node_reset(nt, cv, "NilNode");
+      copy = 1;
+      break;
+    }
+  }
+  if (lit < 0) return 0;
+  if (!copy && lit != src) nt_node_reset(nt, src, "NilNode");
+  if (blk >= 0) nt_node_reset(nt, blk, "NilNode");
+  if (nt_kind(nt, lit) == NK_LambdaNode) {
+    /* a lambda holds its ParametersNode directly, a block through a
+       BlockParametersNode */
+    int lp = nt_ref(nt, lit, "parameters");
+    if (lp >= 0 && nt_kind(nt, lp) == NK_ParametersNode) {
+      int bp = fwd_new_node_like(nt, lp, "BlockParametersNode");
+      if (bp >= 0) {
+        nt_node_set_ref(nt, bp, "parameters", lp);
+        nt_node_set_ref(nt, lit, "parameters", bp);
+      }
+    }
+    nt_node_set_type(nt, lit, "BlockNode");
+  }
+  nt_node_set_arr(nt, args, "arguments", av, 1);
+  nt_node_set_ref(nt, id, "block", lit);
+  return 1;
 }
 
 /* `class D; x = 5; define_method(:f) { x } end`: a local of a class, module
@@ -11379,72 +11356,61 @@ int desugar_define_method_captures(Compiler *c) {
    binding of them read a DefNode's parameters; the define_method scope
    registers only its required and optional positionals. Blocks with only
    those keep the define_method form. */
-int desugar_define_method_keywords(Compiler *c) {
+int desugar_define_method_keywords_at(Compiler *c, LowerCtx *lc, int stmt) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  int n0 = nt->count;
-  for (int cls = 0; cls < n0; cls++) {
-    NodeKind ck = nt_kind(nt, cls);
-    if (ck != NK_ClassNode && ck != NK_ModuleNode && ck != NK_SingletonClassNode) continue;
-    int body = nt_ref(nt, cls, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
-    for (int i = 0; i < bn; i++) {
-      int id = dm_stmt_call(nt, bv[i]);
-      if (id < 0) continue;
-      const char *cn = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver");
-      int single = cn && sp_streq(cn, "define_singleton_method") && ck != NK_SingletonClassNode &&
-                   (recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
-      if (!cn || (!single && (!sp_streq(cn, "define_method") || recv >= 0))) continue;
-      int args = nt_ref(nt, id, "arguments");
-      int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an != 1) continue;
-      const char *mname = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value")
-                        : nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
-      int blk = nt_ref(nt, id, "block");
-      if (!mname || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
-      int bp = nt_ref(nt, blk, "parameters");
-      if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) continue;
-      int pn = nt_ref(nt, bp, "parameters");
-      if (pn < 0) continue;
-      int kn = 0, pon = 0;
-      nt_arr(nt, pn, "keywords", &kn);
-      nt_arr(nt, pn, "posts", &pon);
-      int rest = nt_ref(nt, pn, "rest");
-      if (kn == 0 && pon == 0 && nt_ref(nt, pn, "keyword_rest") < 0 && nt_ref(nt, pn, "block") < 0 &&
-          (rest < 0 || nt_kind(nt, rest) != NK_RestParameterNode)) continue;
-      if (single && id != bv[i]) continue;
-      int def = fwd_new_node_like(nt, id, "DefNode");
-      int dself = single ? fwd_new_node_like(nt, id, "SelfNode") : -1;
-      if (def < 0 || (single && dself < 0)) continue;
-      nt_node_set_str(nt, def, "name", mname);
-      nt_node_set_ref(nt, def, "parameters", pn);
-      nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
-      nt_node_set_ref(nt, def, "receiver", dself);
-      method_body_next_to_return(nt, nt_ref(nt, def, "body"));
-      if (id != bv[i]) {
-        /* `private define_method(...)` -> `private def ...` */
-        nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);
-      }
-      else {
-        int *nb = malloc(sizeof(int) * (size_t)bn);
-        if (!nb) continue;
-        memcpy(nb, bv, sizeof(int) * (size_t)bn);
-        nb[i] = def;
-        nt_node_set_arr(nt, body, "body", nb, bn);
-        free(nb);
-        bv = nt_arr(nt, body, "body", &bn);
-      }
-      /* the parameters and body are the def's alone now: passes that scan
-         every block or call must not reach them through the old nodes */
-      nt_node_reset(nt, blk, "NilNode");
-      nt_node_reset(nt, id, "NilNode");
-      changed = 1;
-    }
+  int body = lc->body, ck = nt_kind(nt, lc->owner);
+  int bn = 0; const int *bv = nt_arr(nt, body, "body", &bn);
+  int i = lower_stmt_at(nt, lc, stmt);
+  int id = dm_stmt_call(nt, stmt);
+  if (id < 0) return 0;
+  const char *cn = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int single = cn && sp_streq(cn, "define_singleton_method") && ck != NK_SingletonClassNode &&
+               (recv < 0 || nt_kind(nt, recv) == NK_SelfNode);
+  if (!cn || (!single && (!sp_streq(cn, "define_method") || recv >= 0))) return 0;
+  int args = nt_ref(nt, id, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an != 1) return 0;
+  const char *mname = nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value")
+                    : nt_kind(nt, av[0]) == NK_StringNode ? nt_str(nt, av[0], "content") : NULL;
+  int blk = nt_ref(nt, id, "block");
+  if (!mname || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return 0;
+  int bp = nt_ref(nt, blk, "parameters");
+  if (bp < 0 || nt_kind(nt, bp) != NK_BlockParametersNode) return 0;
+  int pn = nt_ref(nt, bp, "parameters");
+  if (pn < 0) return 0;
+  int kn = 0, pon = 0;
+  nt_arr(nt, pn, "keywords", &kn);
+  nt_arr(nt, pn, "posts", &pon);
+  int rest = nt_ref(nt, pn, "rest");
+  if (kn == 0 && pon == 0 && nt_ref(nt, pn, "keyword_rest") < 0 && nt_ref(nt, pn, "block") < 0 &&
+      (rest < 0 || nt_kind(nt, rest) != NK_RestParameterNode)) return 0;
+  if (single && id != bv[i]) return 0;
+  int def = fwd_new_node_like(nt, id, "DefNode");
+  int dself = single ? fwd_new_node_like(nt, id, "SelfNode") : -1;
+  if (def < 0 || (single && dself < 0)) return 0;
+  nt_node_set_str(nt, def, "name", mname);
+  nt_node_set_ref(nt, def, "parameters", pn);
+  nt_node_set_ref(nt, def, "body", nt_ref(nt, blk, "body"));
+  nt_node_set_ref(nt, def, "receiver", dself);
+  method_body_next_to_return(nt, nt_ref(nt, def, "body"));
+  if (id != bv[i]) {
+    /* `private define_method(...)` -> `private def ...` */
+    nt_node_set_arr(nt, nt_ref(nt, bv[i], "arguments"), "arguments", &def, 1);
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  else {
+    int *nb = malloc(sizeof(int) * (size_t)bn);
+    if (!nb) return 0;
+    memcpy(nb, bv, sizeof(int) * (size_t)bn);
+    nb[i] = def;
+    nt_node_set_arr(nt, body, "body", nb, bn);
+    free(nb);
+  }
+  /* the parameters and body are the def's alone now: passes that scan
+     every block or call must not reach them through the old nodes */
+  nt_node_reset(nt, blk, "NilNode");
+  nt_node_reset(nt, id, "NilNode");
+  return 1;
 }
 
 /* The anonymous parameters of parameter list pn (bit 0 the block, 1 the
@@ -12607,54 +12573,51 @@ static int stored_enum_write(Compiler *c, int id, int n0) {
   return w;
 }
 
-void desugar_stored_enum_each(Compiler *c) {
+int desugar_stored_enum_each_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
-    int w = nt_kind(nt, id) == NK_CallNode ? stored_enum_write(c, id, n0) : -1;
-    if (w < 0) continue;
-    char hs[48], hp[48]; snprintf(hs, sizeof hs, "__enum_src_%s", comp_node_tag(c, w)); snprintf(hp, sizeof hp, "__enum_ifn_%s", comp_node_tag(c, w));
-    int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
-    int an = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
-    if (nt_int(nt, w, "enum_src", -1) < 0) {
-      int p0 = an ? av[0] : -1;
-      int hw = nt_new_node(nt, "LocalVariableWriteNode"), hr = nt_new_node(nt, "LocalVariableReadNode");
-      int st = nt_new_node(nt, "StatementsNode"), par = nt_new_node(nt, "ParenthesesNode");
-      int pw = an ? nt_new_node(nt, "LocalVariableWriteNode") : -1, pr = an ? nt_new_node(nt, "LocalVariableReadNode") : -1;
-      if (hw < 0 || hr < 0 || st < 0 || par < 0 || (an && (pw < 0 || pr < 0))) break;
-      nt_node_set_str(nt, hw, "name", hs);
-      nt_node_set_ref(nt, hw, "value", nt_ref(nt, v, "receiver"));
-      nt_node_set_str(nt, hr, "name", hs);
-      nt_node_set_ref(nt, v, "receiver", hr);
-      if (an) {
-        nt_node_set_str(nt, pw, "name", hp);
-        nt_node_set_ref(nt, pw, "value", p0);
-        nt_node_set_str(nt, pr, "name", hp);
-        nt_node_set_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &pr, 1);
-      }
-      int sb[3] = { hw, an ? pw : v, v };
-      nt_node_set_arr(nt, st, "body", sb, 2 + an);
-      nt_node_set_ref(nt, par, "body", st);
-      nt_node_set_ref(nt, w, "value", par);
-      nt_node_set_int(nt, w, "enum_src", v);
-    }
-    int sr = nt_new_node(nt, "LocalVariableReadNode");
-    if (sr < 0) break;
-    nt_node_set_str(nt, sr, "name", hs);
-    nt_node_set_int(nt, sr, "depth", nt_int(nt, nt_ref(nt, id, "receiver"), "depth", 0));
-    nt_node_set_ref(nt, id, "receiver", sr);
-    nt_node_set_str(nt, id, "name", nt_str(nt, v, "name"));
-    nt_node_set_int(nt, id, "enum_copy", nt_int(nt, v, "enum_copy", -1));
+  int w = stored_enum_write(c, id, lc->n0);
+  if (w < 0) return 0;
+  char hs[48], hp[48]; snprintf(hs, sizeof hs, "__enum_src_%s", comp_node_tag(c, w)); snprintf(hp, sizeof hp, "__enum_ifn_%s", comp_node_tag(c, w));
+  int v = (int)nt_int(nt, w, "enum_src", nt_ref(nt, w, "value"));
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
+  if (nt_int(nt, w, "enum_src", -1) < 0) {
+    int p0 = an ? av[0] : -1;
+    int hw = nt_new_node(nt, "LocalVariableWriteNode"), hr = nt_new_node(nt, "LocalVariableReadNode");
+    int st = nt_new_node(nt, "StatementsNode"), par = nt_new_node(nt, "ParenthesesNode");
+    int pw = an ? nt_new_node(nt, "LocalVariableWriteNode") : -1, pr = an ? nt_new_node(nt, "LocalVariableReadNode") : -1;
+    if (hw < 0 || hr < 0 || st < 0 || par < 0 || (an && (pw < 0 || pr < 0))) return 0;
+    nt_node_set_str(nt, hw, "name", hs);
+    nt_node_set_ref(nt, hw, "value", nt_ref(nt, v, "receiver"));
+    nt_node_set_str(nt, hr, "name", hs);
+    nt_node_set_ref(nt, v, "receiver", hr);
     if (an) {
-      int ar = nt_new_node(nt, "ArgumentsNode"), pr = nt_new_node(nt, "LocalVariableReadNode");
-      if (ar < 0 || pr < 0) break;
+      nt_node_set_str(nt, pw, "name", hp);
+      nt_node_set_ref(nt, pw, "value", p0);
       nt_node_set_str(nt, pr, "name", hp);
-      nt_node_set_int(nt, pr, "depth", nt_int(nt, sr, "depth", 0));
-      nt_node_set_arr(nt, ar, "arguments", &pr, 1);
-      nt_node_set_ref(nt, id, "arguments", ar);
+      nt_node_set_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &pr, 1);
     }
+    int sb[3] = { hw, an ? pw : v, v };
+    nt_node_set_arr(nt, st, "body", sb, 2 + an);
+    nt_node_set_ref(nt, par, "body", st);
+    nt_node_set_ref(nt, w, "value", par);
+    nt_node_set_int(nt, w, "enum_src", v);
   }
-  comp_grow_node_arrays(c);
+  int sr = nt_new_node(nt, "LocalVariableReadNode");
+  if (sr < 0) return 0;
+  nt_node_set_str(nt, sr, "name", hs);
+  nt_node_set_int(nt, sr, "depth", nt_int(nt, nt_ref(nt, id, "receiver"), "depth", 0));
+  nt_node_set_ref(nt, id, "receiver", sr);
+  nt_node_set_str(nt, id, "name", nt_str(nt, v, "name"));
+  nt_node_set_int(nt, id, "enum_copy", nt_int(nt, v, "enum_copy", -1));
+  if (an) {
+    int ar = nt_new_node(nt, "ArgumentsNode"), pr = nt_new_node(nt, "LocalVariableReadNode");
+    if (ar < 0 || pr < 0) return 0;
+    nt_node_set_str(nt, pr, "name", hp);
+    nt_node_set_int(nt, pr, "depth", nt_int(nt, sr, "depth", 0));
+    nt_node_set_arr(nt, ar, "arguments", &pr, 1);
+    nt_node_set_ref(nt, id, "arguments", ar);
+  }
+  return 1;
 }
 
 /* Whether any assignment in scope `s` writes the local `vn`. */
@@ -16143,56 +16106,54 @@ static int alias_value_call(const NodeTable *nt, int id) {
    call returns the new name as a Symbol. Every pass that registers an alias
    reads body statements, so the call moves in front of its statement as one
    and its value becomes the Symbol literal. */
-int desugar_alias_method_values(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int m = 0; m < n0; m++) {
-    int k = nt_kind(nt, m);
-    if (k != NK_ClassNode && k != NK_ModuleNode && k != NK_SingletonClassNode) continue;
-    int body = nt_ref(nt, m, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int n = 0; const int *st0 = nt_arr(nt, body, "body", &n);
-    if (n == 0) continue;
-    int *out = malloc(sizeof(int) * (size_t)(2 * n)), no = 0, moved = 0;
-    int *st = malloc(sizeof(int) * (size_t)n);
-    memcpy(st, st0, sizeof(int) * (size_t)n);
-    for (int i = 0; i < n; i++) {
-      int s = st[i], sk = nt_kind(nt, s), call = -1;
-      if (sk == NK_LocalVariableWriteNode || sk == NK_InstanceVariableWriteNode ||
-          sk == NK_ClassVariableWriteNode || sk == NK_ConstantWriteNode ||
-          sk == NK_GlobalVariableWriteNode) {
-        int v = nt_ref(nt, s, "value");
-        if (alias_value_call(nt, v)) {
-          call = v;
-          int sym = fwd_new_node_like(nt, v, "SymbolNode");
-          int an = 0; const int *av = nt_arr(nt, nt_ref(nt, v, "arguments"), "arguments", &an);
-          nt_node_set_str(nt, sym, "value", nt_str(nt, av[0], "value"));
-          nt_node_set_ref(nt, s, "value", sym);
-        }
-      }
-      else if (sk == NK_CallNode && !alias_value_call(nt, s) && nt_ref(nt, s, "arguments") >= 0) {
-        int args = nt_ref(nt, s, "arguments");
-        int ac = 0; const int *av0 = nt_arr(nt, args, "arguments", &ac);
-        int *av = malloc(sizeof(int) * (size_t)(ac > 0 ? ac : 1));
-        if (ac > 0) memcpy(av, av0, sizeof(int) * (size_t)ac);
-        for (int j = 0; j < ac && call < 0; j++) {
-          if (!alias_value_call(nt, av[j])) continue;
-          call = av[j];
-          int sym = fwd_new_node_like(nt, call, "SymbolNode");
-          int cn = 0; const int *cv = nt_arr(nt, nt_ref(nt, call, "arguments"), "arguments", &cn);
-          nt_node_set_str(nt, sym, "value", nt_str(nt, cv[0], "value"));
-          av[j] = sym;
-          nt_node_set_arr(nt, args, "arguments", av, ac);
-        }
-        free(av);
-      }
-      if (call >= 0) { out[no++] = call; moved = 1; }
-      out[no++] = s;
-    }
-    if (moved) { nt_node_set_arr(nt, body, "body", out, no); changed = 1; }
-    free(out); free(st);
+/* The alias_method call whose value statement s uses (`r = alias_method :a, :b`:
+   *j -1; `p(alias_method :a, :b)`: *j its argument's place), or -1 */
+static int alias_value_in(const NodeTable *nt, int s, int *j) {
+  int sk = nt_kind(nt, s);
+  *j = -1;
+  if (sk == NK_LocalVariableWriteNode || sk == NK_InstanceVariableWriteNode ||
+      sk == NK_ClassVariableWriteNode || sk == NK_ConstantWriteNode ||
+      sk == NK_GlobalVariableWriteNode) {
+    int v = nt_ref(nt, s, "value");
+    return alias_value_call(nt, v) ? v : -1;
   }
-  return changed;
+  if (sk != NK_CallNode || alias_value_call(nt, s) || nt_ref(nt, s, "arguments") < 0) return -1;
+  int ac = 0; const int *av = nt_arr(nt, nt_ref(nt, s, "arguments"), "arguments", &ac);
+  for (int a = 0; a < ac; a++)
+    if (alias_value_call(nt, av[a])) { *j = a; return av[a]; }
+  return -1;
+}
+int desugar_alias_method_values_left(Compiler *c, LowerCtx *lc, int id) {
+  int j;
+  return alias_value_in(c->nt, id, &j) >= 0;
+}
+int desugar_alias_method_values_at(Compiler *c, LowerCtx *lc, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int s = id, j, call = alias_value_in(nt, s, &j);
+  if (call < 0) return 0;
+  int sym = fwd_new_node_like(nt, call, "SymbolNode");
+  int cn = 0; const int *cv = nt_arr(nt, nt_ref(nt, call, "arguments"), "arguments", &cn);
+  nt_node_set_str(nt, sym, "value", nt_str(nt, cv[0], "value"));
+  if (j < 0) nt_node_set_ref(nt, s, "value", sym);
+  else {
+    int args = nt_ref(nt, s, "arguments");
+    int ac = 0; const int *av0 = nt_arr(nt, args, "arguments", &ac);
+    int *av = malloc(sizeof(int) * (size_t)ac);
+    memcpy(av, av0, sizeof(int) * (size_t)ac);
+    av[j] = sym;
+    nt_node_set_arr(nt, args, "arguments", av, ac);
+    free(av);
+  }
+  /* the call moves in front of the statement */
+  int at = lower_stmt_at(nt, lc, id), n = 0;
+  const int *st = nt_arr(nt, lc->body, "body", &n);
+  int *out = malloc(sizeof(int) * (size_t)(n + 1));
+  memcpy(out, st, sizeof(int) * (size_t)at);
+  out[at] = call;
+  memcpy(out + at + 1, st + at, sizeof(int) * (size_t)(n - at));
+  nt_node_set_arr(nt, lc->body, "body", out, n + 1);
+  free(out);
+  return 1;
 }
 
 /* a read of local `name` shaped like node `like` */
@@ -21287,47 +21248,41 @@ int desugar_class_eval_ivars(Compiler *c) {
    compiled, as `undef a, b` names them -- and that form the analysis reads
    (register_undefs). The call is rewritten into it. A computed name, or one
    anywhere else (a method body, a block), stays the call it is. */
-int desugar_literal_undef_method(Compiler *c) {
+/* The count of names an `undef_method :a, "b"` statement lists, all literals (1 to 64), else 0 */
+static int undef_literal_names(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !sp_streq(nm, "undef_method")) return 0;
+  int r = nt_ref(nt, st, "receiver");
+  if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) return 0;
+  int args = nt_ref(nt, st, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1 || an > 64) return 0;
+  for (int a = 0; a < an; a++) if (!sym_or_str_literal(nt, av[a])) return 0;
+  return an;
+}
+int desugar_literal_undef_method_left(Compiler *c, LowerCtx *lc, int id) {
+  return undef_literal_names(c->nt, id) > 0;
+}
+int desugar_literal_undef_method_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int n0 = nt->count, changed = 0;
-  for (int m = 0; m < n0; m++) {
-    NodeKind mk = nt_kind(nt, m);
-    if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
-    int body = nt_ref(nt, m, "body");
-    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bs = nt_arr(nt, body, "body", &bn);
-    for (int k = 0; k < bn; k++) {
-      int st = bs[k];
-      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) continue;
-      const char *nm = nt_str(nt, st, "name");
-      if (!nm || !sp_streq(nm, "undef_method")) continue;
-      int r = nt_ref(nt, st, "receiver");
-      if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) continue;
-      int args = nt_ref(nt, st, "arguments"), an = 0;
-      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an < 1 || an > 64) continue;
-      int ok = 1;
-      for (int a = 0; a < an && ok; a++) ok = sym_or_str_literal(nt, av[a]) != NULL;
-      if (!ok) continue;
-      int names[64];
-      for (int a = 0; a < an; a++) {
-        if (nt_kind(nt, av[a]) == NK_SymbolNode) { names[a] = av[a]; continue; }
-        char v[256]; snprintf(v, sizeof v, "%s", sym_or_str_literal(nt, av[a]));
-        int sy = fwd_new_node_like(nt, av[a], "SymbolNode");
-        nt_node_set_str(nt, sy, "value", v);
-        names[a] = sy;
-      }
-      int line = (int)nt_int(nt, st, "node_line", 0), file = (int)nt_int(nt, st, "node_file", 0);
-      nt_node_reset(nt, st, "UndefNode");
-      nt_node_set_arr(nt, st, "names", names, an);
-      if (line) nt_node_set_int(nt, st, "node_line", line);
-      if (file) nt_node_set_int(nt, st, "node_file", file);
-      changed = 1;
-      bs = nt_arr(nt, body, "body", &bn);
-    }
+  int st = id, an = undef_literal_names(nt, st);
+  if (!an) return 0;
+  const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
+  int names[64];
+  for (int a = 0; a < an; a++) {
+    if (nt_kind(nt, av[a]) == NK_SymbolNode) { names[a] = av[a]; continue; }
+    char v[256]; snprintf(v, sizeof v, "%s", sym_or_str_literal(nt, av[a]));
+    int sy = fwd_new_node_like(nt, av[a], "SymbolNode");
+    nt_node_set_str(nt, sy, "value", v);
+    names[a] = sy;
   }
-  if (changed) comp_grow_node_arrays(c);
-  return changed;
+  int line = (int)nt_int(nt, st, "node_line", 0), file = (int)nt_int(nt, st, "node_file", 0);
+  nt_node_reset(nt, st, "UndefNode");
+  nt_node_set_arr(nt, st, "names", names, an);
+  if (line) nt_node_set_int(nt, st, "node_line", line);
+  if (file) nt_node_set_int(nt, st, "node_file", file);
+  return 1;
 }
 
 int desugar_body_ivars(Compiler *c) {
