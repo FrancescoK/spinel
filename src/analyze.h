@@ -234,6 +234,8 @@ int elab_form_runs(Compiler *c, int node);
    cannot read (a computed one, a send of a definition form, an eval of a
    String)? Yes too while the record is not being made. */
 int elab_names_method(Compiler *c, const char *name);
+/* adds a method the compiler makes for the program to that set */
+void elab_names_add(Compiler *c, const char *name);
 /* the bodies cls runs, in the order they run; *n their number */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
 /* the mixins run on cls (-1: main's, at a file's top level), one per
