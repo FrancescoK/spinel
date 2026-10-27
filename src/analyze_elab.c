@@ -768,11 +768,19 @@ static int lr_later(Compiler *c, int *cls, int ref) {
    registered: LR_LATER for one a later header of the program's makes a
    class (lr_reopened), which a mixin or a superclass keeps as a reference
    (lr_later). */
+/* A read the tree spells bare that the program wrote `::X` (or
+   `Object::X`): a desugar or the qualify pass made it bare where only
+   Object's X can answer it, and left it root_anchored. It reads Object's
+   constants, not the lexical scopes'. */
+static int lr_root_read(const NodeTable *nt, int node) {
+  return nt_kind(nt, node) == NK_ConstantReadNode && nt_int(nt, node, "root_anchored", 0);
+}
+
 static int lr_class_ref(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const LrDef *d = NULL;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
-  if (k == NK_ConstantReadNode) {
+  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) {
     const char *nm = lr_written_name(nt, node);
     int o = lr_const_at(c, node, nm, &d), ci;
     if (o == ELAB_YES) return lr_class_of(c, d);
@@ -782,8 +790,8 @@ static int lr_class_ref(Compiler *c, int node) {
     }
     return LR_UNKNOWN_CLASS;
   }
-  if (k != NK_ConstantPathNode) return LR_UNKNOWN_CLASS;
-  int par = nt_ref(nt, node, "parent"), pc = par < 0 ? LR_MAIN : lr_class_ref(c, par);
+  if (k != NK_ConstantPathNode && k != NK_ConstantReadNode) return LR_UNKNOWN_CLASS;
+  int par = k == NK_ConstantPathNode ? nt_ref(nt, node, "parent") : -1, pc = par < 0 ? LR_MAIN : lr_class_ref(c, par);
   LoadPoint p = elab_point_of(c, node);
   if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, pc == LR_MAIN, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
   return lr_class_of(c, d);

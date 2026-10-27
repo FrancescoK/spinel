@@ -9888,6 +9888,7 @@ int desugar_root_scoped_constants(Compiler *c) {
     if (rsc_shadowed(names, nn, nm)) continue;
     nt_node_set_type(nt, id, "ConstantReadNode");
     nt_node_set_ref(nt, id, "parent", -1);
+    nt_node_set_int(nt, id, "root_anchored", 1);   /* still Object's X: the load record reads it there */
     changed = 1;
   }
   for (int id = 0; id < n0; id++) {

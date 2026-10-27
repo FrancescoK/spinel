@@ -4684,6 +4684,7 @@ void qc_rewrite_reads(Compiler *c, int node, char (*mods)[64], int mdepth,
         for (int i = 0; i < wn; i++) {
           if (!sp_streq(ws[i].name, chain[0])) continue;
           nt_node_set_type((NodeTable *)nt, node, "ConstantReadNode");
+          nt_node_set_int((NodeTable *)nt, node, "root_anchored", 1);   /* Object's X, for the load record */
           break;
         }
       }
