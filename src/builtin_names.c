@@ -152,6 +152,21 @@ int is_async_code_entry(const char *recv, const char *n) {
   return sp_streq(recv, "Fiber") && sp_streq(n, "new");
 }
 
+/* A call whose block the program keeps to run later, not before the call
+   answers: a Proc or lambda made of it (`proc`, `lambda`, `Proc.new`), a
+   method body (`define_method`, `define_singleton_method`), code run on its
+   own (a thread, a fiber, a signal handler: is_async_code_entry), at exit
+   (`at_exit`) or at collection (`ObjectSpace.define_finalizer`), and an
+   Enumerator's generator (`Enumerator.new`). */
+int is_deferred_block_call(const char *recv, const char *n) {
+  if (!n) return 0;
+  if (is_proc_constructor(n) || is_define_method_name(n) || sp_streq(n, "define_singleton_method") ||
+      sp_streq(n, "at_exit") || is_async_code_entry(recv, n)) return 1;
+  if (!recv) return 0;
+  return ((sp_streq(recv, "Proc") || sp_streq(recv, "Enumerator")) && sp_streq(n, "new")) ||
+         (sp_streq(recv, "ObjectSpace") && sp_streq(n, "define_finalizer"));
+}
+
 int is_name_reader(const char *n) {
   return sp_streq(n, "name") || sp_streq(n, "to_s") || sp_streq(n, "inspect");
 }

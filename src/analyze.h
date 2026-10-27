@@ -138,6 +138,26 @@ int prog_order(Compiler *c, int a, int b);
 void prog_sort(Compiler *c, int *v, int n, const int *node_of);
 int prog_has_files(const Compiler *c);
 int prog_cmp(Compiler *c, int a, int b, int at, const char *reader);
+/* The load-phase record (analyze_elab.c, #9898): where each statement of
+   the load phase runs, as a point (region, seq). Region 0 is the load phase
+   the load graph places, each other region one file it does not place;
+   seq is the order statements run in. region -1: no point (a method body,
+   a lambda or a block run later). elab_cmp answers PROG_BEFORE / AFTER /
+   SAME, or PROG_UNKNOWN across regions or without a point. */
+typedef struct { int region, seq; } LoadPoint;
+typedef struct LoadRecord LoadRecord;
+LoadPoint elab_point_of(Compiler *c, int node);
+int elab_point_may(Compiler *c, int node);
+int elab_cmp(LoadPoint a, LoadPoint b);
+int elab_order(Compiler *c, int a, int b);
+void elab_top_place(Compiler *c, int node, int *file, int *rank);
+long long elab_sort_key(Compiler *c, int node);
+int elab_check_on(Compiler *c);
+void elab_check_order(Compiler *c, const char *reader, int a, int b, int now);
+void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const int *node_of);
+void elab_dump(Compiler *c, FILE *out);
+void elab_free(Compiler *c);
+extern int g_dump_load_record;   /* --dump-load-record */
 int nil_fact_node(const Compiler *c, int node);
 int nil_fact_ivar(const Compiler *c, int cid, const char *ivn);
 /* where a nil comes from: a node's (nil_fact_why), a slot's flag itself.

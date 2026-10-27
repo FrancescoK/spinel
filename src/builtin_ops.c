@@ -3728,6 +3728,12 @@ const IterRow *iter_row(TyKind fam, const char *name, int argc, unsigned skip) {
   return NULL;
 }
 
+int iter_row_named(const char *name) {
+  for (int i = 0; name && i < ITER_NROWS; i++)
+    if (sp_streq(iter_rows[i].name, name)) return 1;
+  return 0;
+}
+
 const IterRow *iter_row_of(TyKind rt, const char *name, int argc) {
   const IterRow *r = iter_row(BOP_ANY_RECV, name, argc, 0);
   if (r || !name) return r;

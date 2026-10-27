@@ -520,7 +520,7 @@ void comp_free(Compiler *c) {
   }
   free(c->scopes);
   free(c->file_scope);
-  free(c->prog_file); free(c->prog_rank);
+  elab_free(c);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
   free(c->symbols);
   for (int i = 0; i < c->nclasses; i++) {

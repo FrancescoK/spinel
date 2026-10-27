@@ -187,95 +187,46 @@ void prog_visit_files(const Compiler *c, void (*fn)(void *ud, int node, int file
    numbers a file's nodes as it walks its tree), and between files the load
    graph's, which each placed file's root carries (prog_load_by): a file's
    top level runs at the top-level statement that first loads it, after that
-   statement and before the file's next one. So the top-level statements
-   are ranked in the order they run, from the entry, each file's root ranked
-   at its entry, ahead of its statements (prog_rank_file), and a node takes
-   the rank of its file's top-level statement holding it; node ids order
-   only the nodes of one statement. A file the parse
-   does not place (another require may run it first: one under a condition,
-   in a method or a block, or any file once a require's path is computed at
-   run time) runs at a time the text does not fix: its nodes have no rank,
-   and against another file no order. A node under no file's root (one a
-   desugaring made and hung nowhere) keeps the id order it had.
-
-   prog_file[n] is node n's file (-1: under no root), prog_rank[n] its
-   rank (-1: none), kept while comp_parent_map's parents are. */
-static void prog_rank_file(Compiler *c, int f, int *next) {
-  const NodeTable *nt = c->nt;
-  int r = nt_root(nt, f), st = prog_root_stmts(c, f), sn = 0;
-  if (r >= 0 && r < c->prog_place_n) c->prog_rank[r] = *next;
-  if (st >= 0 && st < c->prog_place_n) c->prog_rank[st] = *next;
-  (*next)++;
-  const int *v = st >= 0 ? nt_arr(nt, st, "body", &sn) : NULL;
-  for (int k = 0; k < sn; k++) {
-    if (v[k] >= 0 && v[k] < c->prog_place_n) c->prog_rank[v[k]] = (*next)++;
-    int t = prog_ordered_load(c, v[k]);
-    if (t >= 0) prog_rank_file(c, t, next);
-  }
-}
-static void prog_place_build(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  const int *par = comp_parent_map(c);
-  int n = nt->count, next = 0;
-  free(c->prog_file); free(c->prog_rank);
-  c->prog_file = malloc(sizeof(int) * (size_t)(n ? n : 1));
-  c->prog_rank = malloc(sizeof(int) * (size_t)(n ? n : 1));
-  if (!c->prog_file || !c->prog_rank) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  c->prog_place_n = n; c->prog_place_ver = nt->version;
-  for (int id = 0; id < n; id++) { c->prog_file[id] = -2; c->prog_rank[id] = -1; }
-  for (int f = 0; f < nt_nroots(nt); f++) {
-    int r = nt_root(nt, f), st = prog_root_stmts(c, f), sn = 0;
-    if (r >= 0 && r < n) c->prog_file[r] = f;
-    if (st < 0 || st >= n) continue;
-    c->prog_file[st] = f;
-    const int *v = nt_arr(nt, st, "body", &sn);
-    for (int k = 0; k < sn; k++) if (v[k] >= 0 && v[k] < n) c->prog_file[v[k]] = f;
-  }
-  prog_rank_file(c, 0, &next);
-  for (int id = 0; id < n; id++) {   /* the rest from their nearest placed ancestor */
-    int a = id;
-    while (c->prog_file[a] == -2 && par[a] >= 0) a = par[a];
-    int f = c->prog_file[a] == -2 ? -1 : c->prog_file[a], k = c->prog_file[a] == -2 ? -1 : c->prog_rank[a];
-    for (int b = id; c->prog_file[b] == -2; b = par[b]) { c->prog_file[b] = f; c->prog_rank[b] = k; if (b == a) break; }
-  }
-}
-int prog_order(Compiler *c, int a, int b) {
+   statement and before the file's next one. The load-phase record
+   (analyze_elab.c) ranks the top-level statements in the order they run,
+   from the entry, each file's root ranked at its entry, ahead of its
+   statements; a node takes the rank of its file's top-level statement
+   holding it, and node ids order only the nodes of one statement. A file
+   the parse does not place (another require may run it first: one under a
+   condition, in a method or a block, or any file once a require's path is
+   computed at run time) runs at a time the text does not fix: its nodes
+   have no rank, and against another file no order. A node under no file's
+   root (one a desugaring made and hung nowhere) keeps the id order it had.
+   The record's own points also order the statements inside one top-level
+   statement (class bodies, the blocks run at once); prog_order does not
+   read them yet, and SPINEL_ELAB_CHECK=1 reports where they would answer
+   otherwise (elab_check_order). */
+static int prog_order_now(Compiler *c, int a, int b) {
   if (a == b) return PROG_SAME;
   if (!prog_graph(c) || a < 0 || b < 0) return a < b ? PROG_BEFORE : PROG_AFTER;
-  if (!c->prog_file || c->prog_place_n != c->nt->count || c->prog_place_ver != c->nt->version) prog_place_build(c);
-  if (a >= c->prog_place_n || b >= c->prog_place_n) return a < b ? PROG_BEFORE : PROG_AFTER;
-  int fa = c->prog_file[a], fb = c->prog_file[b];
+  int fa, fb, ra, rb;
+  elab_top_place(c, a, &fa, &ra);
+  elab_top_place(c, b, &fb, &rb);
   if (fa < 0 || fb < 0) return a < b ? PROG_BEFORE : PROG_AFTER;
   /* two top-level statements by their ranks, in one file too: a statement
      the parse or a desugaring put in a file's list (a boot library's load
      ahead of the entry's statements) has ids past the file's own */
-  int ra = c->prog_rank[a], rb = c->prog_rank[b];
   if (ra >= 0 && rb >= 0 && ra != rb) return ra < rb ? PROG_BEFORE : PROG_AFTER;
   if (fa == fb) return a < b ? PROG_BEFORE : PROG_AFTER;   /* one statement's nodes, as flatten numbered them */
   return PROG_UNKNOWN;
 }
+static int prog_order_for(Compiler *c, int a, int b, const char *reader) {
+  int o = prog_order_now(c, a, b);
+  if (elab_check_on(c)) elab_check_order(c, reader, a, b, o);
+  return o;
+}
+int prog_order(Compiler *c, int a, int b) { return prog_order_for(c, a, b, "prog_order"); }
 
-/* Sort v[0..n) into the program's order of the nodes they stand for:
-   node_of[v[i]] when node_of is given, else v[i]. By the rank of the
-   top-level statement holding each node, and the nodes of one statement by
-   id, as prog_order answers for two of them; a node that runs at no known
-   point (one under no root, which a desugaring hung nowhere, or one of a
-   file the load graph does not place) after all the others, by id, so the
-   order is a total one even where prog_order answers by ids or UNKNOWN.
-   Under the inline model, the node ids. A stable merge sort on the keys. */
-void prog_sort(Compiler *c, int *v, int n, const int *node_of) {
-  if (n < 2) return;
-  if (prog_graph(c) && (!c->prog_file || c->prog_place_n != c->nt->count || c->prog_place_ver != c->nt->version))
-    prog_place_build(c);
-  long long *key = malloc(sizeof(long long) * (size_t)n), *tkey = malloc(sizeof(long long) * (size_t)n);
+/* v[0..n) sorted by key[], stably (a merge sort): key[i] is v[i]'s */
+static void prog_sort_keyed(int *v, long long *key, int n) {
+  long long *tkey = malloc(sizeof(long long) * (size_t)n);
   int *tmp = malloc(sizeof(int) * (size_t)n);
-  if (!key || !tkey || !tmp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int i = 0; i < n; i++) {
-    int id = node_of ? node_of[v[i]] : v[i];
-    int r = prog_graph(c) && id >= 0 && id < c->prog_place_n && c->prog_file[id] >= 0 ? c->prog_rank[id] : -1;
-    if (!prog_graph(c)) r = 0;
-    key[i] = ((long long)(r >= 0 ? r : INT_MAX) << 32) | (unsigned)id;
-  }
+  if (!tkey || !tmp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int w = 1; w < n; w *= 2) {
     for (int lo = 0; lo < n; lo += 2 * w) {
       int mid = lo + w < n ? lo + w : n, hi = lo + 2 * w < n ? lo + 2 * w : n, i = lo, j = mid, k = lo;
@@ -289,7 +240,36 @@ void prog_sort(Compiler *c, int *v, int n, const int *node_of) {
     memcpy(v, tmp, sizeof(int) * (size_t)n);
     memcpy(key, tkey, sizeof(long long) * (size_t)n);
   }
-  free(key); free(tkey); free(tmp);
+  free(tkey); free(tmp);
+}
+
+/* Sort v[0..n) into the program's order of the nodes they stand for:
+   node_of[v[i]] when node_of is given, else v[i]. By the rank of the
+   top-level statement holding each node, and the nodes of one statement by
+   id, as prog_order answers for two of them; a node that runs at no known
+   point (one under no root, which a desugaring hung nowhere, or one of a
+   file the load graph does not place) after all the others, by id, so the
+   order is a total one even where prog_order answers by ids or UNKNOWN.
+   Under the inline model, the node ids. */
+void prog_sort(Compiler *c, int *v, int n, const int *node_of) {
+  if (n < 2) return;
+  long long *key = malloc(sizeof(long long) * (size_t)n);
+  int *was = elab_check_on(c) ? malloc(sizeof(int) * (size_t)n) : NULL;
+  if (!key || (elab_check_on(c) && !was)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (was) memcpy(was, v, sizeof(int) * (size_t)n);
+  for (int i = 0; i < n; i++) {
+    int id = node_of ? node_of[v[i]] : v[i], f = -1, r = 0;
+    if (prog_graph(c)) { elab_top_place(c, id, &f, &r); if (f < 0) r = -1; }
+    key[i] = ((long long)(r >= 0 ? r : INT_MAX) << 32) | (unsigned)id;
+  }
+  prog_sort_keyed(v, key, n);
+  if (was) {   /* SPINEL_ELAB_CHECK: the record's order of the same nodes */
+    for (int i = 0; i < n; i++) key[i] = elab_sort_key(c, node_of ? node_of[was[i]] : was[i]);
+    prog_sort_keyed(was, key, n);
+    elab_check_sort(c, v, was, n, node_of);
+    free(was);
+  }
+  free(key);
 }
 
 /* prog_order for a reader with no answer of its own where the order is not
@@ -297,7 +277,7 @@ void prog_sort(Compiler *c, int *v, int n, const int *node_of) {
    node `at`, naming the reader (a file loaded at no fixed point gets one in
    part 3c). */
 int prog_cmp(Compiler *c, int a, int b, int at, const char *reader) {
-  int o = prog_order(c, a, b);
+  int o = prog_order_for(c, a, b, reader);
   if (o == PROG_UNKNOWN) {
     char msg[256];
     snprintf(msg, sizeof msg, "--load-model=graph: %s reads the order of two files, one of them loaded at no fixed point, for now", reader);

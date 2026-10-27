@@ -549,6 +549,14 @@ static int parse_flag(const char *a) {
   if (sp_streq(a, "--load-model=graph")) return g_load_model_graph = 1;
   return 0;
 }
+/* The dumps of an analysis answer, printed once the analysis has it:
+   --dump-repr (the representations, as the compile settles them) and
+   --dump-load-record (the load phase's points, after the scope walk). 1
+   when `a` is one of them. */
+static int analysis_dump_flag(const char *a) {
+  if (sp_streq(a, "--dump-repr")) return g_dump_repr = 1;
+  return sp_streq(a, "--dump-load-record") ? (g_dump_load_record = 1) : 0;
+}
 static int run_table_mode(const NodeTable *nt, int mode) {
   /* the lowering rows the graph matched on each call's parse, against the
      node's (analyze_util.c); a report on stderr */
@@ -979,7 +987,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--plan-check"))  { g_plan_check = 1; i++; }
     else if (sp_streq(a, "--arm-check"))   { g_arm_check = 1; i++; }
     else if (sp_streq(a, "--repr-check"))  { g_repr_check = 1; i++; }
-    else if (sp_streq(a, "--dump-repr"))   { g_dump_repr = 1; i++; }
+    else if (analysis_dump_flag(a))        { i++; }
     else if (sp_streq(a, "--check-traits")) { g_check_traits = 1; i++; }
 #ifdef SP_BOP_SHARE_CHECK
     else if (sp_streq(a, "--check-bop-share")) return builtin_ops_share_check() ? 1 : 0;
