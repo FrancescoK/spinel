@@ -25,7 +25,7 @@
 ROOT = File.expand_path("..", __dir__)
 LOOKUP = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\s*\(/
 NAME_ARG = { "comp_method_index" => 1, "comp_name_responders" => 1 }.freeze
-AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index)\b(?=\s*[:;)])/
+AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\b(?=\s*[:;),])/
 
 blob = nil   # the git blob prefix (":" the index, "REV:" a revision), or the working tree
 case ARGV.first
