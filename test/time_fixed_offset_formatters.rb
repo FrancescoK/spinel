@@ -4,7 +4,7 @@
 # boolean and took the UTC branch, printing UTC clock fields under a %z that
 # correctly said otherwise.
 
-require "time"  # Time#iso8601 / #xmlschema are require-gated stdlib
+require "time"  # Time#iso8601 / #xmlschema are require-only stdlib
 
 t = Time.at(1689676186).getlocal(-5 * 3600)
 

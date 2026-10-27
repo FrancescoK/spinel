@@ -6049,7 +6049,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
       rcmod = nt_str(nt, recv, "name");
     if (rcmod) {
       /* native binding (Path B): a native_func returns its declared type,
-         gated by the module's require-gate feature. */
+         gated by the module's strict-require feature. */
       int nvi = comp_native_find(c, rcmod, name);
       if (nvi >= 0) {
         const char *feat = c->native_funcs[nvi].feat;

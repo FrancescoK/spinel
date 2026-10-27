@@ -15,7 +15,7 @@ set -euo pipefail
 
 # --spin DIR drives a whole spin APPLICATION through this, not just a lone .rb:
 # `spin flags` in DIR prints exactly the flags `spin build` would pass (the
-# package include paths, the require gate, and the native objects it has
+# package include paths, strict require, and the native objects it has
 # already compiled), so the program under TSan is the one the application
 # really builds. The --link operands are for the LINK line, not for `-S`, so
 # they are split back out below.

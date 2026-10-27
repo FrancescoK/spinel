@@ -2,7 +2,7 @@
 #
 # JSON is backed by C in lib/sp_json.c. Rather than the compiler hardcoding
 # the dispatch, this package declares the binding: `native_lib` names the
-# require-gate feature, and each `native_func` maps a Ruby method to a C
+# strict-require feature, and each `native_func` maps a Ruby method to a C
 # symbol with spinel-typed args/return. The compiler reads these at analyze
 # time and emits direct, typed C calls (JSON.generate(x) -> sp_json_val(<boxed
 # x>)), no FFI boxing.

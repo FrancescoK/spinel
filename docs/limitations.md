@@ -169,10 +169,10 @@ here on an OS update; a context given a `cert_store` validates against that
 store instead. The package exists only where libssl's headers were
 present at build time.
 
-The require-gated stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
+The require-only stdlib Spinel *does* provide (`StringIO`, `IO#winsize`,
 `Time#iso8601`, ...) requires its `require`, matching CRuby; an unsatisfiable
-`require` is a compile error. This is opt-in today via `--require-gate` (or
-`SPINEL_REQUIRE_GATE=1`); `spin build` always compiles with it on.
+`require` is a compile error. This is opt-in today via `--strict-require` (or
+`SPINEL_STRICT_REQUIRE=1`); `spin build` always compiles with it on.
 See [require.md](require.md) for which stdlib needs which `require`.
 | Mixed / non-UTF-8 encodings | UTF-8 / ASCII-8BIT only. `IO#set_encoding` picks between the two (US-ASCII counts as UTF-8) for what a read with no length and `getc` answer; a third encoding, an internal encoding that would convert reads, or `BOM\|` raises `NotImplementedError` at run time, and options (`invalid: :replace`, ...) are refused. `String#encode` / `encode!` convert between UTF-8, ASCII-8BIT and US-ASCII with `invalid:`, `undef:` and `replace:` as CRuby's; with another encoding they answer ASCII text unchanged where both encodings hold it as ASCII (and an empty String as empty) and raise `NotImplementedError` otherwise, as they do for non-ASCII text from US-ASCII to itself without `invalid: :replace`, and a call that names `xml:`, `fallback:` or a newline option, or computes an option's key, is refused (a `**` hash holding one of those options raises `NotImplementedError`). `encode!` that replaces characters works on a variable or a String shared by reference, where it reaches every name for the String, and raises `NotImplementedError` elsewhere; `s = s.encode(...)` works everywhere | one internal representation; transcoding tables are out of scope |
 | Embedded `NUL` in general binary strings | `char *` boundary assumption | most string ops are NUL-terminated at the C boundary |

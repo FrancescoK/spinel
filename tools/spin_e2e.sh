@@ -303,7 +303,7 @@ echo "$OUT" | grep -q "^cc fast/fast_ext.c$" || fail "touched .c not recompiled"
 OUT=$(CC="env ${CC:-cc}" "$SPIN" run 2>&1)
 expect "carried-C with a wrapped CC" "40" "$(echo "$OUT" | tail -1)"
 
-# --- unresolved require is a hard error (spin sets SPINEL_REQUIRE_GATE) ---------
+# --- unresolved require is a hard error (spin sets SPINEL_STRICT_REQUIRE) ---------
 printf 'require "nosuchgem"\nputs 1\n' > bin/broken.rb
 if "$SPIN" build broken >/dev/null 2>"$WORK/gate.err"; then
   fail "unresolved require compiled anyway"
@@ -761,8 +761,8 @@ FLAGS=$("$SPIN" flags 2>/dev/null)
 # stdout, which would splice `cc fast/fast_ext.c` into the flag string.
 [ "$(printf '%s' "$FLAGS" | wc -l | tr -d ' ')" = "0" ] || fail "spin flags: progress leaked onto stdout"
 case "$FLAGS" in
-  --require-gate*) ;;
-  *) fail "spin flags: does not carry the require gate spin build compiles under" ;;
+  --strict-require*) ;;
+  *) fail "spin flags: does not carry strict require spin build compiles under" ;;
 esac
 # Absolute throughout: the caller's working directory is its own tree.
 case "$FLAGS" in
@@ -1224,7 +1224,7 @@ grep -q "SP_PTHREAD" build/pack/plainpack/Makefile && fail "pack: an unthreaded 
   fail "pack: an unthreaded pack did not build on a target without pthread"
 expect "an unthreaded pack runs on a target without pthread" "plain 6" "$( cd build/pack/plainpack && ./plainpack 2>&1 )"
 
-# --- `spin build` (which always passes --require-gate) does not refuse a
+# --- `spin build` (which always passes --strict-require) does not refuse a
 # `Kernel.require` written in the RUBY_ENGINE branch spinel never takes. The
 # textual require resolver has treated `Kernel.require`/`::Kernel.require` as
 # the bare require since 0c0f61fff, but the dead-branch require skip only

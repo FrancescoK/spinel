@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Unreachable dependencies need not exist, even with --require-gate.
+# Unreachable dependencies need not exist, even with --strict-require.
 if false
   require "spinel_missing_unreachable_library"
   require_relative "require_unreachable/missing"

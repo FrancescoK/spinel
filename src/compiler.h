@@ -14,12 +14,12 @@
 #include "builtin_names.h"
 #include "builtin_ops.h"
 
-/* require-gate (defined in spinel_parse.c). sp_feature_enabled(name) is 1 when
-   feature `name` may be provided: always when the gate is off (g_require_gate
+/* strict-require (defined in spinel_parse.c). sp_feature_enabled(name) is 1 when
+   feature `name` may be provided: always when the gate is off (g_strict_require
    == 0), else only if `require "name"` appeared in the program. Used to gate
-   require-gated stdlib (stringio, io/console, ...) so they match CRuby's
+   require-only stdlib (stringio, io/console, ...) so they match CRuby's
    uninitialized-constant / NoMethodError when the require is absent. */
-extern int g_require_gate;
+extern int g_strict_require;
 /* the program may load a file the compiler did not read (spinel_parse.c,
    above resolve_requires): what that file would define is not in the node table */
 extern int g_require_unread;
@@ -1041,21 +1041,21 @@ typedef struct { char *path; int module, extension, allocator; } CextClass;
    FfiFunc, arg/ret specs are the spinel type language ("any"/"string"/"int"/
    "float"/"bool"; ret also takes "cstring" -- a borrowed C string, e.g. a
    static buffer, that the call site dups onto the GC heap) and csym is the
-   C symbol to call. feat is the require-gate feature name from the module's
+   C symbol to call. feat is the strict-require feature name from the module's
    `native_lib`, or "" (always available). */
 typedef struct {
   char *mod;       /* module name */
   char *name;      /* Ruby method name */
   char *ret;       /* return type spec */
   char *csym;      /* C symbol to emit */
-  char *feat;      /* require-gate feature name, or "" */
+  char *feat;      /* strict-require feature name, or "" */
   char **args;     /* arg type specs (malloc'd) */
   int nargs;
 } NativeFunc;
 
 /* One `native_obj` declaration: a carried C object the package links on demand
    (only when its module's feature is required). path is root-relative, e.g.
-   "packages/json/sp_json.o"; feat is the require-gate feature or "". */
+   "packages/json/sp_json.o"; feat is the strict-require feature or "". */
 typedef struct { char *mod; char *path; char *feat; } NativeObj;
 
 /* One `native_method`/`native_new` binding on a native class. class_id indexes

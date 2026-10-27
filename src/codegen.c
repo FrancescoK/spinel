@@ -20132,7 +20132,7 @@ static void emit_ffi_decls(Compiler *c, Buf *b) {
       buf_puts(b, "};\n");
     }
     /* native_obj link markers: the spinel driver links each object only when
-       its module's require-gate feature is enabled (i.e. the require appears). */
+       its module's strict-require feature is enabled (i.e. the require appears). */
     for (int noi = 0; noi < cf->n_native_objs; noi++) {
       const char *feat = cf->native_objs[noi].feat;
       if (!feat || !feat[0] || sp_feature_enabled(feat))
@@ -20917,7 +20917,7 @@ static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
      containers out over the handle, so the define comes before them (the
      marker the driver reads to pick the archive is beside the thread one) */
   buf_puts(b, "#define SP_ONE_STRING 1\n");
-  /* sp_feature_required, not the require gate: without SPINEL_REQUIRE_GATE,
+  /* sp_feature_required, not strict require: without SPINEL_STRICT_REQUIRE,
      respond_to?'s io/console answer must still follow the program's require,
      as CRuby's does. */
   if (sp_feature_required("io/console"))

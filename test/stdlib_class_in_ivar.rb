@@ -7,7 +7,7 @@
 # classes are unaffected. The ivar slot still compiles either way (the raise
 # expression is int-typed, so no undeclared `sp_<Class> *` field is emitted).
 #
-# ostruct/ipaddr are unimplemented stdlib: under SPINEL_REQUIRE_GATE the
+# ostruct/ipaddr are unimplemented stdlib: under SPINEL_STRICT_REQUIRE the
 # `require` itself is a compile error, so a real program omits it and the .new
 # still raises NameError at the use site. Mutex is core (no require needed).
 #

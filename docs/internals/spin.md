@@ -56,11 +56,11 @@ compile-into-the-binary producer model.**
 - **C3 — C is reachable two ways.** FFI (`ffi_lib`/`ffi_func`) to external
   libraries, and carried C inside the package tree. The runtime headers stay
   additive-only; package C must not mutate runtime internals.
-- **C4 — the require-gate is the resolution point.** `require "name"`
+- **C4 — the strict-require is the resolution point.** `require "name"`
   already resolves bundled stdlib, native features, and `-I` roots, and
   gates typed surfaces on it. Packages are one more provider behind the
   same gate — not a second mechanism. Inside a `spin` project the gate is
-  strict (`SPINEL_REQUIRE_GATE=1`): the dependency universe is fully known,
+  strict (`SPINEL_STRICT_REQUIRE=1`): the dependency universe is fully known,
   so an unresolvable `require` is a hard error, and stdlib features need
   their `require` just as in CRuby.
 - **C5 — types cross package boundaries.** Inference runs over the spliced
@@ -75,7 +75,7 @@ compile-into-the-binary producer model.**
 | layer | contents | ships with | user-visible? |
 |---|---|---|---|
 | runtime | `sp_*.c/h`, archives | the compiler | never edited, not require-able |
-| stdlib | require-gated features (`set`, `erb`, `json`, …) | the compiler | via `require`, no manifest entry |
+| stdlib | require-only features (`set`, `erb`, `json`, …) | the compiler | via `require`, no manifest entry |
 | packages | everything else | fetched/vendored per project | via `require` + manifest entry |
 
 The boundary is directory-level and implemented: `lib/` holds runtime C
@@ -350,7 +350,7 @@ daemon; no per-machine state outside `$XDG_CACHE_HOME/spin/`.
   should not carry TOML/git/network code.
 - Compiler interface: one `-I` per resolved package in resolution order, plus
   `-I <root>`, plus `--link <obj>` per cached native object, plus
-  `SPINEL_REQUIRE_GATE=1`. An unresolved-`require` compile error is wrapped
+  `SPINEL_STRICT_REQUIRE=1`. An unresolved-`require` compile error is wrapped
   with the `spin add` hint that would fix it.
 - Known name collisions, accepted: Fermyon's wasm tool and the SPIN model
   checker also install `spin`; distro packages may need a `spinel-spin`
@@ -451,7 +451,7 @@ libs = ["${build.out}/libggml.a"]   # artifacts reach the R6 --link surface
 
 `spin flags` prints the compiler flags this project implies — the `-I` roots
 for every resolved dependency and the project itself, `--rbs` when it carries
-sidecars, `--link` per cached native object, and `--require-gate` — with no
+sidecars, `--link` per cached native object, and `--strict-require` — with no
 entry file and no `-o`. It is one producer with `spin build`, so what a caller
 compiles with is what spin would have compiled with rather than an
 approximation of it. Reading the native objects compiles any that are cold,
@@ -476,7 +476,7 @@ directory, path dependencies resolve through `File.expand_path`, and cache
 objects are named from the cache root. The caller's working directory is its
 own tree, not the project's.
 
-`--require-gate` is the compiler flag spelling of `SPINEL_REQUIRE_GATE`, added
+`--strict-require` is the compiler flag spelling of `SPINEL_STRICT_REQUIRE`, added
 with this: an env assignment cannot ride inside a flag string, and the gate is
 part of what `spin build` compiles under.
 
@@ -544,7 +544,7 @@ non-git transports would arrive with any such transport.
 `tools/spin_e2e.sh` is the hermetic end-to-end check (`make spin-check`,
 part of `make check`): scaffold, path/git/index deps, MVS, lock schema,
 add/remove/search, tests in both oracle modes, carried C with cache reuse
-and staleness, the require gate, vendor and offline with and without a
+and staleness, strict require, vendor and offline with and without a
 lock.
 
 Being written in the subset, spin also serves as a trap log; the ones its
@@ -557,7 +557,7 @@ string parameters downstream (tab/newline-packed record strings instead),
 
 ## 9. Open points
 
-1. **Stdlib carve-out** (R1): which require-gated features move from the
+1. **Stdlib carve-out** (R1): which require-only features move from the
    compiler tree into pre-installed packages first (`erb`/`optparse`/`set` are
    the easy three; `json`/`stringio` are C-backed and exercise R6), and the
    `packages/` directory itself.

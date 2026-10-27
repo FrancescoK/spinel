@@ -5210,7 +5210,7 @@ void register_ffi_decls(Compiler *c) {
     int body = nt_ref(nt, id, "body");
     int sn = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &sn) : NULL;
-    /* Pre-scan for `native_lib "feat"`: its require-gate feature name is
+    /* Pre-scan for `native_lib "feat"`: its strict-require feature name is
        stamped onto every native_func of this module regardless of order. */
     const char *mod_feat = NULL;
     for (int k = 0; k < sn; k++) {
@@ -5467,7 +5467,7 @@ void register_ffi_decls(Compiler *c) {
       if (sp_streq(dname, "native_obj_reflect")) { c->native_obj_reflect = 1; continue; }
 
       /* native_obj "packages/<pkg>/<file>.o": a carried C object linked only
-         when this module's require-gate feature is present (Path B). */
+         when this module's strict-require feature is present (Path B). */
       if (sp_streq(dname, "native_obj")) {
         if (an < 1) continue;
         const char *objp = ffi_arg_str(nt, args[0]);

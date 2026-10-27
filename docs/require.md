@@ -5,7 +5,7 @@ should behave the same under CRuby. One place Spinel used to be a *superset*
 instead was `require`. Some stdlib that CRuby gates behind a `require` --
 `StringIO`, `IO#winsize`, and friends -- was always available in Spinel, so code
 that forgot the `require` ran under Spinel but raised `NameError` /
-`NoMethodError` under CRuby. The **require-gate** closes that gap.
+`NoMethodError` under CRuby. **Strict require** closes that gap.
 
 This document describes how `require` works today, which stdlib needs which
 `require`, and how features are resolved. The planned package system is sketched
@@ -28,17 +28,17 @@ of Strings the program can read and change, but it starts empty and a change to
 it looks nothing up. A `require` that names something Spinel cannot provide is
 reported when you compile, not when you run.
 
-## The require-gate
+## Strict require
 
-The require-gate makes require-gated stdlib unavailable unless you `require` it,
-matching CRuby. It is currently **opt-in**: pass `--require-gate`, or set the
-environment variable `SPINEL_REQUIRE_GATE=1`, when compiling. With it off (the
+Strict require makes require-only stdlib unavailable unless you `require` it,
+matching CRuby. It is currently **opt-in**: pass `--strict-require`, or set the
+environment variable `SPINEL_STRICT_REQUIRE=1`, when compiling. With it off (the
 default today) the old always-available behaviour is preserved. The gate is
 expected to become the default at a future release boundary.
 
 ```sh
-spinel --require-gate myprogram.rb
-SPINEL_REQUIRE_GATE=1 spinel myprogram.rb   # the same switch
+spinel --strict-require myprogram.rb
+SPINEL_STRICT_REQUIRE=1 spinel myprogram.rb   # the same switch
 ```
 
 `spin build` always compiles with the gate on: inside a resolved dependency set
@@ -47,7 +47,7 @@ than something to warn past. `spin flags` hands the flag to a build driven from
 outside spin, which is why it has a flag spelling at all -- an environment
 assignment cannot ride inside a flag string.
 
-### Require-gated stdlib
+### Require-only stdlib
 
 These are provided by Spinel but, like CRuby, only after their `require`:
 
@@ -217,6 +217,6 @@ does for you.
   Spinel never writes build artifacts next to a feature's sources. A C-backed
   feature's compiled objects go to a separate build cache, so a feature tree can
   be shared or mounted read-only.
-- Spinel's own require-gated stdlib will eventually be carved out of the
+- Spinel's own require-only stdlib will eventually be carved out of the
   compiler into ordinary feature packages, resolved exactly like a third-party
   one.

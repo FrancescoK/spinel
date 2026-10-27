@@ -63,7 +63,7 @@ module OrderProbe
   PERMUTATIONS = 40
   # what changes the text spinel parses or the dump it writes
   # (src/spinel_parse.c): the two orders have to be compiled alike
-  PINNED = %w[SPINEL_NO_BUILTINS SPINEL_REQUIRE_GATE].to_h { |v| [v, nil] }
+  PINNED = %w[SPINEL_NO_BUILTINS SPINEL_STRICT_REQUIRE].to_h { |v| [v, nil] }
                                                  .merge("SP_FIXPOINT_LOG" => "1").freeze
 
   # One compile. state is "ok", "refused" (spinel said no), "crashed" (a

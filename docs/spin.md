@@ -134,7 +134,7 @@ Dependencies are transitive: each fetched package's own `[dependencies]` is
 resolved too. Inside a project every `require` must resolve -- an
 unsatisfiable `require` is a compile error naming the missing package, and
 stdlib features need their `require` just like CRuby (`spin` compiles with
-the require gate on; see [require.md](require.md)).
+strict require on; see [require.md](require.md)).
 
 ### The index
 
@@ -381,7 +381,7 @@ the compiler flags that implies:
 
 ```console
 $ spin flags
---require-gate -I /path/pkgs/curses -I /path/backend --link ~/.cache/spin/native/curses-0.1.0-cc/sp_curses.o
+--strict-require -I /path/pkgs/curses -I /path/backend --link ~/.cache/spin/native/curses-0.1.0-cc/sp_curses.o
 ```
 
 Every path is absolute, so the caller's working directory can be anywhere:

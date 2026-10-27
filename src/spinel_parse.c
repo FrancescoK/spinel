@@ -2652,8 +2652,8 @@ static int source_calls_time_parser(const char *src) {
   return sp_src_code_any(src, sp_time_parser_hit);
 }
 
-/* ---- require-gate: features enabled by a `require "name"` ----
-   SPINEL_REQUIRE_GATE: when set, a require-gated stdlib feature (stringio,
+/* ---- strict-require: features enabled by a `require "name"` ----
+   SPINEL_STRICT_REQUIRE: when set, a require-only stdlib feature (stringio,
    io/console, ...) is provided only if its `require` textually appears in the
    program, matching CRuby's uninitialized-constant / NoMethodError. Default off
    keeps the historical always-available behaviour. The feature name is the
@@ -2661,13 +2661,13 @@ static int source_calls_time_parser(const char *src) {
    require is resolved (file-backed or native); read at analyze/codegen time via
    sp_feature_enabled(). Definitions here (spinel_parse.c includes no project
    headers); declared extern in compiler.h. */
-int g_require_gate = 0;
+int g_strict_require = 0;
 /* A String is shared by reference, as CRuby shares it (#6765): the one
    mode, with no switch to copy. The compiler's flag and the parser's read
    of a package's share declarations ask this one test; `--share-strings`
    is still accepted and changes nothing. */
 int sp_share_strings_env(void) { return 1; }
-int g_require_gate_cli = 0;   /* --require-gate */
+int g_strict_require_cli = 0;   /* --strict-require */
 int g_dump_load_graph = 0;    /* --dump-load-graph */
 int sp_parse_reported = 0;    /* the parse failed and said why (the driver adds nothing) */
 static char **sp_req_feats = NULL;
@@ -2692,7 +2692,7 @@ void sp_feature_mark(const char *name) {
 }
 
 int sp_feature_enabled(const char *name) {
-  if (!g_require_gate) return 1;   /* gate off: always provide (baseline) */
+  if (!g_strict_require) return 1;   /* gate off: always provide (baseline) */
   if (!name) return 1;
   for (int i = 0; i < sp_req_feats_n; i++)
     if (strcmp(sp_req_feats[i], name) == 0) return 1;
@@ -2700,7 +2700,7 @@ int sp_feature_enabled(const char *name) {
 }
 
 /* Like sp_feature_enabled, but the require is mandatory REGARDLESS of the
-   require-gate mode: true only when the program actually `require`d the
+   strict-require mode: true only when the program actually `require`d the
    feature. For stdlib whose classes CRuby only defines after the require
    (socket's TCPServer/TCPSocket) -- without this, the baseline mode would
    grow the constants unconditionally and diverge from CRuby's NameError. */
@@ -3484,7 +3484,7 @@ static int sp_source_writes_engine(const char *source) {
 
 /* `Kernel.require "x"` (`::Kernel.` too) is the bare require: the textual
    resolver has treated it so since 0c0f61fff, so a dead branch must drop it
-   exactly as it drops a receiver-less `require`, or --require-gate refuses
+   exactly as it drops a receiver-less `require`, or --strict-require refuses
    a call that never runs. */
 static int sp_call_receiver_is_kernel(const pm_parser_t *parser, const pm_node_t *receiver) {
   if (!receiver) return 0;
@@ -5287,7 +5287,7 @@ static int sp_lib_is_native(const char *name) {
 
 /* A `require "X"` for a capability Spinel provides as core, without a bundled
    file -- Thread/Mutex/Queue, Enumerator, Fiber. Modern CRuby treats these as
-   no-ops (the feature is already loaded), so the require-gate tolerates them
+   no-ops (the feature is already loaded), so the strict-require tolerates them
    rather than failing with "cannot load such file". */
 static int sp_require_tolerated(const char *name) {
   /* "ffi", where the bundled package is not built (no libffi): the builtin
@@ -5299,7 +5299,7 @@ static int sp_require_tolerated(const char *name) {
      "rbconfig" / "rubygems": the parser splices builtins/rbconfig.rb and
      builtins/gem.rb into a program that names RbConfig or Gem, and CRuby has
      both loaded before the program starts, so the require answers false.
-     Refused under --require-gate, they broke every spin build using the
+     Refused under --strict-require, they broke every spin build using the
      bundled optparse, which requires rbconfig (#9441). ("gem" is no library
      in CRuby either: its require stays a LoadError there.) */
   static const char *const tolerated[] = { "thread", "enumerator", "fiber", "ffi",
@@ -6057,7 +6057,7 @@ else {
       if (!content) {
         if (sp_lib_is_native(lib_name)) {
           /* Provided natively by the Spinel runtime; the require is a
-             harmless no-op, so don't warn. The require-gate still records it
+             harmless no-op, so don't warn. Strict require still records it
              so the C-native feature (e.g. io/console) becomes available. */
           sp_feature_mark(lib_name);
           spl_how = SP_LOAD_NATIVE;
@@ -6074,7 +6074,7 @@ else if (sp_require_tolerated(lib_name)) {
           req_val = "false";   /* already there: nothing was loaded */
           sp_req_resolved++;
         }
-else if (g_require_gate) {
+else if (g_strict_require) {
           /* Whole-program AOT: an unsatisfiable require can never be provided, so
              it is a compile-time refusal (symmetric with the require_relative
              missing-file hard error), not a runtime LoadError. */
@@ -6093,7 +6093,7 @@ else {
       }
 else {
         /* A bundled lib/<name>.rb was found and spliced; record the feature so
-           the require-gate enables any C-native methods it stands in for. */
+           the strict-require enables any C-native methods it stands in for. */
         sp_feature_mark(lib_name);
         req_val = root_dup ? (dval ? dval : "false") : "true";   /* this require is what loaded it */
         char *resolved = resolve_requires(g, content, lib_path, &cfsl, &cfsl_n);
@@ -6460,7 +6460,7 @@ static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const c
     if (tier) how = SP_LOAD_FILE;
     else if (sp_lib_is_native(lib_name)) how = SP_LOAD_NATIVE;
     else if (sp_require_tolerated(lib_name)) how = SP_LOAD_CORE;
-    /* the features a require enables (the require gate) and the ones it
+    /* the features a require enables (strict require) and the ones it
        names, as the inline model's plain pass records them */
     if (how == SP_LOAD_FILE || how == SP_LOAD_NATIVE) sp_feature_mark(lib_name);
     if (how != SP_LOAD_NONE) sp_note_required_feature(lib_name);
@@ -7526,11 +7526,11 @@ static void sp_parse_positions_from_opts(void) {
 
 static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
   sp_parse_positions_from_opts();
-  /* `--require-gate` is the flag spelling of SPINEL_REQUIRE_GATE. An env
+  /* `--strict-require` is the flag spelling of SPINEL_STRICT_REQUIRE. An env
      assignment cannot ride inside a flag string, and `spin flags` has to hand
      a caller's Makefile the same gate `spin build` compiles under. Both load
      models compile under it. */
-  g_require_gate = (g_require_gate_cli || getenv("SPINEL_REQUIRE_GATE")) ? 1 : 0;
+  g_strict_require = (g_strict_require_cli || getenv("SPINEL_STRICT_REQUIRE")) ? 1 : 0;
   if (g_load_model_graph) return sp_parse_graph(source_file, argv0);
   char *source = read_file(source_file);
   if (!source) {

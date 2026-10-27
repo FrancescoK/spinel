@@ -1453,10 +1453,10 @@ end
 def spin_flags(prj)
   # Inside a spin project the dependency universe is fully known (manifest +
   # lock), so an unresolvable require is a bug, not a maybe: flip the
-  # compiler's require gate from warning to hard error. This also makes
-  # stdlib features require-gated, i.e. CRuby-style `require "stringio"`
+  # compiler's strict require from warning to hard error. This also makes
+  # stdlib features require-only, i.e. CRuby-style `require "stringio"`
   # before use.
-  f = "--require-gate"
+  f = "--strict-require"
   prj.dep_paths.each { |d| f += " -I #{d}" }
   f += " -I #{prj.root}"
   # Feed .rbs sidecars to the compiler's --rbs seed machinery when the project

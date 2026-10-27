@@ -45,7 +45,7 @@
 extern int g_no_root_elision;
 extern int g_no_root_frame;
 extern int g_opt_level;
-extern int g_require_gate_cli;
+extern int g_strict_require_cli;
 extern int g_dump_load_graph;
 extern int g_load_model_graph;
 extern int sp_parse_reported;
@@ -495,7 +495,7 @@ static void usage(void) {
     "  --force     overwrite an -o path (with -c) or a --decisions-log path\n"
     "              that spinel did not write\n"
     "  -I DIR      Add a feature search root for `require \"name\"` (like ruby -I)\n"
-    "  --require-gate  Refuse an unresolvable require instead of warning\n"
+    "  --strict-require  Refuse an unresolvable require instead of warning\n"
     "  --emit-rbs  Dump inferred type signatures as RBS (-> app.rbs), no binary\n"
     "  --emit-types Dump per-position inferred types + diagnostics as JSON\n"
     "  --warn-widen  Warn, at the slot, for each parameter or return that\n"
@@ -574,17 +574,17 @@ static int table_mode_of(const char *a) {
   return sp_streq(a, "--check-value-pos") ? 3 : 0;
 }
 
-/* The flags the parse reads: `--require-gate` refuses an unresolvable
+/* The flags the parse reads: `--strict-require` refuses an unresolvable
    require instead of warning past it -- inside a resolved dependency set the
    universe is known, so a require that resolves to nothing is a bug; `spin
-   build` has always compiled this way through SPINEL_REQUIRE_GATE, and `spin
+   build` has always compiled this way through SPINEL_STRICT_REQUIRE, and `spin
    flags` needs to hand the same gate to a caller driving the compiler itself
    (#4105). `--load-model=inline|graph` picks how required files are loaded:
    spliced into one program (the default), or each kept as its own root with
    a load node per require (#9898; requires that are top-level statements, for now). 1 when `a`
    is one of them. */
 static int parse_flag(const char *a) {
-  if (sp_streq(a, "--require-gate")) return g_require_gate_cli = 1;
+  if (sp_streq(a, "--strict-require")) return g_strict_require_cli = 1;
   if (sp_streq(a, "--load-model=inline")) { g_load_model_graph = 0; return 1; }
   if (sp_streq(a, "--load-model=graph")) return g_load_model_graph = 1;
   return 0;
