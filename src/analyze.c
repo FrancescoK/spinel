@@ -13252,8 +13252,11 @@ static int desugar_to_enum(Compiler *c) {
 /* A slot is a local (lv), a method's value (lv NULL, sidx the method), or an
    @ivar of one class (ici/iiv, sidx -1; #4444).
    row_cls / row_escape / odd_elem: the evidence the rows a slot's element
-   reads answer give (oa_row_use), for a table whose rows are empty literals */
-typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; int row_cls, row_escape, odd_elem; } OAS;
+   reads answer give (oa_row_use), for a table whose rows are empty literals.
+   row_hard is row_cls without the pushes of a value whose class is not known
+   (nil, a boxed value): those fit a seed's typed row, as they fit the rows
+   of `Array.new(n) { [] }`, and contradict no seed (oa_seeded_literal_rows) */
+typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; int row_cls, row_hard, row_escape, odd_elem; } OAS;
 
 /* The (sidx, lv) -> first slot index map, so a lookup is not a scan of every
    slot: the pass asks once per node, and the slot list grows with the
@@ -13542,7 +13545,9 @@ static void oa_row_use(Compiler *c, OAS *sl, int S, int rd, const int *par, cons
   if (is_push_alias(nm) && argc >= 1 && blk < 0) {
     for (int a = 0; a < argc; a++) {
       TyKind at = nt_kind(nt, argv[a]) == NK_SplatNode ? TY_UNKNOWN : infer_type(c, argv[a]);
-      sl[S].row_cls = oa_cls_join(sl[S].row_cls, at == TY_INT ? OA_CLS_IA : at == TY_FLOAT ? OA_CLS_FA : -2);
+      int rc = at == TY_INT ? OA_CLS_IA : at == TY_FLOAT ? OA_CLS_FA : -2;
+      sl[S].row_cls = oa_cls_join(sl[S].row_cls, rc);
+      sl[S].row_hard = oa_cls_join(sl[S].row_hard, at == TY_UNKNOWN || at == TY_NIL || at == TY_POLY ? -1 : rc);
     }
     if (!(p < nc && walk_disc[p])) sl[S].row_escape = 1;
     return;
@@ -14657,8 +14662,9 @@ static char *oa_walk_disc(Compiler *c, int nc) {
    before the row has a kind. The seed is that kind: where the pushes into
    its rows (oa_row_use) are of no other kind, the literal is built at it.
    A row held in a local or passed on is the seed's to type, as the empty
-   rows of `Array.new(n) { [] }` are. A push of another kind contradicts
-   the seed, and is refused there as it is into those rows. */
+   rows of `Array.new(n) { [] }` are, and so is a push of nil or of a boxed
+   value (row_hard). A push of another kind contradicts the seed, and is
+   refused there as it is into those rows. */
 static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
   for (int i = 0; i < n; i++) {
     if (oa_uf_find(sl, i) != i || !OA_CLS_IS_NESTED(sl[i].cls)) continue;
@@ -14670,7 +14676,7 @@ static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
       }
     if (!seeded || !c->arr_want) continue;
     TyKind rk = sl[i].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY;
-    if (sl[i].row_cls != -1 && sl[i].row_cls != sl[i].cls) continue;
+    if (sl[i].row_hard != -1 && sl[i].row_hard != sl[i].cls) continue;
     for (int e = 0; e < g_oa_empt_n && sl[i].cls != -1; e++) {
       if (oa_uf_find(sl, g_oa_empt_slot[e]) != i) continue;
       int lit = g_oa_empt_node[e];
@@ -14771,7 +14777,7 @@ static int narrow_object_arrays(Compiler *c) {
       LocalVar *lv = &sc->locals[li];
       if (lv->type != TY_POLY_ARRAY || lv->is_block_param || lv->rbs_seeded || cext_scope(c, s)) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
+      sl[n].sidx = s; sl[n].lv = lv; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_hard = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
       sl[n].old_pin = lv->oa_pin; lv->oa_pin = TY_UNKNOWN; n++;
     }
   }
@@ -14801,7 +14807,7 @@ static int narrow_object_arrays(Compiler *c) {
        Money#coerce for a pair) */
     if (method_name_implicitly_invoked(sc->name)) continue;
     if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
+    sl[n].sidx = s; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = -1; sl[n].iiv = -1; sl[n].row_cls = -1; sl[n].row_hard = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
     sl[n].old_pin = sc->ret_oa_pin; sc->ret_oa_pin = TY_UNKNOWN; n++;
   }
   /* 1c. one slot per @ivar holding a poly array (#4444). An ivar's references
@@ -14838,7 +14844,7 @@ static int narrow_object_arrays(Compiler *c) {
         if (comp_ivar_index(&c->classes[k], ivn) >= 0) { inherited = 1; break; }
       if (inherited) continue;
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
-      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
+      sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv; sl[n].row_cls = -1; sl[n].row_hard = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
       /* An `Array[Array[Integer]]` / `Array[Array[Float]]` seed is element
          evidence, the same evidence a pushed row gives: it decides the kind
          when the program's own rows are silent (`Array.new(n) { [] }`), and
@@ -15530,6 +15536,7 @@ static int narrow_object_arrays(Compiler *c) {
     sl[r].row_iter |= sl[i].row_iter;
     if (!sl[i].alive) sl[r].alive = 0;
     sl[r].row_cls = oa_cls_join(sl[r].row_cls, sl[i].row_cls);
+    sl[r].row_hard = oa_cls_join(sl[r].row_hard, sl[i].row_hard);
     sl[r].row_escape |= sl[i].row_escape;
     sl[r].odd_elem |= sl[i].odd_elem;
   }

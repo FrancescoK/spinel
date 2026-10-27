@@ -28,3 +28,27 @@ end
 t = Table.new
 t.fill
 t.report
+
+# A nil, or a value whose class is not known until it runs, pushed into such
+# a row fits the seed's typed row, as it fits a row of `Array.new(n) { [] }`:
+# the rows are still built at the seed's kind.
+class NilRows
+  def initialize
+    @rows = [[], []]
+  end
+
+  def fill(v)
+    @rows[0] << 1
+    @rows[0] << nil
+    @rows[1] << v
+    @rows[1] << 4
+  end
+
+  def report
+    p @rows[0].length, @rows[0][1], @rows[1].length, @rows[1][0] + @rows[1][1]
+  end
+end
+
+n = NilRows.new
+n.fill(ARGV.size > 5 ? "s" : 3)
+n.report
