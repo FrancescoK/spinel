@@ -255,15 +255,15 @@ int emit_call_poly_builtin_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     }
   }
   /* The same for a boxed Mutex (one read back out of a Hash of locks):
-     #lock, #unlock, #try_lock and #locked?. #owned? is File::Stat's too
+     #lock, #unlock, #try_lock, #locked? and Monitor#mon_owned?. #owned? is File::Stat's too
      and goes through the boxed stream arm. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "lock") || sp_streq(name, "unlock") ||
-       sp_streq(name, "try_lock") || sp_streq(name, "locked?")) &&
+       sp_streq(name, "try_lock") || sp_streq(name, "locked?") || sp_streq(name, "mon_owned?")) &&
       !poly_name_user_claimed(c, name, argc)) {
-    int is_bool = sp_streq(name, "try_lock") || sp_streq(name, "locked?");
+    int is_bool = sp_streq(name, "try_lock") || sp_streq(name, "locked?") || sp_streq(name, "mon_owned?");
     Buf mv; memset(&mv, 0, sizeof mv);
-    buf_printf(&mv, "sp_poly_mutex_%s(", sp_streq(name, "locked?") ? "locked" : name);
+    buf_printf(&mv, "sp_poly_mutex_%s(", sp_streq(name, "locked?") ? "locked" : sp_streq(name, "mon_owned?") ? "mon_owned" : name);
     emit_boxed(c, recv, &mv);
     buf_puts(&mv, ")");
     Repr wr = repr_of(c, id);

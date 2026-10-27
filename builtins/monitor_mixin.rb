@@ -16,12 +16,13 @@ module MonitorMixin
     end
 
     def wait(timeout = nil)
+      check_owner
       if timeout
-        @cond.wait(@monitor, timeout)
+        !@cond.wait(@monitor, timeout).nil?
       else
         @cond.wait(@monitor)
+        true
       end
-      true
     end
 
     def wait_while
@@ -33,13 +34,19 @@ module MonitorMixin
     end
 
     def signal
+      check_owner
       @cond.signal
-      nil
     end
 
     def broadcast
+      check_owner
       @cond.broadcast
-      nil
+    end
+
+    private
+
+    def check_owner
+      raise ThreadError, "current fiber not owner" unless @monitor.owned?
     end
   end
 
