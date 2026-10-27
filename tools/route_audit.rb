@@ -13,7 +13,8 @@
 # listed there with the reason it asks about a name rather than one call
 # (`=NAME` lists the lookups of that name argument only). Any other is a
 # call target that bypasses call_target, and so is a lookup taken as a
-# value (`(cm ? comp_cmethod_in_class : comp_method_in_class)(c, k, nm)`).
+# value (`(cm ? comp_cmethod_in_class : comp_method_in_class)(c, k, nm)`,
+# `{ comp_method_in_class }`).
 # With FILEs, only those of them the list names are read (gate.rb passes a
 # commit's changed sources).
 #
@@ -25,7 +26,7 @@
 ROOT = File.expand_path("..", __dir__)
 LOOKUP = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\s*\(/
 NAME_ARG = { "comp_method_index" => 1, "comp_name_responders" => 1 }.freeze
-AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\b(?=\s*[:;),])/
+AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\b(?=\s*[:;),}])/
 C_KEYWORD = %w[if else while for switch return sizeof do case].freeze
 
 blob = nil   # the git blob prefix (":" the index, "REV:" a revision), or the working tree
@@ -34,10 +35,11 @@ when "--staged" then ARGV.shift; blob = ":"
 when "--rev" then ARGV.shift; blob = "#{ARGV.shift or abort 'route-audit: --rev needs a revision'}:"
 end
 
-# the text of path in the selected source, or nil when it has none
+# the text of path in the selected source, or nil when it has none: its
+# bytes, whatever the locale, as File.binread reads the working tree
 read = lambda do |path|
   if blob
-    out = IO.popen(["git", "-C", ROOT, "show", "#{blob}#{path}"], err: File::NULL, &:read)
+    out = IO.popen(["git", "-C", ROOT, "show", "#{blob}#{path}"], err: File::NULL, binmode: true, &:read)
     $?.success? ? out : nil
   else
     full = File.join(ROOT, path)
