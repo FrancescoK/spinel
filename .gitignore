@@ -29,6 +29,9 @@ packages/*/build/
 # Local config and machine-local Makefile overrides
 .claude/
 CLAUDE.local.md
+.agents/
+AGENTS.local.md
+AGENTS.override.md
 /local.mk
 /config.mk
 
