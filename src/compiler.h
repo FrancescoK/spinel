@@ -64,6 +64,10 @@ extern unsigned long comp_ty_edits;
    none of them has moved since it was derived (analyze_infer.c). */
 extern unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
 extern int comp_scope_ver_cap, comp_class_ver_cap;
+/* (infer_write_types, while it re-derives the locals it reset) per scope, the
+   writes that moved it, and those that were a local's type or proc return:
+   NULL outside it */
+extern int *comp_touch_count, *comp_lv_touch_count;
 /* (diagnostics, SPINEL_IMEMO_WHY) the owner each edit moved, by edit count */
 #define COMP_TOUCH_LOG_CAP (1 << 22)
 extern int *comp_touch_log;
@@ -71,7 +75,7 @@ static inline void comp_touch_note(int key) { if (comp_touch_log) comp_touch_log
 static inline void comp_touch_global_r(int why) { (void)why; comp_global_ver = ++comp_ty_edits; comp_touch_note(-1); }
 static inline void comp_touch_global(void) { comp_touch_global_r(0); }
 static inline void comp_touch_scope(int idx) {
-  if (idx >= 0 && idx < comp_scope_ver_cap) { comp_scope_ver[idx] = ++comp_ty_edits; comp_touch_note(idx); }
+  if (idx >= 0 && idx < comp_scope_ver_cap) { comp_scope_ver[idx] = ++comp_ty_edits; comp_touch_note(idx); if (comp_touch_count) comp_touch_count[idx]++; }
   else comp_touch_global();
 }
 static inline void comp_touch_class(int idx) {
@@ -418,11 +422,19 @@ typedef struct {
 } LocalVar;
 
 static inline TyKind lv_set_type(LocalVar *lv, TyKind t) {
-  if (lv->type != t) { *(TyKind *)&lv->type = t; comp_touch_scope(lv->owner); }
+  if (lv->type != t) {
+    *(TyKind *)&lv->type = t;
+    if (comp_lv_touch_count && lv->owner >= 0 && lv->owner < comp_scope_ver_cap) comp_lv_touch_count[lv->owner]++;
+    comp_touch_scope(lv->owner);
+  }
   return t;
 }
 static inline int lv_set_proc_ret(LocalVar *lv, int t) {
-  if (lv->proc_ret != t) { *(int *)&lv->proc_ret = t; comp_touch_scope(lv->owner); }
+  if (lv->proc_ret != t) {
+    *(int *)&lv->proc_ret = t;
+    if (comp_lv_touch_count && lv->owner >= 0 && lv->owner < comp_scope_ver_cap) comp_lv_touch_count[lv->owner]++;
+    comp_touch_scope(lv->owner);
+  }
   return t;
 }
 #define POLY_LIFT_APPENDED 1

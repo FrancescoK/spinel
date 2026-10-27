@@ -357,6 +357,7 @@ int enum_unrename(NodeTable *nt, int id);
 /* empty infer_type's memo of earlier queries' answers: the start or end of
    a pass whose writes are not all counted (#8852) */
 void infer_memo_boundary(void);
+void infer_memo_forget_since(unsigned long at);
 /* A pure read of the settled analysis (repr_of) asks its questions between
    an_pure_read_begin and an_pure_read_end. infer_type answers as usual but
    records nothing it derives: not the node-type cache, a poly call's

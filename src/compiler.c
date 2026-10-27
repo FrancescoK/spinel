@@ -80,6 +80,7 @@ int comp_scalar_literal_chain_bottom(const NodeTable *nt, int v) {
 unsigned long comp_ty_edits;
 /* the owners' versions (compiler.h): per scope, per class, and the program's */
 unsigned long *comp_scope_ver, *comp_class_ver, comp_global_ver;
+int *comp_touch_count, *comp_lv_touch_count;
 int comp_scope_ver_cap, comp_class_ver_cap;
 int *comp_touch_log;
 int comp_ref_owner(Compiler *c, TyRef r) {

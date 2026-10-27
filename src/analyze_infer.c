@@ -198,6 +198,13 @@ static void imemo_shadow_report(void) {
 void infer_memo_boundary(void) {
   comp_ty_edits++;
 }
+/* Drop the kept answers derived at edit count `at` or later: read off a
+   state a pass then put back (infer_write_types' reset locals), which the
+   owners' versions, put back with it, no longer tell apart. */
+void infer_memo_forget_since(unsigned long at) {
+  for (int id = 0; id < g_imemo_cap; id++)
+    if (g_imemo_stamp[id] && g_imemo_deps[id].at >= at) g_imemo_stamp[id] = 0;
+}
 static void imemo_mode_init(void) {
   const char *m = getenv("SPINEL_IMEMO");
   g_imemo_mode = !m ? IMEMO_ROUND : sp_streq(m, "tree") ? IMEMO_TREE :

@@ -5031,6 +5031,26 @@ int infer_write_types(Compiler *c) {
   int changed = 0;
   g_infer_write_round = 1;
   int nfb = 0, *fb = fiber_new_blocks(c, &nfb);
+  /* The reset below moves every scope it resets a local of, and most of them
+     derive the same types again: their versions would say they changed, and
+     every kept answer that read them would be derived again, round after
+     round. Each scope's version and its locals' types are noted here, and a
+     scope whose only writes were its locals' types, all back where they
+     were, gets its version back at the end (#10325) */
+  unsigned long iwt_p0 = comp_ty_edits;
+  int iwt_ns = c->nscopes, iwt_nl = 0;
+  for (int s = 0; s < iwt_ns; s++) iwt_nl += c->scopes[s].nlocals;
+  unsigned long *iwt_v0 = malloc(sizeof(unsigned long) * (size_t)(iwt_ns + 1));
+  int *iwt_tc = calloc((size_t)iwt_ns + 1, sizeof(int)), *iwt_lc = calloc((size_t)iwt_ns + 1, sizeof(int));
+  int *iwt_ty = malloc(sizeof(int) * (size_t)(2 * iwt_nl + 1));
+  if (!iwt_v0 || !iwt_tc || !iwt_lc || !iwt_ty) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0, k = 0; s < iwt_ns; s++) {
+    iwt_v0[s] = s < comp_scope_ver_cap ? comp_scope_ver[s] : 0;
+    for (int i = 0; i < c->scopes[s].nlocals; i++, k += 2) {
+      iwt_ty[k] = (int)c->scopes[s].locals[i].type; iwt_ty[k + 1] = c->scopes[s].locals[i].proc_ret;
+    }
+  }
+  comp_touch_count = iwt_tc; comp_lv_touch_count = iwt_lc;
 
   /* Recompute non-param local types FRESH each iteration: reset to UNKNOWN
      (saving the old value), then unify all write-site RHS types. This lets
@@ -5255,6 +5275,20 @@ int infer_write_types(Compiler *c) {
       if (lv->is_param || lv->is_block_param || lv->rbs_seeded) continue;
       if ((TyKind)lv->gc_root != lv->type) changed = 1;
     }
+  comp_touch_count = comp_lv_touch_count = NULL;
+  { int restored = 0;
+    for (int s = 0, k = 0; s < iwt_ns && s < c->nscopes; s++) {
+      int nl = c->scopes[s].nlocals, same = iwt_tc[s] > 0 && iwt_tc[s] == iwt_lc[s] && s < comp_scope_ver_cap;
+      for (int i = 0; i < nl && same; i++)
+        if ((int)c->scopes[s].locals[i].type != iwt_ty[k + 2 * i] || c->scopes[s].locals[i].proc_ret != iwt_ty[k + 2 * i + 1]) same = 0;
+      if (same) { comp_scope_ver[s] = iwt_v0[s]; restored++; }
+      k += 2 * nl;
+    }
+    /* (what was derived off the reset state reads as current under the
+       versions put back: it goes) */
+    if (restored) infer_memo_forget_since(iwt_p0);
+  }
+  free(iwt_v0); free(iwt_tc); free(iwt_lc); free(iwt_ty);
   lw_index_free(&lw_ix);
   lw_index_free(&ivw_ix);
   g_infer_write_round = 0;
