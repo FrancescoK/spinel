@@ -1613,6 +1613,28 @@ static int lr_builder_body(Compiler *c, int ci) {
   return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? body : -1;
 }
 
+/* The includes, prepends and extends of a builder's block that no walk of
+   the load phase recorded (lr_call records a placed one's): its own
+   statements', with no point, after the placed ones, the arguments of one
+   call last first as lr_call has them */
+static void lr_builder_mixins(Compiler *c, LrClass *k, int body) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  const int *st = nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : &body;
+  if (nt_kind(nt, body) != NK_StatementsNode) n = 1;
+  for (int i = 0; i < n; i++) {
+    const char *nm = nt_kind(nt, st[i]) == NK_CallNode ? nt_str(nt, st[i], "name") : NULL;
+    int recv = nm ? nt_ref(nt, st[i], "receiver") : -1;
+    if (!nm || !is_mixin_call(nm) || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
+    int an = nt_ref(nt, st[i], "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int j = ac - 1; j >= 0; j--) {
+      k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
+      k->mix[k->nmix++] = (LrMixin){ st[i], lr_mix_kind(nt, st[i], nm, 0), elab_class_ref_at(c, av[j]), av[j] };
+    }
+  }
+}
+
 /* The class builders' blocks (`X = Struct.new(:a) do ... end`) are bodies
    of classes that registration makes after the walk (register_structs):
    once it has, a record that holds such a block with no class is made
@@ -1647,6 +1669,7 @@ void elab_record_builders(Compiler *c) {
     if (have) continue;
     kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
     kc->open[kc->nopen++] = (LrOpen){ d, body };
+    lr_builder_mixins(c, kc, body);
   }
 }
 
