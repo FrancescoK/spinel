@@ -2695,6 +2695,77 @@ int an_calls_named_next(int id);
 static const NodeKind IVS_WK[] = { NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
                                    NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode,
                                    NK_InstanceVariableTargetNode };
+/* The nodes of some kinds by the name one of their fields holds: the ivar
+   writes by the ivar, the attribute op-writes by the reader and writer
+   names. ivs_base_kind asked every write of the program for each ivar of
+   each class, N*N for a class of N attributes (#10325). Nodes are only
+   appended, so the index takes the new ones as the table grows. */
+typedef struct { const char *name; int node, next; } KnEnt;
+typedef struct {
+  const NodeTable *nt;
+  int upto;              /* nodes below this are indexed */
+  int *head, cap;        /* hash of name -> first entry + 1 */
+  KnEnt *e; int n, ecap;
+} KnIdx;
+
+static unsigned kn_hash(const char *s) {
+  unsigned h = 2166136261u;
+  for (; *s; s++) h = (h ^ (unsigned char)*s) * 16777619u;
+  return h;
+}
+
+static int *kn_slot(KnIdx *x, const char *name) {
+  unsigned m = (unsigned)x->cap - 1;
+  for (unsigned k = kn_hash(name) & m; ; k = (k + 1) & m)
+    if (!x->head[k] || sp_streq(x->e[x->head[k] - 1].name, name)) return &x->head[k];
+}
+
+static void kn_add(KnIdx *x, const char *name, int node) {
+  if (!name) return;
+  if ((x->n + 1) * 2 > x->cap) {   /* grow, and put every entry back */
+    int cap = x->cap ? x->cap * 2 : 1024;
+    while ((x->n + 1) * 2 > cap) cap *= 2;
+    free(x->head);
+    x->head = calloc((size_t)cap, sizeof(int));
+    x->cap = cap;
+    for (int i = 0; i < x->n; i++) x->e[i].next = -1;
+    for (int i = 0; i < x->n; i++) {
+      int *h = kn_slot(x, x->e[i].name);
+      x->e[i].next = *h ? *h - 1 : -1;
+      *h = i + 1;
+    }
+  }
+  if (x->n == x->ecap) { x->ecap = x->ecap ? x->ecap * 2 : 1024; x->e = realloc(x->e, sizeof(KnEnt) * (size_t)x->ecap); }
+  int *h = kn_slot(x, name);
+  x->e[x->n] = (KnEnt){ name, node, *h ? *h - 1 : -1 };
+  *h = ++x->n;
+}
+
+/* Bring the index up to the table: kinds ks[0..nk), by field f (and f2) */
+static void kn_sync(KnIdx *x, const NodeTable *nt, const NodeKind *ks, int nk, const char *f, const char *f2) {
+  if (x->nt != nt || x->upto > nt->count) {
+    x->nt = nt; x->upto = 0; x->n = 0;
+    if (x->head) memset(x->head, 0, sizeof(int) * (size_t)x->cap);
+  }
+  for (int id = x->upto; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    for (int q = 0; q < nk; q++)
+      if (k == ks[q]) { kn_add(x, nt_str(nt, id, f), id); if (f2) kn_add(x, nt_str(nt, id, f2), id); break; }
+  }
+  x->upto = nt->count;
+}
+
+/* The first entry of name, or -1; KnEnt.next walks the rest */
+static int kn_first(const KnIdx *x, const char *name) {
+  if (!x->cap || !name) return -1;
+  unsigned m = (unsigned)x->cap - 1;
+  for (unsigned k = kn_hash(name) & m; x->head[k]; k = (k + 1) & m)
+    if (sp_streq(x->e[x->head[k] - 1].name, name)) return x->head[k] - 1;
+  return -1;
+}
+
+static KnIdx g_ivs_writes, g_ivs_callwrites;
+
 static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
   const NodeTable *nt = c->nt;
   int found = 0, scoped = 0;
@@ -2722,8 +2793,7 @@ static int ivs_reflect_only(Compiler *c, int cid, const char *ivn) {
   for (int k = 0; k < c->nclasses; k++) {
     if (scoped && !ivs_related(c, k, cid)) continue;
     ClassInfo *ci = &c->classes[k];
-    for (int j = 0; j < ci->nwriters; j++)
-      if (sp_streq(ci->writers[j], ivn + 1)) return 0;
+    if (comp_is_writer(ci, ivn + 1)) return 0;
     if (ci->is_struct) {
       int iv = comp_ivar_index(ci, ivn);
       if (iv >= 0 && iv < ci->nmembers) return 0;
@@ -2751,22 +2821,24 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
              ty_is_array(t) || ty_is_hash(t) || ty_is_object(t))) kind = 2;
   else {
     kind = 1;
-    const NodeKind *WK = IVS_WK;
-    for (int q = 0; q < 5 && kind == 1; q++)
-      NT_FOREACH_KIND(nt, WK[q], w) {
-        if (!sp_streq(nt_str(nt, w, "name"), ivn)) continue;
-        Scope *ws = comp_scope_of(c, w);
-        if (!ws || ws->is_cmethod) continue;
-        /* a write whose owner this cannot name (a top-level method, an
-           instance_eval body) may be this object's */
-        if (ws->class_id < 0 || !ivs_related(c, ws->class_id, cid)) {
-          if (ws->class_id < 0) { kind = 2; break; }
-          continue;
-        }
-        if (WK[q] == NK_InstanceVariableTargetNode) { kind = 2; break; }
-        if (WK[q] == NK_InstanceVariableOperatorWriteNode) continue;   /* answers a value or raises */
-        if (!ivs_never_nil(c, nt_ref(nt, w, "value"))) { kind = 2; break; }
+    /* (the answer is whether any write decides it: the order they are
+       met in does not matter) */
+    kn_sync(&g_ivs_writes, nt, IVS_WK, 5, "name", NULL);
+    for (int ei = kn_first(&g_ivs_writes, ivn); ei >= 0 && kind == 1; ei = g_ivs_writes.e[ei].next) {
+      int w = g_ivs_writes.e[ei].node;
+      NodeKind wk = nt_kind(nt, w);
+      Scope *ws = comp_scope_of(c, w);
+      if (!ws || ws->is_cmethod) continue;
+      /* a write whose owner this cannot name (a top-level method, an
+         instance_eval body) may be this object's */
+      if (ws->class_id < 0 || !ivs_related(c, ws->class_id, cid)) {
+        if (ws->class_id < 0) kind = 2;
+        continue;
       }
+      if (wk == NK_InstanceVariableTargetNode) { kind = 2; break; }
+      if (wk == NK_InstanceVariableOperatorWriteNode) continue;   /* answers a value or raises */
+      if (!ivs_never_nil(c, nt_ref(nt, w, "value"))) { kind = 2; break; }
+    }
     /* a write from outside: instance_variable_set, a writer, instance_eval.
        Asked per class and ivar, so the calls of those names, not every
        call: any one of them decides */
@@ -2795,11 +2867,10 @@ static int ivs_base_kind(Compiler *c, int cid, const char *ivn) {
     }
     /* `o.x ||= v` and its kin write through the writer too */
     static const NodeKind CW[] = { NK_CallOrWriteNode, NK_CallAndWriteNode, NK_CallOperatorWriteNode };
-    for (int q = 0; q < 3 && kind == 1; q++)
-      NT_FOREACH_KIND(nt, CW[q], u) {
-        const char *rn = nt_str(nt, u, "name"), *wn = nt_str(nt, u, "write_name");
-        if ((rn && (sp_streq(rn, ivn + 1) || sp_streq(rn, wr))) || (wn && sp_streq(wn, wr))) { kind = 2; break; }
-      }
+    if (kind == 1) {
+      kn_sync(&g_ivs_callwrites, nt, CW, 3, "name", "write_name");
+      if (kn_first(&g_ivs_callwrites, ivn + 1) >= 0 || kn_first(&g_ivs_callwrites, wr) >= 0) kind = 2;
+    }
   }
   if (kind == 2 && ivs_reflect_only(c, cid, ivn)) kind = 3;
   return kind;
