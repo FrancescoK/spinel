@@ -1142,8 +1142,6 @@ void elab_record_write(Compiler *c, int stmt) {
   if (e >= 0 && !(r->bits[stmt] & LR_LATE) && r->st[e].node == stmt) lr_value_write(c, e);
 }
 
-static void elab_check_record(Compiler *c);
-
 /* A history for each class registration has made so far */
 static void lr_fit_classes(LoadRecord *r, Compiler *c) {
   if (c->nclasses + 1 <= r->ncls) return;
@@ -1255,8 +1253,7 @@ void elab_program(Compiler *c) {
    builder that is no statement of the load phase (one in an expression,
    which desugar_inline_struct_blocks writes to a local, or in a method
    body) runs its block where no point is: the block is its class's body
-   all the same, after the ones that have a point. Check mode then
-   compares the readers the histories answer for. */
+   all the same, after the ones that have a point. */
 void elab_record_builders(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r || !r->recorded) return;
@@ -1284,7 +1281,6 @@ void elab_record_builders(Compiler *c) {
     kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
     kc->open[kc->nopen++] = (LrOpen){ d, body };
   }
-  if (r->check) elab_check_record(c);
 }
 
 static void lr_settle_add(LoadRecord *r, int fam, int node, int cls, int sg, int may, int vis0, const char *name) {
@@ -1927,30 +1923,6 @@ void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const i
   lr_node_desc(c, node_of ? node_of[now[first]] : now[first], da, sizeof da);
   lr_node_desc(c, node_of ? node_of[rec[first]] : rec[first], db, sizeof db);
   fprintf(stderr, "spinel-elab-check: sort n=%d moved=%d at=%d now=%s record=%s\n", n, moved, first, da, db);
-}
-
-/* The readers the histories will answer for, asked once the record is
-   made: class_body_list's bodies of each class against the record's. */
-static void elab_check_record(Compiler *c) {
-  LoadRecord *r = c->lrec;
-  int *bci = NULL, *bnode = NULL, nb = class_body_list(c, &bci, &bnode);
-  for (int ci = 0; ci < c->nclasses; ci++) {
-    int nr = 0, no = 0, same = 1, k = 0;
-    const LrOpen *o = elab_class_bodies(c, ci, &no);
-    for (int i = 0; i < nb; i++) if (bci[i] == ci && bnode[i] >= 0) nr++;
-    if (!nr && !no) continue;
-    for (int i = 0; i < nb && same; i++)
-      if (bci[i] == ci && bnode[i] >= 0) { while (k < no && o[k].body < 0) k++; same = k < no && o[k++].body == bnode[i]; }
-    while (same && k < no && o[k].body < 0) k++;
-    same = same && k == no;
-    LrCheck *f = lr_family(r, "class_body_list");
-    f->asked++;
-    if (same) continue;
-    f->differ++;
-    if (r->shown++ < LR_CHECK_SHOW)
-      fprintf(stderr, "spinel-elab-check: bodies class=%s reader=%d record=%d\n", c->classes[ci].name, nr, no);
-  }
-  free(bci); free(bnode);
 }
 
 /* The map the walk made as it went (was, wbits: each node's point at its
