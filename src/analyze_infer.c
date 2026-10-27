@@ -2617,6 +2617,7 @@ TyKind an_class_concrete(Compiler *c, int id, const char *name, TyKind t) {
 int an_bare_call_class_owned(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "receiver") >= 0) return 0;
+  if (nt_int(nt, id, "builtin_only", 0)) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   Scope *sc = comp_scope_of(c, id);
@@ -6306,12 +6307,12 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
 
   /* user-defined free-function call (no receiver) */
   if (recv < 0) {
-    int mi = comp_method_index(c, name), fvia = UC_TOP;
+    int mi = nt_int(nt, id, "builtin_only", 0) ? -1 : comp_method_index(c, name), fvia = UC_TOP;
     /* in a block run by instance_eval, the receiver's own method answers
        before a top-level def of the same name (#7213) */
     { int iec = ie_class_of(c, id);
       if (mi >= 0 && iec >= 0 && iec < c->nclasses && comp_method_in_chain(c, iec, name, NULL) >= 0) mi = -1; }
-    if (mi < 0) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
+    if (mi < 0 && !nt_int(nt, id, "builtin_only", 0)) { mi = comp_included_method_index(c, name, id); fvia = UC_INCLUDED; }
     if (mi >= 0) { *out = an_user_call(c, id, mi, fvia, fvia == UC_TOP ? -1 : c->scopes[mi].class_id); return 1; }
     /* Kernel conversions */
     if (sp_streq(name, "Integer") && (kw_argc == 1 || kw_argc == 2)) {
@@ -8853,7 +8854,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
      declared sp_StrArray * and assigned a const char *. One rule, asked before
      any builtin arm, keeps the two halves of the compiler on the same method. */
   if (recv < 0 && nt_ref(nt, id, "block") < 0 &&
-      !nt_str(nt, id, "vis_enforce")) {
+      !nt_str(nt, id, "vis_enforce") && !nt_int(nt, id, "builtin_only", 0)) {
     int bmi = comp_method_index(c, name), bvia = UC_TOP;
     if (bmi < 0) { bmi = comp_included_method_index(c, name, id); bvia = UC_INCLUDED; }
     if (bmi >= 0) {

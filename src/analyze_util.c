@@ -3533,7 +3533,7 @@ int name_is_synth_method(Compiler *c, const char *m) {
 }
 
 int comp_self_call_mi(Compiler *c, int id, const char *name) {
-  if (!name) return -1;
+  if (!name || nt_int(c->nt, id, "kernel_recv", 0)) return -1;
   Scope *self = comp_scope_of(c, id);
   int mi = -1;
   if (self && self->class_id >= 0) {

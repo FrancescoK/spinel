@@ -28163,6 +28163,7 @@ static void emit_call_held(Compiler *c, int id, Buf *b) {
 int bare_call_class_owned(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   if (nt_ref(nt, id, "receiver") >= 0) return 0;
+  if (nt_int(nt, id, "builtin_only", 0)) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   Scope *sc = comp_scope_of(c, id);
@@ -32102,7 +32103,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
      block parameter). */
   {
     const char *bn0 = nt_str(c->nt, id, "name");
-    int bmi0 = bn0 ? comp_method_index(c, bn0) : -1;
+    int bmi0 = bn0 && !nt_int(c->nt, id, "builtin_only", 0) ? comp_method_index(c, bn0) : -1;
     if (bmi0 >= 0 && nt_ref(c->nt, id, "receiver") < 0 &&
         nt_ref(c->nt, id, "block") < 0 &&
         !(bmi0 < c->nscopes && c->scopes[bmi0].yields)) {
