@@ -50,6 +50,9 @@ int sp_process_status_success_p(sp_int s);
    the un-applicable accessor answers nil (an sp_oint), so `p st.termsig`
    renders nil and `st.termsig.nil?` is true. */
 sp_int sp_process_status_pid(sp_int s);
+/* The pid of a boxed Process::Status, which the codegen reads (a poly
+   receiver's pid arm) */
+sp_int sp_process_status_pid_of(sp_ProcessStatus *st);
 sp_oint sp_process_status_exitstatus(sp_int s);
 sp_oint sp_process_status_termsig(sp_int s);
 
