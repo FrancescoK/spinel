@@ -618,6 +618,14 @@ static int lr_class_opened(Compiler *c, int node) {
   return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
 }
 
+/* A frame's singleton flag: where its defs go and what its self is. In a
+   `class << x` body (LR_FS_SCLASS) both are the singleton class. In an
+   instance_eval or instance_exec block on a class (LR_FS_IEVAL) a def, an
+   alias or an undef goes on the singleton class, but self is the class
+   itself: a call on self there (include, prepend, attr_accessor,
+   define_method, alias_method) is the class's own, as in CRuby. */
+enum { LR_FS_NONE, LR_FS_SCLASS, LR_FS_IEVAL };
+
 /* elab_program's state: each statement's frame class (fc) and singleton
    flag (fs), each frame's visibility state (vs) and each file's top
    level's (vmain) */
@@ -698,11 +706,12 @@ static int lr_class_ref(Compiler *c, int node) {
   return lr_class_of(c, d);
 }
 
-/* The class a call's receiver names: none or self, the frame's; a
-   constant, its class (not singleton) */
+/* The class a call's receiver names: none or self, the frame's (its
+   singleton only in a `class << x` body); a constant, its class (not
+   singleton) */
 static int lr_receiver(ElabRec *x, int recv, int fc, int fs, int *sg) {
   NodeKind k = recv >= 0 ? nt_kind(x->c->nt, recv) : NK_SelfNode;
-  *sg = k == NK_SelfNode ? fs : 0;
+  *sg = k == NK_SelfNode && fs == LR_FS_SCLASS;
   if (k == NK_SelfNode) return fc;
   return lr_class_ref(x->c, recv);
 }
@@ -735,7 +744,7 @@ static void lr_frame(ElabRec *x, int e) {
   else if (k == NK_SingletonClassNode) {
     int ex = nt_ref(nt, node, "expression");
     cls = nt_kind(nt, ex) == NK_SelfNode ? cls : lr_class_ref(x->c, ex);
-    sg = 1;
+    sg = LR_FS_SCLASS;
   }
   else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c, node) >= 0) {
     /* `X = Struct.new(:a) do`: the class registration homes there, once it has */
@@ -747,7 +756,7 @@ static void lr_frame(ElabRec *x, int e) {
     const char *nm = nt_str(nt, call, "name");
     int rsg;
     cls = is_class_eval_family(nm) || is_instance_eval_family(nm) ? lr_receiver(x, nt_ref(nt, call, "receiver"), cls, sg, &rsg) : LR_UNKNOWN_CLASS;
-    sg = is_instance_eval_family(nm) ? 1 : 0;
+    sg = is_instance_eval_family(nm) ? LR_FS_IEVAL : LR_FS_NONE;
   }
   if (cls < LR_MAIN) cls = LR_UNKNOWN_CLASS;
   x->fc[e] = cls; x->fs[e] = (unsigned char)sg;
@@ -776,8 +785,8 @@ static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, L
 }
 
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
-  int recv = nt_ref(x->c->nt, def, "receiver"), sg = fs, cls = fc;
-  if (recv >= 0) { cls = lr_receiver(x, recv, fc, 1, &sg); sg = 1; }
+  int recv = nt_ref(x->c->nt, def, "receiver"), sg = fs != LR_FS_NONE, cls = fc;
+  if (recv >= 0) { cls = lr_receiver(x, recv, fc, LR_FS_SCLASS, &sg); sg = 1; }
   lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
 }
 
@@ -996,13 +1005,13 @@ static void lr_record_stmt(ElabRec *x, int e) {
     case NK_DefNode: lr_def(x, node, fc, fs, *vs, may); break;
     case NK_AliasMethodNode: {
       int nn = nt_ref(nt, node, "new_name"), on = nt_ref(nt, node, "old_name");
-      lr_method(x, fc, fs, nn >= 0 ? vis_arg_name(nt, nn) : NULL, node, LR_ALIAS, *vs, may, on >= 0 ? vis_arg_name(nt, on) : NULL);
+      lr_method(x, fc, fs != LR_FS_NONE, nn >= 0 ? vis_arg_name(nt, nn) : NULL, node, LR_ALIAS, *vs, may, on >= 0 ? vis_arg_name(nt, on) : NULL);
       break;
     }
     case NK_UndefNode: {
       int n = 0;
       const int *v = nt_arr(nt, node, "names", &n);
-      for (int i = 0; i < n; i++) lr_method(x, fc, fs, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
+      for (int i = 0; i < n; i++) lr_method(x, fc, fs != LR_FS_NONE, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
       break;
     }
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may); break;
