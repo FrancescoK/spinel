@@ -1,5 +1,3 @@
-# spinel: not-cruby (CRuby names the first missing segment: `uninitialized
-# constant Mylib`; spinel names the whole path)
 # An unresolved qualified constant (`Mylib::VERSION`, Mylib undefined) degrades
 # to a rescuable runtime NameError rather than emitting a bare `Mylib_VERSION` C
 # identifier (undeclared -> C compile error). The constant would once have come

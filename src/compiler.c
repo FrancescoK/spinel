@@ -2067,7 +2067,7 @@ static int const_name_resolves(Compiler *c, const char *cn) {
 /* A constant (path) segment that resolves: by its name, as a builtin
    class, module or builtin class's constant (Encoding::UTF_8), or as a
    program class the path names (A::B, renamed apart from an X::B) */
-static int const_seg_resolves(Compiler *c, int seg) {
+int const_seg_resolves(Compiler *c, int seg) {
   return const_name_resolves(c, nt_str(c->nt, seg, "name")) || const_seg_builtin(c, seg) ||
          const_path_class(c, seg) >= 0;
 }

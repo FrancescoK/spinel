@@ -1816,6 +1816,9 @@ int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
 int        const_name_resolves_top_level(Compiler *c, const char *cn);
+/* Does constant segment node seg (a ConstantReadNode or a path's segment)
+   resolve: by its name, as a builtin, or as a program class the path names? */
+int        const_seg_resolves(Compiler *c, int seg);
 /* The class Ruby sees for `ci`: a synthesized singleton subclass reports its
    parent (CRuby hides the singleton class), every other class reports itself. */
 static inline int singleton_visible_ci(Compiler *c, int ci) {

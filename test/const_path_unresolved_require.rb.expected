@@ -1,2 +1,2 @@
-rescued: uninitialized constant Mylib::VERSION
+rescued: uninitialized constant Mylib
 after

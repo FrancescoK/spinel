@@ -1,4 +1,4 @@
-uninitialized constant A::B::C::D
-uninitialized constant Foo::Bar::BAZ
+uninitialized constant A
+uninitialized constant Foo
 uninitialized constant AlsoMissing
 after

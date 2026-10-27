@@ -3765,6 +3765,21 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
         warn_undefined_constant(c, id, fullname);
+      /* CRuby resolves the path left to right and names the first segment
+         it does not find: `Mylib::VERSION` with no Mylib raises
+         "uninitialized constant Mylib" */
+      { int segs[32], ns = 0;
+        for (int s = nt_ref(nt, id, "parent"); s >= 0 && ns < 32 &&
+             (nt_kind(nt, s) == NK_ConstantReadNode || nt_kind(nt, s) == NK_ConstantPathNode);
+             s = nt_kind(nt, s) == NK_ConstantPathNode ? nt_ref(nt, s, "parent") : -1)
+          segs[ns++] = s;
+        for (int i = ns - 1; i >= 0; i--)
+          if (!const_seg_resolves(c, segs[i])) {
+            char miss[512];
+            const_path_written(nt, segs[i], miss, sizeof miss);
+            if (miss[0]) snprintf(fullname, sizeof fullname, "%s", miss);
+            break;
+          } }
       buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
     }
     return 1;
