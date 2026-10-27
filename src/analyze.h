@@ -330,7 +330,9 @@ int elab_method_span(Compiler *c, int cls, const char *name, int sg, const ElabW
 int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint p);
 /* the versions of cls's method `name` (singleton when sg) in the histories
    of cls's chain as the record holds it at the load's end, nearest history
-   first (prepends, own, includes, then the superclass's), into
+   first (prepends, own, includes, then the superclass's; where a
+   singleton's chain ends, the instance methods it goes on into: for
+   main's own singleton, Object's), into
    out[0..cap): each with its history (hist, the run-time cell its
    statement writes, call_plan.c's version entries) and its number there,
    1-based. How many; -1 when a class on the chain is one the record does

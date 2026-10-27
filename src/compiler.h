@@ -467,9 +467,11 @@ typedef struct {
      cells name, one per parameter count the calls need (version_n
      numbers the later ones in C). It has the method's name, as a replaced
      version does; no lookup of the method by name answers it (sm_owns),
-     only the calls call_target binds to it reach it */
+     only the calls call_target binds to it reach it; main_n, codegen's
+     number for a method of main's own whose name Object's methods have
+     too (both are top-level functions in C) */
   unsigned char versioned, replaced, entry;
-  int version_n;
+  int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
                                (analyze_pass.c): what its parameters hold is
@@ -1771,6 +1773,7 @@ int comp_sret_first(Compiler *c, int scope_idx);
 int comp_sret_next(const Compiler *c, int r);
 int comp_bare_gets_is_argf(Compiler *c);
 int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
+int    comp_main_method(Compiler *c, const char *name);  /* main's singleton method (`def self.k` at the top level); -1 if none */
 /* A receiverless call's target: the enclosing self's ancestry first, a
    top-level def (a private Object method, and so last in every ancestry) only
    as the fallback. See analyze_util.c. */

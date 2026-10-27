@@ -19444,6 +19444,12 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     int mi = k >= 0 ? call_target(c, id, k, nm, CT_CMETHOD, NULL) : -1;
     if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
   }
+  /* a call on main that finds main's own method reaches that one, not an
+     Object method of the name (ct_main_target) */
+  if (k0 == NK_CallNode && nm && names[0] == nm && !nt_int(nt, id, "dyn_arm", 0)) {
+    int mi = ct_main_target(c, id, nm);
+    if (mi >= 0) { snprintf(resolved, sizeof resolved, "\x01%d", mi); names[0] = resolved; }
+  }
   char arm_name[300];
   /* An arm on a class (`self`, written or not, in a `def self.`, or a class
      constant) reaches that class's `def self.` methods, which the "\x02"

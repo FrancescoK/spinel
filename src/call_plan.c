@@ -939,6 +939,33 @@ static int ct_undefined_at(Compiler *c, int id, int cls, const char *name, unsig
   if (framed) elab_plan_leave(c);
   return none && !(nt_ref(c->nt, id, "receiver") >= 0 && !nt_int(c->nt, id, "self_call", 0) && builtin_self_method_known(name));
 }
+/* Does call id run with main as self and look on main first: receiverless
+   or on `self`, in a file's top-level statements (a block there too) or
+   in a method of main's own; not in a top-level `def`, which runs on whatever
+   object called it. At a load point, only once main's method of the name
+   is defined there. */
+static int ct_on_main(Compiler *c, int id, const char *name) {
+  const LrDef *d = NULL;
+  if (nt_kind(c->nt, id) != NK_CallNode) return 0;
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (recv >= 0 && nt_kind(c->nt, recv) != NK_SelfNode) return 0;
+  const Scope *s = comp_scope_of(c, id);
+  if (!self_is_main(c, id) || (!prog_is_top_scope(c, s) && !s->is_cmethod)) return 0;
+  LoadPoint p = elab_point_of(c, id);
+  return p.region < 0 || elab_method_at(c, -1, name, 1, p, &d) != ELAB_NO;
+}
+/* The method call id reaches when it can reach only main's own method of
+   `name`: a call on main (ct_on_main) at a load point where main's method
+   is defined, which CRuby's lookup finds ahead of Object's. -1 for any
+   other call (a method's, a block's kept to run later), which may run
+   before main's method is defined. */
+int ct_main_target(Compiler *c, int id, const char *name) {
+  const LrDef *d = NULL;
+  if (comp_main_method(c, name) < 0 || !ct_on_main(c, id, name)) return -1;
+  LoadPoint p = elab_point_of(c, id);
+  if (p.region < 0 || elab_method_at(c, -1, name, 1, p, &d) != ELAB_YES) return -1;
+  return call_target(c, id, -1, name, CT_TOP, NULL);
+}
 /* the table's answer for `name` on cls, as call_target asks it */
 static int ct_table(Compiler *c, int cls, const char *name, unsigned flags, int *def_class) {
   if (flags & CT_TOP) return comp_method_index(c, name);
@@ -956,8 +983,18 @@ int cplan_cand_target(Compiler *c, int id, const char *name, const PolyCand *pc,
   int mi = pc->mi >= 0 && c->scopes[pc->mi].versioned ? call_target(c, id, pc->cls, name, flags, NULL) : -1;
   return mi >= 0 ? mi : pc->mi;
 }
+/* The method call id finds by name, call_target's start: the table's
+   (ct_table), but main's own method ahead of Object's for a call on main
+   (ct_on_main), as CRuby's lookup there; its versions are then main's
+   chain's, which ends in Object's (*flags gains CT_CMETHOD) */
+static int ct_lookup(Compiler *c, int id, int cls, const char *name, unsigned *flags, int *def_class) {
+  int si = (*flags & CT_TOP) && id >= 0 ? comp_main_method(c, name) : -1;
+  int mi = si >= 0 && ct_on_main(c, id, name) ? si : ct_table(c, cls, name, *flags, def_class);
+  if ((*flags & CT_TOP) && mi >= 0 && c->scopes[mi].is_cmethod) *flags |= CT_CMETHOD;
+  return mi;
+}
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {
-  int dc0 = def_class ? *def_class : -1, mi = ct_table(c, cls, name, flags, def_class), pin;
+  int dc0 = def_class ? *def_class : -1, mi = ct_lookup(c, id, cls, name, &flags, def_class), pin;
   if (mi < 0 || id < 0 || !ct_calls(c, id, name)) return mi;
   if (c->scopes[mi].versioned && (pin = ct_pin_of(c, id)) >= 0) {   /* (an entry's arm: its method's own class) */
     if (ct_top_version(c, pin, flags)) return -1;
@@ -2191,6 +2228,18 @@ static int cplan_bind_call_gap(Compiler *c, int id) {
   return class_value_instance_method_sym(c, recv) && class_value_bind_call_gap(c, recv);
 }
 
+/* A receiverless call in a top-level `def`, which has no self of its own
+   here, to a name main has a singleton method for: CRuby's call finds main's
+   method when the def runs on main and Object's when it runs on another
+   object, and the def is one function whichever calls it. A version entry
+   is not a def of the program: its calls are the dispatch to the versions. */
+static int cplan_top_self_gap(Compiler *c, int id) {
+  const char *name = nt_str(c->nt, id, "name");
+  const Scope *s = comp_scope_of(c, id);
+  return nt_kind(c->nt, id) == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0 && name && s->class_id < 0 &&
+         !s->is_cmethod && !s->entry && s->def_node >= 0 && !prog_is_top_scope(c, s) && comp_main_method(c, name) >= 0;
+}
+
 static CallPlan *g_rf_memo = NULL;
 static unsigned char *g_rf_have = NULL;
 static char **g_rf_name = NULL;   /* the name each entry was resolved under (cplan_user) */
@@ -2223,6 +2272,12 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, si
   if ((what = cplan_runtime_send_what(c, id))) from = CRF_SEND;
   else if ((what = cplan_runtime_const_get_what(c, id))) from = CRF_CONST_GET;
   else if ((what = cplan_binding_what(c, id))) from = CRF_BINDING;
+  if (!what && cplan_top_self_gap(c, id)) {
+    cplan_refuse_set(p, CRF_TOP_SELF, CR_FEATURE,
+                     "a top-level method's self is not modelled: this call finds main's singleton method when the "
+                     "method runs on main and Object's when it runs on another object", buf, cap);
+    return;
+  }
   if (!what) {
     int stop;
     char why_buf[512];
@@ -3530,11 +3585,13 @@ typedef struct { VerNeed *v; int n; } VerNeeds;
 static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   VerNeeds *o = arg;
   ElabVersion vs[VER_MAX_ARMS];
-  int mi, n = 0, ar, rcls = flags & CT_TOP ? -1 : k, sg = (flags & CT_CMETHOD) != 0;
+  int mi, n = 0, ar, rcls = flags & CT_TOP ? -1 : k, sg;
   /* (an entry arms two or more versions of the chain: with fewer, or a
-     chain the record does not hold, no call is asked) */
-  if (elab_chain_versions(c, rcls, sg, nm, vs, VER_MAX_ARMS) < 2) return;
-  if ((mi = ct_table(c, k, nm, flags, NULL)) < 0 || !c->scopes[mi].versioned) return;
+     chain the record does not hold, no call is asked. A call on main may
+     ask main's chain, which ends in Object's: ct_lookup) */
+  if (elab_chain_versions(c, rcls, (flags & (CT_CMETHOD | CT_TOP)) != 0, nm, vs, VER_MAX_ARMS) < 2) return;
+  if ((mi = ct_lookup(c, id, k, nm, &flags, NULL)) < 0 || !c->scopes[mi].versioned) return;
+  sg = (flags & CT_CMETHOD) != 0;
   ar = ver_call_arity(c, id, rcls, sg, nm, mi);
   if (ver_entry_ix(c, rcls, sg, nm, ar) >= 0) return;
   for (int i = 0; i < o->n; i++)

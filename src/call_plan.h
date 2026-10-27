@@ -47,7 +47,8 @@ typedef enum {
   CRF_LIMIT,       /* a documented limit (diagnose_unsupported_call) */
   CRF_EVAL,        /* Kernel#eval of a runtime string (diagnose_eval_call) */
   CRF_IO_REOPEN,   /* an IO reopening that yields (emit_io_reopen_call) */
-  CRF_BIND_CALL    /* a bind_call on a Class value with an armless class */
+  CRF_BIND_CALL,   /* a bind_call on a Class value with an armless class */
+  CRF_TOP_SELF     /* a receiverless call in a top-level def to a name main has a singleton method for (diagnose_unsupported_call) */
 } CplanRefuseFrom;
 
 typedef struct {
@@ -82,8 +83,8 @@ const CallPlan *cplan_user(Compiler *c, int id);
 /* The method scope call `id` runs when it asks for `name`: on cls's
    instance side through its chain, CT_CMETHOD on its class side, CT_OWN
    in cls's own table only, CT_TOP among the top-level functions (cls not
-   read); *def_class (when asked) the class whose table holds it; -1 for
-   none. The one place a site asks "what does this call run": it answers
+   read; main's singleton methods first for a call on main); *def_class
+   (when asked) the class whose table holds it; -1 for none. The one place a site asks "what does this call run": it answers
    from the tables by name (a redefined method's entry is its last
    definition), and binding a call to one of a method's versions (#9898)
    is decided here. `id` is -1 where a helper that serves calls is asked
@@ -103,6 +104,9 @@ int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, 
    each handed to fn with the flags call_target is asked with */
 int ct_version_named(Compiler *c, const char *nm);
 int ct_version_marked(Compiler *c, const char *nm);
+/* the method call id reaches when it can reach only main's own method of
+   name, -1 for none (a call on main where main's method is defined) */
+int ct_main_target(Compiler *c, int id, const char *name);
 typedef void (*CtClassFn)(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg);
 void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void *arg);
 /* the version entries a call whose version is known only at run time

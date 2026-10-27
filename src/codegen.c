@@ -18695,6 +18695,18 @@ static void reject_binding(Compiler *c) {
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
+/* A receiverless call in a top-level def to a name main has a singleton method
+   for: the def has no self of its own here, and which method the call finds
+   depends on the object the def runs on (the plan's CRF_TOP_SELF). A def
+   nothing names is not emitted, so its calls are not refused. */
+static void reject_top_self(Compiler *c) {
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const Scope *s = comp_scope_of(c, id);
+    if (s->name && !s->reachable) continue;
+    if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_TOP_SELF, "refuse-top-self");
+  }
+}
+
 /* `const_get(name)` with a runtime name that the lowering could not reach:
    one with no receiver the desugar could supply (an instance method, where
    self has no const_get) or one the fixpoint never lowered. Left alone it
@@ -21466,6 +21478,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_runtime_send(c);
   reject_runtime_const_get(c);
   reject_binding(c);
+  reject_top_self(c);
   reject_time_parse(c);
   reject_define_method_early(c);
   reject_define_method_runtime_block(c);

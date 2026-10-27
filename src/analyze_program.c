@@ -692,13 +692,10 @@ void prog_settle_files(Compiler *c) {
 }
 
 /* The statements a reader of the top level in order would have to place
-   across a load (part 3b), refused by name, asked just ahead of
-   rename_main_singleton_defs, once the builtins/ files' modules are taken apart
-   (desugar_builtins, desugar_builtin_scalar_defs). In a required file's top
-   level:
-     - a top-level `def self.m` (rename_main_singleton_defs);
-     - `include` (qc_object_mixin_write, which runs ahead of the load
-       record). */
+   across a load (part 3b), refused by name, asked once the builtins/ files'
+   modules are taken apart (desugar_builtins, desugar_builtin_scalar_defs):
+   `include` in a required file's top level (qc_object_mixin_write, which
+   runs ahead of the load record). */
 void prog_refuse_order(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!prog_graph(c)) return;
@@ -708,8 +705,6 @@ void prog_refuse_order(Compiler *c) {
     for (int k = 0; k < n; k++) {
       NodeKind sk = nt_kind(nt, v[k]);
       const char *nm = nt_str(nt, v[k], "name");
-      if (i > 0 && sk == NK_DefNode && nt_ref(nt, v[k], "receiver") >= 0)
-        unsupported_feature(c, v[k], "--load-model=graph: a top-level `def self.m` in a required file (rename_main_singleton_defs reads one file), for now");
       if (i > 0 && sk == NK_CallNode && nt_ref(nt, v[k], "receiver") < 0 && nm && is_include_name(nm))
         unsupported_feature(c, v[k], "--load-model=graph: a top-level include in a required file (qc_object_mixin_write reads one file), for now");
     }

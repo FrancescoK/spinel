@@ -4349,12 +4349,15 @@ static int comp_method_index_1(Compiler *c, const char *name) {
   }
   return -1;
 }
-static int comp_method_index_direct(Compiler *c, const char *name) {
+/* The last top-level scope named name on one side: main's singleton
+   methods (`def self.k` at the top level, main) or Object's (top-level
+   `def k`). */
+static int sm_top_last(Compiler *c, const char *name, int side) {
   if (!name) return -1;
   if (!sm_frozen) {
     /* in reverse, so a redefinition wins, matching the frozen index */
     for (int s = c->nscopes - 1; s >= 0; s--)
-      if (sm_toplevel(c, s) && c->scopes[s].name &&
+      if (sm_toplevel(c, s) && !c->scopes[s].is_cmethod == !side && c->scopes[s].name &&
           sp_streq(c->scopes[s].name, name)) return s;
     return -1;
   }
@@ -4362,8 +4365,21 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
   if (!sm_buckets) return -1;
   unsigned b = sm_hash(-1, name, 0) % (unsigned)sm_buckets;
   for (int s = tm_head[b]; s >= 0; s = tm_next[s])
-    if (sm_toplevel(c, s) && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+    if (sm_toplevel(c, s) && !c->scopes[s].is_cmethod == !side && c->scopes[s].name &&
+        sp_streq(c->scopes[s].name, name)) return s;
   return -1;
+}
+/* Object's method of the name, else main's singleton method: a call that
+   is not known to run on main reaches Object's (call_target asks main's
+   first for one that does). */
+static int comp_method_index_direct(Compiler *c, const char *name) {
+  int s = sm_top_last(c, name, 0);
+  return s >= 0 ? s : sm_top_last(c, name, 1);
+}
+int comp_main_method(Compiler *c, const char *name) {
+  int s = sm_top_last(c, name, 1);
+  if (s >= 0) IMEMO_DEP_SCOPE(s);
+  return s;
 }
 
 /* Does class ci descend from an explicit `< BasicObject` (a blank slate)?

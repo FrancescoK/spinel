@@ -1838,6 +1838,14 @@ spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported with
 spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported without `require "time"`, which defines it in CRuby (see docs/limitations.md)
 == test/reject/time_strptime_no_require.rb [promote] rc=1
 spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported without `require "time"`, which defines it in CRuby (see docs/limitations.md)
+== test/reject/top_def_calls_main_singleton_class_self.rb [default] rc=1
+spinel: test/reject/top_def_calls_main_singleton_class_self.rb:6: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_class_self.rb [promote] rc=1
+spinel: test/reject/top_def_calls_main_singleton_class_self.rb:6: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_def_self.rb [default] rc=1
+spinel: test/reject/top_def_calls_main_singleton_def_self.rb:7: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_def_self.rb [promote] rc=1
+spinel: test/reject/top_def_calls_main_singleton_def_self.rb:7: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
 == test/reject/toplevel_include_yield_ivar_target.rb [default] rc=1
 spinel: test/reject/toplevel_include_yield_ivar_target.rb:14: unsupported top-level include of a module method that uses instance variables: node N (CallNode `pair`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written

@@ -2554,11 +2554,16 @@ static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod
    main's own singleton from Object's. Each is the program's reopening of
    that class as registered so far (Class's is class_reopen_class): the
    histories it searches have no entry before its header. */
-static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
+static int lr_sg_tail_of(Compiler *c, int cls, int tail[5]) {   /* where in tail cls's starts */
   const LoadRecord *r = c->lrec;
-  int tail[5] = { class_reopen_class(c), lr_core(r, CORE_MODULE), lr_core(r, CORE_OBJECT), LR_MAIN, lr_core(r, CORE_KERNEL) };
   int d = cls >= 0 ? c->classes[cls].def_node : -1;
-  for (int i = cls == LR_MAIN ? 2 : d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? 1 : 0; i < 5; i++) {
+  tail[0] = class_reopen_class(c), tail[1] = lr_core(r, CORE_MODULE), tail[2] = lr_core(r, CORE_OBJECT);
+  tail[3] = LR_MAIN, tail[4] = lr_core(r, CORE_KERNEL);
+  return cls == LR_MAIN ? 2 : d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? 1 : 0;
+}
+static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
+  int tail[5];
+  for (int i = lr_sg_tail_of(c, cls, tail); i < 5; i++) {
     int t = tail[i];
     if (t < LR_MAIN) continue;
     if (!name && t == mod) return ELAB_YES;
@@ -2590,7 +2595,26 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   return unsure ? ELAB_UNKNOWN : o;
 }
 
+/* The versions of `name` along cls's chain (its singleton's when sg), as
+   lr_search walks it: on each class, its prepends', its own, its includes'
+   or extends'; then its superclass's, and where a singleton's chain ends
+   the instance methods of lr_sg_tail's classes, each one's own (main's
+   own singleton: Object's, main's top level's, Kernel's) */
+static int lr_chain_one(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int n, int cap, int depth);
 static int lr_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int n, int cap, int depth) {
+  if (depth > 64 || (n = lr_chain_one(c, cls, sg, name, out, n, cap, depth)) < 0) return -1;
+  int sup = lr_super(c, cls), tail[5];
+  if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
+  if (sup >= LR_MAIN) return lr_chain_versions(c, sup, sg, name, out, n, cap, depth + 1);
+  if (!sg) return n;
+  for (int i = lr_sg_tail_of(c, cls, tail), j0 = i; i < 5 && n >= 0; i++) {
+    int seen = 0;   /* (no reopened Object: comp_class_index's -1 is main's) */
+    for (int j = j0; j < i; j++) seen |= tail[j] == tail[i];
+    if (tail[i] >= LR_MAIN && !seen) n = lr_chain_one(c, tail[i], 0, name, out, n, cap, depth + 1);
+  }
+  return n;
+}
+static int lr_chain_one(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int n, int cap, int depth) {
   LoadRecord *r = c->lrec;
   const LrClass *k = lr_class(r, cls);
   if (depth > 64 || !k) return -1;
@@ -2611,9 +2635,7 @@ static int lr_chain_versions(Compiler *c, int cls, int sg, const char *name, Ela
       n = (mod = lr_later(c, &m->mod, m->ref)) < 0 ? -1 : lr_chain_versions(c, mod, 0, name, out, n, cap, depth + 1);
     }
   }
-  int sup = lr_super(c, cls);
-  if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
-  return n >= 0 && sup >= LR_MAIN ? lr_chain_versions(c, sup, sg, name, out, n, cap, depth + 1) : n;
+  return n;
 }
 int elab_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap) {
   LoadRecord *r = c->lrec;
