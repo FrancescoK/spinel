@@ -718,6 +718,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/include_after_call.rb:13: a later statement mixes module Kind into class Cat (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
 == test/reject/include_after_call.rb [promote] rc=1
 spinel: test/reject/include_after_call.rb:13: a later statement mixes module Kind into class Cat (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
+== test/reject/include_after_call_in_method.rb [default] rc=1
+spinel: test/reject/include_after_call_in_method.rb:13: a later statement mixes module Kind into class Cat (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
+== test/reject/include_after_call_in_method.rb [promote] rc=1
+spinel: test/reject/include_after_call_in_method.rb:13: a later statement mixes module Kind into class Cat (include or prepend), after this call, so the call would reach the module's method before the module is there. Include or prepend the module where the class is defined, ahead of the call.
 == test/reject/include_module_from_expression.rb [default] rc=1
 spinel: test/reject/include_module_from_expression.rb:9: `include` of a module named by an expression, not a constant, is not supported (the mixin is resolved at compile time)
 == test/reject/include_module_from_expression.rb [promote] rc=1

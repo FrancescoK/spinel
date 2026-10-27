@@ -43200,6 +43200,12 @@ static int mixin_event_cmp(const void *a, const void *b) {
   if (x->key != y->key) return x->key < y->key ? -1 : 1;
   return y->i - x->i;   /* one call's modules as written (the record has them last first) */
 }
+/* Does a statement that runs code have a rank strictly between lo and hi? */
+static int mixin_runs_between(const int *run, int n, int lo, int hi) {
+  for (int i = 0; i < n; i++)
+    if (run[i] > lo && run[i] < hi) return 1;
+  return 0;
+}
 static void refuse_mixin_after_calls(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* the classes' includes and prepends, as the load record has them, in the
@@ -43229,16 +43235,18 @@ static void refuse_mixin_after_calls(Compiler *c) {
     }
   }
   if (nev > 1) qsort(ev, (size_t)nev, sizeof *ev, mixin_event_cmp);
-  /* the rank of the first top-level statement that runs code, in load
-     order: the record holds definitions, not which statements run code
-     (a load's file's statements follow it, and run or not themselves) */
-  int n = 0, *st = nev ? prog_top_seq(c, &n, NULL) : NULL, run_rank = INT_MAX;
+  /* the ranks of the top-level statements that run code, in load order:
+     the record holds definitions, not which statements run code (a load's
+     file's statements follow it, and run or not themselves) */
+  int n = 0, *st = nev ? prog_top_seq(c, &n, NULL) : NULL, nrun = 0;
+  int *run = n ? malloc(sizeof(int) * (size_t)n) : NULL;
+  if (n && !run) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int q = 0; q < n; q++) {
     NodeKind qk = nt_kind(nt, st[q]);
     if (qk == NK_ClassNode || qk == NK_ModuleNode || qk == NK_DefNode || qk == NK_LoadNode) continue;
-    int f;
-    elab_top_place(c, st[q], &f, &run_rank);
-    break;
+    int f, r;
+    elab_top_place(c, st[q], &f, &r);
+    if (r >= 0) run[nrun++] = r;
   }
   free(st);
   for (int e = 0; e < nev; e++) {
@@ -43253,7 +43261,6 @@ static void refuse_mixin_after_calls(Compiler *c) {
     elab_top_place(c, ob[0].node, &of, &orank);
     if (orank < 0 || orank >= jrank) continue;
     LoadPoint pm = elab_point_of(c, ev[e].node);
-    int runs = run_rank < jrank;
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       /* a call in a top-level statement that ran ahead of the mixin's, in a
          method body too (the statement defining it) */
@@ -43271,7 +43278,11 @@ static void refuse_mixin_after_calls(Compiler *c) {
       int recv = nt_ref(nt, id, "receiver");
       Scope *ms = comp_scope_of(c, id);
       int in_def = ms && ms->def_node >= 0;
-      if (in_def && !runs) continue;
+      /* a method body runs ahead of the mixin only under a statement that
+         runs after both its def and the class's first body, which made the
+         class whose object it is called on; one ahead of either may store a
+         block that calls it, but a later statement runs that block */
+      if (in_def && !mixin_runs_between(run, nrun, rank > orank ? rank : orank, jrank)) continue;
       /* the classes the receiver can be an object of: its type's, or for a
          receiverless call in an instance method, self's */
       TyKind rt = TY_UNKNOWN;
@@ -43303,11 +43314,11 @@ static void refuse_mixin_after_calls(Compiler *c) {
                "the call would reach the module's method before the module is there. Include or prepend "
                "the module where the class is defined, ahead of the call.",
                c->classes[mod].name, c->classes[cid].name);
-      free(ev);
+      free(ev); free(run);
       unsupported_feature(c, id, msg);
     }
   }
-  free(ev);
+  free(ev); free(run);
 }
 
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
