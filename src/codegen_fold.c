@@ -6110,7 +6110,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   const char *yv = recv >= 0 ? nt_str(nt, recv, "enum_yield_view") : NULL;
   int args_view = !autosplat && !as_handle && yv && sp_streq(yv, "args") && et_elem == TY_POLY &&
                   clv0 && clv0->type == TY_POLY_ARRAY;
-  int use_shadow = !as_handle && !args_view && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
+  /* a boxed parameter that a nested block captures lives in a cell, which
+     the frame declares boxed. A shadow cannot retype that cell, so an
+     object element binds boxed into the parameter, as each binds it
+     (box_to_poly). select and reject then keep the element itself. */
+  int boxed_cell = !as_handle && !args_view && clv0 && clv0->is_cell && clv0->type == TY_POLY &&
+                   ty_is_object(et_elem);
+  int use_shadow = !boxed_cell && !as_handle && !args_view && clv0 && clv0->type != et_elem && et_elem != TY_UNKNOWN;
   if (use_shadow) {
     one_elem_bind_slot(clv0, one_elem_decl_type(k, et_elem));   /* (one representation: a handle slot) */
     lv_set_type(clv0, one_elem_decl_type(k, et_elem));
@@ -6137,6 +6143,10 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
       char sn[200]; snprintf(sn, sizeof sn, "lv_%s", p0);
       emit_indent(g_pre, innerIndent); emit_gc_root_var(c, et_elem, sn, g_pre); buf_puts(g_pre, "\n");
     }
+  }
+  else if (boxed_cell) {
+    char es_b[64]; snprintf(es_b, sizeof es_b, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
+    emit_iter_param_assign(c, block, p0, p0, et_elem, es_b, g_pre, bodyIndent);
   }
   else if (as_handle) {
     emit_indent(g_pre, bodyIndent);
@@ -6231,10 +6241,11 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
        parameter may have been reassigned, or typed without the nil) */
     else if (!range_recv && k && rk && sp_streq(rk, k) && is_numeric_literal_tag(k))
       buf_printf(g_pre, "sp_%sArray_push_o(_t%d, sp_%sArray_oget(_t%d, _t%d));\n", rk, tres, k, trecv, ti);
-    else if (p0)
+    else if (p0 && !boxed_cell)
       { if (rk && sp_streq(rk, "Str")) buf_printf(g_pre, "sp_StrArray_push(_t%d, SP_STR_B(lv_%s));\n", tres, p0); else buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0); }
     else
-      /* splat-only block: push the element straight from the receiver */
+      /* splat-only block, or a boxed cell (the block may write the
+         parameter): push the element straight from the receiver */
       buf_printf(g_pre, "sp_%sArray_push(_t%d, sp_%sArray_get(_t%d, _t%d));\n", rk, tres, k, trecv, ti);
   }
   if (use_shadow) { emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "}\n"); }

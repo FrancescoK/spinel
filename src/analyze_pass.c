@@ -14700,12 +14700,31 @@ int desugar_for_nonlocal_index(Compiler *c) {
   return changed;
 }
 
+/* A block parameter no write site in its scope assigns. Its type comes from
+   the binding alone; the usage pass, which runs ahead of the binders in a
+   round, may still have guessed one from a push inside the block (`r <<
+   1.5` reads as "r is a float array") before the receiver or the yield had
+   a type. (The write index chains hash collisions too, so the name and the
+   scope are checked.) */
+static int pure_block_param(Compiler *c, Scope *s, const char *name) {
+  const NodeTable *nt = c->nt;
+  for (int w = comp_lvw_first_sc(c, (int)(s - c->scopes), name); w >= 0; w = comp_lvw_next_sc(c, w)) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && sp_streq(wn, name) && comp_scope_of(c, w) == s) return 0;
+  }
+  return 1;
+}
+
 /* Propagate `proc.call(args)` argument types onto the proc literal `create`'s
    required params, by the binding plan the proc prologue follows
    (block_site_types: auto-splat, gathered splats, the keyword hash). The
    rest, post, optional and keyword params are boxed for good. A concrete
    arg overrides a param still at its bare-int default (the fallback guess,
-   no real evidence), otherwise joins it (bs_join). A param the call may
+   no real evidence), otherwise joins it (bs_join). An Integer is that guess
+   only for a param that nothing writes: a write in the body (`q = 5`) typed
+   the param in a round before it was a block parameter, and the write pass
+   does not fold it again, so the call joins it. A param the call may
    leave without a value reads the slot's own nil, so it takes a type that
    has one. A literal nil passed at one call and an Integer or a Float at
    another keep the Integer or the Float, since the prologue reads a nil
@@ -14756,7 +14775,7 @@ static int cs_type_params(Compiler *c, int create, const int *argv, int argc) {
     TyKind merged = nil_int ? (at == TY_NIL ? lv->type : at)
                   : at == TY_NIL && lv->type == TY_INT && lv->nil_passed ? TY_POLY
                   : at == TY_UNKNOWN || at == lv->type ? lv->type
-                  : lv->type == TY_INT ? at : bs_join(lv->type, at);
+                  : lv->type == TY_INT && pure_block_param(c, bs, p) ? at : bs_join(lv->type, at);
     if ((absent[k] & BS_NIL) && (merged == TY_INT || merged == TY_FLOAT) && !nil_int) merged = TY_POLY;
     /* this call may leave it without a value: the prologue reads the
        slot's own nil, which an Integer, a Float, a String or an object has
@@ -15133,21 +15152,6 @@ static int a_proc_forwarded_with_amp(Compiler *c, int create) {
     if (comp_scope_of(c, ex) == cs) return 1;
   }
   return 0;
-}
-
-/* A block parameter no write site in its scope assigns. Its type comes from
-   the binding alone; the usage pass, which runs ahead of the binders in a
-   round, may still have guessed one from a push inside the block (`r <<
-   1.5` reads as "r is a float array") before the receiver or the yield had
-   a type. */
-static int pure_block_param(Compiler *c, Scope *s, const char *name) {
-  const NodeTable *nt = c->nt;
-  for (int w = 0; w < nt->count; w++) {
-    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
-    const char *wn = nt_str(nt, w, "name");
-    if (wn && sp_streq(wn, name) && comp_scope_of(c, w) == s) return 0;
-  }
-  return 1;
 }
 
 /* Settle what the sites bound (block_site_types) into the parameters of

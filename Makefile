@@ -4733,6 +4733,10 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	for v in iv_herd iv_arrows iv_eggs iv_pen lv_babies lv_adults; do \
 	  grep -q "sp_PtrArray \\* $$v\b" "$$tmp/oaf.c" || { echo "infer-test: FAIL (obj_array_filters: a filter left $$v boxed)"; ok=0; }; \
 	done; \
+	$(SPINEL) test/obj_array_nested_block.rb -c --no-line-map -o "$$tmp/onb.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (obj_array_nested_block: -c)"; ok=0; }; \
+	for v in arrows pts; do \
+	  grep -q "sp_PtrArray \\* iv_$$v;" "$$tmp/onb.c" || { echo "infer-test: FAIL (obj_array_nested_block: a block in a walk's block left @$$v boxed)"; ok=0; }; \
+	done; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' '$(STR_SLOT_C) iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

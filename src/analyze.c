@@ -13247,27 +13247,10 @@ static int desugar_to_enum(Compiler *c) {
    Strictly conservative: any unmodeled use, class conflict, unresolved flow, or
    absent object evidence kills the component, leaving it TY_POLY_ARRAY. Runs
    ONCE, after the fixpoint, so the new type never feeds forward inference. */
-/* A slot is a local (lv), a method's value (lv NULL, sidx the method), or an
-   @ivar of one class (ici/iiv, sidx -1; #4444). */
-/* Does block `blk` contain another block or a lambda anywhere in its body? */
-static int oa_block_has_nested_block_in(const NodeTable *nt, int n) {
-  if (n < 0) return 0;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_BlockNode || k == NK_LambdaNode) return 1;
-  int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) if (oa_block_has_nested_block_in(nt, nt_ref_at(nt, n, i))) return 1;
-  int na = nt_num_arrs(nt, n);
-  for (int i = 0; i < na; i++) {
-    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (oa_block_has_nested_block_in(nt, ids[j])) return 1;
-  }
-  return 0;
-}
-static int oa_block_has_nested_block(const NodeTable *nt, int blk) {
-  return blk >= 0 && oa_block_has_nested_block_in(nt, nt_ref(nt, blk, "body"));
-}
 
-/* row_cls / row_escape / odd_elem: the evidence the rows a slot's element
+/* A slot is a local (lv), a method's value (lv NULL, sidx the method), or an
+   @ivar of one class (ici/iiv, sidx -1; #4444).
+   row_cls / row_escape / odd_elem: the evidence the rows a slot's element
    reads answer give (oa_row_use), for a table whose rows are empty literals */
 typedef struct { int sidx; LocalVar *lv; int cls; int alive; int uf; int needs_cmp; int removes; int poly_elem; int row_iter; int saw_call; TyKind old_pin; int ici, iiv; int row_cls, row_escape, odd_elem; } OAS;
 
@@ -13506,7 +13489,6 @@ static int oa_filter_arm(Compiler *c, int id, int recv, OAS *sl, int S, char *cl
   claimed[recv] = 1;
   sl[S].removes = 1;
   sl[S].row_iter |= 1;
-  if (oa_block_has_nested_block(c->nt, nt_ref(c->nt, id, "block"))) sl[S].row_iter |= 4;
   int disc = id < nc && walk_disc[id];
   if (fk == 1 && !disc) sl[S].alive = 0;
   if (fk == 2 && id < nc) { call_ret[id] = S; value_ok[id] &= disc; }
@@ -14022,12 +14004,12 @@ static int narrowed_local_other_writes_fit(Compiler *c, int s, const char *nm, T
 }
 
 /* The parameter of a walk over a narrowed object array -- `xs.each { |x| }`,
-   reverse_each, each_entry, and each_with_index's first -- binds an element,
-   as `x = xs[i]` does in narrow_locals_from_arrays: it takes the element
-   class, so its reads unbox. A block parameter is a local of the enclosing
-   scope, so every block or lambda that binds it must be such a walk of the
-   same class, and nothing else may write it. (map and collect bind theirs in
-   their emitter.) */
+   reverse_each, each_entry, each_with_index's first, map, collect and the
+   filters -- binds an element, as `x = xs[i]` does in
+   narrow_locals_from_arrays: it takes the element class, so its reads
+   unbox. A block parameter is a local of the enclosing scope, so every
+   block or lambda that binds it must be such a walk of the same class, and
+   nothing else may write it. */
 static int narrow_walk_block_params(Compiler *c) {
   const NodeTable *nt = c->nt;
   int ns = c->nscopes, total = 0;
@@ -14060,7 +14042,8 @@ static int narrow_walk_block_params(Compiler *c) {
       for (int m = 0; more[m]; m++) { int mn = 0; nt_arr(nt, pn, more[m], &mn); extra |= mn > 0; }
       extra |= nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0;
     }
-    int walk = cn && is_each_walk_or_with_index(cn) && ca < 0 && blk != id && ty_is_obj_array(rt) && !extra &&
+    int walk = cn && (is_each_walk_or_with_index(cn) || is_map_alias(cn) || oa_filter_call(c, id)) &&
+               ca < 0 && blk != id && ty_is_obj_array(rt) && !extra &&
                (np == 1 || (np == 2 && sp_streq(cn, "each_with_index"))) && !block_param_is_multi(c, blk, 0);
     for (int pi = 0; pi < np; pi++) {
       const char *nm = block_param_name(c, blk, pi);
@@ -15194,9 +15177,6 @@ static int narrow_object_arrays(Compiler *c) {
         int fold = name && (sp_streq(name, "reduce") || sp_streq(name, "inject") ||
                             sp_streq(name, "zip"));
         sl[S].row_iter |= fold ? 2 : 1;
-        /* a block with a block of its own may be lifted into a proc, whose
-           parameter passing does not carry a typed object element yet (bit 4) */
-        if (oa_block_has_nested_block(nt, nt_ref(nt, id, "block"))) sl[S].row_iter |= 4;
         /* an each-family walk answers its receiver: one whose value is used
            hands the array on (bit 8). A map answers a new array. */
         int maps = name && (is_map_alias(name));
@@ -15575,14 +15555,13 @@ static int narrow_object_arrays(Compiler *c) {
        only when it is one of the walks (bit 1): a reduce, an inject or a zip
        (bit 2) on an object array would narrow a table those emitters do not
        walk. */
-    /* ... and only while nothing yet unsupported comes with it: a block that
-       nests another (bit 4), a walk whose value is used (bit 8), or an
-       element class that is itself Enumerable, whose Enumerable methods have
-       no emitter on a typed receiver. An element class with its own `each`
-       but no Enumerable has no such methods, and its `each` is an ordinary
-       method call on the element. */
+    /* ... and only while nothing yet unsupported comes with it: a walk whose
+       value is used (bit 8), or an element class that is itself Enumerable,
+       whose Enumerable methods have no emitter on a typed receiver. An
+       element class with its own `each` but no Enumerable has no such
+       methods, and its `each` is an ordinary method call on the element. */
     if (!OA_CLS_IS_NESTED(sl[r].cls) &&
-        ((sl[r].row_iter & 14) ||
+        ((sl[r].row_iter & 10) ||
          (sl[r].row_iter && sl[r].cls >= 0 && an_class_includes_enumerable(c, sl[r].cls)))) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;
