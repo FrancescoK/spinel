@@ -18962,7 +18962,9 @@ void cr_class_only_names(Compiler *c, ANameHash *out) {
    node id of a name with replaced versions or an alias, the "\x01<scope>"
    marks of the versions it binds to, asked for every class the call may
    run on: main and self's class (a method's, or the class body's) and its
-   descendants (either side) for a receiverless or `self.` call, a class's
+   descendants (either side) for a receiverless or `self.` call, and in an
+   instance_eval or instance_exec block the class or classes self is
+   rebound to and their descendants (the plan's UC_IE target), a class's
    side for a constant receiver, an object's class and its descendants;
    for any other receiver, main and each class the load record holds a
    history of the name for (elab_method_holder), on that side (a class
@@ -18997,6 +18999,9 @@ static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char *
         cr_mark_class_versions(c, id, nm, self_cls, 0, out, n, cap);
         cr_mark_class_versions(c, id, nm, self_cls, CT_CMETHOD, out, n, cap);
       }
+      int iec = ie_class_of(c, id), pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
+      if (iec >= 0) cr_mark_class_versions(c, id, nm, iec, 0, out, n, cap);
+      for (int j = 0; j < npk; j++) cr_mark_class_versions(c, id, nm, pk[j], 0, out, n, cap);
     }
     else if (cn && comp_class_index(c, cn) >= 0)
       cr_mark_class_versions(c, id, nm, comp_class_index(c, cn), CT_CMETHOD, out, n, cap);
