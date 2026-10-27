@@ -630,6 +630,7 @@ void nt_free(NodeTable *nt) {
   free(nt->file_roots);
   free(nt->aux);
   free(nt->counts);
+  if (nt->holders) { free(nt->holders->par); free(nt->holders->stamp); free(nt->holders); }
   free(nt);
 }
 

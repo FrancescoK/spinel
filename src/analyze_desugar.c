@@ -10268,62 +10268,60 @@ static void fwd_ns_key(const NodeTable *nt, int id, char *key, size_t cap);
    after an edit) is so walked at most once over all its questions, and
    never further than the scan went. An entry counts when it carries the
    tree's stamp, so an edit clears nothing. */
-static int *g_lex_par;
-static unsigned *g_lex_stamp;
-static int g_lex_cap;
-static unsigned g_lex_cur;
-static int g_lex_hi, g_lex_k;  /* entered: the holders before g_lex_hi, and
-                                  the first g_lex_k statements of its body */
-static const int *g_lex_bv;    /* that body, of g_lex_bn statements (-1: */
-static int g_lex_bn = -1;      /* not read yet) */
-static const NodeTable *g_lex_nt;
-static unsigned g_lex_ver;
-static unsigned long g_lex_edits;
-static int g_lex_cnt = -1;
-static void fwd_lex_restamp(const NodeTable *nt) {
-  if (nt->count > g_lex_cap) {
-    int cap = g_lex_cap > 0 ? g_lex_cap : 1024;
+static struct NtHolders *fwd_holders(const NodeTable *nt) {
+  NodeTable *m = (NodeTable *)nt;   /* the index is the table's own */
+  if (!m->holders) {
+    m->holders = calloc(1, sizeof *m->holders);
+    if (!m->holders) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    m->holders->bn = -1;
+    m->holders->cnt = -1;
+  }
+  return m->holders;
+}
+static void fwd_lex_restamp(const NodeTable *nt, struct NtHolders *h) {
+  if (nt->count > h->cap) {
+    int cap = h->cap > 0 ? h->cap : 1024;
     while (cap < nt->count) cap *= 2;
-    int *par = realloc(g_lex_par, sizeof(int) * (size_t)cap);
-    if (par) g_lex_par = par;
-    unsigned *st = par ? realloc(g_lex_stamp, sizeof(unsigned) * (size_t)cap) : NULL;
+    int *par = realloc(h->par, sizeof(int) * (size_t)cap);
+    if (par) h->par = par;
+    unsigned *st = par ? realloc(h->stamp, sizeof(unsigned) * (size_t)cap) : NULL;
     if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    g_lex_stamp = st;
-    memset(g_lex_stamp + g_lex_cap, 0, sizeof(unsigned) * (size_t)(cap - g_lex_cap));
-    g_lex_cap = cap;
+    h->stamp = st;
+    memset(h->stamp + h->cap, 0, sizeof(unsigned) * (size_t)(cap - h->cap));
+    h->cap = cap;
   }
-  if (++g_lex_cur == 0) {
-    memset(g_lex_stamp, 0, sizeof(unsigned) * (size_t)g_lex_cap);
-    g_lex_cur = 1;
+  if (++h->cur == 0) {
+    memset(h->stamp, 0, sizeof(unsigned) * (size_t)h->cap);
+    h->cur = 1;
   }
-  g_lex_hi = g_lex_k = 0;
-  g_lex_bn = -1;
-  g_lex_nt = nt; g_lex_ver = nt->version; g_lex_edits = (unsigned long)nt->edits; g_lex_cnt = nt->count;
+  h->hi = h->k = 0;
+  h->bn = -1;
+  h->ver = nt->version; h->edits = (unsigned long)nt->edits; h->cnt = nt->count;
 }
 static int fwd_lex_parent(const NodeTable *nt, int id) {
   if (id < 0 || id >= nt->count) return -1;
+  struct NtHolders *h = fwd_holders(nt);
   /* a body rewritten in place (nt_node_set_arr) counts an edit, not a
      version */
-  if (g_lex_nt != nt || g_lex_ver != nt->version || g_lex_edits != (unsigned long)nt->edits ||
-      g_lex_cnt != nt->count)
-    fwd_lex_restamp(nt);
-  while (g_lex_stamp[id] != g_lex_cur && g_lex_hi < id) {
-    int ct = g_lex_hi;
-    if (g_lex_bn < 0) {
-      g_lex_bn = 0;
-      g_lex_bv = fwd_node_is(nt, ct, "ClassNode") || fwd_node_is(nt, ct, "ModuleNode")
-                 ? nt_arr(nt, nt_ref(nt, ct, "body"), "body", &g_lex_bn) : NULL;
+  if (h->ver != nt->version || h->edits != (unsigned long)nt->edits || h->cnt != nt->count)
+    fwd_lex_restamp(nt, h);
+  while (h->stamp[id] != h->cur && h->hi < id) {
+    int ct = h->hi;
+    if (h->bn < 0) {
+      h->bn = 0;
+      h->bv = fwd_node_is(nt, ct, "ClassNode") || fwd_node_is(nt, ct, "ModuleNode")
+              ? nt_arr(nt, nt_ref(nt, ct, "body"), "body", &h->bn) : NULL;
     }
-    if (g_lex_k >= g_lex_bn) { g_lex_hi++; g_lex_k = 0; g_lex_bn = -1; continue; }
-    int st = g_lex_bv[g_lex_k++];
+    if (h->k >= h->bn) { h->hi++; h->k = 0; h->bn = -1; continue; }
+    int st = h->bv[h->k++];
     int held[2] = { st, fwd_body_def(nt, st) };
-    for (int h = 0; h < 2; h++)
-      if (held[h] > ct && held[h] < nt->count && g_lex_stamp[held[h]] != g_lex_cur) {
-        g_lex_par[held[h]] = ct;
-        g_lex_stamp[held[h]] = g_lex_cur;
+    for (int j = 0; j < 2; j++)
+      if (held[j] > ct && held[j] < nt->count && h->stamp[held[j]] != h->cur) {
+        h->par[held[j]] = ct;
+        h->stamp[held[j]] = h->cur;
       }
   }
-  return g_lex_stamp[id] == g_lex_cur ? g_lex_par[id] : -1;
+  return h->stamp[id] == h->cur ? h->par[id] : -1;
 }
 /* The lexical namespace a node sits in: its enclosing classes and modules. */
 static void fwd_lex_ctx(const NodeTable *nt, int id, char *key, size_t cap) {
