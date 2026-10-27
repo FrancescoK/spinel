@@ -90,6 +90,8 @@ struct LoadRecord {
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
   char **reopens; int nreopens, creopens;   /* the builtin classes and modules a header of the program reopens, sorted (lr_reopens_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
+  unsigned char structs;     /* registration has made the class builders' classes (elab_record_builders) */
+  int builders;              /* the builder blocks recorded before their class was made (lr_frame) */
   /* the method histories by name (lr_vers_index), as of nentries entries */
   long nentries, indexed;
   struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
@@ -716,11 +718,25 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
 static int lr_cref(Compiler *c, int e);
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 
+/* The class a builder write's block opens (`X = Struct.new(:a) do`,
+   `k = Data.define(:a) do`): the one registration homes it in
+   (register_structs: a constant's class by its name, a local's the class
+   keyed to the write), once registration has run (elab_record_builders);
+   LR_UNKNOWN_CLASS before */
+static int lr_builder_class(Compiler *c, int node) {
+  if (!c->lrec->structs) return LR_UNKNOWN_CLASS;
+  if (nt_kind(c->nt, node) == NK_ConstantWriteNode) {
+    int ci = comp_class_index(c, nt_str(c->nt, node, "name"));
+    return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
+  }
+  for (int ci = 0; ci < c->nclasses; ci++) if (c->classes[ci].def_node == node) return ci;
+  return LR_UNKNOWN_CLASS;
+}
+
 static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
   if (k == NK_ClassNode || k == NK_ModuleNode) return lr_class_opened(c, d->node);
-  if (k == NK_ConstantWriteNode && class_def_body(c, d->node) >= 0)
-    for (int ci = 0; ci < c->nclasses; ci++) if (c->classes[ci].def_node == d->node) return ci;
+  if (k == NK_ConstantWriteNode && class_def_body(c, d->node) >= 0) return lr_builder_class(c, d->node);
   return LR_UNKNOWN_CLASS;
 }
 
@@ -814,9 +830,10 @@ static void lr_frame(ElabRec *x, int e) {
     sg = LR_FS_SCLASS;
   }
   else if ((k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode) && class_def_body(x->c, node) >= 0) {
-    /* `X = Struct.new(:a) do`: the class registration homes there, once it has */
-    cls = LR_UNKNOWN_CLASS; sg = 0;
-    for (int ci = 0; ci < x->c->nclasses; ci++) if (x->c->classes[ci].def_node == node) cls = ci;
+    /* `X = Struct.new(:a) do`: the class registration homes there, once it
+       has; a block recorded before is recorded again then (r->builders) */
+    cls = lr_builder_class(x->c, node); sg = 0;
+    if (cls == LR_UNKNOWN_CLASS) x->r->builders++;
   }
   else if (call == LR_UNKNOWN_CLASS) { cls = LR_UNKNOWN_CLASS; sg = 0; }
   else if (call >= 0) {
@@ -1127,17 +1144,21 @@ void elab_record_write(Compiler *c, int stmt) {
 
 static void elab_check_record(Compiler *c);
 
+/* A history for each class registration has made so far */
+static void lr_fit_classes(LoadRecord *r, Compiler *c) {
+  if (c->nclasses + 1 <= r->ncls) return;
+  r->cls = realloc(r->cls, sizeof *r->cls * (size_t)(c->nclasses + 1));
+  if (!r->cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memset(r->cls + r->ncls, 0, sizeof *r->cls * (size_t)(c->nclasses + 1 - r->ncls));
+  r->ncls = c->nclasses + 1;
+}
+
 /* The statements before n, in seq order, that are not recorded yet */
 static void lr_record_upto(LoadRecord *r, int n) {
   ElabRec *x = r->rec;
   if (!x) return;
   Compiler *c = x->c;
-  if (c->nclasses + 1 > r->ncls) {   /* the classes the walk has made since */
-    r->cls = realloc(r->cls, sizeof *r->cls * (size_t)(c->nclasses + 1));
-    if (!r->cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    memset(r->cls + r->ncls, 0, sizeof *r->cls * (size_t)(c->nclasses + 1 - r->ncls));
-    r->ncls = c->nclasses + 1;
-  }
+  lr_fit_classes(r, c);   /* the classes the walk has made since */
   if (r->frontier >= n) return;
   if (n > x->cap) {
     x->cap = n * 2;
@@ -1158,12 +1179,25 @@ static void lr_record_drop(LoadRecord *r) {
   for (int i = 0; i < r->ncls; i++) { free(r->cls[i].open); free(r->cls[i].mix); }
   if (r->cls) memset(r->cls, 0, sizeof *r->cls * (size_t)r->ncls);
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
-  r->nhist = 0; r->frontier = 0; r->nset = 0;
+  r->nhist = 0; r->frontier = 0; r->nset = 0; r->builders = 0;
   r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
 }
 
 static char *lr_dump_text(Compiler *c);
 static void lr_check_walked(Compiler *c, const char *walked);
+static void lr_later_settle(Compiler *c);
+
+/* The record dropped and made again over the walked statements */
+static void lr_record_again(ElabRec *x) {
+  LoadRecord *r = x->r;
+  r->recorded = 0;
+  lr_record_drop(r);
+  for (int f = 0; f < nt_nroots(x->c->nt); f++) x->vmain[f] = BVIS_PRIVATE;
+  lr_record_upto(r, r->nst);
+  lr_settle_regions(x->c);
+  lr_later_settle(x->c);
+  r->recorded = 1;
+}
 
 /* The references recorded before the header that makes their class
    (LR_LATER), as the walk leaves them: the class, or not known */
@@ -1205,19 +1239,51 @@ void elab_program(Compiler *c) {
   r->recorded = 1;
   if (r->check) {   /* the same record made after the walk, as a check */
     char *walked = lr_dump_text(c);
-    r->recorded = 0;
-    lr_record_drop(r);
-    for (int f = 0; f < nroots; f++) x.vmain[f] = BVIS_PRIVATE;
-    lr_record_upto(r, r->nst);
-    lr_settle_regions(c);
-    lr_later_settle(c);
-    r->recorded = 1;
+    lr_record_again(&x);
     lr_check_walked(c, walked);
     free(walked);
   }
   r->rec = NULL;
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
   sp_timing_end(t0, "an_elab_record", "");
+}
+
+/* The class builders' blocks (`X = Struct.new(:a) do ... end`) are bodies
+   of classes that registration makes after the walk (register_structs):
+   once it has, a record that holds such a block with no class is made
+   again over the same statements, its frame then the builder's class. A
+   builder that is no statement of the load phase (one in an expression,
+   which desugar_inline_struct_blocks writes to a local, or in a method
+   body) runs its block where no point is: the block is its class's body
+   all the same, after the ones that have a point. Check mode then
+   compares the readers the histories answer for. */
+void elab_record_builders(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return;
+  r->structs = 1;
+  if (r->builders) {
+    double t0 = sp_timing_now();
+    elab_fresh(c);
+    ElabRec x = { c, r, NULL, NULL, NULL, malloc((size_t)nt_nroots(c->nt)), 0 };
+    if (!x.vmain) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    r->rec = &x;
+    lr_record_again(&x);
+    r->rec = NULL;
+    free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
+    sp_timing_end(t0, "an_elab_record", "builders");
+  }
+  lr_fit_classes(r, c);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
+    NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
+    if (body < 0 || (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode)) continue;
+    LrClass *kc = lr_class(r, ci);
+    int have = 0;
+    for (int i = 0; i < kc->nopen; i++) if (kc->open[i].body == body) have = 1;
+    if (have) continue;
+    kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
+    kc->open[kc->nopen++] = (LrOpen){ d, body };
+  }
   if (r->check) elab_check_record(c);
 }
 
