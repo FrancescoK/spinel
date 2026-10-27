@@ -6773,21 +6773,25 @@ static int mc_name_fixed(const char *nm) {
    name and its number: `f__redef<n>` at the top level, `m#redef<n>` in a
    class (mc_number_versions). The answer stays valid for the next seven
    spellings. */
+/* The name method s is spelled from: its own, or a replaced version's with
+   its number, in a buffer of its size the caller frees */
+static char *mc_version_name(const Scope *s) {
+  const char *fmt = s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
+  int n = s->version_n ? snprintf(NULL, 0, fmt, s->name, s->version_n) : (int)strlen(s->name);
+  char *v = n >= 0 ? malloc((size_t)n + 1) : NULL;
+  if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (s->version_n) snprintf(v, (size_t)n + 1, fmt, s->name, s->version_n);
+  else memcpy(v, s->name, (size_t)n + 1);
+  return v;
+}
 const char *mc_method(Compiler *c, const Scope *s) {
-  const char *name = s->name, *out;
-  char *vname = NULL;
-  if (s->version_n) {
-    const char *fmt = s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
-    int vn = snprintf(NULL, 0, fmt, s->name, s->version_n);
-    if (vn < 0 || !(vname = malloc((size_t)vn + 1))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    snprintf(vname, (size_t)vn + 1, fmt, s->name, s->version_n);
-    name = vname;
-  }
+  char *name = mc_version_name(s);
+  const char *out;
   if (s->c_name) out = mc_ring_setf(c, "sp_%s", s->c_name);
   else if (s->class_id < 0) out = mc_ring_setf(c, "sp_%s", mc_top(c, name));
   else if (s->is_cmethod) out = mc_ring_setf(c, "sp_%s_s_%s", c->classes[s->class_id].c_name, mc(name));
   else out = mc_ring_setf(c, "sp_%s_%s", mc_reopen_cls(c, s->class_id, name), mc(name));
-  free(vname);
+  free(name);
   return out;
 }
 /* mc_method's answers live in eight slots, each grown to the name set in
@@ -6903,22 +6907,32 @@ void mc_resolve_clashes(Compiler *c) {
   int a, b;
   /* each round renames one method or class; the bound only guards a loop */
   for (int round = 0, n = 2; round < 4096 && mc_find_clash(c, &a, &b); round++, n++) {
+    /* the name each is spelled from, a replaced version's with its number
+       (`f#redef1` meets a method `f_redef1`): renaming `f` would not move it */
+    char *nb = mc_version_name(&c->scopes[b]), *na = NULL;
+    int stop = 0;
     if (a < 0) {
-      if (mc_name_fixed(c->scopes[b].name)) break;
-      mc_rename(c->scopes[b].name, n);
-      continue;
+      if (mc_name_fixed(nb)) stop = 1;
+      else mc_rename(nb, n);
     }
-    const Scope *sa = &c->scopes[a], *sb = &c->scopes[b];
-    if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sb->name)) mc_rename(sb->name, n);
-    else if (!sp_streq(sa->name, sb->name) && !mc_name_fixed(sa->name)) mc_rename(sa->name, n);
     else {
-      int ci = sb->class_id >= 0 && !c->classes[sb->class_id].is_builtin_const ? sb->class_id : sa->class_id;
-      if (ci < 0 || c->classes[ci].is_builtin_const) break;
-      char cn[300];
-      snprintf(cn, sizeof cn, "%s__%d", c->classes[ci].c_name, n);
-      free(c->classes[ci].c_name);
-      c->classes[ci].c_name = strdup(cn);
+      const Scope *sa = &c->scopes[a], *sb = &c->scopes[b];
+      na = mc_version_name(sa);
+      if (!sp_streq(na, nb) && !mc_name_fixed(nb)) mc_rename(nb, n);
+      else if (!sp_streq(na, nb) && !mc_name_fixed(na)) mc_rename(na, n);
+      else {
+        int ci = sb->class_id >= 0 && !c->classes[sb->class_id].is_builtin_const ? sb->class_id : sa->class_id;
+        if (ci < 0 || c->classes[ci].is_builtin_const) stop = 1;
+        else {
+          char cn[300];
+          snprintf(cn, sizeof cn, "%s__%d", c->classes[ci].c_name, n);
+          free(c->classes[ci].c_name);
+          c->classes[ci].c_name = strdup(cn);
+        }
+      }
     }
+    free(na); free(nb);
+    if (stop) break;
   }
 }
 
