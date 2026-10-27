@@ -482,7 +482,7 @@ typedef struct {
    parser made, and the builtins spliced in ahead of the program are parsed
    first, so a builtin that grows moved every id of the dump. A program node
    is numbered by how many program nodes come before it (the count
-   comp_node_ord gives it), which the builtins do not change. */
+   comp_node_tag numbers it by), which the builtins do not change. */
 static int *vp_ord_table(const NodeTable *nt) {
   int *ord = malloc((size_t)(nt->count ? nt->count : 1) * sizeof *ord);
   if (!ord) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

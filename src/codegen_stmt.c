@@ -22547,9 +22547,9 @@ static int stmt_is_folded_return(Compiler *c, int id) {
    lazily on the compiler, so it dies with it -- no static state to go stale
    across node tables). Emission appends nodes after the map is first built
    (a string class_eval's snippet is parsed into the table between two
-   methods), so the map is extended over the appended ones, as comp_node_ord
-   is: sized only to the first count, it was read past its end for a body
-   among them, and their blocks had no entry. */
+   methods), so the map is extended over the appended ones: sized only to
+   the first count, it was read past its end for a body among them, and
+   their blocks had no entry. */
 int block_of_body(Compiler *c, int body) {
   int n = c->nt->count;
   if (n > c->blk_body_map_n) {

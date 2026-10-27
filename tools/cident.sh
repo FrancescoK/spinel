@@ -19,6 +19,15 @@
 # CIDENT_FLAGS=--int-overflow=promote); the reference cache is kept per
 # flag set.
 #
+# CIDENT_NAMES=1 also shows a change that only renames what the compiler
+# invents (#9898 named appended nodes by origin): a program that differs is
+# compared again with every identifier that holds a digit and that no
+# runtime header declares numbered in the order it first appears, in code
+# and string literals alike (the symbol table spells local names), and with
+# the symbol table's hash slots, which hash those names, left out. It counts
+# as identical when only such names differ; a renamed runtime call, a
+# number or any other byte still differs.
+#
 # A reference of the same revision and flags built for another corpus is
 # reused: only the programs the change of corpus can reach are compiled
 # again. CIDENT_REF_ONLY=1 builds the reference and stops; CIDENT_KEEP (20)
@@ -199,7 +208,16 @@ emit "$NEW" "$ROOT" "$NEWDIR"
 
 fzl_seq() { perl -pe 'BEGIN { %n = (); $k = 0 } s/\b_fzl_([0-9a-f]{8}(?:_[0-9a-f]+)?)(?![0-9a-zA-Z])/"_fzl_q" . ($n{$1} \/\/= $k++)/ge'; }
 NORM='s/[0-9]{4}\.[0-9]{2}\.[0-9]{2}\+[0-9]+ revision [0-9a-f]+/REV/g'
-same=0; diffn=0; refch=0; refused=0; fresh=0
+RTIDS=
+if [ -n "${CIDENT_NAMES-}" ]; then
+  RTIDS=$(mktemp "${TMPDIR:-/tmp}/spinel-cident-rt.XXXXXX")
+  find lib -name '*.h' -exec cat {} + | perl -ne 'print "$_\n" for /\b[A-Za-z_]\w*/g' | LC_ALL=C sort -u > "$RTIDS"
+fi
+export RTIDS
+names_seq() { perl -0777 -pe 'BEGIN { open my $f, "<", $ENV{RTIDS} or die; chomp(my @w = <$f>); %rt = map { $_ => 1 } @w; %n = (); $k = 0 }
+  s/(sp_sym_htab\[\d+\] = \{)[^}]*\}/$1}/g;
+  s/(?<![\\\w])([A-Za-z_]\w*)/my $w = $1; $w =~ \/\d\/ && !$rt{$w} ? "N" . ($n{$w} \/\/= $k++) : $w/ge'; }
+same=0; renamed=0; diffn=0; refch=0; refused=0; fresh=0
 for f in $(list); do
   key=$(printf "%s" "$f" | tr "/" "_")
   a=$REFDIR/$key; b=$NEWDIR/$key
@@ -221,6 +239,10 @@ for f in $(list); do
   # compared.
   if cmp -s "$a.c" "$b.c" ||
      cmp -s <(sed -E "$NORM" "$a.c" | fzl_seq) <(sed -E "$NORM" "$b.c" | fzl_seq); then same=$((same+1))
+  elif [ -n "$RTIDS" ] &&
+       cmp -s <(sed -E "$NORM" "$a.c" | fzl_seq | names_seq) <(sed -E "$NORM" "$b.c" | fzl_seq | names_seq); then
+    same=$((same+1)); renamed=$((renamed+1))
+    echo "RENAMED: $f"
   else
     diffn=$((diffn+1))
     echo "DIFFERS: $f"
@@ -228,5 +250,6 @@ for f in $(list); do
   fi
 done
 rm -rf "$NEWDIR"
-echo "cident: $same identical, $diffn differ, $refch refusal changes, $refused refused by both, $fresh not in the reference (against ${SHA:0:9})"
+[ -n "$RTIDS" ] && rm -f "$RTIDS"
+echo "cident: $same identical${RTIDS:+ ($renamed of them only renamed)}, $diffn differ, $refch refusal changes, $refused refused by both, $fresh not in the reference (against ${SHA:0:9})"
 [ "$diffn" -eq 0 ] && [ "$refch" -eq 0 ] || exit 1

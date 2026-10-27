@@ -8145,7 +8145,13 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
   if (seen->nodes[v]) return 0;
   seen->nodes[v] = 1;
   int changed = 0;
-  if (nt_int(nt, v, "cext_const_read", 0)) cext_resolve_constant(c, v);
+  /* the two below append on demand, for whichever pass reaches v first:
+     what they append is named after this walk, not after that pass */
+  if (nt_int(nt, v, "cext_const_read", 0)) {
+    const char *pass = nt_set_pass((NodeTable *)c->nt, "cext_widen_containers");
+    cext_resolve_constant(c, v);
+    nt_set_pass((NodeTable *)c->nt, pass);
+  }
   int constant = nt_int(nt, v, "cext_const_node", 0) - 1;
   if (constant >= 0) {
     changed |= cext_widen_containers(c, constant, seen);
@@ -8224,7 +8230,11 @@ static int cext_widen_containers(Compiler *c, int v, CextWalk *seen) {
         if(method>0) { targets[0]=method;n=1; }
       }
     }
-    if (!n && is_fresh_array(c, v)) changed |= cext_pin_array_producer(c, v);
+    if (!n && is_fresh_array(c, v)) {
+      const char *pass = nt_set_pass((NodeTable *)c->nt, "cext_widen_containers");
+      changed |= cext_pin_array_producer(c, v);
+      nt_set_pass((NodeTable *)c->nt, pass);
+    }
     for (int q = 0; q < n; q++) {
       int *leaves = cext_walk_values(c);
       int count = value_leaves_ex(c, c->scopes[targets[q]].body, leaves, 0, nt->count, VL_NARROW);
