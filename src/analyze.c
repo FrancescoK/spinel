@@ -13367,12 +13367,9 @@ static int *g_oa_empt_slot, *g_oa_empt_node, g_oa_empt_n, g_oa_empt_cap;
    stamps again only the rows of a component that still narrows. Only its own
    -- other producers stamp empty `[]` literals too. */
 static unsigned char *g_oa_empt_mine; static int g_oa_empt_mine_cap;
-/* its bits: this pass stamped the row; a seed built it (oa_mark_seed_row);
-   a seed built it before this round cleared its stamp, so the round that
-   builds it again marks it the seed's again */
+/* its bits: this pass stamped the row; a seed built it (oa_mark_seed_row) */
 #define OA_MINE 1
 #define OA_SEED_ROW 2
-#define OA_SEED_ROW_WAS 4
 static void oa_mark_empty_mine(int lit) {
   if (lit >= g_oa_empt_mine_cap) {
     int nc = g_oa_empt_mine_cap ? g_oa_empt_mine_cap : 256;
@@ -14677,16 +14674,20 @@ static char *oa_walk_disc(Compiler *c, int nc) {
    A row another producer gave a typed kind of its own keeps the table the
    poly array its rows are, before any row is built, instead of reading a
    row of one kind back as the other. */
+/* Is component r an ivar's an `Array[Array[Integer]]` / `Array[Array[Float]]`
+   seed decided? */
+static int oa_component_seeded(Compiler *c, OAS *sl, int n, int r) {
+  for (int j = 0; j < n; j++)
+    if (oa_uf_find(sl, j) == r && sl[j].ici >= 0) {
+      int sd = c->classes[sl[j].ici].ivar_oa_seed[sl[j].iiv];
+      if (sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE) return 1;
+    }
+  return 0;
+}
 static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
   for (int i = 0; i < n; i++) {
     if (oa_uf_find(sl, i) != i || !OA_CLS_IS_NESTED(sl[i].cls)) continue;
-    int seeded = 0;
-    for (int j = 0; j < n && !seeded; j++)
-      if (oa_uf_find(sl, j) == i && sl[j].ici >= 0) {
-        int sd = c->classes[sl[j].ici].ivar_oa_seed[sl[j].iiv];
-        seeded = sd == SEED_OA_INT_TABLE || sd == SEED_OA_FLT_TABLE;
-      }
-    if (!seeded || !c->arr_want) continue;
+    if (!c->arr_want || !oa_component_seeded(c, sl, n, i)) continue;
     /* only a table that narrows builds rows: one the pass keeps boxed (dead,
        or a remove, a comparison or a boxed row, as narrow_object_arrays
        checks) keeps its rows boxed */
@@ -14767,11 +14768,7 @@ static int narrow_object_arrays(Compiler *c) {
   if (c->arr_want) {
     for (int id = 0; id < c->nt->count && id < c->node_cap; id++) {
       if (id < g_oa_empt_mine_cap && g_oa_empt_mine[id]) {
-        unsigned char m = g_oa_empt_mine[id];
-        /* a row a seed built is the seed's again when this round builds it
-           (OA_SEED_ROW_WAS, below) */
-        g_oa_empt_mine[id] = m & OA_SEED_ROW ? OA_SEED_ROW_WAS : 0;
-        if (!(m & (OA_MINE | OA_SEED_ROW))) continue;
+        g_oa_empt_mine[id] = 0;
         if (c->arr_want[id] != TY_INT_ARRAY && c->arr_want[id] != TY_FLOAT_ARRAY) continue;
       }
       else {
@@ -15658,13 +15655,14 @@ static int narrow_object_arrays(Compiler *c) {
       }
       nty = sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY_ARRAY : TY_FLOAT_ARRAY_ARRAY;
       /* every empty `[]` that flowed into this component is a row: build it
-         at the row kind (see oa_note_empty) */
+         at the row kind (see oa_note_empty), a seeded table's as the seed's */
+      int seeded = oa_component_seeded(c, sl, n, r);
       for (int e = 0; e < g_oa_empt_n; e++) {
         if (oa_uf_find(sl, g_oa_empt_slot[e]) != r) continue;
         int lit = g_oa_empt_node[e];
         if (c->arr_want && lit < c->node_cap && c->arr_want[lit] == TY_UNKNOWN) {
           comp_set_arr_want(c, lit, sl[r].cls == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY);
-          if (lit < g_oa_empt_mine_cap && (g_oa_empt_mine[lit] & OA_SEED_ROW_WAS)) oa_mark_seed_row(lit);
+          if (seeded) oa_mark_seed_row(lit);
           else oa_mark_empty_mine(lit);
         }
       }
