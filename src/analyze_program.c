@@ -12,7 +12,9 @@
        and locals (prog_file_scopes; the load record walks them, elab_program);
      - which scopes are a file's top level (prog_is_top_scope) and which
        nodes a file's root or its statements (prog_is_root*);
-     - which files have a function of their own when loaded (prog_file_tops);
+     - which files the program runs (prog_drop_dead_files: one no live
+       require reaches is taken out) and which have a function of their own
+       when loaded (prog_file_tops);
      - the program's top-level statements in load order (prog_top_stmts):
        a load at the top level runs its file's top level there, once; and
        with them the files no load there places (prog_visit_files);
@@ -409,6 +411,31 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, v[k], "--load-model=graph: `class Class` in a required file (desugar_class_reopen reads one file), for now");
   }
   free(parent);
+}
+
+/* A required file that no load able to run reaches is not part of the
+   program (#9898). A fold of a constant condition (RUBY_VERSION, the engine
+   checks) leaves a `require` in the branch it decided dead under no root's
+   tree, and a file only such requires name, or only the requires of a file
+   so dropped, is never loaded. The inline model splices a file at its
+   require, so a dead branch takes the file along; here the file's
+   statements are taken out of the tree, and nothing registers its classes,
+   methods and constants (ruby_version_fold's `const_defined?`). A file named
+   by an autoload or a computed require has no LoadNode: both are refused
+   (prog_refuse_loads) until their own steps. Asked after the folds, ahead
+   of the readers of the program's order. */
+void prog_drop_dead_files(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n = nt_nroots(nt);
+  if (!prog_graph(c) || n < 2) return;
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
+  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_reach(nt, seen, live);
+  for (int f = 1; f < n; f++) {
+    int st = live[f] ? -1 : prog_root_stmts(c, f);
+    if (st >= 0) nt_node_set_arr(nt, st, "body", NULL, 0);
+  }
+  free(seen); free(live);
 }
 
 /* A definition at a file's top level, by name, for the definitions two files

@@ -119,6 +119,7 @@ void an_const_presence(Compiler *c);
    their top-level scopes and roots, and what the model refuses for now. */
 void prog_file_scopes(Compiler *c);
 void prog_refuse_loads(Compiler *c);
+void prog_drop_dead_files(Compiler *c);
 void prog_refuse_order(Compiler *c);
 int prog_is_top_scope(const Compiler *c, const Scope *s);
 int prog_is_root(const Compiler *c, int id);
