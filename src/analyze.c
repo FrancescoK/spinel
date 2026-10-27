@@ -8085,6 +8085,16 @@ static int lit_name_is(const NodeTable *nt, int n, const char *nm) {
    knows (`%i[merge! update].each { |m| define_method(m) ... }`); or a
    module prepended, whose methods are not followed here (`Hash.prepend(M)`
    is a `prepend M` in a `class Hash` by now) */
+/* Call `call` is an alias_method or define_method that may bind `nm`: of
+   that name, or of a name not written out. */
+static int dyn_def_binds_name(const NodeTable *nt, int call, const char *nm) {
+  const char *cn = nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  if (!cn || (!sp_streq(cn, "alias_method") && !sp_streq(cn, "define_method"))) return 0;
+  int ca = nt_ref(nt, call, "arguments"), an = 0;
+  const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
+  NodeKind ak = an >= 1 ? nt_kind(nt, av[0]) : NK_NONE;
+  return an >= 1 && ((ak != NK_SymbolNode && ak != NK_StringNode) || lit_name_is(nt, av[0], nm));
+}
 static int binds_name_under(const NodeTable *nt, int root, const char *nm) {
   if (root < 0 || root >= nt->count) return 0;
   NodeKind k = nt_kind(nt, root);
@@ -8092,12 +8102,7 @@ static int binds_name_under(const NodeTable *nt, int root, const char *nm) {
   if (k == NK_AliasMethodNode && lit_name_is(nt, nt_ref(nt, root, "new_name"), nm)) return 1;
   const char *cn = k == NK_CallNode ? nt_str(nt, root, "name") : NULL;
   if (cn && sp_streq(cn, "prepend") && nt_ref(nt, root, "receiver") < 0) return 1;
-  if (cn && (sp_streq(cn, "alias_method") || sp_streq(cn, "define_method"))) {
-    int ca = nt_ref(nt, root, "arguments"), an = 0;
-    const int *av = ca >= 0 ? nt_arr(nt, ca, "arguments", &an) : NULL;
-    NodeKind ak = an >= 1 ? nt_kind(nt, av[0]) : NK_NONE;
-    if (an >= 1 && ((ak != NK_SymbolNode && ak != NK_StringNode) || lit_name_is(nt, av[0], nm))) return 1;
-  }
+  if (dyn_def_binds_name(nt, root, nm)) return 1;
   for (int j = 0; j < nt_num_refs(nt, root); j++) if (binds_name_under(nt, nt_ref_at(nt, root, j), nm)) return 1;
   for (int j = 0; j < nt_num_arrs(nt, root); j++) {
     int an = 0; const int *ids = nt_arr_at(nt, root, j, &an);
@@ -8141,6 +8146,190 @@ static int hash_merges_own(const NodeTable *nt, const char *nm, int memo[3]) {
   if (memo[2] < 0) memo[2] = hash_reopen_defines(nt, "merge");
   return memo[i] || memo[2];
 }
+/* Whether node `d`, a method's definition, takes `an` arguments. A def
+   with keywords (`**opts`, `...` included) is said to take them, since the
+   last argument may be its keywords, and so is a definition that is no
+   def (define_method's block). */
+static int def_takes_argc(const NodeTable *nt, int d, int an) {
+  if (d < 0 || nt_kind(nt, d) != NK_DefNode) return 1;
+  int pn = nt_ref(nt, d, "parameters");
+  if (pn < 0) return an == 0;
+  int rn = 0, on = 0, qn = 0, kn = 0;
+  nt_arr(nt, pn, "requireds", &rn); nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "posts", &qn);
+  nt_arr(nt, pn, "keywords", &kn);
+  if (kn > 0 || nt_ref(nt, pn, "keyword_rest") >= 0) return 1;
+  return an >= rn + qn && (nt_ref(nt, pn, "rest") >= 0 || an <= rn + qn + on);
+}
+/* update with a block was not folded before: a def of it of any arity
+   keeps the call, so its own ArgumentError still shows */
+static int merge_def_takes_argc(const NodeTable *nt, const char *nm, int d, int an) {
+  return sp_streq(nm, "update") || def_takes_argc(nt, d, an);
+}
+
+/* Whether the program may give some object its own `nm` (merge, merge! or
+   update) that takes `an` arguments in one call: a def of it on any
+   receiver that takes them, an alias to it, an alias_method or
+   define_method of it or of a name not written out, or a method_missing.
+   The classes are not registered yet, so every such binding counts. */
+static int hash_merge_name_owned(const NodeTable *nt, const char *nm, int an) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    if (dn && ((sp_streq(dn, nm) && merge_def_takes_argc(nt, nm, d, an)) || sp_streq(dn, "method_missing"))) return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, a)
+    if (lit_name_is(nt, nt_ref(nt, a, "new_name"), nm)) return 1;
+  NT_FOREACH_KIND(nt, NK_CallNode, call)
+    if (dyn_def_binds_name(nt, call, nm)) return 1;
+  return 0;
+}
+
+/* `r.merge(a, b, ...)` folds left into `r.merge(a).merge(b)...`; merge! and
+   update chain the same way because they answer self. `typed`: asked in the
+   inference rounds, so new nodes take the call's scope. Answers 1 when it
+   folded. */
+static int hash_merge_fold(Compiler *c, int id, int typed) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  int argsn = nt_ref(nt, id, "arguments");
+  int an = 0;
+  const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
+  if (!nm || recv < 0 || an < 2 || an > 64) return 0;
+  const char *mname = sp_streq(nm, "merge!") ? "merge!" : sp_streq(nm, "update") ? "update" : "merge";
+  int base = nt->count;
+  int av[64];
+  memcpy(av, av0, (size_t)an * sizeof(int));
+  int mblk = nt_ref(nt, id, "block");
+  /* An argument with a side effect after the first runs in order with the
+     receiver and the arguments before it: each is held in a local, and
+     the whole chain is one parenthesized sequence, since C leaves the
+     order in which a call's operands are evaluated open (a read placed
+     beside the sequence that assigns it could run first). */
+  int late = 0;
+  for (int j = 1; j < an; j++) late |= subtree_has_side_effect(c, av[j]);
+  int seq[66], ns = 0;
+  if (late) {
+    for (int j = -1; j < an; j++) {
+      char tn[48];
+      snprintf(tn, sizeof tn, "__mrg%d_%d", id, j + 1);
+      int w = nt_new_node(nt, "LocalVariableWriteNode"), r = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, w, "name", tn); nt_node_set_int(nt, w, "depth", 0);
+      nt_node_set_ref(nt, w, "value", j < 0 ? recv : av[j]);
+      nt_node_set_str(nt, r, "name", tn); nt_node_set_int(nt, r, "depth", 0);
+      seq[ns++] = w;
+      if (j < 0) recv = r; else av[j] = r;
+      if (typed) scope_local_intern(comp_scope_of(c, id), tn);
+    }
+  }
+  int cur = recv;
+  for (int j = 0; j < an - 1; j++) {
+    int call = nt_new_node(nt, "CallNode");
+    int one = nt_new_node(nt, "ArgumentsNode");
+    if (call < 0 || one < 0) return 0;
+    nt_node_set_arr(nt, one, "arguments", &av[j], 1);
+    nt_node_set_str(nt, call, "name", mname);
+    nt_node_set_ref(nt, call, "receiver", cur);
+    nt_node_set_ref(nt, call, "arguments", one);
+    /* a conflict block applies at every merge step; a `break` in it
+       leaves the whole call, so an inner step is no break target of
+       its own (call_breaks) and its break reaches the outer call's */
+    if (mblk >= 0) {
+      nt_node_set_ref(nt, call, "block", mblk);
+      nt_node_set_str(nt, call, "merge_fold_step", "1");
+    }
+    cur = call;
+  }
+  int last = nt_new_node(nt, "ArgumentsNode");
+  if (last < 0) return 0;
+  if (late) {
+    int fin = nt_new_node(nt, "CallNode"), st = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
+    nt_node_set_str(nt, fin, "name", mname);
+    nt_node_set_ref(nt, fin, "receiver", cur);
+    nt_node_set_ref(nt, fin, "arguments", last);
+    if (mblk >= 0) nt_node_set_ref(nt, fin, "block", mblk);
+    seq[ns++] = fin;
+    nt_node_set_arr(nt, st, "body", seq, ns);
+    /* the call node becomes the sequence: its own operands move into
+       the chain above */
+    if (typed) {
+      int line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+      nt_node_reset(nt, id, "ParenthesesNode");
+      nt_node_set_int(nt, id, "node_line", line);
+      nt_node_set_int(nt, id, "node_file", file);
+    }
+    else {
+      nt_node_set_type(nt, id, "ParenthesesNode");
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_ref(nt, id, "arguments", -1);
+      nt_node_set_ref(nt, id, "block", -1);
+    }
+    nt_node_set_ref(nt, id, "body", st);
+  }
+  else {
+    nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
+    nt_node_set_ref(nt, id, "receiver", cur);
+    nt_node_set_ref(nt, id, "arguments", last);
+  }
+  comp_grow_node_arrays(c);
+  if (typed) {
+    int encl = c->nscope[id];
+    for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
+  }
+  return 1;
+}
+
+/* Whether method mi, of `nm`, takes `an` arguments in one call
+   (merge_def_takes_argc). */
+static int scope_takes_argc(Compiler *c, int mi, const char *nm, int an) {
+  return merge_def_takes_argc(c->nt, nm, c->scopes[mi].def_node, an);
+}
+/* Whether class k answers `nm` with a method of its own (a Hash subclass's
+   or Hash's reopened one included) that takes `an` arguments. */
+static int class_takes_merge_argc(Compiler *c, int k, const char *nm, int an) {
+  int mi = comp_method_in_chain(c, k, nm, NULL);
+  return mi >= 0 && scope_takes_argc(c, mi, nm, an);
+}
+
+/* The fold of hash_merge_fold, for a call desugar_enum_chain_shapes left
+   (marked merge_fold_wait) because the program may own the name. Once the
+   receiver is typed, a Hash or an object of a class with no method of the
+   name that takes every argument in one call folds as it would have
+   before. Any other receiver (a class, a String, ...) keeps the call. */
+int desugar_hash_merge_fold(Compiler *c) {
+  /* the fold cannot be taken back: a block parameter typed a Hash in an
+     optimistic round may hold the program's own object after */
+  if (g_infer_optimistic) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    if (!nt_int(nt, id, "merge_fold_wait", 0)) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver"), argsn = nt_ref(nt, id, "arguments"), an = 0;
+    if (!nm || recv < 0 || argsn < 0) continue;
+    nt_arr(nt, argsn, "arguments", &an);
+    if (an < 2) continue;
+    TyKind t = infer_type(c, recv);
+    int own = 0;
+    if (ty_is_object(t)) own = class_takes_merge_argc(c, ty_object_class(t), nm, an);
+    else if (ty_is_hash(t)) {
+      int mi = comp_builtin_kind_reopen_mi(c, t, nm);
+      own = mi >= 0 && scope_takes_argc(c, mi, nm, an);
+    }
+    /* a value of either kind: the dispatch's merge! / update arms take every
+       argument, to a Hash and to an object alike (its merge arm reads the
+       first one only, so a merge still folds) */
+    else if (t == TY_POLY) {
+      for (int k = 0; k < c->nclasses && !own && is_hash_merge_bang(nm); k++)
+        own = class_takes_merge_argc(c, k, nm, an);
+    }
+    /* (a receiver nothing typed, such as a `{}` only these calls fill) */
+    else own = t != TY_UNKNOWN;
+    if (!own) changed |= hash_merge_fold(c, id, 1);
+  }
+  return changed;
+}
+
 static int enum_chain_kept(const NodeTable *nt, int **par, int id) {
   if (nt_ref(nt, id, "block") >= 0) return 0;
   /* (the parent map, made at the first such call of the pass) */
@@ -8212,83 +8401,15 @@ static void desugar_enum_chain_shapes(Compiler *c) {
       nt_node_set_str(nt, id, "name", "merge");
       nm = "merge";
     }
-    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!")) && recv >= 0) {
-      /* h.merge(a, b, ...) folds left into h.merge(a).merge(b)...; merge!
-         chains the same way because it returns self. */
-      int argsn = nt_ref(nt, id, "arguments");
-      int an = 0;
-      const int *av0 = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
-      if (an >= 2 && an <= 64) {
-        const char *mname = sp_streq(nm, "merge!") ? "merge!" : "merge";
-        int av[64];
-        memcpy(av, av0, (size_t)an * sizeof(int));
-        int mblk = nt_ref(nt, id, "block");
-        /* An argument with a side effect after the first runs in order with the
-           receiver and the arguments before it: each is held in a local, and
-           the whole chain is one parenthesized sequence, since C leaves the
-           order in which a call's operands are evaluated open (a read placed
-           beside the sequence that assigns it could run first). */
-        int late = 0;
-        for (int j = 1; j < an; j++) late |= subtree_has_side_effect(c, av[j]);
-        int seq[66], ns = 0;
-        if (late) {
-          for (int j = -1; j < an; j++) {
-            char tn[48];
-            snprintf(tn, sizeof tn, "__mrg%d_%d", id, j + 1);
-            int w = nt_new_node(nt, "LocalVariableWriteNode"), r = nt_new_node(nt, "LocalVariableReadNode");
-            nt_node_set_str(nt, w, "name", tn); nt_node_set_int(nt, w, "depth", 0);
-            nt_node_set_ref(nt, w, "value", j < 0 ? recv : av[j]);
-            nt_node_set_str(nt, r, "name", tn); nt_node_set_int(nt, r, "depth", 0);
-            seq[ns++] = w;
-            if (j < 0) recv = r; else av[j] = r;
-          }
-        }
-        int cur = recv;
-        for (int j = 0; j < an - 1; j++) {
-          int call = nt_new_node(nt, "CallNode");
-          int one = nt_new_node(nt, "ArgumentsNode");
-          if (call < 0 || one < 0) { cur = -1; break; }
-          nt_node_set_arr(nt, one, "arguments", &av[j], 1);
-          nt_node_set_str(nt, call, "name", mname);
-          nt_node_set_ref(nt, call, "receiver", cur);
-          nt_node_set_ref(nt, call, "arguments", one);
-          /* a conflict block applies at every merge step; a `break` in it
-             leaves the whole call, so an inner step is no break target of
-             its own (call_breaks) and its break reaches the outer call's */
-          if (mblk >= 0) {
-            nt_node_set_ref(nt, call, "block", mblk);
-            nt_node_set_str(nt, call, "merge_fold_step", "1");
-          }
-          cur = call;
-        }
-        if (cur >= 0) {
-          int last = nt_new_node(nt, "ArgumentsNode");
-          if (last >= 0 && late) {
-            int fin = nt_new_node(nt, "CallNode"), st = nt_new_node(nt, "StatementsNode");
-            nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
-            nt_node_set_str(nt, fin, "name", mname);
-            nt_node_set_ref(nt, fin, "receiver", cur);
-            nt_node_set_ref(nt, fin, "arguments", last);
-            if (mblk >= 0) nt_node_set_ref(nt, fin, "block", mblk);
-            seq[ns++] = fin;
-            nt_node_set_arr(nt, st, "body", seq, ns);
-            /* the call node becomes the sequence: its own operands move into
-               the chain above */
-            nt_node_set_type(nt, id, "ParenthesesNode");
-            nt_node_set_ref(nt, id, "body", st);
-            nt_node_set_ref(nt, id, "receiver", -1);
-            nt_node_set_ref(nt, id, "arguments", -1);
-            nt_node_set_ref(nt, id, "block", -1);
-            comp_grow_node_arrays(c);
-          }
-          else if (last >= 0) {
-            nt_node_set_arr(nt, last, "arguments", &av[an - 1], 1);
-            nt_node_set_ref(nt, id, "receiver", cur);
-            nt_node_set_ref(nt, id, "arguments", last);
-            comp_grow_node_arrays(c);
-          }
-        }
-      }
+    /* (update without a block keeps its own several-Hash arm) */
+    if ((sp_streq(nm, "merge") || sp_streq(nm, "merge!") ||
+         (sp_streq(nm, "update") && nt_ref(nt, id, "block") >= 0)) && recv >= 0) {
+      int argsn = nt_ref(nt, id, "arguments"), an = 0;
+      if (argsn >= 0) nt_arr(nt, argsn, "arguments", &an);
+      /* a receiver that may be the program's own object waits for its type
+         (desugar_hash_merge_fold) */
+      if (an >= 2 && hash_merge_name_owned(nt, nm, an)) nt_node_set_int(nt, id, "merge_fold_wait", 1);
+      else hash_merge_fold(c, id, 0);
       continue;
     }
     /* `m(&lambda_literal)`: attach the lambda's block directly as m's block
@@ -49870,6 +49991,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_to_proc_block_arg", desugar_to_proc_block_arg(c));        /* &obj (user to_proc) -> &(obj.to_proc) hoisted once */
     ch |= AN_PASS("desugar_proc_expr_block_arg", desugar_proc_expr_block_arg(c));      /* &(a >> b) -> hoisted temp */
     ch |= AN_PASS("desugar_to_hash_splat", desugar_to_hash_splat(c));            /* f(**obj) -> f(**obj.to_hash) */
+    ch |= AN_PASS("desugar_hash_merge_fold", desugar_hash_merge_fold(c));       /* h.merge(a, b) -> h.merge(a).merge(b) (a program merge elsewhere) */
     ch |= AN_PASS("desugar_kernel_array_conv", desugar_kernel_array_conv(c));    /* Array(h) -> Array(h.to_ary) (Hash/String subclass's own) */
     ch |= AN_PASS("desugar_splat_to_a", desugar_splat_to_a(c));               /* [*h] -> [*h.to_a] (Hash, user #to_a) */
     ch |= AN_PASS("desugar_builtin_splat_forward", desugar_builtin_splat_forward(c));    /* @a.m(*args, &blk) on a builtin -> one fixed arity per args.size */
