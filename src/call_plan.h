@@ -127,6 +127,9 @@ int cplan_targets(Compiler *c, int id, int *out, int cap);
 enum { CPT_WHY_NONE = 0, CPT_WHY_CAP, CPT_WHY_RECV_UNTYPED };
 int cplan_targets_unknown_why(Compiler *c, int id, int cap);
 void cplan_targets_drop(void);
+/* Counts the drops (and a new compiler's first ask): an answer held at one
+   count is the answer while it stands. */
+unsigned cplan_targets_drops(void);
 /* Can target method mi of call id bind the call's arguments? 0 only when
    their count is known at compile time -- plain positional arguments and a
    trailing keyword hash, no splat or `...` -- and mi's parameters refuse

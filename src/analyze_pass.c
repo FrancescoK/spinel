@@ -6217,6 +6217,100 @@ static int cla_layout_arg(Compiler *c, int call, int si, Scope *sc, const int *a
   return from;
 }
 
+/* The arguments the callers of method si hand its parameter pi
+   (container_literals, the parameter case), in call order. The walk took
+   every call of the method's name, asked its targets and the argument its
+   layout passes there, at every ask for the parameter in every round; on a
+   Rails application most of its time. A call's targets are held until
+   cplan_targets_drop, and its argument holds while the node table and the
+   scopes do, so the list a walk met holds as long. It is extended only as
+   far as a walk reaches (`next`, the call to read next, or -1 at the end),
+   so each call is first asked when it was before. An inference that records
+   what it reads walks the calls itself. */
+typedef struct { int si, pi, next, n, cap; int *call, *arg; } ClpEntry;
+static ClpEntry *clp_tab; static int clp_cap, clp_n;
+static const NodeTable *clp_nt; static unsigned clp_ver, clp_gen, clp_drops; static int clp_count, clp_nscopes;
+static unsigned clp_epoch;   /* bumped by each reset: a walk's entry is gone past one */
+static int clp_holds(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  return clp_nt == nt && clp_ver == nt->version && clp_count == nt->count && clp_gen == comp_scope_index_gen() &&
+         clp_nscopes == c->nscopes && clp_drops == cplan_targets_drops();
+}
+static ClpEntry *clp_find(int si, int pi) {
+  unsigned h = ((unsigned)si * 2654435761u ^ (unsigned)pi * 97u) & (unsigned)(clp_cap - 1);
+  while (clp_tab[h].cap) {
+    if (clp_tab[h].si == si && clp_tab[h].pi == pi) return &clp_tab[h];
+    h = (h + 1) & (unsigned)(clp_cap - 1);
+  }
+  return NULL;
+}
+static ClpEntry *clp_entry(Compiler *c, int si, Scope *sc, int pi) {
+  const NodeTable *nt = c->nt;
+  if (!clp_holds(c)) {
+    for (int i = 0; i < clp_cap; i++) { free(clp_tab[i].call); free(clp_tab[i].arg); }
+    if (clp_tab) memset(clp_tab, 0, sizeof *clp_tab * (size_t)clp_cap);
+    clp_n = 0; clp_epoch++;
+    clp_nt = nt; clp_ver = nt->version; clp_count = nt->count; clp_gen = comp_scope_index_gen();
+    clp_nscopes = c->nscopes; clp_drops = cplan_targets_drops();
+  }
+  if (clp_n * 2 >= clp_cap) {
+    int ncap = clp_cap ? clp_cap * 2 : 1024;
+    ClpEntry *nv = calloc((size_t)ncap, sizeof *nv);
+    if (!nv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < clp_cap; i++) {
+      if (!clp_tab[i].cap) continue;
+      unsigned h = ((unsigned)clp_tab[i].si * 2654435761u ^ (unsigned)clp_tab[i].pi * 97u) & (unsigned)(ncap - 1);
+      while (nv[h].cap) h = (h + 1) & (unsigned)(ncap - 1);
+      nv[h] = clp_tab[i];
+    }
+    free(clp_tab); clp_tab = nv; clp_cap = ncap;
+  }
+  unsigned h = ((unsigned)si * 2654435761u ^ (unsigned)pi * 97u) & (unsigned)(clp_cap - 1);
+  while (clp_tab[h].cap) {
+    if (clp_tab[h].si == si && clp_tab[h].pi == pi) return &clp_tab[h];
+    h = (h + 1) & (unsigned)(clp_cap - 1);
+  }
+  ClpEntry *e = &clp_tab[h];
+  e->si = si; e->pi = pi; e->n = 0; e->cap = 4;
+  e->call = malloc(sizeof(int) * (size_t)e->cap);
+  e->arg = malloc(sizeof(int) * (size_t)e->cap);
+  if (!e->call || !e->arg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  e->next = an_calls_named_first(c, sc->name);
+  clp_n++;
+  return e;
+}
+/* Reads the next call of entry (si, pi): appends the argument it hands, if
+   it reaches the method. 0 when the asks moved what the entries hold (a
+   reset since epoch ep, or a change clp_holds sees): the call is then
+   unread. */
+static int clp_extend(Compiler *c, int si, Scope *sc, int pi, unsigned ep) {
+  const NodeTable *nt = c->nt;
+  ClpEntry *e = clp_find(si, pi);
+  int call = e->next;
+  int targets[CPT_MAX], nt_ = cplan_targets(c, call, targets, CPT_MAX), hit = 0;
+  for (int t = 0; t < nt_ && !hit; t++) hit = targets[t] == si;
+  int from = -1, an = 0;
+  const int *av = NULL;
+  if (hit) {
+    int a = nt_ref(nt, call, "arguments");
+    av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    from = cla_layout_arg(c, call, si, sc, av, an, pi);
+  }
+  if (clp_epoch != ep || !clp_holds(c)) return 0;
+  e = clp_find(si, pi);   /* (an ask may have grown the table) */
+  if (e->next != call) return 1;   /* (a walk the asks made read it) */
+  e->next = an_calls_named_next(call);
+  if (from < 0 || from >= an) return 1;
+  if (e->n == e->cap) {
+    e->cap *= 2;
+    e->call = realloc(e->call, sizeof(int) * (size_t)e->cap);
+    e->arg = realloc(e->arg, sizeof(int) * (size_t)e->cap);
+    if (!e->call || !e->arg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  e->call[e->n] = call; e->arg[e->n++] = av[from];
+  return 1;
+}
+
 /* Collects into out[] the container literals `n` can evaluate to, as far
    as the program shows: a literal itself, the literals a variable is
    assigned, and, for an element read `x[k]` (`fetch`, `first`, `last`),
@@ -6270,7 +6364,28 @@ static int container_literals(Compiler *c, int n, int *out, int nout, int cap, i
     if (lv && lv->is_param && !lv->is_block_param && sc->name && sc->def_node >= 0) {
       int pi = -1;
       for (int i = 0; i < sc->nparams && pi < 0; i++) if (sc->pnames[i] && sp_streq(sc->pnames[i], nm)) pi = i;
-      for (int call = pi >= 0 ? an_calls_named_first(c, sc->name) : -1; call >= 0 && nout < cap;
+      /* the held arguments (clp_entry), as long as they hold; past a
+         change the walk goes on from the call it was at */
+      int resume = -2;   /* (the call to go on from; -2: from the first) */
+      if (pi >= 0 && !imemo_dep_on) {
+        ClpEntry *e = clp_entry(c, si, sc, pi);
+        unsigned ep = clp_epoch;
+        for (int q = 0; nout < cap && resume == -2; q++) {
+          while (q == e->n && e->next >= 0) {
+            int was = e->next;
+            if (!clp_extend(c, si, sc, pi, ep)) { resume = was; break; }
+            e = clp_find(si, pi);
+          }
+          if (resume != -2 || q == e->n) break;
+          int call = e->call[q];
+          nout = container_literals(c, e->arg[q], out, nout, cap, depth + 1);
+          if (clp_epoch != ep || !clp_holds(c)) resume = an_calls_named_next(call);
+          else e = clp_find(si, pi);   /* (the walk may have grown the table) */
+        }
+        if (resume == -2) return nout;
+      }
+      for (int call = pi < 0 ? -1 : resume != -2 ? resume : an_calls_named_first(c, sc->name);
+           call >= 0 && nout < cap;
            call = an_calls_named_next(call)) {
         int targets[CPT_MAX], nt_ = cplan_targets(c, call, targets, CPT_MAX), hit = 0;
         for (int t = 0; t < nt_ && !hit; t++) hit = targets[t] == si;
