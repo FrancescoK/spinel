@@ -5962,61 +5962,71 @@ static TyKind nil_write_type(TyKind cur) {
   return an_ty_holds_nil(cur) ? cur : TY_POLY;
 }
 
-static int user_method_named(Compiler *c, const char *nm) {
-  if (nm && sp_streq(nm, "new")) nm = "initialize";
-  for (int i = 1; nm && i < c->nscopes; i++)
-    if (c->scopes[i].name && sp_streq(c->scopes[i].name, nm)) return 1;
-  return 0;
+static int gvar_name_cmp(const void *a, const void *b) {
+  return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-/* Could the subtree `n`, run ahead of a global's first assignment, read the
-   global? A read or update of it counts, and so does a call that may reach a
-   user method outside a class body: the callee may read it. Method bodies do
-   not run here. */
-static int gvar_read_hazard(Compiler *c, int n, const char *gname, int in_cbody) {
+/* The first point at which something could read global gname, in the order
+   the load phase runs (the load record): a read or update of it (also
+   through an alias), or a call that may reach a method of the program,
+   whose body may read it. A definition form (a mixin, attr_*, a visibility
+   word, define_method, alias_method, ...) reaches one when the load record
+   finds one it runs there (elab_form_runs: its own name's, or a hook it
+   fires, Module#included and its kin). A method body runs only when
+   it is called; a block or a lambda no earlier than the statement that
+   makes it. Region -1 when nothing could; a point in a file no load places
+   as soon as something there could, since no write is known to run
+   first. */
+static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
+  static const NodeKind rk[] = { NK_GlobalVariableReadNode, NK_GlobalVariableOperatorWriteNode,
+                                 NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode };
   const NodeTable *nt = c->nt;
-  if (n < 0) return 0;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_DefNode) return 0;
-  if (k == NK_GlobalVariableReadNode || k == NK_GlobalVariableOperatorWriteNode ||
-      k == NK_GlobalVariableOrWriteNode || k == NK_GlobalVariableAndWriteNode) {
+  LoadPoint best = { -1, -1 };
+  for (int q = 0; q < 4; q++)
+    NT_FOREACH_KIND(nt, rk[q], n) {
+      const char *nm = nt_str(nt, n, "name");
+      if (!nm || !*nm || !sp_streq(comp_resolve_gvar(c, nm + 1), gname) || elab_in_method_body(c, n)) continue;
+      LoadPoint p = elab_point_from(c, n);
+      if (p.region > 0) return p;
+      if (p.region == 0 && (best.region < 0 || p.seq < best.seq)) best = p;
+    }
+  /* the program's methods by name, `new` standing for `initialize` */
+  const char **names = malloc(sizeof *names * (size_t)(c->nscopes + 1));
+  if (!names) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int nn = 0;
+  for (int i = 1; i < c->nscopes; i++)
+    if (c->scopes[i].name) names[nn++] = c->scopes[i].name;
+  qsort(names, (size_t)nn, sizeof *names, gvar_name_cmp);
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
     const char *nm = nt_str(nt, n, "name");
-    if (nm && sp_streq(comp_resolve_gvar(c, nm + 1), gname)) return 1;
+    if (!nm || elab_in_method_body(c, n)) continue;
+    LoadPoint p = elab_point_from(c, n);
+    if (p.region < 0 || (p.region == 0 && best.region == 0 && p.seq >= best.seq)) continue;
+    if (is_new_name(nm)) nm = "initialize";
+    if (is_method_naming_call(nm) || visibility_of_name(nm) || is_mixin_call(nm) ? elab_form_runs(c, n) == ELAB_NO
+                                                                                 : !bsearch(&nm, names, (size_t)nn, sizeof *names, gvar_name_cmp))
+      continue;
+    if (p.region > 0) { best = p; break; }
+    best = p;
   }
-  if (k == NK_CallNode && !in_cbody && user_method_named(c, nt_str(nt, n, "name"))) return 1;
-  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) in_cbody = 1;
-  for (int i = 0; i < nt_num_refs(nt, n); i++)
-    if (gvar_read_hazard(c, nt_ref_at(nt, n, i), gname, in_cbody)) return 1;
-  for (int i = 0; i < nt_num_arrs(nt, n); i++) {
-    int an = 0; const int *av = nt_arr_at(nt, n, i, &an);
-    for (int j = 0; j < an; j++)
-      if (gvar_read_hazard(c, av[j], gname, in_cbody)) return 1;
-  }
-  return 0;
+  free(names);
+  return best;
 }
 
-/* Is global `gname` assigned a non-nil value by a top-level statement that
-   runs before anything could read it? Until its first assignment a global is
-   nil, so a slot with no nil of its own has to box unless this holds. */
-typedef struct { Compiler *c; const char *gname; int answer; } GvarSeed;   /* answer: -1 undecided */
-static void gvar_seed_stmt(void *ud, int stmt) {
-  GvarSeed *g = ud;
-  const NodeTable *nt = g->c->nt;
-  if (g->answer >= 0) return;
-  for (int w = stmt; w >= 0 && nt_kind(nt, w) == NK_GlobalVariableWriteNode; w = nt_ref(nt, w, "value")) {
-    const char *nm = nt_str(nt, w, "name");
-    int v = nt_ref(nt, w, "value");
-    if (!nm || !sp_streq(comp_resolve_gvar(g->c, nm + 1), g->gname)) continue;
-    g->answer = v >= 0 && nt_kind(nt, v) != NK_NilNode && comp_nil_chain_bottom(nt, v) < 0 &&
-                !gvar_read_hazard(g->c, v, g->gname, 0);
-    return;
-  }
-  if (gvar_read_hazard(g->c, stmt, g->gname, 0)) g->answer = 0;
-}
+/* Is global `gname` written a non-nil value before anything could read it,
+   on every path of the load phase (the load record, asked at
+   gvar_first_read)? Until its first write a global is nil, so a slot with
+   no nil of its own has to box unless this holds. A write through an alias
+   of it counts. Asked once per global: the answer is kept on its slot. */
 int gvar_seeded_before_read(Compiler *c, const char *gname) {
-  GvarSeed g = { c, gname, -1 };
-  if (c->nscopes > 0) prog_top_stmts(c, gvar_seed_stmt, &g);   /* the files' top levels, in load order */
-  return g.answer > 0;
+  LocalVar *g = comp_gvar(c, gname);
+  if (g && g->gvar_seeded) return g->gvar_seeded == 2;
+  LoadPoint p = gvar_first_read(c, gname);
+  int yes = elab_written_before(c, ELAB_GVAR, gname, p) == ELAB_YES;
+  for (int i = 0; !yes && i < c->ngvar_aliases; i++)
+    yes = sp_streq(c->gvar_alias_to[i], gname) && elab_written_before(c, ELAB_GVAR, c->gvar_alias_from[i], p) == ELAB_YES;
+  if (g) g->gvar_seeded = yes ? 2 : 1;
+  return yes;
 }
 
 /* A global with no nil of its own that something could read before its first
@@ -9082,7 +9092,8 @@ static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line)
   return seq;
 }
 /* ...and the write that sets the flag, after top-level statement `late`, in
-   its file's top level */
+   its file's top level, which the load record records (the global's
+   readers ask it) */
 static void mixin_guard_flag_write(Compiler *c, int late, const char *flag) {
   NodeTable *nt = (NodeTable *)c->nt;
   int f, rank;
@@ -9107,6 +9118,7 @@ static void mixin_guard_flag_write(Compiler *c, int late, const char *flag) {
   free(ns);
   comp_gvar_intern(c, flag + 1);
   comp_grow_node_arrays(c);
+  elab_record_write(c, w);
 }
 
 static void process_prepend_body(Compiler *c, int ci, int body) {

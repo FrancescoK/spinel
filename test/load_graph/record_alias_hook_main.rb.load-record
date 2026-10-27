@@ -1,0 +1,19 @@
+load record: 12 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 LoadNode line 8
+r0 #2 f1 ProgramNode line 3
+r0 #3 f1 ClassNode Struct line 3
+  r0 #4 f1 DefNode on_added line 4
+  r0 #5 f1 SingletonClassNode line 5
+    r0 #6 f1 AliasMethodNode line 6
+r0 #7 f0 ConstantWriteNode Pt line 9
+  r0 #8 f0 CallNode attr_accessor line 10
+r0 #9 f0 LocalVariableWriteNode pt line 12
+r0 #10 f0 CallNode x= line 13
+r0 #11 f0 CallNode p line 14
+class Struct: body#3
+const Struct: write#3
+Struct.on_added: def#4 end=yes
+Struct.method_added: alias#6 (on_added: def#4) end=yes
+const Pt: write#7
+form #8 runs code (maybe)

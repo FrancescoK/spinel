@@ -404,7 +404,6 @@ static void prog_def_add(ProgDef **v, int *n, int *cap, const char *cls, const c
      - a top-level `def self.m` (rename_main_singleton_defs);
      - `include` (qc_object_mixin_write, which runs ahead of the load
        record);
-     - a write of main's instance variable (nf_written_before);
    and across files:
      - a top-level method defined in a required file and again anywhere
        (rename_redefined_toplevel_defs);
@@ -413,8 +412,6 @@ static void prog_def_add(ProgDef **v, int *n, int *cap, const char *cls, const c
 void prog_refuse_order(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!prog_graph(c)) return;
-  int *parent = an_parent_map(nt);
-  if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   ProgDef *defs = NULL;
   int nd = 0, cd = 0;
   for (int i = 0; i < nt_nroots(nt); i++) {
@@ -456,22 +453,4 @@ void prog_refuse_order(Compiler *c) {
           : "--load-model=graph: a method a class reopened in another file defines again (version_redefined_reopen_defs reads one file), for now");
   }
   free(defs);
-  for (int id = 0; id < nt->count; id++) {
-    NodeKind k = nt_kind(nt, id);
-    int ivar = k == NK_InstanceVariableWriteNode || k == NK_InstanceVariableOrWriteNode ||
-               k == NK_InstanceVariableAndWriteNode || k == NK_InstanceVariableOperatorWriteNode;
-    if (!ivar) continue;
-    int r = prog_root_of(c, parent, id);
-    if (r < 0 || r == nt->root_id) continue;
-    /* main's: outside any method, class, module, block or lambda */
-    int in_body = 0;
-    for (int a = parent[id]; a >= 0 && !in_body; a = parent[a]) {
-      NodeKind ak = nt_kind(nt, a);
-      in_body = ak == NK_DefNode || ak == NK_ClassNode || ak == NK_ModuleNode || ak == NK_SingletonClassNode ||
-                ak == NK_BlockNode || ak == NK_LambdaNode;
-    }
-    if (!in_body)
-      unsupported_feature(c, id, "--load-model=graph: a write of main's instance variable in a required file (nf_written_before reads one file), for now");
-  }
-  free(parent);
 }

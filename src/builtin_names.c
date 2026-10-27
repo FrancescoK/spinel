@@ -681,6 +681,25 @@ int is_definition_hook_name(const char *n) {
          sp_streq(n, "singleton_method_added") || sp_streq(n, "const_added");
 }
 
+/* The hooks definition form `form` (given its arguments) fires, on the
+   class that receives it (sg: as its singleton's), into out[0..1]: a
+   mixin's on the module (included, extended, prepended); a form that adds a
+   method or changes one's visibility, method_added (singleton_method_added
+   for a singleton's; module_function both); remove_method method_removed,
+   undef_method method_undefined. Answers how many. */
+int definition_form_hooks(const char *form, int sg, const char **out) {
+  if (!form) return 0;
+  if (sp_streq(form, "include")) { out[0] = "included"; return 1; }
+  if (sp_streq(form, "extend")) { out[0] = "extended"; return 1; }
+  if (sp_streq(form, "prepend")) { out[0] = "prepended"; return 1; }
+  if (sp_streq(form, "remove_method")) { out[0] = sg ? "singleton_method_removed" : "method_removed"; return 1; }
+  if (sp_streq(form, "undef_method")) { out[0] = sg ? "singleton_method_undefined" : "method_undefined"; return 1; }
+  if (sp_streq(form, "module_function")) { out[0] = "singleton_method_added"; out[1] = "method_added"; return 2; }
+  if (sp_streq(form, "define_singleton_method")) { out[0] = "singleton_method_added"; return 1; }
+  if (is_method_naming_call(form) || visibility_of_name(form)) { out[0] = sg ? "singleton_method_added" : "method_added"; return 1; }
+  return 0;
+}
+
 int is_const_missing_name(const char *n) {
   return sp_streq(n, "const_missing");
 }

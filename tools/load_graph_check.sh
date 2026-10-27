@@ -15,8 +15,8 @@
 # (`<top (required)>`, `Kernel#require_relative`). What graph mode does not
 # compile yet it refuses by name: a require below a file's top level or one
 # whose path is computed, an autoload, a load of the entry file, an END
-# block, a write of main's instance variable or a top-level include in a
-# required file. A required file that only defines things costs no C.
+# block or a top-level include in a required file. A required file that
+# only defines things costs no C.
 # The load record's points of a program with a .load-record are those it
 # lists.
 #
@@ -181,7 +181,7 @@ refused() {
     grep -qF -- "$2" "$tmp/$1/out" || { fail "$1 refused without naming why"; sed -n 1,3p "$tmp/$1/out"; }
   fi
 }
-mkdir "$tmp/in_method" "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/ivar" "$tmp/end" "$tmp/mixin"
+mkdir "$tmp/in_method" "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/end" "$tmp/mixin"
 printf 'puts "lib"\n' > "$tmp/in_method/lib.rb"
 printf 'def setup\n  require_relative "lib"\nend\nsetup\n' > "$tmp/in_method/main.rb"
 refused in_method "loads only a require that is a statement of a file's top level"
@@ -193,9 +193,6 @@ refused autoload "an autoload's file"
 printf 'require_relative "main"\n' > "$tmp/entry/lib.rb"
 printf 'require_relative "lib"\nputs "main"\n' > "$tmp/entry/main.rb"
 refused entry "the program's own entry file"
-printf '@level = 2\n' > "$tmp/ivar/lib.rb"
-printf '@level = 1\nrequire_relative "lib"\np @level\n' > "$tmp/ivar/main.rb"
-refused ivar "a write of main's instance variable in a required file"
 printf 'END { puts "lib END" }\nputs "lib"\n' > "$tmp/end/lib.rb"
 printf 'require_relative "lib"\nputs "main"\n' > "$tmp/end/main.rb"
 refused end "an END block in a required file"
