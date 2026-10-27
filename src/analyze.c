@@ -45117,8 +45117,11 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
 
 /* Node `n` (reset in place) as the call a `super` at `at` makes into Array:
    Array's method `mname` on self, marked builtin_only so the class's own
-   override does not take it, or in initialize `self.clear` for no arguments
-   and no block, else `self.replace(Array.new(args) { blk })`. */
+   override does not take it, or in initialize (init 1) `self.clear` for no
+   arguments and no block, else `self.replace(Array.new(args) { blk })`. In
+   the class's own `def self.new` (init 2) it is Class#new with no
+   initialize of the program to run: `self.allocate`, else
+   `self.allocate.replace(Array.new(args) { blk })`. */
 static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
   Scope *s = comp_scope_of(c, at);
   const char *bn = s ? comp_arysub_builtin(c, s->class_id) : "Array";
@@ -45127,6 +45130,8 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   int self = arysub_node(c, "SelfNode", at);
   if (self < 0) return;
   char *mn = strdup(mname);
+  if (init == 2 && an == 0 && blk < 0) { arysub_set_call(c, n, self, "allocate", -1, -1); free(mn); return; }
+  if (init == 2 && (self = arysub_new_call(c, at, self, "allocate", -1, -1)) < 0) { free(mn); return; }
   if (!init) {
     arysub_set_call(c, n, self, mn, args, blk);
     nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
@@ -45135,6 +45140,7 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   else {
     int an_call = arysub_builtin_call(c, at, bn, "new", an ? args : -1, blk);
     if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
+    if (an_call >= 0 && init == 2) nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
   }
   nt_set_ignore_visibility((NodeTable *)c->nt, n, 1);
   free(mn);
@@ -45147,15 +45153,35 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
    method of the same name on self, marked builtin_only so the class's own
    override does not take it. A Hash subclass's is the same with Hash:
    Hash#replace takes the default and the default proc along, so
-   `self.replace(Hash.new(default) { blk })` is Hash#initialize's. */
+   `self.replace(Hash.new(default) { blk })` is Hash#initialize's.
+   In the class's own `def self.new` it is Class#new, which calls Array.new's
+   construction on a new instance when no initialize of the program can
+   run: none in the class's chain, nor in a descendant's, which self may be.
+   (One that can is left to Class#new's own splice.) */
+static int arysub_cnew_inits(Compiler *c, int k) {
+  if (comp_method_in_chain(c, k, "initialize", NULL) >= 0) return 1;
+  int nd = 0;
+  const int *ds = comp_descendants(c, k, &nd);
+  for (int d = 0; d < nd; d++)
+    if (comp_method_in_chain(c, ds[d], "initialize", NULL) >= 0) return 1;
+  return 0;
+}
 static void rewrite_array_subclass_super(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   Scope *s = comp_scope_of(c, id);
-  if (!s || !s->name || s->is_cmethod || comp_ary_root(c, s->class_id) < 0 || comp_super_shadow(c, s)) return;
+  if (!s || !s->name || comp_ary_root(c, s->class_id) < 0) return;
+  int init;
   const char *mname = comp_prep_user_name(s->name);
-  int p = c->classes[s->class_id].parent;
-  if (p >= 0 && comp_method_in_chain(c, p, mname, NULL) >= 0) return;
-  int init = sp_streq(mname, "initialize");
+  if (s->is_cmethod) {
+    if (!comp_super_is_class_new(c, id) || arysub_cnew_inits(c, s->class_id)) return;
+    init = 2;
+  }
+  else {
+    if (comp_super_shadow(c, s)) return;
+    int p = c->classes[s->class_id].parent;
+    if (p >= 0 && comp_method_in_chain(c, p, mname, NULL) >= 0) return;
+    init = sp_streq(mname, "initialize");
+  }
   /* Array#initialize_copy is a replace, which the copy dup and clone make
      of an Array subclass instance has done already: super into it is the
      receiver */
