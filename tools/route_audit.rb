@@ -26,6 +26,7 @@ ROOT = File.expand_path("..", __dir__)
 LOOKUP = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\s*\(/
 NAME_ARG = { "comp_method_index" => 1, "comp_name_responders" => 1 }.freeze
 AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\b(?=\s*[:;),])/
+C_KEYWORD = %w[if else while for switch return sizeof do case].freeze
 
 blob = nil   # the git blob prefix (":" the index, "REV:" a revision), or the working tree
 case ARGV.first
@@ -96,11 +97,12 @@ bad = []
 files.each do |f|
   src = read.(f) or next
   code = code_of(src.b)   # bytes: the walk below indexes the text
-  # where each function starts: a line at column 0 naming one, not a declaration
+  # where each function starts: a line at column 0 naming one, not a
+  # declaration, nor a statement written at column 0 ("else if (")
   starts = []
   off = 0
   code.each_line do |l|
-    starts << [off, $1] if l =~ /\A[A-Za-z][^;=]*?\b(\w+)\s*\(/ && !l.rstrip.end_with?(";")
+    starts << [off, $1] if l =~ /\A[A-Za-z][^;=]*?\b(\w+)\s*\(/ && !l.rstrip.end_with?(";") && !C_KEYWORD.include?($1)
     off += l.size
   end
   function_at = ->(at) { starts.reverse_each.find { |o, _| o <= at }&.last }
