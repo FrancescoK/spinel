@@ -12648,9 +12648,20 @@ static void emit_kwsplat_empty_check(Compiler *c, int id, int kwh, const char *l
 }
 
 /* See codegen_call_arms.h. */
-void emit_class_value_new_switch(int rt2, int kt, int boxed, Buf *b) {
+void emit_class_value_new_switch(Compiler *c, int rt2, int kt, int boxed, Buf *b) {
   buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); ", rt2);
-  if (boxed) buf_printf(b, "switch (_t%d.tag == SP_TAG_CLASS ? _t%d.cls_id : -1) {", kt, kt);
+  /* (a class boxed by its name, an object's #class read back out of a
+     boxed slot, switches on the id of the program's class of that name) */
+  if (boxed && g_emit_class_names) {
+    int k = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = _t%d.tag == SP_TAG_CLASS ? _t%d.cls_id : -1; "
+                  "if (_t%d == SP_CLASS_BY_NAME) { _t%d = -1; for (sp_int _j = 0; _j < %d; _j++) { "
+                  "const char *_s = sp_class_to_s((sp_Class){_j, NULL}); "
+                  "if (_s && _s[0] && _t%d.v.s && !strcmp(_s, _t%d.v.s)) { _t%d = _j; break; } } } ",
+               k, kt, kt, k, k, c->nclasses, kt, kt, k);
+    buf_printf(b, "switch (_t%d) {", k);
+  }
+  else if (boxed) buf_printf(b, "switch (_t%d.tag == SP_TAG_CLASS ? _t%d.cls_id : -1) {", kt, kt);
   else buf_printf(b, "switch(_t%d.cls_id){", kt);
 }
 
@@ -12662,7 +12673,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   buf_printf(b, "({ %s _t%d = ", boxed ? "sp_RbVal" : "sp_Class", kt); emit_expr(c, recv, b);
   buf_puts(b, "; ");
   int sv_cbt = hoist_ctor_block(c, id, b);
-  emit_class_value_new_switch(rt2, kt, boxed, b);
+  emit_class_value_new_switch(c, rt2, kt, boxed, b);
   /* the operand of a sole `*splat`, or the SplatNode itself for an anonymous
      `*` forwarding the method's rest (`k.new(*)`) */
   int sole_splat = argc == 1 && nt_kind(nt, argv[0]) == NK_SplatNode ? nt_ref(nt, argv[0], "expression") : -1;

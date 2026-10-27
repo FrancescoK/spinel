@@ -178,7 +178,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b);
    Symbol's or nil's can equal a user class's index, and a user
    object's is its class's, so anything else
    switches on -1, no arm's label, and takes the default's NoMethodError. */
-void emit_class_value_new_switch(int rt2, int kt, int boxed, Buf *b);
+void emit_class_value_new_switch(Compiler *c, int rt2, int kt, int boxed, Buf *b);
 void emit_ctor_arm_case(Compiler *c, int ci, int rt2, int self_t, const char *pre, const char *args, int given, Buf *b);
 void struct_nil_fill_stmts(Compiler *c, int ci, int given, const char *obj, Buf *out);
 void emit_ctor_arm_param(Compiler *c, Scope *is, int j, const ArgLayout *L, const int *atmp, Buf *pdpre, Buf *out);
