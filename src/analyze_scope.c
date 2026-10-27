@@ -7684,7 +7684,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, con
 static int prepend_late_stmt(Compiler *c, int ci, int body);
 static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line);
 static const char *mixin_flag_name(Compiler *c, char flag[64]);
-static void mixin_guard_flag_write(Compiler *c, int late, const char *flag);
+static void mixin_guard_flag_write(Compiler *c, int list, int after, const char *flag);
 
 /* attr_reader/attr_accessor/attr_writer and alias_method in a MODULE body
    belong to every class that includes it, just like a plain def. The transplant
@@ -8342,12 +8342,12 @@ void register_extends(Compiler *c) {
     int n = 0;
     const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
     /* a singleton prepend in a reopening (prepend_late_stmt, asked once, at
-       the first): its copies answer as the class's own until that
-       statement has run */
+       the first): its copies answer as the class's own until the prepend
+       has run, each prepend's by a flag of its own */
     int late = -2;
-    char flag[64] = "";
     for (int k = 0; k < n; k++) {
       int s = stmts[k];
+      char flag[64] = "";
       NodeKind sk = nt_kind(nt, s);
       if (sk != NK_CallNode) continue;
       const char *nm = nt_str(nt, s, "name");
@@ -8388,8 +8388,12 @@ void register_extends(Compiler *c) {
         if (sprep && late == -2) late = prepend_late_stmt(c, ci, body);
         did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? flag : NULL);
       }
+      if (flag[0]) {
+        mixin_guard_flag_write(c, body, s, flag);
+        stmts = nt_arr(nt, body, "body", &n);
+        k++;   /* past the write */
+      }
     }
-    if (flag[0]) mixin_guard_flag_write(c, late, flag);
    }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
@@ -9185,16 +9189,14 @@ static const char *mixin_flag_name(Compiler *c, char flag[64]) {
   if (!flag[0]) snprintf(flag, 64, "$__spinel_mixin_ran_%d", ++c->n_mixin_flags);
   return flag;
 }
-/* ...and the write that sets the flag, after top-level statement `late`, in
-   its file's top level, which the load record records (the global's
-   readers ask it) */
-static void mixin_guard_flag_write(Compiler *c, int late, const char *flag) {
+/* ...and the write that sets the flag, after statement `after` of statement
+   list `list`, which the load record records (the global's readers ask
+   it) */
+static void mixin_guard_flag_write(Compiler *c, int list, int after, const char *flag) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int f, rank;
-  elab_top_place(c, late, &f, &rank);
-  int root = prog_root_stmts(c, f), n = 0, j = 0;
+  int root = list, n = 0, j = 0;
   const int *st = nt_arr(nt, root, "body", &n);
-  while (j < n && st[j] != late) j++;
+  while (j < n && st[j] != after) j++;
   int line = (int)nt_int(nt, st[j], "node_line", 0);
   int tv = nt_new_node(nt, "TrueNode");
   int w = nt_new_node(nt, "GlobalVariableWriteNode");
@@ -9347,7 +9349,11 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
       }
     }
   }
-  if (flag[0]) mixin_guard_flag_write(c, late, flag);
+  if (flag[0]) {   /* after the reopening's statement, in its file's top level */
+    int f, rank;
+    elab_top_place(c, late, &f, &rank);
+    mixin_guard_flag_write(c, prog_root_stmts(c, f), late, flag);
+  }
 }
 
 /* For each class, find `prepend M` in ALL class bodies, the reopenings
