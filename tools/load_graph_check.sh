@@ -13,9 +13,9 @@
 # A require that names no file raises LoadError when it runs, and a
 # --debug build reports a required file's frames as CRuby does
 # (`<top (required)>`, `Kernel#require_relative`). What graph mode does not
-# compile yet it refuses by name: a require below a file's top level or one
-# whose path is computed, an autoload, a load of the entry file, an END
-# block or a top-level include in a required file. A required file that
+# compile yet it refuses by name: a require whose path is computed, an
+# autoload, a load of the entry file, an END block or a top-level include
+# in a required file. A required file that
 # only defines things costs no C.
 # The load record's points of a program with a .load-record are those it
 # lists.
@@ -181,10 +181,7 @@ refused() {
     grep -qF -- "$2" "$tmp/$1/out" || { fail "$1 refused without naming why"; sed -n 1,3p "$tmp/$1/out"; }
   fi
 }
-mkdir "$tmp/in_method" "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/end" "$tmp/mixin"
-printf 'puts "lib"\n' > "$tmp/in_method/lib.rb"
-printf 'def setup\n  require_relative "lib"\nend\nsetup\n' > "$tmp/in_method/main.rb"
-refused in_method "loads only a require that is a statement of a file's top level"
+mkdir "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/end" "$tmp/mixin"
 printf 'name = ARGV.first || "lib"\nrequire name\n' > "$tmp/computed/main.rb"
 refused computed "loads only a require whose path is known at compile time"
 printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"

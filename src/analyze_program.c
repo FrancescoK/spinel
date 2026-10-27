@@ -18,9 +18,8 @@
      - the program's top-level statements in load order (prog_top_stmts):
        a load at the top level runs its file's top level there, once; and
        with them the files no load there places (prog_visit_files);
-     - what the program refuses for now: a require that is not a top-level
-       statement, one that resolves to no file at compile time, an autoload
-       (prog_refuse_loads), and the statements the readers of the top level
+     - what the program refuses for now: a require that resolves to no file
+       at compile time, an autoload (prog_refuse_loads), and the statements the readers of the top level
        in order would have to place across a load (prog_refuse_order). */
 
 #include "analyze_internal.h"
@@ -402,8 +401,6 @@ void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, in
 
 /* What --load-model=graph does not load yet, refused by name (#9898), asked
    once the load sites are known, ahead of the desugaring:
-     - a require that is not a statement of a file's top level: its file
-       loads when that code runs (part 3c);
      - a require of the program's own entry file, which CRuby runs again as
        a new file since `$0` is not a loaded feature;
      - one whose path is computed when it runs: its file is chosen among
@@ -430,8 +427,6 @@ void prog_refuse_loads(Compiler *c) {
       /* (one that names no file runs no file's top level: it raises
          LoadError wherever it stands) */
       const char *how = nt_str(nt, id, "how");
-      if (!nt_int(nt, id, "boot", 0) && !is_load_how_missing(how) && !prog_is_root_stmts(c, parent[id]))
-        unsupported_feature(c, id, "--load-model=graph loads only a require that is a statement of a file's top level, for now");
       if (nt_int(nt, id, "target_file", -1) == 0)
         unsupported_feature(c, id, "--load-model=graph does not load the program's own entry file again, for now");
       if (is_load_how_computed(how))
