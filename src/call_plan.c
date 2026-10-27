@@ -338,7 +338,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     if (sci < 0 && comp_scope_native_twin(c, mi)) return;
     if (mi >= 0) { cplan_set(p, mi, ci, UC_CMETH, CP_DIRECT); return; }
     /* a method the program adds to Class, on a builtin class constant */
-    int rmi = class_reopen_cmethod(c, recv, name);
+    int rmi = class_reopen_cmethod(c, id, recv, name);
     if (rmi >= 0) { cplan_set(p, rmi, c->scopes[rmi].class_id, UC_CMETH, CP_DIRECT); return; }
     /* a constant holding an instance is read by its type below */
   }

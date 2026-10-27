@@ -10,10 +10,12 @@
 # `files:`, a by-name lookup of the tables (comp_method_in_chain and kin)
 # passes when its name is a string literal (a method the language calls by
 # a fixed name) or when its function (or the function and that lookup) is
-# listed there with the reason it asks about a name rather than one call.
-# Any other is a call target that bypasses call_target. With FILEs, only
-# those of them the list names are read (gate.rb passes a commit's changed
-# sources).
+# listed there with the reason it asks about a name rather than one call
+# (`=NAME` lists the lookups of that name argument only). Any other is a
+# call target that bypasses call_target, and so is a lookup taken as a
+# value (`(cm ? comp_cmethod_in_class : comp_method_in_class)(c, k, nm)`).
+# With FILEs, only those of them the list names are read (gate.rb passes a
+# commit's changed sources).
 #
 # The sources and the list are read from the working tree, from the index
 # with --staged (the pre-commit check), or from revision REV with --rev (a
@@ -23,6 +25,7 @@
 ROOT = File.expand_path("..", __dir__)
 LOOKUP = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index|comp_name_responders)\s*\(/
 NAME_ARG = { "comp_method_index" => 1, "comp_name_responders" => 1 }.freeze
+AS_VALUE = /\b(comp_method_in_chain|comp_cmethod_in_chain|comp_method_in_class|comp_cmethod_in_class|comp_method_index)\b(?=\s*[:;)])/
 
 blob = nil   # the git blob prefix (":" the index, "REV:" a revision), or the working tree
 case ARGV.first
@@ -50,7 +53,7 @@ list.each_line do |l|
   if l.start_with?("files:") then files.concat(l.split[1..])
   else
     f, fn, look, = l.split(/\s+/, 4)
-    allow[look&.start_with?("comp_") ? "#{f} #{fn} #{look}" : "#{f} #{fn}"] = true
+    allow[look&.start_with?("comp_", "=") ? "#{f} #{fn} #{look}" : "#{f} #{fn}"] = true
   end
 end
 files &= ARGV.map { |a| a.delete_prefix("#{ROOT}/") } unless ARGV.empty?
@@ -100,14 +103,22 @@ files.each do |f|
     starts << [off, $1] if l =~ /\A[A-Za-z][^;=]*?\b(\w+)\s*\(/ && !l.rstrip.end_with?(";")
     off += l.size
   end
+  function_at = ->(at) { starts.reverse_each.find { |o, _| o <= at }&.last }
+  line_at = ->(at) { code[0, at].count("\n") + 1 }
   code.to_enum(:scan, LOOKUP).each do
     m = Regexp.last_match
-    fn = starts.reverse_each.find { |o, _| o <= m.begin(0) }&.last
+    fn = function_at.(m.begin(0))
     next if m[1] == fn   # the lookup's own definition
     name = args(code, m.end(0))[NAME_ARG.fetch(m[1], 2)].to_s.gsub(/\s+/, " ")
-    next if name.start_with?('"') || fn == "call_target" || allow["#{f} #{fn}"] || allow["#{f} #{fn} #{m[1]}"]
-    line = code[0, m.begin(0)].count("\n") + 1
-    bad << "#{f}:#{line}: #{fn}: #{m[1]}(..., #{name}, ...): a call's target goes through call_target, or list #{fn} in tools/route_audit.allow with why it asks about a name"
+    next if name.start_with?('"') || fn == "call_target"
+    next if allow["#{f} #{fn}"] || allow["#{f} #{fn} #{m[1]}"] || allow["#{f} #{fn} =#{name}"]
+    bad << "#{f}:#{line_at.(m.begin(0))}: #{fn}: #{m[1]}(..., #{name}, ...): a call's target goes through call_target, or list #{fn} in tools/route_audit.allow with why it asks about a name"
+  end
+  code.to_enum(:scan, AS_VALUE).each do
+    m = Regexp.last_match
+    fn = function_at.(m.begin(0))
+    next if fn == "call_target" || allow["#{f} #{fn}"] || allow["#{f} #{fn} #{m[1]}"]
+    bad << "#{f}:#{line_at.(m.begin(0))}: #{fn}: #{m[1]} taken as a value: a call's target goes through call_target, or list #{fn} in tools/route_audit.allow with why it asks about a name"
   end
 end
 bad.each { |b| warn "route-audit: #{b}" }

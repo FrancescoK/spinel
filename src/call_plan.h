@@ -86,7 +86,9 @@ const CallPlan *cplan_user(Compiler *c, int id);
    none. The one place a site asks "what does this call run": it answers
    from the tables by name (a redefined method's entry is its last
    definition), and binding a call to one of a method's versions (#9898)
-   is decided here. A question about a name rather than one call (is it
+   is decided here. `id` is -1 where a helper that serves calls is asked
+   with no call (class_reopen_cmethod for a respond_to? test): the name's
+   last definition. A question about a name rather than one call (is it
    defined, which classes answer it) and a method the language calls by a
    fixed name (`initialize`, `<=>`) ask the tables directly. */
 enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4 };

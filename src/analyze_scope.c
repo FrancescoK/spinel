@@ -217,9 +217,9 @@ static int forwarding_target_scan(Compiler *c, Scope *s, int *sole) {
       const char *cn = nt_str(nt, id, "name");
       /* a receiver-qualified target is not resolved here */
       if (cn && nt_ref(nt, id, "receiver") < 0) {
-        mi = comp_method_index(c, cn);
-        if (mi < 0 && s->class_id >= 0) mi = comp_method_in_chain(c, s->class_id, cn, NULL);
-        if (mi < 0 && s->class_id >= 0) mi = comp_cmethod_in_chain(c, s->class_id, cn, NULL);
+        mi = call_target(c, id, -1, cn, CT_TOP, NULL);
+        if (mi < 0 && s->class_id >= 0) mi = call_target(c, id, s->class_id, cn, 0, NULL);
+        if (mi < 0 && s->class_id >= 0) mi = call_target(c, id, s->class_id, cn, CT_CMETHOD, NULL);
       }
     }
     if (mi < 0 || (first >= 0 && mi != first)) one = 0;
@@ -1037,7 +1037,7 @@ int is_class_const(const NodeTable *nt, int id) {
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
 
-int class_reopen_cmethod(Compiler *c, int recv, const char *name) {
+int class_reopen_cmethod(Compiler *c, int call, int recv, const char *name) {
   int cm = comp_class_index(c, class_reopen_mod);
   if (cm < 0 || !name) return -1;
   if (recv >= 0) {
@@ -1045,9 +1045,9 @@ int class_reopen_cmethod(Compiler *c, int recv, const char *name) {
     const char *cn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(c->nt, recv, "name") : NULL;
     int ci = cn ? comp_class_index(c, cn) : -1;
     if (!cn || !builtin_class_id(cn) || is_builtin_module_name(cn) ||
-        (ci >= 0 && comp_cmethod_in_chain(c, ci, name, NULL) >= 0)) return -1;
+        (ci >= 0 && call_target(c, call, ci, name, CT_CMETHOD, NULL) >= 0)) return -1;
   }
-  return comp_cmethod_in_class(c, cm, name);
+  return call_target(c, call, cm, name, CT_OWN | CT_CMETHOD, NULL);
 }
 
 static int is_class_eval_name(const char *nm) {
@@ -5176,7 +5176,7 @@ static void bare_native_func_calls(Compiler *c) {
     if (!sc || !sc->is_cmethod || sc->class_id < 0) continue;
     const char *mod = c->classes[sc->class_id].name;
     if (comp_native_find(c, mod, nm) < 0) continue;
-    int mi = comp_cmethod_in_chain(c, sc->class_id, nm, NULL);
+    int mi = call_target(c, id, sc->class_id, nm, CT_CMETHOD, NULL);
     if (mi >= 0 && !comp_scope_native_twin(c, mi)) continue;
     int cr = nt_new_node(nt, "ConstantReadNode");
     if (cr < 0) continue;
@@ -6545,7 +6545,7 @@ static void check_unrewritten_delegators(Compiler *c) {
     /* a program that defines the name itself is calling its own method */
     int user = 0;
     for (int k = 0; k < c->nclasses && !user; k++)
-      if (comp_cmethod_in_class(c, k, nm) >= 0 || comp_method_in_class(c, k, nm) >= 0) user = 1;
+      if (call_target(c, id, k, nm, CT_OWN | CT_CMETHOD, NULL) >= 0 || call_target(c, id, k, nm, CT_OWN, NULL) >= 0) user = 1;
     if (user) continue;
     char msg[256];
     snprintf(msg, sizeof msg,
@@ -7851,11 +7851,11 @@ void rewrite_self_attr_empty_writes(Compiler *c) {
     int ci = s->class_id;
     ClassInfo *cls = &c->classes[ci];
     if (comp_class_is_module(c, cls) || cls->is_struct || cls->is_native_class) continue;
-    if (!comp_writer_in_chain(c, ci, base, NULL) || comp_method_in_chain(c, ci, name, NULL) >= 0) continue;
+    if (!comp_writer_in_chain(c, ci, base, NULL) || call_target(c, id, ci, name, 0, NULL) >= 0) continue;
     if (comp_prep_chain_target(c, ci, name)) continue;
     int over = 0;
     for (int k = 0; k < c->nclasses && !over; k++)
-      if (k != ci && is_descendant(c, k, ci) && comp_method_in_class(c, k, name) >= 0) over = 1;
+      if (k != ci && is_descendant(c, k, ci) && call_target(c, id, k, name, CT_OWN, NULL) >= 0) over = 1;
     if (over) continue;
     char ivn[260];
     snprintf(ivn, sizeof ivn, "@%s", base);
@@ -8389,8 +8389,8 @@ static int cmethod_reaches_override_walk(Compiler *c, int mi, int ci, int def_cl
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;          /* direct `new` is the caller's has_new path */
     int sub_def = -1;
-    int mci = comp_cmethod_in_chain(c, ci, nm, NULL);
-    int mdef = comp_cmethod_in_chain(c, def_cls, nm, &sub_def);
+    int mci = call_target(c, id, ci, nm, CT_CMETHOD, NULL);
+    int mdef = call_target(c, id, def_cls, nm, CT_CMETHOD, &sub_def);
     if (mci >= 0 && mci != mdef) return 1;            /* ci overrides nm directly */
     /* nm is inherited unchanged by ci -- but its own body may still reach an
        override; descend into the def-chain version. */
@@ -8449,7 +8449,7 @@ static int cmethod_reaches_class_ivar_walk(Compiler *c, int mi, int def_cls, uns
       }
     }
     int sub_def = -1;
-    int mdef = comp_cmethod_in_chain(c, def_cls, nm, &sub_def);
+    int mdef = call_target(c, id, def_cls, nm, CT_CMETHOD, &sub_def);
     if (mdef >= 0 && mdef != mi && sub_def >= 0 &&
         cmethod_reaches_class_ivar_walk(c, mdef, sub_def, seen)) return 1;
   }
@@ -8492,9 +8492,9 @@ static int cmethod_calls_specialized_sibling(Compiler *c, int mi, int ci, int de
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
     int sdef = -1;
-    int smi = comp_cmethod_in_chain(c, def_cls, nm, &sdef);
+    int smi = call_target(c, id, def_cls, nm, CT_CMETHOD, &sdef);
     if (smi < 0 || smi == mi || sdef < 0) continue;
-    if (comp_cmethod_in_class(c, ci, nm) >= 0) continue;   /* ci owns it already */
+    if (call_target(c, id, ci, nm, CT_OWN | CT_CMETHOD, NULL) >= 0) continue;   /* ci owns it already */
     int hn = 0;
     if (cmethod_needs_specialization_d(c, smi, ci, sdef, &hn, depth + 1)) return 1;
   }
@@ -8594,7 +8594,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || sp_streq(nm, "new")) continue;
     int sub_def = -1;
-    int sub_mi = comp_cmethod_in_chain(c, ci, nm, &sub_def);
+    int sub_mi = call_target(c, id, ci, nm, CT_CMETHOD, &sub_def);
     if (sub_mi < 0 || sub_def == ci) continue;   /* unresolved, or ci-native */
     /* The nearest one may be a copy just made for an intermediate class (Test
        between Runnable and AddTest): copied from it, ci's version would call
@@ -8813,9 +8813,9 @@ void specialize_inherited_cls_new(Compiler *c) {
            own class-level ivars as its descendants do */
         for (int k = 0; k < c->nclasses; k++) {
           if (k != base && !is_descendant(c, k, base)) continue;
-          if (comp_cmethod_in_class(c, k, mname) >= 0) continue;
+          if (call_target(c, id, k, mname, CT_OWN | CT_CMETHOD, NULL) >= 0) continue;
           int def_cls = -1;
-          int mi = comp_cmethod_in_chain(c, k, mname, &def_cls);
+          int mi = call_target(c, id, k, mname, CT_CMETHOD, &def_cls);
           if (mi < 0 || def_cls == k) continue;
           if (mi >= snap) {
             int orig = -1;
@@ -8853,9 +8853,9 @@ void specialize_inherited_cls_new(Compiler *c) {
     }
     const char *mname = cls_call_name(c, id);
     if (!mname || sp_streq(mname, "new")) continue;
-    if (comp_cmethod_in_class(c, ci, mname) >= 0) continue;  /* defined on ci */
+    if (call_target(c, id, ci, mname, CT_OWN | CT_CMETHOD, NULL) >= 0) continue;  /* defined on ci */
     int def_cls = -1;
-    int mi = comp_cmethod_in_chain(c, ci, mname, &def_cls);
+    int mi = call_target(c, id, ci, mname, CT_CMETHOD, &def_cls);
     if (mi < 0 || def_cls == ci) continue;                   /* not inherited */
     /* The nearest inherited copy may itself be a fresh specialization built
        this pass for an INTERMEDIATE subclass (index >= snap); specializing
@@ -8964,7 +8964,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       /* the source's own name on its own class, or whatever the call's name
          runs on its class being this source */
       if (sp_streq(nm1, src->name) && rc == src->class_id) { called_direct = 1; break; }
-      if (ccres[ii] == -2) ccres[ii] = comp_cmethod_in_chain(c, rc, nm1, NULL);
+      if (ccres[ii] == -2) ccres[ii] = call_target(c, ccall[ii], rc, nm1, CT_CMETHOD, NULL);
       if (ccres[ii] == s) called_direct = 1;
     }
     /* ... or if a bare call inside some class-method body still resolves to
@@ -8977,7 +8977,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!nm2 || !cm_call_names(c, nm2, s, &src->class_id, 1, &an, cmemo)) continue;
       Scope *encl = comp_scope_of(c, id);
       if (!encl || !encl->is_cmethod || encl->class_id < 0) continue;
-      if (comp_cmethod_in_chain(c, encl->class_id, nm2, NULL) == s) called_direct = 1;
+      if (call_target(c, id, encl->class_id, nm2, CT_CMETHOD, NULL) == s) called_direct = 1;
     }
     /* ... or if a receiver-less call in a class BODY resolves to this source:
        self there is the class, and a class that needed no specialized copy of
@@ -8986,7 +8986,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (!body_cls || body_cls[id] < 0) continue;
       const char *nm3 = nt_str(nt, id, "name");
       if (!nm3 || !cm_call_names(c, nm3, s, &src->class_id, 1, &an, cmemo)) continue;
-      if (comp_cmethod_in_chain(c, body_cls[id], nm3, NULL) == s) called_direct = 1;
+      if (call_target(c, id, body_cls[id], nm3, CT_CMETHOD, NULL) == s) called_direct = 1;
     }
     /* ... or if an `obj.class.<name>` call exists anywhere. That compiles to a
        switch over the receiver's cls_id whose DEFAULT arm calls this source, so
@@ -9590,7 +9590,7 @@ static int cvar_note_write(Compiler *c, int cid, int id, int nil_only) {
     vt = infer_type(c, vnode);
     const char *op = nt_str(nt, id, "binary_operator");
     if (ty_is_object(cur)) {
-      int mi = op ? comp_method_in_chain(c, ty_object_class(cur), op, NULL) : -1;
+      int mi = op ? call_target(c, id, ty_object_class(cur), op, 0, NULL) : -1;
       vt = (mi >= 0 && c->scopes[mi].ret != TY_UNKNOWN) ? c->scopes[mi].ret : cur;
     }
     else if ((ty_is_array(cur) || cur == TY_POLY_ARRAY) && op &&
@@ -10907,7 +10907,7 @@ static int ctor_scopes_write(Compiler *c, NilWrites *out) {
       int recv = nt_ref(nt, id, "receiver");
       if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) continue;
       const char *nm = nt_str(nt, id, "name");
-      int mi = nm ? comp_method_in_chain(c, s->class_id, nm, NULL) : -1;
+      int mi = nm ? call_target(c, id, s->class_id, nm, 0, NULL) : -1;
       if (mi < 0 || ctor[mi] || c->scopes[mi].is_cmethod) continue;
       ctor[mi] = 1; grew = 1;
     }
@@ -11477,7 +11477,7 @@ int infer_ivar_types(Compiler *c) {
       if (ty_k == NK_InstanceVariableOperatorWriteNode && ty_is_object(ci->ivar_types[iv])) {
         const char *op2 = nt_str(nt, id, "binary_operator");
         int cid2 = ty_object_class(ci->ivar_types[iv]);
-        int mi2 = op2 ? comp_method_in_chain(c, cid2, op2, NULL) : -1;
+        int mi2 = op2 ? call_target(c, id, cid2, op2, 0, NULL) : -1;
         if (mi2 >= 0 && c->scopes[mi2].ret != TY_UNKNOWN)
           vt = c->scopes[mi2].ret;
         else

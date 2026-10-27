@@ -579,14 +579,14 @@ static int nf_region_writes_before(NF *f, int region, const char *nm, int rd) {
   return nf_write_runs_first(f, region, nm, rd, rl, region, 0);
 }
 /* Does the program give nil a method `name` of its own (on NilClass, Object,
-   Kernel, BasicObject, or at the top level)? Then a call of it on nil
-   raises nothing. */
-static int nf_nil_user_method(Compiler *c, const char *name) {
+   Kernel, BasicObject, or at the top level), for call `call`? Then the call
+   on nil raises nothing. */
+static int nf_nil_user_method(Compiler *c, int call, const char *name) {
   static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
-  if (comp_method_index(c, name) >= 0) return 1;
+  if (call_target(c, call, -1, name, CT_TOP, NULL) >= 0) return 1;
   for (int i = 0; owners[i]; i++) {
     int k = comp_class_index(c, owners[i]);
-    if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+    if (k >= 0 && call_target(c, call, k, name, 0, NULL) >= 0) return 1;
   }
   return 0;
 }
@@ -607,7 +607,7 @@ static int nf_derefs(Compiler *c, int n, const char *nm, int depth) {
     const char *cn = nt_str(nt, n, "name");
     if (r >= 0 && cn && !nt_safe_nav(nt, n) && nf_is_read_of(nt, r, nm) &&
         nt_kind(nt, nt_paren_single(nt, r)) == NK_LocalVariableReadNode && !is_nil_method(cn) &&
-        !nf_nil_user_method(c, cn)) return 1;
+        !nf_nil_user_method(c, n, cn)) return 1;
     if (r >= 0 && nf_derefs(c, r, nm, depth + 1)) return 1;
     int a = nt_ref(nt, n, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;

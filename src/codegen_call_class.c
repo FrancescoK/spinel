@@ -2412,7 +2412,7 @@ int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         int oci = comp_class_index(c, nt_str(nt, recv, "name"));
         int odef = -1;
         int omi = oci >= 0 ? comp_cmethod_in_chain(c, oci, name, &odef) : -1;
-        if (omi < 0 && (omi = class_reopen_cmethod(c, recv, name)) >= 0) {
+        if (omi < 0 && (omi = class_reopen_cmethod(c, id, recv, name)) >= 0) {
           odef = c->scopes[omi].class_id;
           oci = builtin_class_id(nt_str(nt, recv, "name"));
         }

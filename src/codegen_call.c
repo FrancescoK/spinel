@@ -1649,7 +1649,7 @@ static int kwh_elem_named(Compiler *c, int kwn, const int *kwels, const char *pn
 }
 int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls,
                                 const char *raise, Buf *b) {
-  if (kmi != class_reopen_cmethod(c, -1, name)) return 0;
+  if (kmi != class_reopen_cmethod(c, -1, -1, name)) return 0;
   char t[200];
   snprintf(t, sizeof t, "(%s).cls_id < 0 && !sp_class_nil_p(%s) && !sp_class_is_module_val(%s)", cls, cls, cls);
   if (raise) buf_printf(b, " default: if (!(%s)) { %s; break; } ", t, raise);
@@ -18604,11 +18604,11 @@ static int class_responds_to(Compiler *c, int ci, const char *qm) {
 }
 
 int class_value_responds(Compiler *c, int tv, const char *qm, Buf *b) {
-  int any = (class_reopen_cmethod(c, -1, qm) >= 0);
+  int any = (class_reopen_cmethod(c, -1, -1, qm) >= 0);
   for (int k = 0; k < c->nclasses && !class_object_universal_method(qm); k++) any |= class_responds_to(c, k, qm);
   if (!any || !b) return any;
   buf_printf(b, " || (_t%d.tag == SP_TAG_CLASS && (_t%d.cls_id < 0 || _t%d.cls_id == SP_CLASS_BY_NAME ? %d : (0", tv, tv, tv,
-             class_object_universal_method(qm) || (class_reopen_cmethod(c, -1, qm) >= 0));
+             class_object_universal_method(qm) || (class_reopen_cmethod(c, -1, -1, qm) >= 0));
   for (int k = 0; k < c->nclasses; k++) if (class_responds_to(c, k, qm)) buf_printf(b, " || _t%d.cls_id == %d", tv, k);
   buf_puts(b, ")))");
   return 1;

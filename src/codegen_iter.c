@@ -1002,7 +1002,7 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
                                  rk == NK_ConstantPathNode))
                         ? nt_str(nt, recv, "name") : NULL;
     int ci = cname ? comp_class_index(c, cname) : self_class_static_ci(c, recv);
-    if ((t->mi = class_reopen_cmethod(c, recv, name)) >= 0) {
+    if ((t->mi = class_reopen_cmethod(c, id, recv, name)) >= 0) {
       t->cm_class = c->scopes[t->mi].class_id;
       t->cm_self_id = builtin_class_id(cname);
     }
