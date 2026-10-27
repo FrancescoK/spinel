@@ -9037,7 +9037,7 @@ static int prepend_late_stmt(Compiler *c, int ci, int body) {
     if (nt_kind(nt, s) != NK_ClassNode || nt_ref(nt, s, "body") != body) continue;
     int cp = nt_ref(nt, s, "constant_path");
     elab_top_place(c, s, &f, &rank);
-    if (cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode && f >= 0 && comp_parent_map(c)[s] == prog_root_stmts(c, f) &&
+    if (cp >= 0 && (nt_kind(nt, cp) == NK_ConstantReadNode || nt_kind(nt, cp) == NK_ConstantPathNode) && f >= 0 && comp_parent_map(c)[s] == prog_root_stmts(c, f) &&
         elab_cmp(elab_point_of(c, ob[0].node), elab_point_of(c, s)) == PROG_BEFORE) return s;
     return -1;
   }
