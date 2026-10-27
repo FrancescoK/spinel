@@ -3388,7 +3388,26 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
            local to the universally-boxed PolyPoly hash, and so does a boxed
            other, which holds whichever variant the value really is. */
         TyKind ot = infer_type(c, argv[0]);
+        /* another Hash subclass instance holds its class's Hash */
+        if (ty_is_object(ot) && comp_ary_is_hash(c, ty_object_class(ot))) {
+          ot = comp_ary_kind(c, ty_object_class(ot));
+          if (ot == TY_UNKNOWN) continue;
+        }
         if (recv < 0 || (!ty_is_hash(ot) && ot != TY_POLY)) continue;
+        /* a Hash subclass instance's Hash is its class's: another variant
+           widens the class's Hash, as it does a local's (`H.new(7)` is
+           `H.allocate.replace(Hash.new(7))`) */
+        { TyKind rrt = infer_type(c, recv), rk;
+          int hroot = comp_ty_ary_root(c, rrt);
+          if (hroot >= 0) {
+            if (c->classes[hroot].ary_hash && comp_arysub_call(c, id, rrt, &rk)) {
+              TyKind *slot = &c->classes[hroot].ary_kind;
+              if (ty_is_hash(*slot) && *slot != ot && *slot != TY_POLY_POLY_HASH) {
+                *slot = TY_POLY_POLY_HASH; changed = 1; comp_touch_class(hroot);
+              }
+            }
+            continue;
+          } }
         NodeKind rpk = nt_kind(nt, recv);
         if (rpk == NK_LocalVariableReadNode) {
           const char *rpnm = nt_str(nt, recv, "name");
