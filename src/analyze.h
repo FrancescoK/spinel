@@ -187,7 +187,11 @@ typedef struct {
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
-typedef struct { int node, kind, mod, ref; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know; ref: the argument naming it */
+/* kind: LrMixKind; mod: the module's class, -2 one the record does not
+   know; ref: the argument naming it; dup, once asked (lr_mixin_dup): 1 +
+   whether mod is already among the class's ancestors where the mixin
+   runs, ELAB_YES / NO / UNKNOWN */
+typedef struct { int node, kind, mod, ref; unsigned char dup; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the class builders' blocks recorded as their classes' bodies, once

@@ -1291,6 +1291,10 @@ void elab_program(Compiler *c) {
   }
   r->rec = NULL;
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
+  /* a mixin's duplicate answer asked while the record was made saw only
+     what was recorded by then (lr_mixin_dup) */
+  for (int k = 0; k < r->ncls; k++)
+    for (int i = 0; i < r->cls[k].nmix; i++) r->cls[k].mix[i].dup = 0;
   elab_mark_versions(c);
   sp_timing_end(t0, "an_elab_record", "");
 }
@@ -1571,6 +1575,23 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
+/* Is mixin m's module already among cls's ancestors (its singleton's when
+   sg) where m runs: ELAB_YES / NO / UNKNOWN. A fact of the mixin, asked
+   once and kept: the search it makes reads the earlier mixins' answers in
+   turn, so asking again at every search would double the work with each
+   mixin. Answers given while the record is made are dropped at its end
+   (elab_program). The search starts at depth 0, so the kept answer does
+   not depend on where it was first asked; an ask while it runs (modules
+   that include each other) answers unknown. */
+static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
+  if (lr_later(c, &m->mod, m->ref) < 0) return ELAB_NO;
+  if (!m->dup) {
+    m->dup = 1 + ELAB_UNKNOWN;
+    m->dup = (unsigned char)(1 + lr_search(c, cls, sg, NULL, m->mod, elab_point_of(c, m->node), 0, 0, NULL, 0));
+  }
+  return m->dup - 1;
+}
+
 /* The search of `name` (or, with name NULL, of module `mod`) along cls's
    ancestors at p: its prepends (the last first), cls, its includes (the
    last first), then its superclass; a singleton's own methods, its extends,
@@ -1580,7 +1601,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
-  const LrClass *k = lr_class(r, cls);
+  LrClass *k = lr_class(r, cls);
   /* a class made after the record (an object's singleton class, which
      its extends and defs fill) holds methods the record never saw */
   if (!k) return ELAB_UNKNOWN;
@@ -1599,6 +1620,11 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
       if (m->kind != want) continue;
       int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
       if (b == ELAB_NO) continue;
+      /* a module already among the ancestors where the mixin runs (an
+         earlier mixin's, the superclass's) stays where it is */
+      int dup = lr_mixin_dup(c, cls, sg, m);
+      if (dup == ELAB_YES) continue;
+      if (dup == ELAB_UNKNOWN) unsure = 1;
       int o = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o != ELAB_NO) unsure = 1;
