@@ -484,7 +484,23 @@ const char *sp_json_pretty(sp_RbVal v) {
 
 #define JP_MAX_DEPTH 200
 
-typedef struct { const char *p, *end; } jrd;
+/* An object's keys repeat across the objects of an array (`[{"x": ..}, {"x": ..}]`):
+   a key read inside an array is kept, as the frozen key a Hash stores as is
+   (sp_hash_key_from_bytes), and handed out again for the same bytes. It is
+   ruby/json's per-parse name cache: a sorted array searched by length and
+   bytes, for keys of at most JP_KEY_MAX bytes that begin with a letter (an
+   identifier, where an id or a number key would only fill it), with no
+   eviction once it is full. It lives for one parse, in the reader. Every
+   key in it is held by a Hash the parse is still building, which the
+   containers' roots keep, and nothing in the parse runs the program's code. */
+#define JP_KEYS 63
+#define JP_KEY_MAX 55
+typedef struct { const char *key; size_t len; } jkey;
+typedef struct {
+  const char *p, *end;
+  int in_array;                 /* arrays open around the read */
+  int nkeys; jkey keys[JP_KEYS];   /* by length, then bytes */
+} jrd;
 
 static SP_NORETURN void jp_err(const char *msg) {
   sp_raise_cls("JSON::ParserError", msg);
@@ -569,6 +585,37 @@ static const char *jp_string(jrd *j) {
   j->p++;  /* closing quote */
   return jb_finish(&b);
 }
+/* An object's key: the frozen key the Hash stores as is, made from the
+   input's bytes in one allocation where a String read for it was copied
+   again by the Hash, and shared through the reader's cache (jrd) inside an
+   array. A key with an escape or a control character is read as a String,
+   which the Hash copies. */
+static const char *jp_key(jrd *j) {
+  if (j->p >= j->end || *j->p != '"') jp_err("expected a string");
+  const char *s = j->p + 1, *q = s;
+  while (q < j->end && *q != '"' && *q != '\\' && (unsigned char)*q >= 0x20) q++;
+  if (q >= j->end || *q != '"') return jp_string(j);
+  size_t n = (size_t)(q - s);
+  j->p = q + 1;
+  int lead = n ? (unsigned char)s[0] : 0;
+  if (!j->in_array || n > JP_KEY_MAX || !((lead >= 'a' && lead <= 'z') || (lead >= 'A' && lead <= 'Z')))
+    return sp_hash_key_from_bytes(s, n, 0);
+  int lo = 0, hi = j->nkeys;
+  while (lo < hi) {
+    int mid = (lo + hi) / 2;
+    const jkey *e = &j->keys[mid];
+    int c = e->len < n ? -1 : e->len > n ? 1 : memcmp(e->key, s, n);
+    if (c == 0) return e->key;
+    if (c < 0) lo = mid + 1; else hi = mid;
+  }
+  const char *k = sp_hash_key_from_bytes(s, n, 0);
+  if (j->nkeys < JP_KEYS) {
+    memmove(&j->keys[lo + 1], &j->keys[lo], sizeof(jkey) * (size_t)(j->nkeys - lo));
+    j->keys[lo].key = k; j->keys[lo].len = n;
+    j->nkeys++;
+  }
+  return k;
+}
 static sp_RbVal jp_number(jrd *j) {
   const char *start = j->p;
   int is_float = 0;
@@ -634,7 +681,9 @@ static sp_RbVal jp_array(jrd *j, int depth) {
   jp_ws(j);
   if (j->p < j->end && *j->p == ']') { j->p++; return box; }
   for (;;) {
+    j->in_array++;
     sp_RbVal v = jp_value(j, depth + 1);
+    j->in_array--;
     sp_PolyArray_push((sp_PolyArray *)box.v.p, v);
     jp_ws(j);
     if (j->p >= j->end) jp_err("unterminated array");
@@ -652,7 +701,7 @@ static sp_RbVal jp_object(jrd *j, int depth) {
   if (j->p < j->end && *j->p == '}') { j->p++; return box; }
   for (;;) {
     jp_ws(j);
-    const char *key = jp_string(j);
+    const char *key = jp_key(j);
     SP_GC_ROOT_STR(key);   /* survive the value parse; the hash stores the ptr */
     jp_ws(j);
     if (j->p >= j->end || *j->p != ':') jp_err("expected ':' in object");
@@ -691,6 +740,7 @@ sp_RbVal sp_json_parse(const char *s) {
      run on a small document, a segfault on a large one. */
   SP_GC_ROOT_STR(s);
   jrd j;
+  j.in_array = 0; j.nkeys = 0;
   j.p = s ? s : "";
   j.end = j.p + (s ? sp_str_byte_len(s) : 0);
   sp_RbVal v = jp_value(&j, 0);

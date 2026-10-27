@@ -134,12 +134,10 @@ const char*sp_sym_to_s_chilled(sp_sym id){
 #ifdef SP_ONE_STRING
 struct sp_String_s *sp_strelem_of(const char *b) { return sp_String_new_shared(b); }
 const char *sp_str_keep_copy(const char *s) { return sp_str_concat(s, sp_str_empty); }
-/* A Hash's copy of a mutable String key: a frozen handle over a copy, whose
-   payload is the key (sp_hash_key_str) */
-const char *sp_hash_key_handle_copy(const char *s) {
-  int64_t len = (int64_t)sp_str_byte_len(s);
-  int bin = sp_str_is_binary(s);
-  sp_String *h = sp_String_new_inline_len(s, len);
+/* A Hash's String key made from `len` bytes at `data`: a frozen handle over
+   a copy, whose payload is the key (sp_hash_key_str, sp_hash_key_from_bytes) */
+const char *sp_hash_key_from_bytes(const char *data, size_t len, int bin) {
+  sp_String *h = sp_String_new_inline_len(data, (int64_t)len);
   if (bin) { h->binary = 1; sp_fd_publish(h); }
   sp_String_freeze(h);
   return h->data;
