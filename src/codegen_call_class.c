@@ -4589,7 +4589,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            the arguments again: only arguments with no effect. */
         {
           int dargc = 0; const int *dargv = call_args(nt, id, &dargc);
-          if (initm >= 0 && ctor_needs_self_defaults_argv(c, initm, dargv, dargc) && !ncls->is_value_type) {
+          if (initm >= 0 && ctor_needs_self_defaults_argv(c, initm, dargv, dargc)) {
             int subs = 0, plain = nt_ref(nt, id, "block") < 0;
             for (int k = 0; k < c->nclasses; k++) {
               if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
