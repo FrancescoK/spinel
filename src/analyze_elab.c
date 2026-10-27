@@ -1384,7 +1384,10 @@ int elab_version_captured(Compiler *c, const char *name) {
     const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
     for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
     v = nt_nodes_of_kind(nt, NK_StringNode, &n);
-    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "unescaped"), name);
+    for (int i = 0; !hit && i < n; i++) {
+      const char *s = nt_str(nt, v[i], "content");   /* a StringNode's text */
+      hit = s && sp_streq(s, name);
+    }
     x->captured = hit ? 2 : 1;
   }
   return x->captured == 2;
