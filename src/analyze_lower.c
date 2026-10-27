@@ -223,7 +223,11 @@ int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt) {
   return -1;
 }
 
+/* A row's run starts afresh: its scratch, and the parent map checked
+   against the table at its first ask (a run before it, or the run a check
+   follows, may have edited the table after asking for the map). */
 static void lower_scratch_reset(LowerCtx *lc) {
+  lc->parent_live = 0;
   lc->serial = 0;
   for (int i = 0; i < 3; i++) lc->prog_memo[i] = -1;
   for (int i = 0; i < lc->nused; i++) free(lc->used[i]);
@@ -290,7 +294,6 @@ static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, in
    once, at the end. */
 static int lower_once(Compiler *c, LowerCtx *lc, const Lowering *w) {
   lc->n0 = c->nt->count;
-  lc->parent_live = 0;
   lower_scratch_reset(lc);
   if (w->gate && !w->gate(c, lc)) return 0;
   int rewrote = lower_sites(c, lc, w, 0, NULL);
