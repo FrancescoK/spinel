@@ -11,7 +11,7 @@ doc = Document.new
 doc << XMLDecl.new
 doc << DocType.new(%q{svg PUBLIC "-//W3C//DTD SVG 1.0//EN" } +
   %q{"http://www.w3.org/TR/2001/REC-SVG-20010904/DTD/svg10.dtd"})
-doc << Instruction.new("xml-stylesheet", %Q{href="graph.css" type="text/css"})
+doc << Instruction.new("xml-stylesheet", String.new(%Q{href="graph.css" type="text/css"}))
 root = doc.add_element("svg", {
   "width" => "500",
   "height" => "300",
