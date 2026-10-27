@@ -33,3 +33,13 @@ s = JSON.parse(pairs, symbolize_names: true)
 p s, s[1][:name]
 o = JSON.parse(pairs, object_class: OpenStruct)
 p o.map(&:name)
+
+# a key the Hash does not keep -- an earlier key of the same bytes was
+# written with an escape -- is still the cache's to hand out: it has to stay
+# alive for the objects that follow
+dups = '[{"a\\u0062": 1, "ab": 2}, ' + (1..200).map { |i| %({"ab": #{i}, "w": [#{i}, "v#{i}"]}) }.join(", ") + "]"
+d = JSON.parse(dups)
+p d[0], d[1], d[200], d[200].keys.first.frozen?
+p d.sum { |h| h["ab"] }
+ds = JSON.parse(dups, symbolize_names: true)
+p ds[0], ds[200]
