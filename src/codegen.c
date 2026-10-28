@@ -19540,10 +19540,10 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
     int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
     /* Each class's includes and prepends as the load record has them, in
-       the order they run (a Struct.new block's too). One call's modules
-       are recorded last first, as `include A, B` includes B first, and
-       `prepend A, B` is listed as written; one under a condition in its
-       body (LrMixin.cond), which may not run, is left out. */
+       the order they run (a Struct.new block's too): one call's modules
+       last first, as `include A, B` includes B first and `prepend A, B`
+       prepends B first. One under a condition in its body (LrMixin.cond),
+       which may not run, is left out. */
     for (int ci = 0; ci < c->nclasses; ci++) {
       int nmx = 0;
       const LrMixin *mx = elab_class_mixins(c, ci, &nmx);
@@ -19554,7 +19554,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
         int **tgt_mods = prep ? cls_preps : cls_incs;
         int  *tgt_n    = prep ? cls_npreps : cls_nincs;
         for (int x = g; x < ge; x++) {
-          const LrMixin *m = &mx[prep ? ge - 1 - (x - g) : x];
+          const LrMixin *m = &mx[x];
           int mid2 = m->mod >= 0 ? m->mod : mixin_ref_class_id(c, m->ref);
           if (mid2 == -1) continue;
           int found2 = 0;
