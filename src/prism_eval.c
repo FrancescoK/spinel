@@ -27,9 +27,57 @@ struct PevCtx {
   PevVar loc[64]; int nloc;
   int full;               /* a table was full: the evaluation cannot be trusted */
   const PevHooks *hooks;
+  /* the directory of the file the expression is in, where it is asked what
+     path it builds: `__dir__`, `File.dirname(__FILE__)`, `File.join`,
+     `File.expand_path` and `freeze` are known only then (NULL: they are not) */
+  const char *dir;
 };
 
 static int pev_eval(PevCtx *c, pm_node_t *n, Mv *out);
+
+/* `File.join` of Strings: a "/" between them, none doubled */
+static int pev_file_join(Mv *v, int n, Mv *out) {
+  MvBuf b = {0};
+  for (int i = 0; i < n; i++) {
+    if (v[i].k != MV_STR) { free(b.p); return 0; }
+    const char *s = v[i].s;
+    size_t len = strlen(s);
+    if (i) { while (b.len && b.p[b.len - 1] == '/') b.len--; if (b.p) b.p[b.len] = 0; mvb_puts(&b, "/"); while (*s == '/') { s++; len--; } }
+    mvb_putn(&b, s, len);
+  }
+  *out = mv_str(b.p ? b.p : "", b.len, MV_STR);
+  free(b.p);
+  return 1;
+}
+
+/* the path forms of a context that has a directory (PevCtx.dir): 1 and the
+   value, 0 when not known, -1 when the call is none of them */
+static int pev_path_call(PevCtx *c, pm_call_node_t *n, const char *name, Mv *out) {
+  pm_node_list_t *args = n->arguments ? &n->arguments->arguments : NULL;
+  size_t argc = args ? args->size : 0;
+  int file = n->receiver && PM_NODE_TYPE(n->receiver) == PM_CONSTANT_READ_NODE;
+  if (file) { char *rn = cstr(((pm_constant_read_node_t *)n->receiver)->name); file = strcmp(rn, "File") == 0; free(rn); }
+  if (!n->receiver && !argc && strcmp(name, "__dir__") == 0) { *out = mv_str(c->dir, strlen(c->dir), MV_STR); return 1; }
+  if (n->receiver && !argc && strcmp(name, "freeze") == 0) return pev_eval(c, n->receiver, out);
+  if (file && argc == 1 && strcmp(name, "dirname") == 0 && PM_NODE_TYPE(args->nodes[0]) == PM_SOURCE_FILE_NODE) {
+    *out = mv_str(c->dir, strlen(c->dir), MV_STR);
+    return 1;
+  }
+  if (!file || !argc || argc > 16) return -1;
+  Mv v[16];
+  int expand = strcmp(name, "expand_path") == 0;
+  if (!expand && strcmp(name, "join") != 0) return -1;
+  if (expand && argc != 2) return -1;
+  for (size_t i = 0; i < argc; i++) {
+    if (PM_NODE_TYPE(args->nodes[i]) == PM_SPLAT_NODE || !pev_eval(c, args->nodes[i], &v[i])) return 0;
+    if (v[i].k != MV_STR) return 0;
+  }
+  if (!expand) return pev_file_join(v, (int)argc, out);
+  /* `File.expand_path(path, dir)` of a path under the directory it is given */
+  if (v[0].s[0] == '/') { *out = v[0]; return 1; }
+  Mv pair[2] = { v[1], v[0] };
+  return pev_file_join(pair, 2, out);
+}
 
 static Mv *pev_lookup(PevVar *vars, int n, const char *name) {
   for (int i = n - 1; i >= 0; i--) if (strcmp(vars[i].name, name) == 0) return &vars[i].v;
@@ -105,6 +153,10 @@ static int pev_eval_call(PevCtx *c, pm_call_node_t *n, Mv *out) {
   pm_node_list_t *args = n->arguments ? &n->arguments->arguments : NULL;
   size_t argc = args ? args->size : 0;
   if (n->block) goto done;
+  if (c->dir) {
+    int r = pev_path_call(c, n, name, out);
+    if (r >= 0) { ok = r; goto done; }
+  }
   if (!n->receiver || PM_NODE_TYPE(n->receiver) == PM_SELF_NODE) {
     /* a call on no receiver reaches what the context's owner knows: a macro, the class's own name */
     ok = c->hooks && c->hooks->self_call(c, n, name, out);
