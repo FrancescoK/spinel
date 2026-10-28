@@ -54,6 +54,10 @@ module H
     s = resp.body
     s.to_s
   end
+
+  def self.kept(n)
+    "x#{n}".tap { |s| $kept = s }
+  end
 end
 
 module C
@@ -84,6 +88,8 @@ h = {
   "f" => C.text(ARGV.size + 1),
   "g" => C.text(ARGV.size),
   "h" => C.failed(ARGV.size + 1),
+  "i" => H.kept(ARGV.size + 1),
 }
+$kept << "y"
 h.each { |k, v| puts "#{k}: #{v}" }
 puts C.text(ARGV.size + 1)

@@ -6,4 +6,5 @@ e: <input value="abc123">
 f: v: 1; busy
 g: v: 0
 h: error: boom 1; busy
+i: x1y
 v: 1; busy
