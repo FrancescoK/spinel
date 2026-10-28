@@ -9321,22 +9321,48 @@ static void fwd_branch_on_callable(Compiler *c, int id, int cx) {
 }
 static void fwd_branch_on_block_given(Compiler *c, int id) { fwd_branch_on_callable(c, id, -1); }
 
-/* May evaluating e change what the read cx (a local, an instance variable
-   or a constant) answers? A local only by a write to it; the others also by
-   any call, which may write them. */
-static int fwd_subtree_may_rebind(const NodeTable *nt, int e, int cx) {
+/* Does e write the variable `name`, at any depth (closures = 0), or only
+   inside a block or a lambda (closures = 1)? */
+static int fwd_subtree_writes(const NodeTable *nt, int e, const char *name, int closures, int inside) {
+  if (e < 0 || e >= nt->count) return 0;
+  const char *ty = nt->nodes[e].type, *en = nt_str(nt, e, "name");
+  if (ty && en && sp_streq(name, en) && (strstr(ty, "WriteNode") || strstr(ty, "TargetNode")) &&
+      (!closures || inside))
+    return 1;
+  if (ty && (sp_streq(ty, "BlockNode") || sp_streq(ty, "LambdaNode"))) inside = 1;
+  const SpNode *nd = &nt->nodes[e];
+  for (int j = 0; j < nd->nr; j++) if (fwd_subtree_writes(nt, nd->r[j].ref, name, closures, inside)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++)
+      if (fwd_subtree_writes(nt, nd->a[j].ids[k], name, closures, inside)) return 1;
+  return 0;
+}
+static int fwd_subtree_calls(const NodeTable *nt, int e) {
   if (e < 0 || e >= nt->count) return 0;
   const char *ty = nt->nodes[e].type;
-  const char *cn = nt_str(nt, cx, "name"), *en = nt_str(nt, e, "name");
-  int local = nt_kind(nt, cx) == NK_LocalVariableReadNode;
-  if (ty && cn && en && sp_streq(cn, en) && (strstr(ty, "WriteNode") || strstr(ty, "TargetNode"))) return 1;
-  if (!local && ty && (sp_streq(ty, "CallNode") || sp_streq(ty, "SuperNode") ||
-                       sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))) return 1;
+  if (ty && (sp_streq(ty, "CallNode") || sp_streq(ty, "SuperNode") ||
+             sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))) return 1;
   const SpNode *nd = &nt->nodes[e];
-  for (int j = 0; j < nd->nr; j++) if (fwd_subtree_may_rebind(nt, nd->r[j].ref, cx)) return 1;
+  for (int j = 0; j < nd->nr; j++) if (fwd_subtree_calls(nt, nd->r[j].ref)) return 1;
   for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_may_rebind(nt, nd->a[j].ids[k], cx)) return 1;
+    for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_calls(nt, nd->a[j].ids[k])) return 1;
   return 0;
+}
+/* May evaluating e change what the read cx (a local or an instance
+   variable) answers? By a write to it; for an instance variable by any
+   call, which may run a method that writes it; for a local by any call
+   where a block or a lambda of its method writes it (at the top level,
+   where that is not looked for, by any call). */
+static int fwd_subtree_may_rebind(Compiler *c, int e, int cx) {
+  const NodeTable *nt = c->nt;
+  const char *cn = nt_str(nt, cx, "name");
+  if (!cn) return 1;
+  if (fwd_subtree_writes(nt, e, cn, 0, 0)) return 1;
+  if (!fwd_subtree_calls(nt, e)) return 0;
+  if (nt_kind(nt, cx) != NK_LocalVariableReadNode) return 1;
+  Scope *ms = comp_scope_of(c, cx);
+  int def = ms ? ms->def_node : -1;
+  return def < 0 || fwd_subtree_writes(nt, def, cn, 1, 0);
 }
 
 /* Does any class, module or the top level define an instance method `name`? */
@@ -9450,9 +9476,10 @@ int desugar_value_callable_forwards(Compiler *c) {
        with 0: a block calling pr raised NoMethodError): it is read once,
        into a temp (fwd_hoist_callable: the Proc may assign pr), and the
        temp is tested where the call runs (fwd_branch_on_callable). The read
-       goes ahead of the receiver, so a plain read keeps the `&b` form where
-       the receiver or an argument may change what it answers (any other
-       expression desugar_block_arg_order put in order already). */
+       goes ahead of the receiver, so a local or an instance variable keeps
+       the `&b` form where the receiver or an argument may change it (any
+       other expression desugar_block_arg_order put in order already). A
+       constant is not read ahead: it keeps the form it had. */
     int fill_nilable = 0;
     if (sp_streq(name, "fill")) {
       int fa = nt_ref(nt, id, "arguments"), fn = 0;
@@ -9464,12 +9491,16 @@ int desugar_value_callable_forwards(Compiler *c) {
       int fown = ami >= 0 && ami < c->nscopes && c->scopes[ami].def_node >= 0 &&
                  !nt_int(nt, c->scopes[ami].def_node, "node_bi", 0);
       if (fsplat || fown) continue;
-      if (!anon) {
-        NodeKind xk = nt_kind(nt, ex);
-        int rd = xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode ||
-                 xk == NK_ConstantReadNode || xk == NK_ConstantPathNode;
-        if (rd && (fwd_subtree_may_rebind(nt, recv, ex) ||
-                   fwd_subtree_may_rebind(nt, nt_ref(nt, id, "arguments"), ex)))
+      NodeKind xk = anon ? NK_CallNode : nt_kind(nt, ex);
+      if (!anon && (xk == NK_ConstantReadNode || xk == NK_ConstantPathNode)) {
+        /* a constant is read where the block runs, after the receiver and
+           the arguments; one of no Proc or Method type keeps the `&b` form */
+        if (ct != TY_PROC && ct != TY_METHOD) continue;
+      }
+      else if (!anon) {
+        if ((xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode) &&
+            (fwd_subtree_may_rebind(c, recv, ex) ||
+             fwd_subtree_may_rebind(c, nt_ref(nt, id, "arguments"), ex)))
           continue;
         hoist = 0;
         fill_nilable = 1;

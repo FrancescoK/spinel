@@ -91,3 +91,19 @@ fa2 = [1, 2]
 fpr = proc { |i| i + 1 }
 fa2.fill((fpr = nil; 0), &fpr)
 p fa2
+# a lambda run by an argument may change pr; a constant is read after the arguments
+def fcl(a)
+  pr = proc { |i| i + 1 }
+  clr = -> { pr = nil; 0 }
+  a.fill(clr.(), &pr)
+end
+p fcl([1, 2])
+FILL_PRC = proc { |i| i + 7 }
+def fq(a) = a.fill(0, &FILL_PRC)
+p fq([1, 2])
+class FillBump
+  def initialize(pr) = @pr = pr
+  def bump = (@pr = nil; 0)
+  def go(a) = a.fill(bump, &@pr)
+end
+p FillBump.new(proc { |i| i + 3 }).go([1, 2])
