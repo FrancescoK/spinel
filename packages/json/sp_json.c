@@ -159,12 +159,13 @@ static const char jb_esc[256] = {
    buffer's growth can collect: every caller's S is held by the document the
    walk has rooted (a value, a key, a Symbol's name) or is not on the GC heap,
    and the collector moves nothing, so it is still there to read. */
-static void jb_str(jbuf *b, const char *s) {
+static void jb_strn(jbuf *b, const char *s, size_t n) {
   jb_c(b, '"');
   if (s) {
-    const char *run = s, *p = s;
+    const char *run = s, *p = s, *end = s + n;
     unsigned char c;
-    while ((c = (unsigned char)*p)) {
+    while (p < end) {
+      c = (unsigned char)*p;
       char e = jb_esc[c];
       if (!e) { p++; continue; }
       if (p > run) jb_add(b, run, (size_t)(p - run));
@@ -179,9 +180,20 @@ static void jb_str(jbuf *b, const char *s) {
   }
   jb_c(b, '"');
 }
+/* A C string with no header to read a length from: a Symbol's name, a bare
+   literal. It ends at its NUL. */
+static void jb_str(jbuf *b, const char *s) { jb_strn(b, s, s ? strlen(s) : 0); }
+/* A Spinel String, which may hold a NUL: its bytes run to its own length, and
+   a NUL among them is written as \u0000, as CRuby's json writes it. */
+static void jb_rstr(jbuf *b, const char *s) { jb_strn(b, s, sp_str_byte_len(s)); }
 const char *sp_json_str(const char *s) {
   char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
   jb_str(&b, s);
+  return jb_finish(&b);
+}
+static const char *sp_json_rstr(const char *s) {
+  char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
+  jb_rstr(&b, s);
   return jb_finish(&b);
 }
 /* An Integer's digits into the buffer, as sp_int_to_s writes them */
@@ -195,13 +207,13 @@ static void jb_int(jbuf *b, sp_int n) {
 
 static const char *sp_json_key(sp_RbVal k) {
   k = sp_rbval_str(k);
-  if (k.tag == SP_TAG_STR)  return sp_json_str(k.v.s);
+  if (k.tag == SP_TAG_STR)  return sp_json_rstr(k.v.s);
   if (k.tag == SP_TAG_SYM)  return sp_json_str(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)k.v.i) : "");
   if (k.tag == SP_TAG_INT)  return sp_json_str(sp_int_to_s(k.v.i));
   if (k.tag == SP_TAG_BOOL) return sp_json_str(k.v.b ? "true" : "false");
   /* any other key is its #to_s, as CRuby's json generates it: a Float, nil,
      an Array, an object of the program's own */
-  return sp_json_str(sp_poly_to_s_fn ? sp_poly_to_s_fn(k) : "");
+  return sp_poly_to_s_fn ? sp_json_rstr(sp_poly_to_s_fn(k)) : sp_json_str("");
 }
 /* A key that is an object may run a #to_s of the program's own, which may
    raise, throw, or return past the walk: the buffer moves to the heap first,
@@ -210,7 +222,7 @@ static void sp_json_key_b(jbuf *b, sp_RbVal k) {
   /* the usual keys straight into the buffer, as sp_json_key would write them */
   sp_RbVal ks = sp_rbval_str(k);
   switch (ks.tag) {
-    case SP_TAG_STR: jb_str(b, ks.v.s); return;
+    case SP_TAG_STR: jb_rstr(b, ks.v.s); return;
     case SP_TAG_SYM: jb_str(b, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)ks.v.i) : ""); return;
     case SP_TAG_INT: jb_c(b, '"'); jb_int(b, ks.v.i); jb_c(b, '"'); return;
     default: break;
@@ -242,8 +254,8 @@ static sp_RbVal sp_json_user_view(sp_RbVal v) {
    json reads a String subclass instance's bytes, not its #to_s); any other
    object is its #to_s, as Object#to_json is. */
 static const char *sp_json_obj_text(sp_RbVal v) {
-  if (sp_json_is_strbuf(v)) return sp_json_str(sp_poly_to_s(v));
-  return sp_json_str(sp_json_obj_to_s(v));
+  if (sp_json_is_strbuf(v)) return sp_json_rstr(sp_poly_to_s(v));
+  return sp_json_rstr(sp_json_obj_to_s(v));
 }
 
 /* CRuby's json refuses to serialize past 100 levels of nesting, which is how
@@ -341,7 +353,7 @@ static const char *sp_json_scalar_o(sp_RbVal v, int allow_nan) {
       return sp_json_float(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? JSPL("true") : JSPL("false");
     case SP_TAG_NIL:  return JSPL("null");
-    case SP_TAG_STR:  return sp_json_str(v.v.s);
+    case SP_TAG_STR:  return sp_json_rstr(v.v.s);
     case SP_TAG_SYM:  return sp_json_str(sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : "");
     default: return JSPL("null");
   }
@@ -389,7 +401,7 @@ static void sp_json_leaf_b(jbuf *b, sp_RbVal v) {
     case SP_TAG_FLT:
       if (isfinite(v.v.f)) { char out[64]; jb_add(b, out, (size_t)sp_json_float_fmt(v.v.f, out)); return; }
       break;
-    case SP_TAG_STR: jb_str(b, v.v.s); return;
+    case SP_TAG_STR: jb_rstr(b, v.v.s); return;
     case SP_TAG_SYM: jb_str(b, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : ""); return;
     case SP_TAG_BOOL: if (v.v.b) jb_add(b, "true", 4); else jb_add(b, "false", 5); return;
     case SP_TAG_NIL: jb_add(b, "null", 4); return;
