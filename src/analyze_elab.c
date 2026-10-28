@@ -1193,6 +1193,39 @@ static char *lr_dump_text(Compiler *c);
 static void lr_check_walked(Compiler *c, const char *walked);
 static void lr_later_settle(Compiler *c);
 
+/* A class or module body that is no statement of the load phase: one in
+   a lambda or in a block kept to run later (`l = -> { class G; private
+   :foo; end }`), or in an expression. It runs when the program runs that
+   code, at no point the record orders, but it is its class's body all the
+   same, as early as it can run: from the statement that makes the lambda
+   or block (elab_point_from), after the bodies whose statements run
+   before that one. A body the record cannot order against those is
+   placed after them. */
+static void lr_record_unplaced(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  LoadRecord *r = c->lrec;
+  lr_fit_classes(r, c);
+  for (int q = 0; q < 2; q++)
+    NT_FOREACH_KIND(nt, q ? NK_ModuleNode : NK_ClassNode, id) {
+      int e = id < r->n ? r->at[id] : -1, ci = lr_class_opened(c, id);
+      if ((e >= 0 && r->st[e].node == id) || ci < 0) continue;
+      LrClass *kc = lr_class(r, ci);
+      int have = 0;
+      for (int i = 0; i < kc->nopen && !have; i++) have = kc->open[i].node == id;
+      if (have) continue;
+      kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
+      int at = kc->nopen;
+      while (at > 0) {
+        int o = kc->open[at - 1].node, eo = o < r->n ? r->at[o] : -1;
+        if (e < 0 || eo < 0 || r->st[eo].region != r->st[e].region || eo <= e) break;
+        at--;
+      }
+      memmove(kc->open + at + 1, kc->open + at, sizeof *kc->open * (size_t)(kc->nopen - at));
+      kc->open[at] = (LrOpen){ id, nt_ref(nt, id, "body") };
+      kc->nopen++;
+    }
+}
+
 /* The record dropped and made again over the walked statements */
 static void lr_record_again(ElabRec *x) {
   LoadRecord *r = x->r;
@@ -1202,6 +1235,7 @@ static void lr_record_again(ElabRec *x) {
   lr_record_upto(r, r->nst);
   lr_settle_regions(x->c);
   lr_later_settle(x->c);
+  lr_record_unplaced(x->c);
   r->recorded = 1;
 }
 
@@ -1242,6 +1276,7 @@ void elab_program(Compiler *c) {
   lr_record_upto(r, r->nst);
   lr_settle_regions(c);
   lr_later_settle(c);
+  lr_record_unplaced(c);
   r->recorded = 1;
   if (r->check) {   /* the same record made after the walk, as a check */
     char *walked = lr_dump_text(c);
