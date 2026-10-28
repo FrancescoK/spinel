@@ -11029,10 +11029,19 @@ static void dmc_walk(NodeTable *nt, int id, int lvl, int in_dm, const char *cls,
   }
 }
 
+/* The text a scope's locals carry: the tag of the node that names the
+   scope, asked when the scope has a local to name */
+typedef struct { Compiler *c; int node, made; char s[64]; } BlsTag;
+static const char *bls_tag(BlsTag *t) {
+  if (!t->made) snprintf(t->s, sizeof t->s, "%s", comp_node_tag(t->c, t->node));
+  t->made = 1;
+  return t->s;
+}
+
 /* Rename every reference in a body's lexical scope (blocks included, defs
    and nested classes not) to a local the body owns: depth equal to the
    blocks entered. */
-static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
+static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
   if (id < 0) return;
   NodeKind k = nt_kind(nt, id);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
@@ -11042,7 +11051,7 @@ static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
      says nothing, a program can spell a local like the names made here */
   if (nm && nt_int(nt, id, "depth", 0) == lvl && !nt_int(nt, id, "cb_renamed", 0)) {
     char buf[256];
-    snprintf(buf, sizeof buf, "%s__cb%s", nm, tag);
+    snprintf(buf, sizeof buf, "%s__cb%s", nm, bls_tag(tag));
     nt_node_set_str(nt, id, "name", buf);
     nt_node_set_int(nt, id, "cb_renamed", 1);
   }
@@ -11062,13 +11071,14 @@ static void bls_walk(NodeTable *nt, int id, int lvl, const char *tag) {
    variable with the top level's (and with every other body's). Each body's
    locals take a name private to the body. Runs before any pass turns a
    block into a class body (Class.new do..end), whose locals are the
-   block's and may read the enclosing scope's. */
+   block's and may read the enclosing scope's. Code a later step splices
+   into the body is a scope of its own (a hook's call, a class_eval block):
+   the lowering context hands the scope's statements and the node that
+   names it, the body and its owner for the body's own. */
 int desugar_body_local_scopes_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
-  int body = nt_ref(nt, id, "body");
-  if (body < 0) return 0;
-  char tag[64]; snprintf(tag, sizeof tag, "%s", comp_node_tag(c, id));
-  bls_walk(nt, body, 0, tag);
+  BlsTag tag = { c, lc->scope, 0, "" };
+  for (int i = 0; i < lc->scope_n; i++) bls_walk(nt, lc->scope_stmts[i], 0, &tag);
   return 1;
 }
 

@@ -19,6 +19,25 @@
    a row first needs it in a run. A row that makes shapes it must itself lower
    runs again while a run changes the table (fix).
 
+   Code a step splices into a body after rows have run (a hook's body, the
+   text of a class_eval) is a span: lower_span runs over it every row that has
+   run, in the order of the table, as their runs over the program would have,
+   had the code been there. A row enters at the span's nodes and the nodes
+   rows append for it; a row that enters at statements (LF_STMT) takes the
+   span's statements, with the body they stand in as its owner and body; a row
+   that names the locals of a scope (LF_SCOPE) takes each splice's statements
+   as a scope of their own, apart from the body's (one call of a hook, one
+   class_eval block); any other row whose kinds include that owner's visits
+   the owner, as its run did. A gate asks the whole program, so a span asks it
+   again once a step, and a yes runs the row on every span of the step. A gate
+   that said 0 over the program and says yes after the splice (the splice
+   brought in what it asks for, a def of ` say) makes code outside the spans
+   the row's too: lower_settle runs the row over the program once more at the
+   end of the step. So does every pass over the whole program (LF_PROGRAM),
+   which a span cannot be asked of: once per step, however many spans it
+   splices. Nothing in a span is rebuilt for the program: the answers a row
+   keeps of the whole program (its gate's among them) last the step.
+
    SPINEL_LOWER_CHECK=1 checks the rows instead of compiling. After each row
    it reports a node still in the row's shape, and a second run of the row
    that changes the table: a lowering that is not idempotent cannot be
@@ -33,7 +52,9 @@
 enum {
   LF_MARKS = 1,   /* sets marks only: no shape is eliminated, so no left */
   LF_STMT = 2,    /* enters at the statements of the bodies of its kinds, not at the nodes */
-  LF_PROGRAM = 4  /* a pass over the whole program: visited once, with id -1, and nothing is asked of a node */
+  LF_PROGRAM = 4, /* a pass over the whole program: visited once, with id -1, and nothing is asked of a node */
+  LF_SCOPE = 8    /* names the locals of the scope a node of its kinds opens: visited at the node, with the
+                     scope's statements and the node that names it in the lowering context (lc->scope) */
 };
 enum { LW_MAX_KINDS = 6 };
 
@@ -89,7 +110,7 @@ static const Lowering lowerings[LW__COUNT] = {
     desugar_rescue_block_bodies_at, desugar_rescue_block_bodies_left, "a block whose body is not a StatementsNode" },
   [LW_MARK_SYM_PROC_BLOCKS] = { "mark_sym_proc_blocks", LF_MARKS, { NK_BlockNode },
     mark_sym_proc_blocks_at, NULL, NULL },
-  [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", 0, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
+  [LW_BODY_LOCAL_SCOPES] = { "desugar_body_local_scopes", LF_SCOPE, { NK_ClassNode, NK_ModuleNode, NK_SingletonClassNode },
     desugar_body_local_scopes_at, NULL, "a local of a class body" },
   [LW_ERRNO_ALIASES] = { "desugar_errno_aliases", 0, { NK_ConstantPathNode },
     desugar_errno_aliases_at, desugar_errno_aliases_left, "`Errno::EWOULDBLOCK`, an alias of another errno's class" },
@@ -229,13 +250,17 @@ int lower_stmt_at(const NodeTable *nt, const LowerCtx *lc, int stmt) {
 static void lower_scratch_reset(LowerCtx *lc) {
   lc->parent_live = 0;
   lc->serial = 0;
-  for (int i = 0; i < 4; i++) lc->prog_memo[i] = -1;
-  for (int i = 0; i < lc->nused; i++) free(lc->used[i]);
-  free(lc->used);
-  lc->used = NULL;
-  lc->nused = 0;
-  lc->used_built = 0;
-  free(lc->ids);
+  /* a span's row keeps what the step's first span made it ask of the whole
+     program: the program's names and answers (lower_settle drops them) */
+  if (!lc->span) {
+    for (int i = 0; i < 4; i++) lc->prog_memo[i] = -1;
+    for (int i = 0; i < lc->nused; i++) free(lc->used[i]);
+    free(lc->used);
+    lc->used = NULL;
+    lc->nused = 0;
+    lc->used_built = 0;
+  }
+  if (!lc->span) free(lc->ids);   /* a span's are its gate's, kept for the step (span_ids) */
   lc->ids = NULL;
   lc->nids = 0;
   free(lc->aliases);
@@ -243,6 +268,60 @@ static void lower_scratch_reset(LowerCtx *lc) {
   lc->naliases = 0;
 }
 
+/* The statements sv[0..sn) of the body of `owner`, for a row that enters at
+   statements: a copy, so a statement a visit inserts is not visited */
+static int lower_stmts(Compiler *c, LowerCtx *lc, const Lowering *w, int owner, int body, const int *sv, int sn,
+                       int ask, int *first) {
+  if (sn <= 0) return 0;
+  int n = 0;
+  int *st = malloc(sizeof(int) * (size_t)sn);
+  if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(st, sv, sizeof(int) * (size_t)sn);
+  for (int i = 0; i < sn; i++) {
+    lc->owner = owner;
+    lc->body = body;
+    int r = ask ? w->left(c, lc, st[i]) : w->visit(c, lc, st[i]);
+    if (r && first && *first < 0) *first = st[i];
+    n += ask ? r != 0 : r;
+  }
+  free(st);
+  return n;
+}
+
+/* A row that names a scope's locals (LF_SCOPE), at `owner`: the scope of
+   the statements sv[0..sn), which `scope` names */
+static int lower_scope(Compiler *c, LowerCtx *lc, const Lowering *w, int owner, int scope, const int *sv, int sn,
+                       int ask, int *first) {
+  lc->scope = scope;
+  lc->scope_stmts = sv;
+  lc->scope_n = sn;
+  int r = ask ? w->left(c, lc, owner) : w->visit(c, lc, owner);
+  lc->scope_stmts = NULL;
+  lc->scope_n = 0;
+  if (r && first && *first < 0) *first = owner;
+  return ask ? r != 0 : r;
+}
+
+/* A row's site at node id, one of its kinds */
+static int lower_site(Compiler *c, LowerCtx *lc, const Lowering *w, int id, int ask, int *first) {
+  const NodeTable *nt = c->nt;
+  if (w->flags & LF_SCOPE) {
+    int body = nt_ref(nt, id, "body");
+    return body >= 0 ? lower_scope(c, lc, w, id, id, &body, 1, ask, first) : 0;
+  }
+  if (w->flags & LF_STMT) {
+    int body = nt_ref(nt, id, "body");
+    if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) return 0;
+    int sn = 0;
+    const int *sv = nt_arr(nt, body, "body", &sn);
+    return lower_stmts(c, lc, w, id, body, sv, sn, ask, first);
+  }
+  int r = ask ? w->left(c, lc, id) : w->visit(c, lc, id);
+  if (r && first && *first < 0) *first = id;
+  return ask ? r != 0 : r;
+}
+
+static int lower_span_sites(Compiler *c, LowerCtx *lc, const Lowering *w);
 /* Every site of a row, in the order the loops it replaces took them: with
    `ask` 0 its visit rewrites each and the answer is how many it did; with 1
    its left answers for each and the answer is how many are in the shape
@@ -262,32 +341,35 @@ static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, in
     int r = ask ? 0 : w->visit(c, lc, -1);
     return r ? r : nt->edits != edits;
   }
-  for (int id = 0; id < end; id++) {
-    if (!kind_set_has(&set, nt_kind(nt, id))) continue;
-    if (w->flags & LF_STMT) {
-      int body = nt_ref(nt, id, "body");
-      if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-      int sn = 0;
-      const int *sv = nt_arr(nt, body, "body", &sn);
-      if (sn == 0) continue;
-      int *st = malloc(sizeof(int) * (size_t)sn);
-      if (!st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      memcpy(st, sv, sizeof(int) * (size_t)sn);
-      for (int i = 0; i < sn; i++) {
-        lc->owner = id;
-        lc->body = body;
-        int r = ask ? w->left(c, lc, st[i]) : w->visit(c, lc, st[i]);
-        if (r && first && *first < 0) *first = st[i];
-        n += ask ? r != 0 : r;
-      }
-      free(st);
-      continue;
-    }
-    int r = ask ? w->left(c, lc, id) : w->visit(c, lc, id);
-    if (r && first && *first < 0) *first = id;
-    n += ask ? r != 0 : r;
-  }
+  if (lc->span && !ask) return lower_span_sites(c, lc, w);
+  for (int id = 0; id < end; id++)
+    if (kind_set_has(&set, nt_kind(nt, id))) n += lower_site(c, lc, w, id, ask, first);
   return n;
+}
+
+/* A row's gate, over the program: lower_span asks again a gate that said 0 */
+static int lower_gate(Compiler *c, LowerCtx *lc, const Lowering *w) {
+  int yes = w->gate(c, lc) != 0;
+  lc->gate_no[w - lowerings] = !yes;
+  return yes;
+}
+
+/* A row's gate in a span, asked of the program once a step, at the first
+   span that reaches the row; the ids it collects last the step. A gate that
+   said 0 over the program and says yes now leaves the row to lower_settle
+   as well. */
+static int lower_span_gate(Compiler *c, LowerCtx *lc, const Lowering *w) {
+  int row = (int)(w - lowerings);
+  if (!lc->span_gate[row]) {
+    int yes = w->gate(c, lc) != 0;
+    lc->span_gate[row] = yes ? 2 : 1;
+    lc->span_ids[row] = lc->ids;
+    lc->span_nids[row] = lc->nids;
+    if (yes && lc->gate_no[row]) lc->settle[row] = 1;
+  }
+  lc->ids = lc->span_ids[row];
+  lc->nids = lc->span_nids[row];
+  return lc->span_gate[row] == 2;
 }
 
 /* One run of a row: its gate, its sites. The arrays that follow the table grow
@@ -295,7 +377,7 @@ static int lower_sites(Compiler *c, LowerCtx *lc, const Lowering *w, int ask, in
 static int lower_once(Compiler *c, LowerCtx *lc, const Lowering *w) {
   lc->n0 = c->nt->count;
   lower_scratch_reset(lc);
-  if (w->gate && !w->gate(c, lc)) return 0;
+  if (w->gate && !(lc->span ? lower_span_gate(c, lc, w) : lower_gate(c, lc, w))) return 0;
   int rewrote = lower_sites(c, lc, w, 0, NULL);
   comp_grow_node_arrays(c);
   return rewrote;
@@ -410,6 +492,7 @@ void lower_begin(Compiler *c, LowerCtx *lc) {
 int lower_run(Compiler *c, LowerCtx *lc, int row) {
   NodeTable *nt = (NodeTable *)c->nt;
   const Lowering *w = &lowerings[row];
+  lc->ran[row] = 1;
   const char *was = nt_set_pass(nt, w->name);
   int rewrote = lower_pass(c, lc, w);
   lc->rewrote[row] += rewrote;
@@ -422,8 +505,111 @@ int lower_run(Compiler *c, LowerCtx *lc, int row) {
 }
 
 static void lower_release(LowerCtx *lc) {
+  lc->span = NULL;
   lower_scratch_reset(lc);
   free(lc->parent);
+}
+
+/* ---- spans ---- */
+
+typedef struct LowerSpan {
+  int owner, body;      /* the frame: the body the statements stand in, and its owner */
+  const int *stmts;     /* the spliced statements */
+  const int *scopes;    /* per statement, the node that names its scope: one per splice */
+  int nstmts;
+  int *nodes;           /* their nodes, ascending */
+  int nnodes;
+  int count0;           /* the count when the span was handed over: the rows' own nodes are past it */
+} LowerSpan;
+
+static int int_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+
+/* The nodes of the subtrees at stmts, ascending: a walk of the span alone */
+static void lower_span_collect(NodeTable *nt, LowerSpan *s) {
+  s->nodes = nt_subtree_ids(nt, s->stmts, s->nstmts, &s->nnodes);
+  qsort(s->nodes, (size_t)s->nnodes, sizeof(int), int_cmp);
+}
+
+/* A row's sites in the span: the frame's owner where the row enters at its
+   kind (only the spliced statements, for a row that enters at statements;
+   each splice's, as a scope of its own, for a row that names a scope's
+   locals), then the span's nodes and the ones the rows appended for it,
+   ascending */
+static int lower_span_sites(Compiler *c, LowerCtx *lc, const Lowering *w) {
+  const NodeTable *nt = c->nt;
+  const LowerSpan *s = lc->span;
+  KindSet set = kind_set_of(w);
+  int n = 0;
+  if (s->owner >= 0 && kind_set_has(&set, nt_kind(nt, s->owner))) {
+    if (w->flags & LF_STMT) n += lower_stmts(c, lc, w, s->owner, s->body, s->stmts, s->nstmts, 0, NULL);
+    else if (w->flags & LF_SCOPE)
+      for (int i = 0, j; i < s->nstmts; i = j) {
+        for (j = i + 1; j < s->nstmts && s->scopes[j] == s->scopes[i]; j++) {}
+        n += lower_scope(c, lc, w, s->owner, s->scopes[i], s->stmts + i, j - i, 0, NULL);
+      }
+    else n += lower_site(c, lc, w, s->owner, 0, NULL);
+  }
+  for (int i = 0; i < s->nnodes; i++)
+    if (s->nodes[i] < lc->n0 && kind_set_has(&set, nt_kind(nt, s->nodes[i]))) n += lower_site(c, lc, w, s->nodes[i], 0, NULL);
+  for (int id = s->count0; id < lc->n0; id++)
+    if (kind_set_has(&set, nt_kind(nt, id))) n += lower_site(c, lc, w, id, 0, NULL);
+  return n;
+}
+
+/* Statements stmts[0..n), which a step has put into `body` (owner's), lowered
+   by every row that has run, in the order of the table; scopes[i] names the
+   scope of stmts[i], the same node for the statements of one splice. A
+   whole-program row is left to lower_settle. The nodes the rows rewrote. */
+int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts, const int *scopes, int n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any = 0;
+  for (int row = 0; row < LW__COUNT && !any; row++) any = lc->ran[row];
+  if (!any || n <= 0) return 0;
+  if (!lc->span_step) {   /* the step's first span: its rows ask the program afresh */
+    lower_scratch_reset(lc);
+    lc->span_step = 1;
+  }
+  LowerSpan s = { owner, body, stmts, scopes, n, NULL, 0, nt->count };
+  lower_span_collect(nt, &s);
+  lc->span = &s;
+  int rewrote = 0;
+  for (int row = 0; row < LW__COUNT; row++) {
+    if (!lc->ran[row]) continue;
+    const Lowering *w = &lowerings[row];
+    if (w->flags & LF_PROGRAM) { lc->settle[row] = 1; continue; }
+    const char *was = nt_set_pass(nt, w->name);
+    int r = lower_pass(c, lc, w);
+    lc->rewrote[row] += r;
+    rewrote += r;
+    nt_set_pass(nt, was);
+  }
+  lc->span = NULL;
+  lc->ids = NULL;
+  lc->nids = 0;
+  free(s.nodes);
+  return rewrote;
+}
+
+/* The end of a step that lowered spans: each row they left runs once more
+   over the program, in the order of the table, and the answers the spans
+   kept are dropped */
+void lower_settle(Compiler *c, LowerCtx *lc) {
+  if (!lc->span_step) return;
+  lc->span_step = 0;
+  lower_scratch_reset(lc);
+  for (int row = 0; row < LW__COUNT; row++) {
+    free(lc->span_ids[row]);
+    lc->span_ids[row] = NULL;
+    lc->span_gate[row] = 0;
+  }
+  for (int row = 0; row < LW__COUNT; row++) {
+    if (!lc->settle[row]) continue;
+    lc->settle[row] = 0;
+    lower_run(c, lc, row);
+  }
 }
 
 int lower_row_once(Compiler *c, int row) {
