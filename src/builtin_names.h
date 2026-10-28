@@ -532,6 +532,7 @@ int is_plain_builtin_superclass(int id);       /* BC_PLAIN or an exception: give
    analyze_ct.c) */
 int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */
 int is_hash_read_only(const char *n);      /* the Hash calls that read a table and leave it as it is */
+int is_to_a_name(const char *n);           /* to_a: the receiver's own Array, for an Array */
 int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value freeze to_h: answer the Hash itself */
 int is_core_change_call(const char *n);    /* class_eval .. module_exec include prepend define_method send family alias_method remove_method undef_method: may change a class's methods */
 int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */

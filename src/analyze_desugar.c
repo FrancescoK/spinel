@@ -24069,42 +24069,73 @@ static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n)
   nt_free(tmp);
   return sn;
 }
+/* What the program does with each constant name, for sce_const_unmutated:
+   its reads, its path reads (`A::NAME`), and the calls on a read of it that
+   leave an Array as it is (BOP_READ_ARRAY_INTACT), its to_a calls apart. Made
+   at the first ask, then brought up to the nodes appended since: the form
+   and the splices of a step only append, so no ask rescans the program. */
+typedef struct SceConsts {
+  char **names;
+  int n, cap;
+  NameIdx ix;
+  int *reads, *paths, *ro, *to_a;
+  int upto;   /* the nodes below it are counted */
+} SceConsts;
+static int sce_consts_slot(SceConsts *x, const char *name) {
+  int i = name_idx_find(&x->ix, x->names, x->n, name);
+  if (i >= 0) return i;
+  if (x->n == x->cap) {
+    x->cap = x->cap ? x->cap * 2 : 32;
+    x->names = realloc(x->names, sizeof(char *) * (size_t)x->cap);
+    int **cols[] = { &x->reads, &x->paths, &x->ro, &x->to_a };
+    for (int c = 0; c < 4; c++) *cols[c] = realloc(*cols[c], sizeof(int) * (size_t)x->cap);
+    if (!x->names || !x->reads || !x->paths || !x->ro || !x->to_a) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  x->names[x->n] = strdup(name);
+  if (!x->names[x->n]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  x->reads[x->n] = x->paths[x->n] = x->ro[x->n] = x->to_a[x->n] = 0;
+  return x->n++;
+}
+static void sce_consts_catch_up(const NodeTable *nt, SceConsts *x) {
+  for (int id = x->upto; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) {
+      const char *cn = nt_str(nt, id, "name");
+      if (!cn) continue;
+      int i = sce_consts_slot(x, cn);   /* first: it may move the columns */
+      if (k == NK_ConstantReadNode) x->reads[i]++;
+      else x->paths[i]++;
+      continue;
+    }
+    if (k != NK_CallNode) continue;
+    int r = nt_ref(nt, id, "receiver");
+    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
+    const char *cn = nt_str(nt, r, "name"), *m = nt_str(nt, id, "name");
+    if (!cn || !m) continue;
+    int i = sce_consts_slot(x, cn);
+    x->ro[i] += bop_name_has_reader(m, BOP_READ_ARRAY_INTACT);
+    x->to_a[i] += is_to_a_name(m);
+  }
+  x->upto = nt->count;
+}
+static void sce_consts_free(SceConsts *x) {
+  for (int i = 0; i < x->n; i++) free(x->names[i]);
+  free(x->names); free(x->reads); free(x->paths); free(x->ro); free(x->to_a);
+  free(x->ix.slot);
+  memset(x, 0, sizeof *x);
+}
 /* Is every read of constant `name` in the program the receiver of a call
-   that leaves the Array as it is? Then its literal is what an each sees. */
-static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused, int no_alias);
-/* ... but for `excused` reads the caller knows leave it as it is. With
+   that leaves the Array as it is? Then its literal is what an each sees.
+   But for `excused` reads the caller knows leave it as it is. With
    no_alias, a call that answers the Array itself (to_a) is a read that can
    change it later (`FLAGS.to_a << :c`): the attr splat reads the names once,
    ahead of anything that runs. */
-static int sce_const_unmutated_ex(const NodeTable *nt, const char *name, int excused, int no_alias) {
-  static const char *const RO[] = { "each", "each_with_index", "each_with_object", "map", "flat_map",
-    "filter_map", "select", "reject", "find", "include?", "first", "last", "size", "length", "count",
-    "empty?", "any?", "all?", "none?", "join", "to_a", "freeze", "frozen?", "dup", "[]", "index",
-    "sort", "reverse", "uniq", "zip", "min", "max", "inspect", "to_s", "==", "+", "-", "&", "|", NULL };
-  int reads = 0, ro = 0;
-  NtKindIter it = nt_kind_iter_begin(nt, NK_ConstantReadNode);
-  while (nt_kind_iter_next(&it)) {
-    const char *cn = nt_str(nt, it.id, "name");
-    if (cn && sp_streq(cn, name)) reads++;
-  }
-  nt_kind_iter_close(&it);
-  it = nt_kind_iter_begin(nt, NK_ConstantPathNode);
-  while (nt_kind_iter_next(&it)) {
-    const char *cn = nt_str(nt, it.id, "name");
-    if (cn && sp_streq(cn, name)) { nt_kind_iter_close(&it); return 0; }
-  }
-  nt_kind_iter_close(&it);
-  it = nt_kind_iter_begin(nt, NK_CallNode);
-  while (nt_kind_iter_next(&it)) {
-    int r = nt_ref(nt, it.id, "receiver");
-    if (r < 0 || nt_kind(nt, r) != NK_ConstantReadNode) continue;
-    const char *cn = nt_str(nt, r, "name"), *m = nt_str(nt, it.id, "name");
-    if (!cn || !m || !sp_streq(cn, name)) continue;
-    if (no_alias && sp_streq(m, "to_a")) continue;
-    for (int q = 0; RO[q]; q++) if (sp_streq(m, RO[q])) { ro++; break; }
-  }
-  nt_kind_iter_close(&it);
-  return reads - excused == ro;
+static int sce_const_unmutated(const NodeTable *nt, SceConsts *x, const char *name, int excused, int no_alias) {
+  sce_consts_catch_up(nt, x);
+  int i = name_idx_find(&x->ix, x->names, x->n, name);
+  if (i < 0) return excused == 0;
+  if (x->paths[i]) return 0;
+  return x->reads[i] - excused == x->ro[i] - (no_alias ? x->to_a[i] : 0);
 }
 /* the element texts of an Array literal of Strings and Symbols (`%w(a b)`,
    `%i[a b]`, `["a", :b]`), or -1 */
@@ -24127,12 +24158,7 @@ static int sce_array_elems(const NodeTable *nt, int v, const char ***out) {
    this body, ahead of it, and never changed after (sce_const_unmutated).
    One written anywhere else could be shadowed by a superclass's or an
    enclosing scope's on the way, so only the body's own is read. -1 if not. */
-static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const char *name, int excused,
-                              const char ***out);
-static int sce_const_elems(const NodeTable *nt, int body, int before, const char *name, const char ***out) {
-  return sce_const_elems_ex(nt, body, before, name, 0, out);
-}
-static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const char *name, int excused,
+static int sce_const_elems(const NodeTable *nt, SceConsts *x, int body, int before, const char *name, int excused,
                               const char ***out) {
   int w = -1;
   int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
@@ -24142,7 +24168,7 @@ static int sce_const_elems_ex(const NodeTable *nt, int body, int before, const c
       w = bb[i];
     }
   /* the attr splat (the only caller with excused reads) takes no alias */
-  if (w < 0 || !sce_const_unmutated_ex(nt, name, excused, excused > 0)) return -1;
+  if (w < 0 || !sce_const_unmutated(nt, x, name, excused, excused > 0)) return -1;
   return sce_array_elems(nt, nt_ref(nt, w, "value"), out);
 }
 
@@ -24181,7 +24207,7 @@ static int attr_splat_reads(const NodeTable *nt, const char *name) {
   return n;
 }
 /* the call's arguments with each `*CONST` spelled out, or -1 (marked) */
-static int attr_splat_expand(NodeTable *nt, int body, int i, int st) {
+static int attr_splat_expand(NodeTable *nt, SceConsts *x, int body, int i, int st) {
   int args = nt_ref(nt, st, "arguments"), an = 0;
   const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   int *av = (int *)malloc(sizeof(int) * (size_t)(an > 0 ? an : 1));
@@ -24194,7 +24220,7 @@ static int attr_splat_expand(NodeTable *nt, int body, int i, int st) {
     int e = nt_ref(nt, av[a], "expression");
     const char *cn = e >= 0 && nt_kind(nt, e) == NK_ConstantReadNode ? nt_str(nt, e, "name") : NULL;
     const char **els = NULL;
-    int en = cn ? sce_const_elems_ex(nt, body, i, cn, attr_splat_reads(nt, cn), &els) : -1;
+    int en = cn ? sce_const_elems(nt, x, body, i, cn, attr_splat_reads(nt, cn), &els) : -1;
     if (en < 0) { ok = 0; break; }
     for (int j = 0; j < en && ok; j++) {
       int sym = nt_new_node(nt, "SymbolNode");
@@ -24216,6 +24242,7 @@ static int attr_splat_expand(NodeTable *nt, int body, int i, int st) {
 int desugar_attr_const_splat(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
+  SceConsts consts = {0};
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ModuleNode && k != NK_ClassNode) continue;
@@ -24227,7 +24254,7 @@ int desugar_attr_const_splat(Compiler *c) {
       if (nt_kind(nt, st) != NK_CallNode || !attr_family(nt_str(nt, st, "name"))) continue;
       int rcv = nt_ref(nt, st, "receiver");
       if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) continue;
-      changed |= attr_splat_expand(nt, body, i, st);
+      changed |= attr_splat_expand(nt, &consts, body, i, st);
       bb = nt_arr(nt, body, "body", &bn);   /* new nodes may have moved the table */
     }
   }
@@ -24240,6 +24267,7 @@ int desugar_attr_const_splat(Compiler *c) {
     if (nt_argv_has_splat(nt, av, an)) nt_node_set_int(nt, it.id, "attr_splat", 1);
   }
   nt_kind_iter_close(&it);
+  sce_consts_free(&consts);
   return changed;
 }
 /* A program that gives class_eval / module_eval a method of its own, or
@@ -24541,6 +24569,7 @@ int desugar_nil_block_arg_at(Compiler *c, LowerCtx *lc, int id) {
 struct SceFacts {
   int gate;          /* -1 until asked */
   SceScoped scoped;
+  SceConsts consts;
 };
 static struct SceFacts *sce_facts(HostStep *h) {
   if (!h->sce) {
@@ -24553,6 +24582,7 @@ static struct SceFacts *sce_facts(HostStep *h) {
 void sce_facts_free(struct SceFacts *f) {
   if (!f) return;
   free(f->scoped.names);
+  sce_consts_free(&f->consts);
   free(f);
 }
 
@@ -24596,7 +24626,7 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
       int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
       /* CONST.each, or the same over a literal list (`%w(a b).each`) */
       const char **elems = NULL;
-      int ne = cname ? sce_const_elems(nt, body, i, cname, &elems)
+      int ne = cname ? sce_const_elems(nt, &f->consts, body, i, cname, 0, &elems)
              : recv >= 0 ? sce_array_elems(nt, recv, &elems) : -1;
       if (var && estr >= 0 && ne >= 0) {
         ok = 1;

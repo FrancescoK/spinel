@@ -2019,6 +2019,7 @@ int is_hash_read_only(const char *n) {
   for (int i = 0; n && R[i]; i++) if (sp_streq(n, R[i])) return 1;
   return 0;
 }
+int is_to_a_name(const char *n) { return n && sp_streq(n, "to_a"); }
 int is_hash_self_answer(const char *n) {
   return n && (sp_streq(n, "each") || sp_streq(n, "each_pair") || sp_streq(n, "each_key") ||
                sp_streq(n, "each_value") || sp_streq(n, "freeze") || sp_streq(n, "to_h"));
