@@ -15111,6 +15111,15 @@ static int narrow_object_arrays(Compiler *c) {
     if (!ivslot[sl[i].ici]) ivslot[sl[i].ici] = (int *)calloc((size_t)c->classes[sl[i].ici].nivars, sizeof(int));
     ivslot[sl[i].ici][sl[i].iiv] = i + 1;
   }
+  /* An ivar slot's answer to oa_class_may_answer, asked by its reader's name
+     -- the name both rules below ask it for -- once per pass: -1 until
+     asked. It scans the class table for subclasses, and a slot it answers
+     no for stays alive, so every dynamic call of the name asked again. */
+  signed char *oa_ans = (signed char *)malloc((size_t)n);
+  if (!oa_ans) { fprintf(stderr, "oom\n"); exit(1); }
+  memset(oa_ans, -1, (size_t)n);
+  #define OA_MAY_ANSWER(i) (oa_ans[(i)] < 0 ? (oa_ans[(i)] = (signed char)oa_class_may_answer(c, sl[(i)].ici, \
+    c->classes[sl[(i)].ici].ivars[sl[(i)].iiv] + 1)) : oa_ans[(i)])
   /* (a subclass's use is a use of the slot its ancestor declares) */
   #define OA_IVSLOT(ci, ivn) ({ int _r = -1; \
     for (int _k = (ci); _r < 0 && _k >= 0 && _k < c->nclasses; _k = c->classes[_k].parent) \
@@ -15539,7 +15548,7 @@ static int narrow_object_arrays(Compiler *c) {
             /* a dynamic receiver may be this class: its reader would hand
                the unboxed array to a caller expecting the boxed one -- when
                the class has a reader, or a method, by the name at all */
-            if (sl[pi].ici >= 0) { if (oa_class_may_answer(c, sl[pi].ici, name)) sl[pi].alive = 0; continue; }
+            if (sl[pi].ici >= 0) { if (OA_MAY_ANSWER(pi)) sl[pi].alive = 0; continue; }
             if (!sl[pi].lv) { sl[pi].alive = 0; continue; }
             Scope *PS = &c->scopes[sl[pi].sidx];
             for (int pk = 0; pk < PS->nparams; pk++)
@@ -15731,7 +15740,7 @@ static int narrow_object_arrays(Compiler *c) {
            Struct member elsewhere reaches no `b` of this class) */
         const char *ivn = c->classes[sl[i].ici].ivars[sl[i].iiv];
         if (anh_has(&spelled, ivn) ||
-            (anh_has(&spelled, ivn + 1) && oa_class_may_answer(c, sl[i].ici, ivn + 1))) sl[i].alive = 0;
+            (anh_has(&spelled, ivn + 1) && OA_MAY_ANSWER(i))) sl[i].alive = 0;
         continue;
       }
       if (!sl[i].lv && c->scopes[sl[i].sidx].name &&
@@ -15962,6 +15971,8 @@ static int narrow_object_arrays(Compiler *c) {
      round clears and re-stamps, and reporting that would never converge. */
   if (oa_want_dropped(c, cleared, n_cleared)) changed = 1;
   free(cleared);
+  free(oa_ans);
+  #undef OA_MAY_ANSWER
   for (int k = 0; k < c->nclasses; k++) free(ivslot[k]);
   free(ivslot);
   #undef OA_IE_KILL
