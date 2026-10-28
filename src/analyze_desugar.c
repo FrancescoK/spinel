@@ -5923,7 +5923,9 @@ static int dsend_name_source(Compiler *c, int arg) {
   const char *vn = nt_str(nt, arg, "name");
   int scope = arg < nt->count ? c->nscope[arg] : -1, src = -1, nw = 0;
   if (!vn) return arg;
-  for (int id = 0; id < nt->count; id++) {
+  /* the scope's writes of the name, from the (scope, name) index: the
+     whole table was scanned for them per send asked about */
+  for (int id = comp_lvw_first_sc(c, scope, vn); id >= 0; id = comp_lvw_next_sc(c, id)) {
     if (!comp_is_local_write(nt_kind(nt, id)) || c->nscope[id] != scope) continue;
     const char *wn = nt_str(nt, id, "name");
     if (!wn || !sp_streq(wn, vn)) continue;
