@@ -2110,6 +2110,19 @@ int is_runtime_callback_name(const char *n) {
   if (!n) return 0;
   return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
 }
+int is_port_gvar_name(const char *n) {
+  return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
+}
+
+int synth_stands_for(const char *name, const char **proto) {
+  const char *stands = NULL;
+  if (!name) return 0;
+  if (sp_streq(name, "__noarg to_s")) stands = "to_s";
+  else if (sp_streq(name, "__noarg inspect")) stands = "inspect";
+  else if (sp_streq(name, "__enum_to_a")) stands = "each";
+  if (stands && proto) *proto = stands;
+  return stands != NULL;
+}
 int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||
                sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));

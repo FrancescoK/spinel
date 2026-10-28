@@ -1119,6 +1119,16 @@ static void flatten_parameter(int id, pm_node_t *node) {
   if (value) emit_ref(id, "value", value);
 }
 
+/* An attribute's `+=`, `||=` and `&&=` calls the reader and then the writer:
+   both names, the reader as `name` and the writer as `write_name`. */
+static void emit_attr_names(int id, pm_constant_id_t read, pm_constant_id_t write) {
+  char *r = cstr(read), *w = cstr(write);
+  emit_str(id, "name", r);
+  emit_str(id, "write_name", w);
+  free(r);
+  free(w);
+}
+
 /* The Prism flags of a CallNode that the passes read by name, each written
    only when Prism set it: `recv&.name` (nt_safe_nav); `recv.name = v`,
    `recv.name=(v)` and `recv[i] = v`, which `recv.send(:name=, v)` is not
@@ -1564,7 +1574,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
     N("CallOperatorWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
     emit_call_flags(id, node);
@@ -1574,7 +1584,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_and_write_node_t *n = (pm_call_and_write_node_t *)node;
     N("CallAndWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     R("value", n->value);
     emit_call_flags(id, node);
     break;
@@ -1583,7 +1593,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
     N("CallOrWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     R("value", n->value);
     emit_call_flags(id, node);
     break;

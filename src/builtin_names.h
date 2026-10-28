@@ -548,5 +548,12 @@ int is_remove_const_name(const char *n);   /* remove_const */
 int is_const_visibility_name(const char *n);   /* private_constant public_constant deprecate_constant */
 int is_cvar_write_name(const char *n);     /* class_variable_set remove_class_variable */
 int is_runtime_callback_name(const char *n);   /* an operator, method_missing, deconstruct, to_f ...: what CRuby's core calls by itself */
+int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an object makes it the port output goes to */
+
+/* A name the compiler synthesizes for a protocol method (the no-argument
+   display wrappers `__noarg to_s` and `__noarg inspect`, the Enumerable
+   materializer `__enum_to_a`): 1, and in *proto the protocol name it answers
+   for (to_s, inspect, each), else 0. */
+int synth_stands_for(const char *name, const char **proto);
 int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif
