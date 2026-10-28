@@ -595,6 +595,16 @@ static inline int nt_paren_single(const NodeTable *nt, int n) {
   }
   return n;
 }
+/* A def's receiver `recv` as written inside its parentheses: `def (expr).m`,
+   where Prism gives the receiver's own parentheses the expression itself
+   as body; parentheses inside it hold statements as usual (nt_paren_single) */
+static inline int nt_def_receiver(const NodeTable *nt, int recv) {
+  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
+    int b = nt_ref(nt, recv, "body");
+    if (b >= 0 && nt_kind(nt, b) != NK_StatementsNode) recv = b;
+  }
+  return nt_paren_single(nt, recv);
+}
 int nt_pred_const(const NodeTable *nt, int pred);   /* a predicate's constant truth: 1, 0, -1 not constant */
 const char *nt_content(const NodeTable *nt, int id);
 

@@ -1,0 +1,36 @@
+load record: 22 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 ClassNode Foo line 5
+  r0 #2 f0 DefNode x line 6
+  r0 #3 f0 DefNode y line 7
+r0 #4 f0 DefNode z line 9
+r0 #5 f0 DefNode hi line 10
+r0 #6 f0 ConstantWriteNode P line 12
+  r0 #7 f0 DefNode m line 13
+  r0 #8 f0 SingletonClassNode line 14
+    r0 #9 f0 DefNode make line 15
+  r0 #10 f0 CallNode private line 17
+  r0 #11 f0 DefNode uses_h line 18
+  r0 #12 f0 CallNode define_method line 19
+  r0 #13 f0 IfNode line 20
+    r0 #14 f0 CallNode define_method line 21
+  r0 #15 f0 CallNode each line 23
+    r0 #16 f0 CallNode define_method line 23
+r0 #17 f0 ConstantWriteNode D line 25
+  r0 #18 f0 DefNode twice line 26
+r0 #19 f0 CallNode p line 29
+r0 #20 f0 CallNode p line 30
+r0 #21 f0 CallNode p line 31
+class Foo: body#1
+entity Foo: owner main leaf Foo
+const Foo: write#1
+Foo.x: def#2 end=yes
+Foo.y: def#3 end=yes
+Foo.z: def#4 end=yes
+main.hi: def#5 end=yes
+const P: write#6
+form #10 runs code (maybe)
+form #12 runs code (maybe)
+form #14 runs code (maybe)
+form #16 runs code (maybe)
+const D: write#17

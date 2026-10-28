@@ -384,12 +384,13 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
    keeps it to run later, so that its nodes are late. fmay: may, counted
    from the frame: a condition stands between the node and the body (or
-   main's file) holding it. sure: an else clause that runs whenever its
+   main's file) holding it; fpartial: partial, counted from the frame. sure:
+   an else clause that runs whenever its
    condition is reached (the condition's predicate is a constant false,
    nt_pred_const). */
 typedef struct {
   int e, file, top, frame, depth, rep;
-  unsigned char may, partial, kind, bits, defer, fmay, sure;
+  unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);
@@ -410,17 +411,14 @@ int is_struct_call(Compiler *c, int val);
 int new_recv_classes(Compiler *c, int recv, int *out, int cap);
 int new_recv_every_class(Compiler *c, int recv);
 int class_def_body(Compiler *c, int def_node);
+int dm_each_inner(const NodeTable *nt, int call);   /* the define_method call of `[...].each { |v| define_method(...) { } }`, else -1 */
 const char *vis_arg_name(const NodeTable *nt, int arg);   /* a Symbol or String argument's method name (analyze_scope.c) */
 void register_struct_members(Compiler *c, ClassInfo *cls, int val);
 void register_structs(Compiler *c);
 void register_singleton_defs(Compiler *c);
 void fix_struct_block_scopes(Compiler *c);
-void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton);
-void register_attrs_body(Compiler *c, ClassInfo *cls, int body);
 void register_attrs(Compiler *c);
-void register_aliases_body(Compiler *c, ClassInfo *cls, int body);
 void register_aliases(Compiler *c);
-void register_undefs_body(Compiler *c, ClassInfo *cls, int body);
 void register_undefs(Compiler *c);
 int is_c_ident(const char *s);
 void register_globals_consts(Compiler *c);

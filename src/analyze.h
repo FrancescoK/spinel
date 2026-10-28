@@ -188,13 +188,17 @@ typedef struct {
   unsigned char vis;    /* SP_VIS_*, for a method version; BVIS_*, for a bare visibility word */
   unsigned char may;    /* recorded under a condition: may not have run */
   unsigned char nil;    /* a write of nil */
-  const char *target;   /* an alias's or a copy's original name */
+  const char *target;   /* an alias's or a copy's original name, an alias
+                           forwarder def's (lr_def) */
   int owner;            /* a write's: the class whose constant it is (LR_MAIN:
                            Object's), below LR_MAIN when not known or not a
                            constant's; unused in other versions */
   unsigned char unplaced; /* in a body the walk does not place (a builder's
                              block, lr_body_defs): no version, and no query
                              at a point sees it */
+  int scope;            /* a def's or a define_method's: the method scope
+                           the scope walk made of it (its Scope index; 0,
+                           the program's top level, for none) */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
@@ -205,8 +209,12 @@ typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /
    rescue clause, a modifier, the right of `&&` / `||`) stands between the
    call and the body, or main's file, holding it, so it may not run when
    that body does. A class body opened under a condition is no condition
-   of its statements. */
-typedef struct { int node, kind, mod, ref; unsigned char dup, cond; } LrMixin;
+   of its statements. applied: the load phase runs the call whenever its
+   body runs, as the registration applies an entry (elab_entries): no
+   condition between them, not in an iterator's block or a begin with a
+   rescue clause. open: the statement whose body the call stands in
+   (LrOpen.node; a file's root for main's). */
+typedef struct { int node, kind, mod, ref; unsigned char dup, cond, applied; int open; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the class builders' blocks recorded as their classes' bodies, once
@@ -237,9 +245,18 @@ void elab_mark_versions(Compiler *c);
 /* does node run whenever the body of def node `def` runs: is it inside that
    body with no lambda, nested def or deferred block between? */
 int elab_runs_with(Compiler *c, int node, int def);
+/* the scope walk made method scope `scope` of def or define_method node
+   `node`: the record's version of it holds it (LrDef.scope) */
+void elab_def_scope(Compiler *c, int node, int scope);
 /* the def node whose body holds node, with no class body or other def
    between; -1 for none */
 int elab_body_def(Compiler *c, int node);
+/* does the load phase apply def or define_method node `def` whenever the
+   body it stands in runs (lr_stmt_applied): not under a run-time
+   condition there, nor in an iterator's block, except a define_method an
+   applied `[lits].each` unrolls (dm_each_inner)? 1 for one at no point,
+   which the record leaves to its body */
+int elab_def_applied(Compiler *c, int def);
 /* call_target's questions about call id read the record's facts as its
    first such question found them (analyze_elab.c): 1 when the frame is in,
    until elab_plan_leave; 0 for a node it cannot place */
@@ -304,6 +321,10 @@ ElabBody *elab_all_bodies(Compiler *c, int *n);
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
 int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
+/* does a body of cls define name with a def of its own on its instance
+   side, wherever in the body (under a condition, in a block), placed or
+   not? */
+int elab_defines(Compiler *c, int cls, const char *name);
 /* the module mixin m names: the one the record resolved where the call
    stands, else the one its constant names (elab_module_named); -1 for none */
 int elab_mixin_module(Compiler *c, const LrMixin *m);
@@ -359,10 +380,20 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
 typedef struct {
   const char *name, *alias;   /* alias: the last alias's original name */
   int node;                   /* the name's last entry */
+  int first;                  /* its first entry that gives it a visibility, -1 for none */
   signed char vis;
   unsigned char reader, writer, undef, copy;
 } ElabSurface;
 const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n);
+/* An entry the registration applies, as the load phase ends (lr_applied):
+   on class side (cls, LR_MAIN for main's; sg), of kind LrKind, by node, of
+   name (an alias's original in target); names point into the record */
+typedef struct { int cls, sg, kind, node; const char *name, *target; } ElabEntry;
+/* every class side's entries of the kinds in mask (1 << LrKind), in the
+   order the load phase makes them: by class and side, then statement, then
+   the argument that names them (a reader before its writer); *n of them,
+   the caller frees the array */
+ElabEntry *elab_entries(Compiler *c, unsigned mask, int *n);
 /* did code the record cannot follow (a send, an eval of a String, a mixin
    of a module it does not know, a computed method name, a method of the
    program its body calls) run on cls before p? */

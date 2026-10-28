@@ -1,0 +1,52 @@
+load record: 32 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 ClassNode C line 8
+r0 #2 f0 SingletonClassNode line 10
+  r0 #3 f0 CallNode class_eval line 11
+    r0 #4 f0 DefNode made line 12
+r0 #5 f0 ClassNode K line 16
+  r0 #6 f0 CallNode each line 17
+    r0 #7 f0 DefNode from_iter line 17
+  r0 #8 f0 IfNode line 18
+    r0 #9 may f0 DefNode cond_m#__cond1 line 18
+    r0 #10 may f0 GlobalVariableWriteNode $__cond_def1 line 18
+    r0 #11 may f0 DefNode cond_m#__cond2 line 18
+    r0 #12 may f0 GlobalVariableWriteNode $__cond_def1 line 18
+  r0 #13 f0 DefNode cond_m line 18
+  r0 #14 f0 DefNode mk line 19
+r0 #15 f0 ConstantWriteNode S line 24
+  r0 #16 f0 IfNode line 25
+    r0 #17 f0 CallNode each line 26
+      r0 #18 f0 CallNode define_method line 26
+  r0 #19 f0 UnlessNode line 28
+    r0 #20 f0 CallNode each line 29
+      r0 #21 f0 CallNode define_method line 29
+r0 #22 f0 DefNode build line 33
+r0 #23 f0 ConstantWriteNode B line 38
+r0 #24 f0 CallNode p line 40
+r0 #25 f0 CallNode p line 41
+r0 #26 f0 CallNode p line 42
+r0 #27 f0 CallNode mk line 43
+r0 #28 f0 CallNode p line 44
+r0 #29 f0 LocalVariableWriteNode s line 45
+r0 #30 f0 CallNode p line 46
+r0 #31 f0 CallNode p line 47
+class C: body#1
+class K: body#5
+entity C: owner main leaf C
+entity K: owner main leaf K
+const C: write#1
+C.made: def#4 end=yes
+const K: write#5
+K#from_iter: def#7 end=yes
+K#cond_m#__cond1: def#9 may end=unknown
+$__cond_def1: write#10 may write#12 may
+K#cond_m#__cond2: def#11 may end=unknown
+K#cond_m: def#13 end=yes
+K.mk: def#14 end=yes
+const S: write#15
+form #18 runs code (maybe)
+form #21 runs code (maybe)
+main#build: def#22 private end=yes
+const B: write#23
+opaque K: opaque#27
