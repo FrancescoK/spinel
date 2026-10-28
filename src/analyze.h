@@ -187,7 +187,11 @@ typedef struct {
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
-typedef struct { int node, kind, mod, ref; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know; ref: the argument naming it */
+/* kind: LrMixKind; mod: the module's class, -2 one the record does not
+   know; ref: the argument naming it; dup, once asked (lr_mixin_dup): 1 +
+   whether mod is already among the class's ancestors where the mixin
+   runs, ELAB_YES / NO / UNKNOWN */
+typedef struct { int node, kind, mod, ref; unsigned char dup; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the class builders' blocks recorded as their classes' bodies, once
@@ -202,6 +206,31 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */
 int elab_method_versions(Compiler *c, const char *name);
+/* may a call of `name` reach a replaced version: does some class's (or
+   main's) history of it hold more than one version, or an alias, which
+   names the version it captured? */
+int elab_method_replaced(Compiler *c, const char *name);
+/* The record's histories of method `name`, one class and side at a time:
+   the first with i -1, then the one after i; -1 past the last. *cls the
+   class (-1 main's), *sg 1 for its singleton side. */
+int elab_method_holder(Compiler *c, const char *name, int i, int *cls, int *sg);
+/* Sets each method scope's version facts (Scope.versioned, .replaced) from
+   the record: as it is made, and again once the passes after it have
+   copied (mixins), renamed (prepend shadows, alias captures) and made
+   their methods, ahead of the inference. */
+void elab_mark_versions(Compiler *c);
+/* does node run whenever the body of def node `def` runs: is it inside that
+   body with no lambda, nested def or deferred block between? */
+int elab_runs_with(Compiler *c, int node, int def);
+/* the def node whose body holds node, with no class body or other def
+   between; -1 for none */
+int elab_body_def(Compiler *c, int node);
+/* call_target's questions about call id read the record's facts as its
+   first such question found them (analyze_elab.c): 1 when the frame is in,
+   until elab_plan_leave; 0 for a node it cannot place */
+int elab_plan_enter(Compiler *c, int id);
+void elab_plan_leave(Compiler *c);
+void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc);   /* SPINEL_ELAB_CHECK */
 /* where the version recorded at def node `node` in cls's history of `name`
    (singleton when sg) is replaced: ELAB_YES with *end the next version's
    point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN

@@ -1974,13 +1974,6 @@ int emit_poly_cls_value_prearm(Compiler *c, int id, const char *name, int argc,
   return 1;
 }
 
-/* The name a message about call `id` says: the one the program wrote, where
-   the call was pointed at a hidden definition (version_redefined_reopen_defs). */
-const char *call_shown_name(const NodeTable *nt, int id) {
-  const char *sh = nt_str(nt, id, "redef_shown");
-  return sh ? sh : nt_str(nt, id, "name");
-}
-
 /* Enumerable's public instance methods, for respond_to? on a user class
    that includes the module (served through the __enum_to_a redirect). */
 const char *const enumerable_names[] = {
@@ -21413,7 +21406,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b) {
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
               !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);  /* the class-body desugar keeps permission when it gives the call its class */
   if (!stamped && !plain) return 0;
-  const char *vnm = call_shown_name(nt, id);
+  const char *vnm = nt_str(nt, id, "name");
   int vcid = -1;
   if (vrecv >= 0) {
     TyKind vrt = comp_ntype(c, vrecv);
@@ -21489,7 +21482,7 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   int plain = !stamped && vrecv >= 0 && !nt_str(nt, id, "send_blind") &&
               !nt_int(nt, id, "dyn_arm", 0) && !nt_ignore_visibility(nt, id);
   if (!stamped && !plain) return;
-  const char *vnm = call_shown_name(nt, id);
+  const char *vnm = nt_str(nt, id, "name");
   if (!vnm) return;
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
@@ -21895,7 +21888,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       g_gate_raise) {
     int vac = 0; call_args(nt, id, &vac);
     if (vac == 0) {
-      const char *vnm = call_shown_name(nt, id);
+      const char *vnm = nt_str(nt, id, "name");
       TyKind vret = repr_of(c, id).as_ty;
       const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
       char head[200];

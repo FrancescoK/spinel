@@ -627,13 +627,13 @@ void compute_reachable(Compiler *c, int typed) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     { sc->reachable = 0; comp_touch_scope(sc->idx); }
-    int is_root = (s == 0 || !sc->name || sp_streq(sc->name, "initialize") ||
-                   method_name_implicitly_invoked(sc->name) || sc->is_ext_entry ||
+    int is_root = (s == 0 || !sc->name || (!sc->replaced && sp_streq(sc->name, "initialize")) ||
+                   (!sc->replaced && method_name_implicitly_invoked(sc->name)) || sc->is_ext_entry ||
                    /* an exception's message: the runtime asks it where the
                       exception is printed or inspected (sp_user_exc_message),
                       so a private helper only the override calls (sqlite3's
                       sql_error) is reached through it */
-                   (sp_streq(sc->name, "message") && !sc->is_cmethod && sc->class_id >= 0 &&
+                   (sp_streq(sc->name, "message") && !sc->replaced && !sc->is_cmethod && sc->class_id >= 0 &&
                     class_is_exc_subclass(c, sc->class_id)));
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
@@ -681,7 +681,9 @@ void compute_reachable(Compiler *c, int typed) {
      top-level def of it, a private method of Object every receiver has.
      "\x03<name>" is a call on a known instance (`K.new.m`, or a receiverless
      or `self.` call in a class's instance method): every scope of the name
-     but the class methods, which no instance can reach. */
+     but the class methods, which no instance can reach. None of these
+     reaches a replaced method version, which only the calls bound to it
+     reach ("\x01<scope>", cr_collect_versions). */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
       if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
@@ -693,15 +695,15 @@ void compute_reachable(Compiler *c, int typed) {
           int _t=comp_method_in_chain(c,_p,_mn+1,NULL); \
           if(_t>=0 && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
-        if(c->scopes[_t].class_id<0 && !c->scopes[_t].is_cmethod && !c->scopes[_t].reachable) \
+        if(c->scopes[_t].class_id<0 && !c->scopes[_t].is_cmethod && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
           { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
     else if(_mn && _mn[0]=='\x03'){ if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_mn+1)){ CN_ADD(_mn); \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
-        if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].reachable) \
+        if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
           { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
-      if(!c->scopes[_t].reachable) \
+      if(!c->scopes[_t].replaced && !c->scopes[_t].reachable) \
         { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } while(0)
 
   while (qhead < qtail) {
@@ -43232,26 +43234,16 @@ static int bam_wrapper_binds_receiver(Compiler *c, Scope *sc) {
 }
 
 
-/* A top-level method redefined by a later top-level `def` is a different
-   method until that def runs: `def tw(&b)`, calls, then `def tw(a)` and more
-   calls reach the first body from the first calls and the second from the
-   rest. Spinel has one function per name, so the earlier definitions are
-   given a private name each, and the top-level calls that run between one
-   definition and the next -- statements of the program body and the blocks
-   in them, not method bodies (which run whenever they are called, by then
-   usually after the last def) and not class or module bodies -- are renamed
-   to match. The last definition keeps the name, and every other call
-   reaches it. Before this every call bound to the FIRST definition: a later
-   def of another arity refused its calls, one of the same arity was a C
-   redefinition. */
-static int g_redef_self_too;   /* also rename `self.from` (main's singleton methods) */
+/* Renames the receiverless and `self.` calls of `from` under node id to
+   `to`, not those in a def, class or module body
+   (rename_main_singleton_defs). */
 static void redef_rename_calls(NodeTable *nt, int id, const char *from, const char *to, int depth) {
   if (id < 0 || id >= nt->count || depth > 400) return;
   NodeKind k = nt_kind(nt, id);
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode)
     return;
   int crecv = k == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
-  if (k == NK_CallNode && (crecv < 0 || (g_redef_self_too && nt_kind(nt, crecv) == NK_SelfNode))) {
+  if (k == NK_CallNode && (crecv < 0 || nt_kind(nt, crecv) == NK_SelfNode)) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && sp_streq(nm, from)) {
       if (!sp_streq(from, to)) nt_set_str(nt, id, "name", to);
@@ -43266,285 +43258,8 @@ static void redef_rename_calls(NodeTable *nt, int id, const char *from, const ch
     for (int j = 0; j < nd->a[i].n; j++)
       redef_rename_calls(nt, nd->a[i].ids[j], from, to, depth + 1);
 }
-static void rename_redefined_toplevel_defs(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int body = nt_ref(nt, nt->root_id, "statements");
-  int n = 0;
-  const int *st0 = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  if (!st0 || n < 2) return;
-  int *st = malloc(sizeof(int) * (size_t)n);   /* renaming may move the array */
-  if (!st) return;
-  memcpy(st, st0, sizeof(int) * (size_t)n);
-  int serial = 0;
-  for (int i = 0; i < n; i++) {
-    if (nt_kind(nt, st[i]) != NK_DefNode || nt_ref(nt, st[i], "receiver") >= 0) continue;
-    const char *nm0 = nt_str(nt, st[i], "name");
-    if (!nm0) continue;
-    int next = -1;
-    for (int j = i + 1; j < n && next < 0; j++)
-      if (nt_kind(nt, st[j]) == NK_DefNode && nt_ref(nt, st[j], "receiver") < 0 &&
-          nt_str(nt, st[j], "name") && sp_streq(nt_str(nt, st[j], "name"), nm0)) next = j;
-    if (next < 0) continue;
-    char *nm = strdup(nm0);
-    char to[256];
-    /* a name the program does not already define (`def f__redef1` is legal) */
-    for (;;) {
-      snprintf(to, sizeof to, "%s__redef%d", nm, ++serial);
-      int taken = 0;
-      NT_FOREACH_KIND(nt, NK_DefNode, d) {
-        const char *dn = nt_str(nt, d, "name");
-        if (dn && sp_streq(dn, to)) { taken = 1; break; }
-      }
-      if (!taken) break;
-    }
-    nt_set_str(nt, st[i], "name", to);
-    for (int j = i + 1; j < next; j++) {
-      redef_rename_calls(nt, st[j], nm, to, 0);
-      /* `alias saved f` between the two names the body in effect there */
-      if (nt_kind(nt, st[j]) == NK_AliasMethodNode) {
-        int on = nt_ref(nt, st[j], "old_name");
-        const char *ov = on >= 0 ? nt_str(nt, on, "value") : NULL;
-        if (ov && sp_streq(ov, nm)) nt_set_str(nt, on, "value", to);
-      }
-    }
-    /* The earlier body's own calls: it is entered only from the renamed
-       calls, all of which run before the later `def`, so while it runs the
-       name is still this definition -- a recursive `fact(n - 1)` is itself,
-       not the redefinition (CodeRabbit on #4972). Parameter defaults run on
-       entry, the same. */
-    redef_rename_calls(nt, nt_ref(nt, st[i], "body"), nm, to, 0);
-    redef_rename_calls(nt, nt_ref(nt, st[i], "parameters"), nm, to, 0);
-    free(nm);
-  }
-  free(st);
-}
 
-/* The calls of `nm` with a receiver under top-level statement `id` -- the
-   statement and the blocks in it, not a def, class or module body -- into
-   out (at most cap); answers how many. */
-static int redef_collect_calls(const NodeTable *nt, int id, const char *nm, int *out, int n, int cap, int depth) {
-  if (id < 0 || id >= nt->count || depth > 400) return n;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return n;
-  if (k == NK_CallNode && nt_ref(nt, id, "receiver") >= 0 && nt_str(nt, id, "name") &&
-      sp_streq(nt_str(nt, id, "name"), nm) && n < cap)
-    out[n++] = id;
-  const SpNode *nd = &nt->nodes[id];
-  for (int i = 0; i < nd->nr; i++) n = redef_collect_calls(nt, nd->r[i].ref, nm, out, n, cap, depth + 1);
-  for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++) n = redef_collect_calls(nt, nd->a[i].ids[j], nm, out, n, cap, depth + 1);
-  return n;
-}
-
-/* The Symbol nodes naming `nm` as the method an alias statement of class
-   body `body`, from statement `from` on, gives another name: `alias new
-   nm`, `alias_method :new, :nm`. Into out (at most cap), after n of them. */
-static int redef_collect_aliases(const NodeTable *nt, int body, int from, const char *nm, int *out, int n, int cap) {
-  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-  for (int k = from; k < bn; k++) {
-    int on = -1;
-    if (nt_kind(nt, bb[k]) == NK_AliasMethodNode) on = nt_ref(nt, bb[k], "old_name");
-    else if (nt_kind(nt, bb[k]) == NK_CallNode && nt_ref(nt, bb[k], "receiver") < 0 && nt_str(nt, bb[k], "name") &&
-             sp_streq(nt_str(nt, bb[k], "name"), "alias_method")) {
-      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, bb[k], "arguments"), "arguments", &an);
-      if (an == 2) on = av[1];
-    }
-    if (on >= 0 && nt_kind(nt, on) == NK_SymbolNode && nt_str(nt, on, "value") &&
-        sp_streq(nt_str(nt, on, "value"), nm) && n < cap)
-      out[n++] = on;
-  }
-  return n;
-}
-
-/* The DefNode of instance method `nm` in class body statement `cls`, or -1. */
-static int redef_class_def(const NodeTable *nt, int cls, const char *nm) {
-  int body = nt_ref(nt, cls, "body");
-  int bn = 0; const int *bb = body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &bn) : NULL;
-  for (int k = 0; k < bn; k++)
-    if (nt_kind(nt, bb[k]) == NK_DefNode && nt_ref(nt, bb[k], "receiver") < 0 &&
-        nt_str(nt, bb[k], "name") && sp_streq(nt_str(nt, bb[k], "name"), nm)) return bb[k];
-  return -1;
-}
-
-static const char *redef_class_name(const NodeTable *nt, int cls) {
-  int cp = nt_ref(nt, cls, "constant_path");
-  return cp >= 0 && nt_kind(nt, cp) == NK_ConstantReadNode ? nt_str(nt, cp, "name") : NULL;
-}
-
-/* A class reopened at the top level with an instance method defined again
-   (`class B; def get = 1; end; ...; class B; def get = 2; end`) has, as the
-   top-level method does (rename_redefined_toplevel_defs), the earlier
-   definition until the later `def` runs. Spinel had one function per name,
-   so the calls the program body makes between the two -- `B.new.get` --
-   reached the later body. Where some top-level statement between them calls
-   the name on a receiver, the earlier def takes a hidden name
-   (`get#redef<n>`, no Ruby def can spell it, and reflection lists none such)
-   and those calls are marked with it; once their receivers are typed,
-   desugar_redef_version_calls points the ones on the class at it. Calls in
-   method bodies, which run whenever they are called, keep the last def. */
-typedef struct { const char *name; int at; } RedefClassAt;
-static int redef_class_at_cmp(const void *a, const void *b) {
-  const RedefClassAt *x = a, *y = b;
-  int r = strcmp(x->name, y->name);
-  return r ? r : x->at - y->at;
-}
-
-static void version_redefined_reopen_defs(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int body = nt_ref(nt, nt->root_id, "statements");
-  int n = 0;
-  const int *st0 = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  if (!st0 || n < 2) return;
-  int *st = malloc(sizeof(int) * (size_t)n);
-  /* reopened[i]: the next top-level statement reopening statement i's
-     class, or -1. Looking for it by a walk of the later statements from
-     each def made the pass quadratic in a program's classes. */
-  int *reopened = malloc(sizeof(int) * (size_t)n);
-  RedefClassAt *byname = malloc(sizeof(RedefClassAt) * (size_t)n);
-  if (!st || !reopened || !byname) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memcpy(st, st0, sizeof(int) * (size_t)n);
-  int nb = 0;
-  for (int i = 0; i < n; i++) {
-    reopened[i] = -1;
-    const char *cn = nt_kind(nt, st[i]) == NK_ClassNode ? redef_class_name(nt, st[i]) : NULL;
-    if (cn) { byname[nb].name = cn; byname[nb].at = i; nb++; }
-  }
-  qsort(byname, (size_t)nb, sizeof(RedefClassAt), redef_class_at_cmp);
-  for (int i = 0; i + 1 < nb; i++)
-    if (strcmp(byname[i].name, byname[i + 1].name) == 0) reopened[byname[i].at] = byname[i + 1].at;
-  free(byname);
-  int serial = 0;
-  for (int i = 0; i < n; i++) {
-    if (reopened[i] < 0) continue;
-    const char *cn = redef_class_name(nt, st[i]);
-    int cb = nt_ref(nt, st[i], "body");
-    int bn = 0; const int *bb0 = cn && cb >= 0 && nt_kind(nt, cb) == NK_StatementsNode ? nt_arr(nt, cb, "body", &bn) : NULL;
-    for (int k = 0; k < bn; k++) {
-      const int *bb = nt_arr(nt, cb, "body", &bn);
-      int d1 = bb[k];
-      if (nt_kind(nt, d1) != NK_DefNode || nt_ref(nt, d1, "receiver") >= 0 || !nt_str(nt, d1, "name")) continue;
-      char *nm = strdup(nt_str(nt, d1, "name"));
-      if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      int j = -1;
-      for (int q = reopened[i]; q >= 0 && j < 0; q = reopened[q])
-        if (redef_class_def(nt, st[q], nm) >= 0) j = q;
-      int calls[256], nc = 0;
-      for (int q = i + 1; j >= 0 && q < j; q++) nc = redef_collect_calls(nt, st[q], nm, calls, nc, 256, 0);
-      /* an alias of the name made while this is the definition, after it in
-         this body or in a reopening ahead of the later def, names it, not
-         the later def (`class B; def get = 1; alias old get; end`) */
-      int aliases[64], na = 0;
-      na = redef_collect_aliases(nt, cb, k + 1, nm, aliases, na, 64);
-      for (int q = reopened[i]; j >= 0 && q >= 0 && q < j; q = reopened[q])
-        na = redef_collect_aliases(nt, nt_ref(nt, st[q], "body"), 0, nm, aliases, na, 64);
-      if (j < 0 || (nc == 0 && na == 0)) { free(nm); continue; }
-      char hidden[300];
-      snprintf(hidden, sizeof hidden, "%s#redef%d", nm, ++serial);
-      nt_set_str(nt, d1, "name", hidden);
-      if (nc > 0) {
-        int *rc = realloc(c->redef_calls, sizeof(int) * (size_t)(c->nredef_calls + nc));
-        if (!rc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        c->redef_calls = rc;
-      }
-      for (int q = 0; q < nc; q++) {
-        nt_node_set_str(nt, calls[q], "redef_name", hidden);
-        nt_node_set_str(nt, calls[q], "redef_class", cn);
-        c->redef_calls[c->nredef_calls++] = calls[q];
-      }
-      for (int q = 0; q < na; q++) nt_set_str(nt, aliases[q], "value", hidden);
-      /* its own receiverless calls run while it is the definition */
-      redef_rename_calls(nt, nt_ref(nt, d1, "body"), nm, hidden, 0);
-      /* the visibility the body gives it after the def (`private :get`) is
-         this definition's, not the later one's */
-      for (int q = k + 1; q < bn; q++) {
-        int vc = bb[q];
-        const char *vn = nt_kind(nt, vc) == NK_CallNode && nt_ref(nt, vc, "receiver") < 0 ? nt_str(nt, vc, "name") : NULL;
-        if (!vn || !(sp_streq(vn, "private") || sp_streq(vn, "protected") || sp_streq(vn, "public"))) continue;
-        int va = nt_ref(nt, vc, "arguments"), van = 0;
-        const int *vav = va >= 0 ? nt_arr(nt, va, "arguments", &van) : NULL;
-        for (int r = 0; r < van; r++)
-          if (nt_kind(nt, vav[r]) == NK_SymbolNode && nt_str(nt, vav[r], "value") &&
-              sp_streq(nt_str(nt, vav[r], "value"), nm))
-            nt_set_str(nt, vav[r], "value", hidden);
-      }
-      free(nm);
-    }
-  }
-  free(st);
-  free(reopened);
-}
-
-/* The calls version_redefined_reopen_defs marked, once their receivers are
-   typed: one on the class (or a descendant inheriting the method) takes the
-   earlier definition's hidden name; one on a value that may be such an
-   object and may be another is refused, the definition it reaches being
-   decided by its class at run time; one on anything else stays as it is. */
 int is_descendant(Compiler *c, int k, int anc);
-static int desugar_redef_version_calls(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int changed = 0;
-  /* only the marked calls: a walk of every node each fixpoint round was
-     work the scale test counts against programs that redefine nothing */
-  for (int r = 0; r < c->nredef_calls; r++) {
-    int id = c->redef_calls[r];
-    if (id < 0) continue;
-    const char *hid = nt_str(nt, id, "redef_name"), *cn = nt_str(nt, id, "redef_class");
-    if (!hid || !cn) continue;
-    int recv = nt_ref(nt, id, "receiver");
-    const char *nm = nt_str(nt, id, "name");
-    int cid = comp_class_index(c, cn);
-    if (recv < 0 || !nm || cid < 0) continue;
-    TyKind rt = infer_type(c, recv);
-    if (rt == TY_UNKNOWN) continue;
-    /* the class whose method the call reaches: the redefined one, where the
-       receiver's class inherits it unchanged */
-    int reaches = 0, maybe = 0;
-    if (ty_is_object(rt)) {
-      int k = ty_object_class(rt), d = -1;
-      int mi = (k == cid || is_descendant(c, k, cid)) ? comp_method_in_chain(c, k, nm, &d) : -1;
-      if (mi >= 0) {
-        /* a module prepended to the class answers it ahead of either
-           definition, from where the prepend runs */
-        if (d == cid && c->scopes[mi].is_prepend_copy) maybe = 3;
-        else if (d == cid) reaches = 1;
-        /* a descendant's own override: whether it is defined yet where the
-           call runs decides between it and the earlier definition */
-        else if (d >= 0 && is_descendant(c, d, cid)) maybe = 2;
-      }
-    }
-    else if (rt == TY_POLY) {
-      for (int k = 0; k < c->nclasses && !maybe; k++) {
-        int d = -1;
-        if ((k == cid || is_descendant(c, k, cid)) && comp_method_in_chain(c, k, nm, &d) >= 0 && d == cid)
-          maybe = 1;
-      }
-    }
-    c->redef_calls[r] = -1;
-    if (reaches) {
-      /* the name a message says is the one the program wrote */
-      nt_node_set_str(nt, id, "redef_shown", nm);
-      nt_set_str(nt, id, "name", hid);
-      changed = 1;
-    }
-    else if (maybe == 3)
-      unsupported_feature(c, id,
-        "a method redefined by a later reopening of its class is called between the two definitions, and a "
-        "module prepended to the class defines it too, so which method the call reaches depends on where the "
-        "prepend runs. Define the method once, or prepend the module where the class is defined.");
-    else if (maybe == 2)
-      unsupported_feature(c, id,
-        "a method redefined by a later reopening of its class is called between the two definitions on an "
-        "object of a subclass that overrides it, so which definition the call reaches depends on where the "
-        "override is defined. Define the method once, or the override before the call.");
-    else if (maybe)
-      unsupported_feature(c, id,
-        "a method redefined by a later reopening of its class is called between the two definitions on a "
-        "value whose class is known only at run time, so which definition the call reaches is not known "
-        "here. Call it on a value of the class itself, or define the method once.");
-  }
-  return changed;
-}
-
 /* Does a call of `name` on an object of class k already reach the method
    def node `def` as the class stood at p, ahead of a later include? Then
    that include changes no call on k's objects (`class A; include M2; end`
@@ -44334,11 +44049,9 @@ static void rename_main_singleton_defs(Compiler *c) {
       if (!taken) break;
     }
     if (plain) nt_set_str(nt, st[i], "name", to);
-    g_redef_self_too = 1;
     for (int j = i + 1; j < n; j++) redef_rename_calls(nt, st[j], nm, to, 0);
     redef_rename_calls(nt, nt_ref(nt, st[i], "body"), nm, to, 0);
     redef_rename_calls(nt, nt_ref(nt, st[i], "parameters"), nm, to, 0);
-    g_redef_self_too = 0;
     free(nm);
   }
   free(st);
@@ -48344,8 +48057,6 @@ static void an_phase_desugar_register(Compiler *c) {
   AN_STEP_V("desugar_builtin_scalar_defs", desugar_builtin_scalar_defs(c));
   prog_settle_files(c);                  /* (--load-model=graph: a file no live require reaches is dropped; one a nested require places is placed) */
   prog_refuse_order(c);                  /* (--load-model=graph: what these read across files) */
-  rename_redefined_toplevel_defs(c);     /* def f; f; def f -> def f__redef1; f__redef1; def f */
-  version_redefined_reopen_defs(c);      /* class B; def g; end; B.new.g; class B; def g -> g#redef1 there */
   rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   lower_run(c, &lc, LW_SCOPE_NUMBERED_BLOCK_PARAMS);
   lower_run(c, &lc, LW_SINGLETON_CLASS_DEFINE_METHOD); /* singleton_class.define_method -> define_singleton_method */
@@ -49702,6 +49413,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      the method-lookup index can be used; it is rebuilt if the scope count ever
      grows. This is where comp_method_in_class / comp_cmethod_in_class are
      hottest (called per node, every fixpoint iteration). */
+  elab_mark_versions(c);
   comp_scope_index_set_frozen(1);
 
   /* The classes that can exist, before any type is derived from them (see
@@ -50215,7 +49927,6 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_hash_iter_with_index", desugar_hash_iter_with_index(c));     /* h.select.with_index { } -> h.select { } with a counter */
     ch |= AN_PASS("widen_shared_cmp_params", widen_shared_cmp_params(c));          /* multi-class <=> takes its operand boxed */
     ch |= AN_PASS("desugar_reduce_splat_args", desugar_reduce_splat_args(c));      /* inject(*a) -> by a.length */
-    ch |= AN_PASS("desugar_redef_version_calls", desugar_redef_version_calls(c));   /* B.new.g between two defs -> g#redef1 */
     ch |= AN_PASS("desugar_splat_view_scalars", desugar_splat_view_scalars(c));   /* h.fetch(*k), k an Integer -> the arms read [k] */
     ch |= AN_PASS("desugar_reduce_proc_arg", desugar_reduce_proc_arg(c));          /* reduce(&pr) -> reduce { |a,b| pr.call(a,b) } */
     ch |= AN_PASS("desugar_block_capture_wrap", desugar_block_capture_wrap(c));       /* { |i| ->{i} } -> { |i| (->(i){ ->{i} }).call(i) } */

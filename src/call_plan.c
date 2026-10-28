@@ -676,15 +676,102 @@ static const CallPlan *cplan_dep(const CallPlan *p) {
   if (p->owner_ci >= 0) IMEMO_DEP_CLASS(p->owner_ci);
   return p;
 }
-int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {
-  (void)id;
-  if (flags & CT_TOP) return comp_method_index(c, name);
-  if (flags & CT_OWN) {
-    int mi = flags & CT_CMETHOD ? comp_cmethod_in_class(c, cls, name) : comp_method_in_class(c, cls, name);
-    if (mi >= 0 && def_class) *def_class = cls;
-    return mi;
+int call_node_names(const NodeTable *nt, int id, const char *out[2]) {
+  NodeKind k = nt_kind(nt, id);
+  int n = 0;
+  if (k == NK_CallNode || k == NK_CallTargetNode) out[n++] = nt_str(nt, id, "name");
+  else if (k == NK_CallOperatorWriteNode || k == NK_CallOrWriteNode || k == NK_CallAndWriteNode) {
+    out[n++] = nt_str(nt, id, "read_name");
+    out[n++] = nt_str(nt, id, "write_name");
   }
-  return flags & CT_CMETHOD ? comp_cmethod_in_chain(c, cls, name, def_class) : comp_method_in_chain(c, cls, name, def_class);
+  return n;
+}
+/* does node id itself call `name` (not a method the language calls for it)? */
+static int ct_calls(Compiler *c, int id, const char *name) {
+  const char *nm[2];
+  int n = call_node_names(c->nt, id, nm);
+  for (int i = 0; i < n; i++) if (nm[i] && sp_streq(nm[i], name)) return 1;
+  return 0;
+}
+/* The method scope of version d of `name` for a call on class rcls (class
+   side when sg; main when rcls < 0), as the record answered it: a def's
+   scope (rcls's copy of it, when a mixin copied it); for an alias, the
+   version of its target live where the alias was made, in the class whose
+   body made it. -1 for any other version (a define_method's, an
+   attribute's) or an alias made where the record has no point. A chain of
+   aliases ends: each step asks for the version live at an alias's point,
+   one recorded ahead of that point, so the points only go back. */
+static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const LrDef *d, int *dc) {
+  int cls = rcls;
+  while (d) {
+    if (d->kind == LR_DEF) return comp_method_version(c, rcls, name, sg, d->node, dc);
+    if (d->kind != LR_ALIAS || !d->target) return -1;
+    int at = d->node;
+    name = d->target;
+    LoadPoint p = elab_point_of(c, at);
+    if (p.region < 0) return -1;
+    cls = c->node_cbody[at];
+    if (elab_method_at(c, cls, name, sg, p, &d) != ELAB_YES) return -1;
+  }
+  return -1;
+}
+/* The version of `name` call id runs, when the method has more than one
+   (#9898): a call at a load point gets the version live there; one in a
+   replaced version's body, the version live over that body's interval
+   when the record proves the body runs only inside it, else (as for a
+   receiverless or self call of its own name) that version itself; any
+   other call, the last version, which for an alias is the version it
+   captured. mi, the table's answer (the last version), where the record
+   cannot tell. */
+static int ct_version_at(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
+  int sg = (flags & CT_CMETHOD) != 0, rcls = flags & CT_TOP ? -1 : cls, vi = -1, dc = -1;
+  const LrDef *d = NULL;
+  LoadPoint p = elab_point_of(c, id), end;
+  int def = p.region >= 0 ? -1 : elab_body_def(c, id);
+  const Scope *v = def >= 0 ? comp_scope_of(c, id) : NULL;
+  if (v && (v->def_node != def || !v->replaced)) v = NULL;
+  if (p.region >= 0) {
+    if (elab_method_at(c, rcls, name, sg, p, &d) == ELAB_YES) vi = ct_def_version(c, rcls, name, sg, d, &dc);
+  }
+  else if (v && elab_version_end(c, v->class_id, v->name, v->is_cmethod, def, &end) == ELAB_YES &&
+           !elab_version_captured(c, v->name) && elab_runs_with(c, id, def) &&
+           elab_method_over(c, rcls, name, sg, elab_point_of(c, def), end, &d) == ELAB_YES)
+    vi = ct_def_version(c, rcls, name, sg, d, &dc);
+  else if (v && sp_streq(name, v->name) && rcls == v->class_id && sg == v->is_cmethod) {
+    int recv = nt_kind(c->nt, id) == NK_CallNode ? nt_ref(c->nt, id, "receiver") : -2;
+    if (recv == -1 || (recv >= 0 && nt_kind(c->nt, recv) == NK_SelfNode)) { vi = v->idx; dc = v->class_id; }
+  }
+  else if (elab_method_at(c, rcls, name, sg, p, &d) == ELAB_YES && d && d->kind == LR_ALIAS)
+    vi = ct_def_version(c, rcls, name, sg, d, &dc);
+  /* only a version that is a function of its own: a replaced one
+     (lr_mark_versions), or one no later scope of its name shadows; not one
+     a scope no def made (a define_method's) passes over */
+  if (vi < 0 || (!c->scopes[vi].replaced && scope_is_shadowed(c, vi))) return mi;
+  if (def_class && !(flags & CT_TOP)) *def_class = dc;
+  return vi;
+}
+/* ...asked in the record's frame for the call plan (elab_plan_enter): the
+   version is decided from the facts the record had for the call when the
+   plan first asked, not from a map rebuilt per ask */
+static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class) {
+  int framed = elab_plan_enter(c, id), dc = def_class ? *def_class : -1, now = dc;
+  int vi = ct_version_at(c, id, cls, name, flags, mi, def_class ? &dc : NULL);
+  if (framed) elab_plan_leave(c);
+  if (framed && elab_check_on(c))   /* the map as it is, for check mode */
+    elab_check_version(c, id, vi, dc, ct_version_at(c, id, cls, name, flags, mi, def_class ? &now : NULL), now);
+  if (def_class) *def_class = dc;
+  return vi;
+}
+int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {
+  int mi;
+  if (flags & CT_TOP) mi = comp_method_index(c, name);
+  else if (flags & CT_OWN) {
+    mi = flags & CT_CMETHOD ? comp_cmethod_in_class(c, cls, name) : comp_method_in_class(c, cls, name);
+    if (mi >= 0 && def_class) *def_class = cls;
+  }
+  else mi = flags & CT_CMETHOD ? comp_cmethod_in_chain(c, cls, name, def_class) : comp_method_in_chain(c, cls, name, def_class);
+  if (mi < 0 || id < 0 || !c->scopes[mi].versioned || !ct_calls(c, id, name)) return mi;
+  return ct_version(c, id, cls, name, flags, mi, def_class);
 }
 
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {

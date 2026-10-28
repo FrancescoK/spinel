@@ -62,8 +62,10 @@ int g_dump_load_record = 0;
    it runs at once if at all, but maybe not at all or cut short (in an
    iterator's block, which may run no time, or a begin body with rescue
    clauses, where a raise skips the rest): a write there is on no path for
-   sure. */
-typedef struct { int node, file, region, top, rank, depth, frame, last; unsigned char may, partial; } LrStmt;
+   sure. rep: the nearest statement around it whose body may run more than
+   once (a loop, an iterator's block, a begin body a rescue may retry), -1
+   for none: a statement after it in that body may also run before it. */
+typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -81,12 +83,23 @@ struct LoadRecord {
   int check, shown;
   LrCheck fam[LR_CHECK_MAX];
   double ms; int builds;
+  /* the call plan's frame (elab_plan_enter): the map one build made, swapped
+     in while call_target asks its questions, with the parents it climbed */
+  struct LrPlan { LrStmt *st; int nst, cst, *at; unsigned char *bits; int n, ncap; } plan;
+  int *up;                   /* [n] the parent each node's point was climbed from */
+  int *plan_par, plan_depth;
+  unsigned char plan_made;
   /* the histories (elab_program) */
   int recorded;
   int frontier;              /* the statements recorded so far, in seq order: while the walk records, a query at p is complete for p.seq <= frontier (lr_ready) */
   struct ElabRec *rec;       /* the record's state while elab_program makes it */
   struct LrHist *hist; int nhist, chist, *hhead;
   struct LrClass *cls; int ncls;
+  /* [ncls] the classes the record holds: those the walk made and the class
+     builders' (elab_record_builders). One registration makes otherwise
+     after the walk (an object's singleton class, which its extends and
+     defs fill) has methods the record never saw, and no entry (lr_class). */
+  unsigned char *held;
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
   char **reopens; int nreopens, creopens;   /* the builtin classes and modules a header of the program reopens, sorted (lr_reopens_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
@@ -147,7 +160,7 @@ static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->may, pos->partial };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial };
   r->at[node] = k;
   pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
@@ -226,7 +239,11 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       break;
     case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhenNode: case NK_InNode: case NK_RescueNode:
     case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
-      if (spine && ch == nt_ref(nt, p, "statements")) { q.may = 1; return elab_body_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "statements")) {
+        q.may = 1;
+        if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) q.rep = pp->e;
+        return elab_body_pos(nt, ch, q);
+      }
       if (spine && (((k == NK_IfNode || k == NK_RescueNode) && ch == nt_ref(nt, p, "subsequent")) ||
                     (k == NK_UnlessNode && ch == nt_ref(nt, p, "else_clause"))))
         q.kind = EP_SPINE;
@@ -237,6 +254,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_BeginNode:
       if (spine && ch == nt_ref(nt, p, "statements")) {
         q.partial |= nt_ref(nt, p, "rescue_clause") >= 0;
+        if (nt_ref(nt, p, "rescue_clause") >= 0) q.rep = pp->e;   /* `retry` runs it again */
         return elab_body_pos(nt, ch, q);
       }
       if (spine) q.kind = EP_SPINE;   /* its rescue clauses, else and ensure */
@@ -266,7 +284,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       q.kind = EP_SPINE;
       if (runs == 0) q.may = 1;
       if (elab_opens_frame(nt, p)) q.frame = pp->e;
-      else q.partial = 1;
+      else { q.partial = 1; q.rep = pp->e; }   /* an iterator's: zero times, or several */
       break;
     }
     default: break;
@@ -394,7 +412,7 @@ static void elab_sites_in(const NodeTable *nt, int id, ElabPos pos, void (*fn)(v
   }
 }
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud) {
-  ElabPos at = { .e = 0, .top = -1, .frame = -1, .kind = EP_NEW };
+  ElabPos at = { .e = 0, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW };
   elab_sites_in(c->nt, stmt, at, fn, ud);
 }
 
@@ -416,7 +434,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     c->nscope[root] = sc; c->node_cbody[root] = -1;
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
-  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .kind = EP_NEW }, rp = at;
+  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW }, rp = at;
   if (site) { at.may = rp.may = site->may; at.partial = rp.partial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
@@ -518,7 +536,8 @@ static void elab_points_walk(Compiler *c, int reg) {
   }
   if (was) lr_check_map(c, was, wbits);
   free(was); free(wbits);
-  free(up); free(live); free(stack); free(w.entered);
+  free(r->up); r->up = up;
+  free(live); free(stack); free(w.entered);
   r->builds++;
   if (sp_timing_on()) r->ms += sp_timing_now() - t0;
 }
@@ -527,8 +546,78 @@ static void elab_points_walk(Compiler *c, int reg) {
    except while the registration's walk makes it */
 static LoadRecord *elab_fresh(Compiler *c) {
   LoadRecord *r = lr_get(c);
-  if (!r->walk && (!r->at || r->n != c->nt->count || r->ver != c->nt->version)) elab_points_walk(c, 0);
+  if (!r->walk && !r->plan_depth && (!r->at || r->n != c->nt->count || r->ver != c->nt->version)) elab_points_walk(c, 0);
   return r;
+}
+
+/* ---- the call plan's frame ----
+   Which version a call binds to is the call plan's decision (call_target),
+   made from the record's facts about the call: its point, the def whose
+   body holds it, whether it runs whenever that body runs, and the points
+   of the histories' entries. The passes ask it again and again, and append
+   nodes between the asks, so a map rebuilt per ask made each such pass
+   quadratic in the program (#10422). The facts are decided once instead:
+   the first ask copies the map and its parent map, and every later ask
+   reads that copy (elab_plan_enter). A node appended since takes the facts
+   of the node it was first linked under (nt_origin), as the climb would
+   place it there; a copy (a clone) has no such place, and asks the map as
+   it is. SPINEL_ELAB_CHECK asks each call's version of the map as it is too
+   (elab_check_version). */
+static void lr_plan_swap(LoadRecord *r) {
+  struct LrPlan live = { r->st, r->nst, r->cst, r->at, r->bits, r->n, r->ncap };
+  r->st = r->plan.st; r->nst = r->plan.nst; r->cst = r->plan.cst; r->at = r->plan.at;
+  r->bits = r->plan.bits; r->n = r->plan.n; r->ncap = r->plan.ncap;
+  r->plan = live;
+}
+static void *lr_dup(const void *v, size_t sz) {
+  void *d = malloc(sz ? sz : 1);
+  if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (sz) memcpy(d, v, sz);
+  return d;
+}
+/* Inside the frame: node id, appended since the copy, placed where it was
+   first linked; past a chain of 64 such links the map as it is answers */
+static int lr_plan_place(Compiler *c, int id, int depth) {
+  LoadRecord *r = c->lrec;
+  if (id < r->n && r->at[id] != -2) return 1;
+  char how = 0; int a = 0, k = 0; unsigned pass = 0;
+  int o = depth < 64 ? nt_origin(c->nt, id, &how, &a, &pass, &k) : -1;
+  if (o < 0 || how == 'c' || !lr_plan_place(c, o, depth + 1)) return 0;
+  int cap = r->ncap, n0 = r->n;
+  lr_fit(r, id + 1);
+  if (r->ncap != cap && !(r->plan_par = realloc(r->plan_par, sizeof(int) * (size_t)r->ncap))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  for (int i = n0; i < r->n; i++) r->plan_par[i] = -1;
+  r->at[id] = r->at[o]; r->plan_par[id] = o;
+  r->bits[id] = (unsigned char)(((r->bits[o] & LR_LATE) || lr_defers(c->nt, r->plan_par, o) ? LR_LATE : 0) |
+                                ((r->bits[o] & LR_BODY) || nt_kind(c->nt, o) == NK_DefNode ? LR_BODY : 0));
+  return 1;
+}
+/* Swaps the frame in for call_target's questions about call id: 1 when it
+   did (elab_plan_leave swaps it out), 0 for a node the copy cannot place,
+   which is asked of the map as it is */
+int elab_plan_enter(Compiler *c, int id) {
+  LoadRecord *r = lr_get(c);
+  if (!r->plan_made) {
+    elab_fresh(c);
+    r->plan.st = lr_dup(r->st, sizeof *r->st * (size_t)r->nst); r->plan.nst = r->plan.cst = r->nst;
+    r->plan.at = lr_dup(r->at, sizeof(int) * (size_t)r->ncap);
+    r->plan.bits = lr_dup(r->bits, (size_t)r->ncap);
+    r->plan.n = r->n; r->plan.ncap = r->ncap;
+    r->plan_par = lr_dup(r->up, sizeof(int) * (size_t)r->n);
+    r->plan_par = realloc(r->plan_par, sizeof(int) * (size_t)r->ncap);
+    r->plan_made = 1;
+  }
+  if (!r->plan_depth) lr_plan_swap(r);
+  r->plan_depth++;
+  if (lr_plan_place(c, id, 0)) return 1;
+  elab_plan_leave(c);
+  return 0;
+}
+void elab_plan_leave(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (!--r->plan_depth) lr_plan_swap(r);
 }
 
 /* The point at which node's statement runs; region -1 (no point) for a
@@ -673,9 +762,10 @@ static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
   r->nentries++;
 }
 
-/* cls's history (LR_MAIN: main's, Object's), NULL past the record's classes */
+/* cls's history (LR_MAIN: main's, Object's), NULL for a class the record
+   does not hold (LoadRecord.held) */
 static LrClass *lr_class(LoadRecord *r, int cls) {
-  return cls >= LR_MAIN && cls + 1 < r->ncls ? &r->cls[cls + 1] : NULL;
+  return cls >= LR_MAIN && cls + 1 < r->ncls && r->held[cls + 1] ? &r->cls[cls + 1] : NULL;
 }
 
 /* The class a class or module header opens, as the scope walk decided it:
@@ -1155,12 +1245,15 @@ void elab_record_write(Compiler *c, int stmt) {
   if (e >= 0 && !(r->bits[stmt] & LR_LATE) && r->st[e].node == stmt) lr_value_write(c, e);
 }
 
-/* A history for each class registration has made so far */
+/* A history for each class registration has made so far, held when the
+   walk made it (before the class builders' step) */
 static void lr_fit_classes(LoadRecord *r, Compiler *c) {
   if (c->nclasses + 1 <= r->ncls) return;
   r->cls = realloc(r->cls, sizeof *r->cls * (size_t)(c->nclasses + 1));
-  if (!r->cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  r->held = realloc(r->held, (size_t)(c->nclasses + 1));
+  if (!r->cls || !r->held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memset(r->cls + r->ncls, 0, sizeof *r->cls * (size_t)(c->nclasses + 1 - r->ncls));
+  memset(r->held + r->ncls, !r->structs, (size_t)(c->nclasses + 1 - r->ncls));
   r->ncls = c->nclasses + 1;
 }
 
@@ -1215,8 +1308,8 @@ static void lr_record_unplaced(Compiler *c) {
       int e = id < r->n ? r->at[id] : -1, ci = lr_class_opened(c, id);
       if ((e >= 0 && r->st[e].node == id) || ci < 0) continue;
       LrClass *kc = lr_class(r, ci);
-      int have = 0;
-      for (int i = 0; i < kc->nopen && !have; i++) have = kc->open[i].node == id;
+      int have = !kc;
+      for (int i = 0; !have && i < kc->nopen; i++) have = kc->open[i].node == id;
       if (have) continue;
       kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
       int at = kc->nopen;
@@ -1291,7 +1384,20 @@ void elab_program(Compiler *c) {
   }
   r->rec = NULL;
   free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
+  /* a mixin's duplicate answer asked while the record was made saw only
+     what was recorded by then (lr_mixin_dup) */
+  for (int k = 0; k < r->ncls; k++)
+    for (int i = 0; i < r->cls[k].nmix; i++) r->cls[k].mix[i].dup = 0;
+  elab_mark_versions(c);
   sp_timing_end(t0, "an_elab_record", "");
+}
+
+/* The block of the class builder class ci is made by (`X = Struct.new(:a)
+   do`), -1 for a class no builder makes */
+static int lr_builder_body(Compiler *c, int ci) {
+  int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
+  NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
+  return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? body : -1;
 }
 
 /* The class builders' blocks (`X = Struct.new(:a) do ... end`) are bodies
@@ -1306,6 +1412,8 @@ void elab_record_builders(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r || !r->recorded) return;
   r->structs = 1;
+  lr_fit_classes(r, c);
+  for (int ci = 0; ci < c->nclasses; ci++) if (lr_builder_body(c, ci) >= 0) r->held[ci + 1] = 1;
   if (r->builders) {
     double t0 = sp_timing_now();
     elab_fresh(c);
@@ -1317,11 +1425,9 @@ void elab_record_builders(Compiler *c) {
     free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
     sp_timing_end(t0, "an_elab_record", "builders");
   }
-  lr_fit_classes(r, c);
   for (int ci = 0; ci < c->nclasses; ci++) {
-    int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
-    NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
-    if (body < 0 || (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode)) continue;
+    int d = c->classes[ci].def_node, body = lr_builder_body(c, ci);
+    if (body < 0) continue;
     LrClass *kc = lr_class(r, ci);
     int have = 0;
     for (int i = 0; i < kc->nopen; i++) if (kc->open[i].body == body) have = 1;
@@ -1395,7 +1501,7 @@ static void lr_settle_regions(Compiler *c) {
    define_method, an attr, an alias, a module_function copy, an undef or
    remove), not a visibility change. lr_vers_index indexes the histories as
    they stand, again once more entries have been recorded. */
-typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes */
+typedef struct LrVers { const char *name; int first, nver, next; unsigned char captured, replaced; } LrVers;   /* captured: elab_version_captured's memo, 1 no, 2 yes; replaced: one history holds two versions, or an alias */
 
 static int lr_is_version(const LrDef *v) { return v->kind <= LR_REMOVE; }
 
@@ -1419,7 +1525,13 @@ static void lr_vers_index(LoadRecord *r) {
     }
     h->nlink = r->vers[k].first;
     r->vers[k].first = i;
-    for (int j = 0; j < h->n; j++) r->vers[k].nver += lr_is_version(&h->v[j]);
+    int nh = 0;
+    for (int j = 0; j < h->n; j++) {
+      nh += lr_is_version(&h->v[j]);
+      if (h->v[j].kind == LR_ALIAS) r->vers[k].replaced = 1;
+    }
+    r->vers[k].nver += nh;
+    if (nh > 1) r->vers[k].replaced = 1;
   }
   r->indexed = r->nentries;
 }
@@ -1436,6 +1548,105 @@ int elab_method_versions(Compiler *c, const char *name) {
   LoadRecord *r = c->lrec;
   const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
   return x ? x->nver : 0;
+}
+
+int elab_method_replaced(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  const LrVers *x = r && r->recorded ? lr_vers(r, name) : NULL;
+  return x && x->replaced;
+}
+
+int elab_method_holder(Compiler *c, const char *name, int i, int *cls, int *sg) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return -1;
+  if (i < 0) {
+    const LrVers *x = lr_vers(r, name);
+    i = x ? x->first : -1;
+  }
+  else i = r->hist[i].nlink;
+  if (i >= 0) { *cls = r->hist[i].a; *sg = r->hist[i].b; }
+  return i;
+}
+
+/* Each method scope's version facts (analyze.h):
+   Scope.versioned when the record holds more than one version of its name;
+   Scope.replaced when it is a def's scope that a later scope of the same
+   class, side and name takes the method table's place of (a top-level
+   method: a later def's), so that the tables answer the later one. */
+typedef struct { const char *name; int cls, cm, s; } LrScopeKey;   /* s: -1 - s for a scope no def made */
+static int lr_scope_key_cmp(const void *a, const void *b) {
+  const LrScopeKey *x = a, *y = b;
+  int d = strcmp(x->name, y->name);
+  if (d) return d;
+  if (x->cls != y->cls) return x->cls < y->cls ? -1 : 1;
+  if (x->cm != y->cm) return x->cm - y->cm;
+  int xs = x->s < 0 ? -1 - x->s : x->s, ys = y->s < 0 ? -1 - y->s : y->s;
+  return xs - ys;
+}
+void elab_mark_versions(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  LrScopeKey *keys = NULL;
+  int nk = 0;
+  if (!r || !r->recorded) return;
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    if (sc->versioned || sc->replaced) { sc->versioned = sc->replaced = 0; comp_touch_scope(sc->idx); }
+    const LrVers *x = sc->name && sc->def_node >= 0 ? lr_vers(r, sc->name) : NULL;
+    if (!x || x->nver < 2) continue;
+    { sc->versioned = 1; comp_touch_scope(sc->idx); }
+    int def = nt_kind(c->nt, sc->def_node) == NK_DefNode;
+    if (!x->replaced || (sc->class_id < 0 && !def)) continue;
+    if (!(nk & (nk - 1)) && !(keys = realloc(keys, sizeof *keys * (size_t)(nk ? 2 * nk : 1)))) {
+      fprintf(stderr, "spinel: out of memory\n"); exit(1);
+    }
+    keys[nk++] = (LrScopeKey){ sc->name, sc->class_id < 0 ? -1 : sc->class_id, sc->class_id < 0 ? 0 : sc->is_cmethod, def ? s : -1 - s };
+  }
+  if (nk > 1) qsort(keys, (size_t)nk, sizeof *keys, lr_scope_key_cmp);
+  for (int i = 0; i + 1 < nk; i++)
+    if (keys[i].s >= 0 && keys[i].cls == keys[i + 1].cls && keys[i].cm == keys[i + 1].cm && sp_streq(keys[i].name, keys[i + 1].name)) {
+      Scope *sc = &c->scopes[keys[i].s];
+      sc->replaced = 1;
+      comp_touch_scope(sc->idx);
+    }
+  free(keys);
+}
+
+/* The parents elab_body_def and elab_runs_with climb: those the map
+   placed each node through, the frame's inside it (elab_plan_enter). The
+   parent map can answer a node a desugaring left hung nowhere, which still
+   holds a child it shares with the node that replaced it. */
+static const int *lr_parents(Compiler *c, int *n) {
+  LoadRecord *r = elab_fresh(c);
+  *n = r->n;
+  return r->plan_depth ? r->plan_par : r->up;
+}
+
+/* The def node whose body holds node, with no class body or other def
+   between; -1 for none. */
+static int lr_body_def(const NodeTable *nt, const int *par, int n, int node) {
+  for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_DefNode) return p;
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return -1;
+  }
+  return -1;
+}
+int elab_body_def(Compiler *c, int node) {
+  int n;
+  const int *par = lr_parents(c, &n);
+  return lr_body_def(c->nt, par, n, node);
+}
+
+/* Does node run whenever the body of def node `def` runs: is it in that
+   body with no lambda, nested def or block kept to run later between? */
+int elab_runs_with(Compiler *c, int node, int def) {
+  int n;
+  const int *par = lr_parents(c, &n);
+  for (int p = node >= 0 && node < n ? par[node] : -1; p >= 0 && p < n; p = par[p]) {
+    if (p == def) return 1;
+    if (lr_defers(c->nt, par, p)) return 0;
+  }
+  return 0;
 }
 
 /* ---- the queries ---- */
@@ -1462,12 +1673,29 @@ static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, i
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
 }
 
+/* May node's statement, which comes after p, also run before p: is it in
+   a body around p that runs again (LrStmt.rep), or in the body of a loop
+   whose condition p is? */
+static int lr_runs_again(Compiler *c, int node, LoadPoint p) {
+  LoadRecord *r = c->lrec;
+  LoadPoint q = elab_point_of(c, node);
+  if (p.region < 0 || elab_cmp(p, q) != PROG_BEFORE) return 0;
+  NodeKind k = nt_kind(c->nt, r->st[p.seq].node);
+  for (int e = k == NK_WhileNode || k == NK_UntilNode ? p.seq : r->st[p.seq].rep; e >= 0; e = r->st[e].rep)
+    if (q.seq <= r->st[e].last) return 1;
+  return 0;
+}
+
 /* ...of a method: an undef stops the search (LR_STOP), a removal passes it
-   on; a visibility change (`private :m`) counts only when vis asks for it */
+   on; a visibility change (`private :m`) counts only when vis asks for it.
+   An entry after p that may run before it on the body's next run leaves
+   the answer unknown. */
 static int lr_own(Compiler *c, const LrHist *h, LoadPoint p, int late, int vis, const LrDef **out) {
   const LrDef *v = NULL;
   int o = lr_last_before(c, h, p, late, !vis, &v);
   if (out && v) *out = v;
+  for (int i = late || p.region < 0 || !h ? 0 : h->n; i > 0; i--)
+    if ((vis || h->v[i - 1].kind != LR_VIS) && lr_runs_again(c, h->v[i - 1].node, p)) return ELAB_UNKNOWN;
   return o != ELAB_YES ? o : v->kind == LR_UNDEF ? LR_STOP : v->kind == LR_REMOVE ? ELAB_NO : ELAB_YES;
 }
 
@@ -1484,10 +1712,29 @@ static int lr_super(Compiler *c, int cls) {
 }
 
 /* Did mixin m of a class happen before p (late: in the load phase)?
-   ELAB_YES / NO / UNKNOWN */
+   ELAB_YES / NO / UNKNOWN; unknown too for one after p that may run
+   before it on a body's next run */
 static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late, int may) {
   int o = late ? (elab_point_of(c, m->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, m->node), p);
+  if (!late && lr_runs_again(c, m->node, p)) return ELAB_UNKNOWN;
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
+}
+
+/* Is mixin m's module already among cls's ancestors (its singleton's when
+   sg) where m runs: ELAB_YES / NO / UNKNOWN. A fact of the mixin, asked
+   once and kept: the search it makes reads the earlier mixins' answers in
+   turn, so asking again at every search would double the work with each
+   mixin. Answers given while the record is made are dropped at its end
+   (elab_program). The search starts at depth 0, so the kept answer does
+   not depend on where it was first asked; an ask while it runs (modules
+   that include each other) answers unknown. */
+static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
+  if (lr_later(c, &m->mod, m->ref) < 0) return ELAB_NO;
+  if (!m->dup) {
+    m->dup = 1 + ELAB_UNKNOWN;
+    m->dup = (unsigned char)(1 + lr_search(c, cls, sg, NULL, m->mod, elab_point_of(c, m->node), 0, 0, NULL, 0));
+  }
+  return m->dup - 1;
 }
 
 /* The search of `name` (or, with name NULL, of module `mod`) along cls's
@@ -1499,7 +1746,8 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   LoadRecord *r = c->lrec;
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
-  const LrClass *k = lr_class(r, cls);
+  LrClass *k = lr_class(r, cls);
+  if (!k) return ELAB_UNKNOWN;   /* a class the record does not hold (LoadRecord.held) */
   int unsure = 0;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
@@ -1515,6 +1763,11 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
       if (m->kind != want) continue;
       int b = lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
       if (b == ELAB_NO) continue;
+      /* a module already among the ancestors where the mixin runs (an
+         earlier mixin's, the superclass's) stays where it is */
+      int dup = lr_mixin_dup(c, cls, sg, m);
+      if (dup == ELAB_YES) continue;
+      if (dup == ELAB_UNKNOWN) unsure = 1;
       int o = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
       if (o != ELAB_NO) unsure = 1;
@@ -1577,11 +1830,12 @@ static int lr_in_ancestry(Compiler *c, int cls, int sg, int k, LoadPoint p) {
 }
 
 /* Does node's statement run strictly between p0 and p1, or is it not
-   known not to? */
+   known not to (one after p1 that a body around p0 runs again)? */
 static int lr_inside(Compiler *c, int node, LoadPoint p0, LoadPoint p1) {
   LoadPoint q = elab_point_of(c, node);
   int a = elab_cmp(p0, q), b = elab_cmp(q, p1);
-  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE);
+  return a == PROG_UNKNOWN || b == PROG_UNKNOWN || (a == PROG_BEFORE && b == PROG_BEFORE) ||
+         (b == PROG_AFTER && lr_runs_again(c, node, p0));
 }
 
 /* The version of cls's `name` live at every point from p0 up to p1: the
@@ -1657,7 +1911,7 @@ int elab_version_captured(Compiler *c, const char *name) {
     const NodeTable *nt = c->nt;
     int hit = c->names_by_value || elab_runs_unseen(c), n = 0;
     const int *v = nt_nodes_of_kind(nt, NK_SymbolNode, &n);
-    for (int i = 0; !hit && i < n; i++) hit = sp_streq(nt_str(nt, v[i], "value"), name);
+    for (int i = 0; !hit && i < n; i++) { const char *sv = nt_str(nt, v[i], "value"); hit = sv && sp_streq(sv, name); }
     v = nt_nodes_of_kind(nt, NK_StringNode, &n);
     for (int i = 0; !hit && i < n; i++) {
       const char *s = nt_str(nt, v[i], "content");   /* a StringNode's text */
@@ -2194,6 +2448,23 @@ static void lr_check_map(Compiler *c, const int *was, const unsigned char *wbits
   }
 }
 
+/* The version call_target decided for call id in the call plan's frame
+   (vi, found from class dc) against the one the map as it is answers (now,
+   from ndc), asked while the pass that appends nodes then runs. A
+   lowering that moves a call so that its version changes shows here. */
+void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc) {
+  LoadRecord *r = lr_get(c);
+  LrCheck *f = lr_family(r, "the call plan's versions");
+  f->asked++;
+  if (vi == now && dc == ndc) return;
+  f->differ++;
+  if (r->shown++ >= LR_CHECK_SHOW) return;
+  char d[96];
+  lr_node_desc(c, id, d, sizeof d);
+  fprintf(stderr, "spinel-elab-check: plan pass=%s node=%s version=%d/%d class=%d/%d (plan/now)\n",
+          c->nt->pass ? c->nt->pass : "-", d, vi, now, dc, ndc);
+}
+
 /* The record as --dump-load-record prints it */
 static char *lr_dump_text(Compiler *c) {
   FILE *f = tmpfile();
@@ -2245,7 +2516,7 @@ void elab_dump(Compiler *c, FILE *out) {
   static const char *const vars[] = { "$", "main ", "const " };
   for (int ci = LR_MAIN; ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
-    if (!k->nopen && !k->nmix) continue;
+    if (!k || (!k->nopen && !k->nmix)) continue;
     fprintf(out, "class %s:", ci == LR_MAIN ? "main" : c->classes[ci].name);
     for (int i = 0; i < k->nopen; i++) fprintf(out, " body#%d", elab_point_of(c, k->open[i].node).seq);
     for (int i = 0; i < k->nmix; i++)
@@ -2329,7 +2600,7 @@ static void elab_check_visibility(Compiler *c) {
      against the visibility the class table finds up the class's chain */
   for (int ci = 0; ci < c->nclasses && ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
-    for (int j = 0; j < k->nmix; j++) {
+    for (int j = 0; k && j < k->nmix; j++) {
       if (k->mix[j].mod < 0 || elab_mix_on_singleton(k->mix[j].kind)) continue;
       for (int i = 0; i < r->nhist; i++) {
         const LrHist *h = &r->hist[i];
@@ -2360,12 +2631,13 @@ void elab_free(Compiler *c) {
   for (int i = 0; r->check && i < LR_CHECK_MAX && r->fam[i].reader; i++)
     fprintf(stderr, "spinel-elab-check: family=\"%s\" asked=%ld differ=%ld\n", r->fam[i].reader, r->fam[i].asked, r->fam[i].differ);
   lr_record_drop(r);
+  free(r->plan.st); free(r->plan.at); free(r->plan.bits); free(r->plan_par); free(r->up);
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
   free(r->names); free(r->reopens);
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
-  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head); free(r->set);
+  free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }

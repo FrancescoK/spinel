@@ -1970,6 +1970,7 @@ const char *bigint_arith_fn(const char *op);
    (one live result at a time -- fine since each use is consumed inline). */
 const char *mc(const char *name);
 void mc_resolve_clashes(Compiler *c);   /* before any method is named (codegen_program) */
+void mc_number_versions(Compiler *c);   /* the replaced method versions' numbers, ahead of mc_resolve_clashes */
 /* The class stem to compose a REOPENED builtin's method name with: the
    plain c_name, or one with an `_oc` suffix where the runtime already has a
    function of that exact spelling (sp_String_length). */
@@ -2675,7 +2676,6 @@ int str_enum_h_made(Compiler *c);                   /* ...does the program make 
 int emit_unresolved_call(Compiler *c, int id, Buf *b);
 int emit_array_call(Compiler *c, int id, Buf *b);
 int emit_array_splat_mutator(Compiler *c, int id, Buf *b);
-const char *call_shown_name(const NodeTable *nt, int id);
 void emit_gather_call_args(Compiler *c, const int *argv, int argc, int ta, Buf *b);
 void emit_str_insert_text(Compiler *c, int arg, Buf *b);
 int emit_hash_call(Compiler *c, int id, Buf *b);

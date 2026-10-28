@@ -531,41 +531,17 @@ void prog_settle_files(Compiler *c) {
   free(seen); free(live); free(ok); free(nsite); free(site); free(at);
 }
 
-/* A definition at a file's top level, by name, for the definitions two files
-   both make (prog_refuse_order) */
-typedef struct { const char *cls, *name; int root, node; } ProgDef;
-static int prog_def_cmp(const void *a, const void *b) {
-  const ProgDef *x = a, *y = b;
-  int d = strcmp(x->cls, y->cls);
-  return d ? d : strcmp(x->name, y->name);
-}
-static void prog_def_add(ProgDef **v, int *n, int *cap, const char *cls, const char *name, int root, int node) {
-  if (*n == *cap) {
-    *cap = *cap ? *cap * 2 : 32;
-    *v = realloc(*v, sizeof **v * (size_t)*cap);
-    if (!*v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  }
-  (*v)[(*n)++] = (ProgDef){ cls, name, root, node };
-}
-
 /* The statements a reader of the top level in order would have to place
-   across a load (part 3b), refused by name, asked just ahead of the
-   redefinition readers, once the builtins/ files' modules are taken apart
+   across a load (part 3b), refused by name, asked just ahead of
+   rename_main_singleton_defs, once the builtins/ files' modules are taken apart
    (desugar_builtins, desugar_builtin_scalar_defs). In a required file's top
    level:
      - a top-level `def self.m` (rename_main_singleton_defs);
      - `include` (qc_object_mixin_write, which runs ahead of the load
-       record);
-   and across files:
-     - a top-level method defined in a required file and again anywhere
-       (rename_redefined_toplevel_defs);
-     - a method a class reopened at the top level of two files defines in
-       both (version_redefined_reopen_defs). */
+       record). */
 void prog_refuse_order(Compiler *c) {
   const NodeTable *nt = c->nt;
   if (!prog_graph(c)) return;
-  ProgDef *defs = NULL;
-  int nd = 0, cd = 0;
   for (int i = 0; i < nt_nroots(nt); i++) {
     int st = prog_root_stmts(c, i), n = 0;
     const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
@@ -576,33 +552,6 @@ void prog_refuse_order(Compiler *c) {
         unsupported_feature(c, v[k], "--load-model=graph: a top-level `def self.m` in a required file (rename_main_singleton_defs reads one file), for now");
       if (i > 0 && sk == NK_CallNode && nt_ref(nt, v[k], "receiver") < 0 && nm && is_include_name(nm))
         unsupported_feature(c, v[k], "--load-model=graph: a top-level include in a required file (qc_object_mixin_write reads one file), for now");
-      if (sk == NK_DefNode && nt_ref(nt, v[k], "receiver") < 0 && nm)
-        prog_def_add(&defs, &nd, &cd, "", nm, i, v[k]);
-      int cp = sk == NK_ClassNode ? nt_ref(nt, v[k], "constant_path") : -1;
-      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      int b = cn ? nt_ref(nt, v[k], "body") : -1, bn = 0;
-      const int *bv = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
-      for (int j = 0; j < bn; j++)
-        if (nt_kind(nt, bv[j]) == NK_DefNode && nt_ref(nt, bv[j], "receiver") < 0 && nt_str(nt, bv[j], "name"))
-          prog_def_add(&defs, &nd, &cd, cn, nt_str(nt, bv[j], "name"), i, bv[j]);
     }
   }
-  /* the same name defined twice: a top-level method once in a required
-     file, or a class's method in two files */
-  if (nd > 1) qsort(defs, (size_t)nd, sizeof *defs, prog_def_cmp);
-  for (int a = 0, b; a < nd; a = b) {
-    int req = 0, files = 0;
-    for (b = a; b < nd && !prog_def_cmp(&defs[a], &defs[b]); b++) {
-      req |= defs[b].root > 0;
-      files |= defs[b].root != defs[a].root;
-    }
-    int top = !*defs[a].cls;
-    if (b - a < 2 || !req || (!top && !files)) continue;
-    for (int q = a; q < b; q++)
-      if (defs[q].root > 0)
-        unsupported_feature(c, defs[q].node, top
-          ? "--load-model=graph: a top-level method a required file defines again (rename_redefined_toplevel_defs reads one file), for now"
-          : "--load-model=graph: a method a class reopened in another file defines again (version_redefined_reopen_defs reads one file), for now");
-  }
-  free(defs);
 }
