@@ -239,6 +239,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   else if (k == NK_LambdaNode || (k == NK_BlockNode && pp->defer)) q.bits |= LR_LATE;
   if (pp->kind == EP_LIST) { q.kind = EP_NEW; return q; }
   int spine = pp->kind == EP_SPINE;
+  if (!spine && k != NK_CallNode) return q;
   switch (k) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
       if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; q.fmay = 0; return elab_body_pos(nt, ch, q); }
@@ -303,7 +304,9 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (ch != nt_ref(nt, p, "block") || nt_kind(nt, ch) != NK_BlockNode) break;
       int runs = elab_block_runs(nt, p);
       if (runs < 0) { q.defer = 1; break; }
-      if (!spine) break;
+      /* An immediate block keeps its call's point in an expression too;
+         only a call that may keep the block leaves its body unplaced. */
+      if (!spine) { q.defer = runs == 0; break; }
       q.kind = EP_SPINE;
       if (runs == 0) q.may = q.fmay = 1;
       if (elab_opens_frame(nt, p)) { q.frame = pp->e; q.fmay = 0; }
@@ -567,6 +570,9 @@ static void elab_points_walk(Compiler *c, int reg) {
   }
   for (int id = 0; id < n; id++)
     if (!live[id] || par[id] < 0 || live[par[id]]) up[id] = par[id];
+  /* Reuse the reachability scratch for the part's kind and defer bit,
+     so the climb asks the same placement rule as the walk. */
+  for (int id = 0; id < n; id++) live[id] = (unsigned char)((r->at[id] >= 0 ? EP_SPINE : EP_NODE) << 1);
   for (int id = 0; id < n; id++) {
     int s = 0, a = id;
     while (r->at[a] == -2 && up[a] >= 0) { stack[s++] = a; a = up[a]; }
@@ -574,8 +580,10 @@ static void elab_points_walk(Compiler *c, int reg) {
     while (s > 0) {
       int b = stack[--s], p = up[b];
       r->at[b] = r->at[p];
-      if ((r->bits[p] & LR_LATE) || lr_defers(nt, up, p)) r->bits[b] |= LR_LATE;
-      if ((r->bits[p] & LR_BODY) || nt_kind(nt, p) == NK_DefNode) r->bits[b] |= LR_BODY;
+      ElabPos pos = { .e = r->at[p], .kind = live[p] >> 1, .defer = live[p] & 1, .bits = r->bits[p] };
+      pos = elab_child(nt, p, b, &pos);
+      live[b] = (unsigned char)((pos.kind << 1) | pos.defer);
+      r->bits[b] = (unsigned char)pos.bits;
     }
   }
   if (was) lr_check_map(c, was, wbits);
@@ -894,6 +902,7 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
 static int lr_cref(Compiler *c, int e);
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 static int lr_named(Compiler *c, const char *name);
+static const char *lr_const_written(const NodeTable *nt, int id);
 static const NodeKind *lr_const_write_kinds(int *n);
 
 /* The class a builder write's block opens (`X = Struct.new(:a) do`,
@@ -1102,7 +1111,60 @@ static int lr_nil_value(const NodeTable *nt, int v) {
 /* Record a write under owner, numbered as lr_const_owner numbers it; the
    version keeps the class it names (LrDef.owner) */
 static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, int node, int nilv, int may) {
+  if (node >= 0 && node < r->n && (r->bits[node] & LR_LATE)) {
+    const LrHist *h = lr_hist(r, -2 - (int)kind, owner, name, 0);
+    for (int i = 0; h && i < h->n; i++) if (h->v[i].node == node) return;
+  }
   lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner - 2 });
+}
+
+/* Every constant assignment joins its owner's history at its point. A
+   multiple assignment's targets share its completion point; a conditional
+   assignment may leave the previous value in place. */
+static void lr_const_write(Compiler *c, int node, int e, int fc, int may) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  int owner = lr_cref(c, e), target = -1, v = nt_ref(nt, node, "value");
+  const char *name;
+  if (node < c->lrec->n && (c->lrec->bits[node] & LR_LATE)) {
+    const int *par = comp_parent_map(c);
+    owner = LR_MAIN;
+    for (int a = par[node]; a >= 0; a = par[a]) {
+      NodeKind ak = nt_kind(nt, a);
+      if (ak == NK_SingletonClassNode) { owner = LR_UNKNOWN_CLASS; break; }
+      if (ak == NK_ClassNode || ak == NK_ModuleNode) { owner = elab_header_class(c, a, NULL, NULL); break; }
+    }
+    fc = owner;
+  }
+  switch (k) {
+    case NK_ConstantWriteNode: case NK_ConstantTargetNode:
+    case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode: case NK_ConstantOperatorWriteNode:
+      break;
+    case NK_ConstantPathTargetNode: target = node; break;
+    case NK_ConstantPathWriteNode: case NK_ConstantPathOrWriteNode:
+    case NK_ConstantPathAndWriteNode: case NK_ConstantPathOperatorWriteNode:
+      target = nt_ref(nt, node, "target");
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, node, "name");
+      int a = nt_ref(nt, node, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (!nm || !is_const_set_name(nm) || an < 2 || !(name = vis_arg_name(nt, av[0]))) return;
+      int rv = nt_ref(nt, node, "receiver");
+      owner = rv < 0 || nt_kind(nt, rv) == NK_SelfNode ? fc : elab_class_ref_at(c, rv);
+      lr_write(c->lrec, ELAB_CONST, lr_const_owner(owner), name, node, lr_nil_value(nt, av[1]), may);
+      return;
+    }
+    default: return;
+  }
+  if (!(name = lr_const_written(nt, node))) return;
+  if (target >= 0) {
+    int par = nt_ref(nt, target, "parent");
+    owner = par < 0 ? LR_MAIN : nt_kind(nt, par) == NK_SelfNode ? fc : elab_class_ref_at(c, par);
+  }
+  may |= k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+         k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode;
+  lr_write(c->lrec, ELAB_CONST, lr_const_owner(owner), name, node, v >= 0 && lr_nil_value(nt, v), may);
 }
 
 static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may);
@@ -1487,6 +1549,7 @@ static int lr_nested_part(void *ud, int ch, ElabPos *q) {
   if (q->kind == EP_LIST || q->kind == EP_NEW || (q->bits & LR_LATE) || q->defer) return 0;
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode ||
       k == NK_LambdaNode || k == NK_DefinedNode) return 0;
+  lr_const_write(n->x->c, ch, q->e, n->fc, q->may || q->partial);
   if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, q->may); return 0; }
   if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, q->may, 1); return 0; }
   return 1;
@@ -1565,14 +1628,9 @@ static void lr_record_stmt(ElabRec *x, int e) {
       break;
     }
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may, 0); break;
-    case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: {   /* in its lexical scope */
-      int v = nt_ref(nt, node, "value");
-      lr_write(r, ELAB_CONST, lr_const_owner(lr_cref(x->c, e)), lr_written_name(nt, node), node, lr_nil_value(nt, v),
-               wmay || k == NK_ConstantOrWriteNode);
-      break;
-    }
     default: lr_value_write(x->c, e); break;
   }
+  lr_const_write(x->c, node, e, fc, wmay);   /* in its lexical scope, or its explicit owner's */
   /* ...and the definition forms in its parts (a form records its own; a
      file's root holds its statements, each one of its own) */
   int own = k == NK_ProgramNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
@@ -1681,6 +1739,18 @@ static void lr_record_unplaced(Compiler *c) {
   const NodeTable *nt = c->nt;
   LoadRecord *r = c->lrec;
   lr_fit_classes(r, c);
+  /* Deferred writes have no load point, but may complete before any read.
+     Reuse the write forms and lexical owners of the placed histories. */
+  int nk = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k <= nk; k++) {
+    NodeKind kind = k < nk ? kinds[k] : NK_CallNode;
+    NT_FOREACH_KIND(nt, kind, id) {
+      if (id >= r->n || !(r->bits[id] & LR_LATE)) continue;
+      if (kind == NK_CallNode && !is_const_set_name(nt_str(nt, id, "name"))) continue;
+      lr_const_write(c, id, r->at[id], LR_UNKNOWN_CLASS, 1);
+    }
+  }
   for (int q = 0; q < 2; q++)
     NT_FOREACH_KIND(nt, q ? NK_ModuleNode : NK_ClassNode, id) {
       int e = id < r->n ? r->at[id] : -1, ci = elab_header_class(c, id, NULL, NULL);
