@@ -13121,7 +13121,10 @@ static int class_lacks_enumerable(Compiler *c, int k) {
   return !comp_enum_behind(c, k);
 }
 
-static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int ndef) {
+/* `rn.is_a?(K) || ...` over the classes `defcls`; `instance_of?` for one
+   whose `exact` is set (a class with no Enumerable, whose subclass may
+   include it) */
+static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, const int *exact, int ndef) {
   NodeTable *nt = (NodeTable *)c->nt;
   int pred = -1;
   for (int k = 0; k < ndef; k++) {
@@ -13133,7 +13136,7 @@ static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int n
     nt_node_set_str(nt, pr, "name", rn); nt_node_set_int(nt, pr, "depth", 0);
     nt_node_set_str(nt, cr, "name", c->classes[defcls[k]].name);
     nt_node_set_arr(nt, iaa, "arguments", &cr, 1);
-    nt_node_set_str(nt, ia, "name", "is_a?");
+    nt_node_set_str(nt, ia, "name", exact[k] ? "instance_of?" : "is_a?");
     nt_node_set_ref(nt, ia, "receiver", pr);
     nt_node_set_ref(nt, ia, "arguments", iaa);
     if (pred < 0) pred = ia;
@@ -13424,6 +13427,11 @@ int desugar_builtin_enum_calls(Compiler *c) {
      the inner call's receiver: a blockless call that is the receiver of an
      `each { }` is left for it, and comes back here with the block. */
   unsigned char *chained = (unsigned char *)calloc((size_t)(n0 ? n0 : 1), 1);
+  /* a call's arm classes (below), and whether each is tested exactly: one
+     entry per class at most */
+  int *defcls = (int *)malloc(sizeof(int) * 2 * (size_t)(c->nclasses + 1));
+  if (!defcls) { free(chained); free(in_default); return 0; }
+  int *exact = defcls + c->nclasses + 1;
   for (int id = 0; chained && id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") < 0) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -13655,7 +13663,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
          (__r = recv; __r.is_a?(K) ? __r.m(args) { } : __enum_m(__r, args) { })
        over the classes that define it, the block copied for the second arm.
        Without such a class the call is rewritten in place. */
-    int ndef = 0, defcls[64];
+    int ndef = 0;
     /* the name the call was written with, where the pre-pass renamed it
        (detect to find): the one a class's own method or reader answers */
     const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
@@ -13663,16 +13671,19 @@ int desugar_builtin_enum_calls(Compiler *c) {
        the call outside was already sent to the copy for */
     int in_copy = nt_int(nt, id, "enum_in_copy", -1) >= 0;
     if (rt == TY_POLY) {
-      for (int k = 0; k < c->nclasses && ndef < 64; k++)
+      for (int k = 0; k < c->nclasses; k++) {
         /* Enumerable itself answers through the copy: it holds a program's
            own method of the name (index_by), and an Array is_a? it too. A
            class that has no Enumerable gets the arm too: its call of a name
            it does not define is the NoMethodError CRuby raises, where the
-           copy would walk its #each or convert its #to_a */
-        if (!c->classes[k].is_native_class && !sp_streq(c->classes[k].name, "Enumerable") &&
-            (comp_poly_arm_defines_n(c, k, qn, an) || (an == 0 && comp_reader_in_chain(c, k, qn, NULL)) ||
-             (!in_copy && class_lacks_enumerable(c, k))))
-          defcls[ndef++] = k;
+           copy would walk its #each or convert its #to_a. Its test is
+           exact: a subclass that includes Enumerable answers through it */
+        if (c->classes[k].is_native_class || is_enumerable_module_name(c->classes[k].name)) continue;
+        int defines = comp_poly_arm_defines_n(c, k, qn, an) || (an == 0 && comp_reader_in_chain(c, k, qn, NULL));
+        if (!defines && (in_copy || !class_lacks_enumerable(c, k))) continue;
+        exact[ndef] = !defines;
+        defcls[ndef++] = k;
+      }
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the
        same dispatch shape with a nil test for the class test */
@@ -13702,7 +13713,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
       int es = nt_new_node(nt, "StatementsNode");
       int eln = nt_new_node(nt, "ElseNode");
       int body = nt_new_node(nt, "StatementsNode");
-      if (w < 0 || own < 0 || ownr < 0 || genr < 0 || gen < 0 || ifn < 0 || ts < 0 || es < 0 || eln < 0 || body < 0) { free(chained); free(in_default); return changed; }
+      if (w < 0 || own < 0 || ownr < 0 || genr < 0 || gen < 0 || ifn < 0 || ts < 0 || es < 0 || eln < 0 || body < 0) { free(chained); free(in_default); free(defcls); return changed; }
       nt_node_set_str(nt, w, "name", rn); nt_node_set_int(nt, w, "depth", 0);
       nt_node_set_ref(nt, w, "value", recv);
       nt_node_set_str(nt, ownr, "name", rn); nt_node_set_int(nt, ownr, "depth", 0);
@@ -13713,15 +13724,15 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (safe_nav) {
         int nr = nt_new_node(nt, "LocalVariableReadNode");
         int nq = nt_new_node(nt, "CallNode");
-        if (nr < 0 || nq < 0) { free(chained); free(in_default); return changed; }
+        if (nr < 0 || nq < 0) { free(chained); free(in_default); free(defcls); return changed; }
         nt_node_set_str(nt, nr, "name", rn); nt_node_set_int(nt, nr, "depth", 0);
         nt_node_set_str(nt, nq, "name", "nil?");
         nt_node_set_ref(nt, nq, "receiver", nr);
         pred = nq;
       }
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
-                          : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, ndef);
-      if (pred < 0) { free(chained); free(in_default); return changed; }
+                          : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
+      if (pred < 0) { free(chained); free(in_default); free(defcls); return changed; }
       /* the class's own method, on the same receiver, with the block; under
          a safe navigation the nil arm answers nil and the class arm, when
          there is one, sits inside it */
@@ -13735,10 +13746,10 @@ int desugar_builtin_enum_calls(Compiler *c) {
         int cts = nt_new_node(nt, "StatementsNode");
         int ces = nt_new_node(nt, "StatementsNode");
         int celse = nt_new_node(nt, "ElseNode");
-        if (nil_n < 0 || ifc < 0 || cts < 0 || ces < 0 || celse < 0) { free(chained); free(in_default); return changed; }
+        if (nil_n < 0 || ifc < 0 || cts < 0 || ces < 0 || celse < 0) { free(chained); free(in_default); free(defcls); return changed; }
         /* pred so far is `__r.nil?`; the class test becomes the inner if */
-        int cpred = enum_is_a_chain(c, rn, defcls, ndef);
-        if (cpred < 0) { free(chained); free(in_default); return changed; }
+        int cpred = enum_is_a_chain(c, rn, defcls, exact, ndef);
+        if (cpred < 0) { free(chained); free(in_default); free(defcls); return changed; }
         nt_node_set_str(nt, own, "name", qn);
         nt_node_set_ref(nt, own, "receiver", ownr);
         nt_node_set_int(nt, own, "enum_own", 1);   /* the class's method: a user arm */
@@ -13785,12 +13796,12 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (es2) scope_local_intern(es2, rn);
     }
     int *na = (int *)malloc(sizeof(int) * (size_t)(an + 1));
-    if (!na) { free(chained); free(in_default); return changed; }
+    if (!na) { free(chained); free(in_default); free(defcls); return changed; }
     na[0] = recv_read; for (int j = 0; j < an; j++) na[j + 1] = av[j];
     /* a fresh arguments node: the old one may be shared with a call the
        Enumerator each rule rewrote onto it (an orphan keeps a reference) */
     int nargs = nt_new_node(nt, "ArgumentsNode");
-    if (nargs < 0) { free(na); free(chained); free(in_default); return changed; }
+    if (nargs < 0) { free(na); free(chained); free(in_default); free(defcls); return changed; }
     nt_node_set_arr(nt, nargs, "arguments", na, an + 1);
     nt_node_set_ref(nt, generic, "arguments", nargs);
     free(na);
@@ -13800,7 +13811,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
-  free(chained); free(in_default);
+  free(chained); free(in_default); free(defcls);
   return changed;
 }
 

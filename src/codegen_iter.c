@@ -7816,9 +7816,12 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         buf_printf(b, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp0, pb0.p ? pb0.p : "NULL", tp0);
         free(pb0.p);
+        Buf rb0; memset(&rb0, 0, sizeof rb0); emit_boxed(c, irecv, &rb0);
+        /* a class with no Enumerable raises before the proc is handed on */
+        emit_poly_iter_recv_reject(c, id, inm, &rb0, b, indent);
         emit_indent(b, indent);
-        buf_puts(b, "(void)sp_poly_enum_proc("); emit_boxed(c, irecv, b);
-        buf_printf(b, ", %s, _t%d);\n", pen, tp0);
+        buf_printf(b, "(void)sp_poly_enum_proc(%s, %s, _t%d);\n", rb0.p ? rb0.p : "sp_box_nil()", pen, tp0);
+        free(rb0.p);
         return 1;
       }
       return 0;

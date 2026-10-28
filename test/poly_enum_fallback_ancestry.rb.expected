@@ -1,0 +1,60 @@
+-- 0
+true
+[2, 6]
+5
+[5]
+6
+{1 => 1, 5 => 1}
+true
+1:0 5:1 nil
+1:0 5:1 :walked
+-- 1
+true
+[3, 7, 7]
+6
+[6, 6]
+14
+{2 => 1, 6 => 2}
+true
+2:0 6:1 6:2 nil
+2:0 6:1 6:2 :walked
+-- 2
+NoMethodError: undefined method 'any?' for an instance of Parent
+NoMethodError: undefined method 'map' for an instance of Parent
+NoMethodError: undefined method 'find' for an instance of Parent
+NoMethodError: private method 'select' called for an instance of Parent
+NoMethodError: undefined method 'inject' for an instance of Parent
+NoMethodError: undefined method 'tally' for an instance of Parent
+NoMethodError: undefined method 'any?' for an instance of Parent
+NoMethodError: undefined method 'each_with_index' for an instance of Parent
+NoMethodError: undefined method 'each_with_index' for an instance of Parent
+-- 3
+NoMethodError: undefined method 'any?' for an instance of Fault
+NoMethodError: undefined method 'map' for an instance of Fault
+NoMethodError: undefined method 'find' for an instance of Fault
+NoMethodError: private method 'select' called for an instance of Fault
+NoMethodError: undefined method 'inject' for an instance of Fault
+NoMethodError: undefined method 'tally' for an instance of Fault
+NoMethodError: undefined method 'any?' for an instance of Fault
+NoMethodError: undefined method 'each_with_index' for an instance of Fault
+NoMethodError: undefined method 'each_with_index' for an instance of Fault
+-- 4
+NoMethodError: undefined method 'any?' for an instance of Fault
+NoMethodError: undefined method 'map' for an instance of Fault
+NoMethodError: undefined method 'find' for an instance of Fault
+NoMethodError: private method 'select' called for an instance of Fault
+NoMethodError: undefined method 'inject' for an instance of Fault
+NoMethodError: undefined method 'tally' for an instance of Fault
+NoMethodError: undefined method 'any?' for an instance of Fault
+NoMethodError: undefined method 'each_with_index' for an instance of Fault
+NoMethodError: undefined method 'each_with_index' for an instance of Fault
+-- 5
+true
+[6, 10]
+5
+[5, 9]
+14
+{5 => 1, 9 => 1}
+true
+5:0 9:1 nil
+5:0 9:1 :walked

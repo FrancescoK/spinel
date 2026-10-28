@@ -2979,12 +2979,13 @@ static int mixin_level_answers(Compiler *c, int k, const char *name) {
 /* The same positions and walker also answer Comparable membership and equality
    precedence; neither query reconstructs includes from the node table. */
 /* Whether Enumerable is among the ancestors class or module k brings: it
-   includes (or prepends) it, or includes a module that does. */
+   includes (or prepends) it, or includes a module that does, at any depth
+   (a module chain is no longer than the program's classes). */
 static int mixin_reaches(Compiler *c, int k, int comparable, int depth) {
   ClassInfo *ci = &c->classes[k];
   if (comparable ? (ci->cmp_inc_at || ci->cmp_prepended) :
                    (ci->enum_inc_at || ci->enum_prepended)) return 1;
-  for (int j = 0; j < ci->nincluded_mods && depth < (comparable ? c->nclasses : 16); j++) {
+  for (int j = 0; j < ci->nincluded_mods && depth < c->nclasses; j++) {
     int m = ci->included_mods[j];
     if (m >= 0 && m < c->nclasses && m != k && mixin_reaches(c, m, comparable, depth + 1)) return 1;
   }
@@ -3067,7 +3068,7 @@ int comp_enum_reaches(Compiler *c, int cid) {
    them on their own. */
 int comp_enum_behind(Compiler *c, int cid) {
   int n = 0;
-  for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
+  for (int k = cid; k >= 0 && k < c->nclasses && n < c->nclasses; k = c->classes[k].parent, n++) {
     ClassInfo *ci = &c->classes[k];
     if (ci->is_native_class || (ci->is_struct && !ci->is_data) || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0 || comp_enum_reaches(c, k)) return 1;
     if (k == ci->parent) break;

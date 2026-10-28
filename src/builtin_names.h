@@ -520,11 +520,13 @@ const PackageFact *package_fact_at(int i);   /* the i-th row, NULL past the last
 
 /* ---- Spinel's native classes, modules and exceptions (BUILTIN_CLASSES) ----
    One row per name: which predicate accepts it (BC_*) and its negative
-   cls_id (0 when codegen has none). */
-enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8 };
+   cls_id (0 when codegen has none). BC_PLAIN marks Object, BasicObject and
+   Data, below which a program's class is an object of its own. */
+enum { BC_CLASS = 1, BC_MODULE = 2, BC_EXCEPTION = 4, BC_SOCKET = 8, BC_PLAIN = 16 };
 typedef struct { const char *name; int id; unsigned flags; } BuiltinClass;
 const BuiltinClass *builtin_class_at(int i);   /* the i-th row, NULL past the last */
 int is_native_class_name(const char *n);       /* any row: a class Spinel has without a library */
+int is_plain_builtin_superclass(int id);       /* BC_PLAIN or an exception: gives a program's subclass no method of an Enumerable walk */
 /* names the compile-time evaluation and its questions ask about (ct_eval.c,
    analyze_ct.c) */
 int is_class_const_name(const char *n);    /* Class: the constant Class.new is called on */

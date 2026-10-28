@@ -4193,8 +4193,7 @@ void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *nam
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     if (!ci->instantiated || ci->is_native_class || is_builtin_reopen(ci->name)) continue;
-    int bp = class_builtin_superclass(c, k);
-    if (bp != -116 && bp != -117 && bp != -146) continue;
+    if (!is_plain_builtin_superclass(class_builtin_superclass(c, k))) continue;
     if (comp_enum_behind(c, k) || call_target(c, call, k, name, 0, NULL) >= 0 ||
         comp_method_in_chain(c, k, "method_missing", NULL) >= 0) continue;
     buf_printf(&arms, " case %d:", k);
@@ -4203,6 +4202,28 @@ void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *nam
     buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ) switch (_t%d.cls_id) {%s sp_raise_poly_nomethod(\"%s\", _t%d); default: break; }\n",
                tv, tv, arms.p, shown, tv);
   free(arms.p);
+}
+
+/* A boxed receiver's text `rb` that call `call`'s builtin iteration `name`
+   reads with no statement of its own before it (the conversion through its
+   to_a, or a forwarded proc's sp_poly_enum_proc): the receiver is held in a
+   rooted temp and the NoMethodError for a class with no Enumerable written
+   after it into `out`, at `indent`, and `rb` becomes the temp. A program with
+   no such class writes nothing and keeps `rb` as it was. */
+void emit_poly_iter_recv_reject(Compiler *c, int call, const char *name, Buf *rb, Buf *out, int indent) {
+  int tbox = g_tmp + 1;
+  Buf rj; memset(&rj, 0, sizeof rj);
+  emit_poly_iter_obj_reject(c, call, tbox, name, &rj);
+  if (rj.p && rj.p[0]) {
+    g_tmp++;
+    emit_indent(out, indent);
+    buf_printf(out, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tbox, rb->p ? rb->p : "sp_box_nil()", tbox);
+    emit_indent(out, indent);
+    buf_puts(out, rj.p);
+    free(rb->p); memset(rb, 0, sizeof *rb);
+    buf_printf(rb, "_t%d", tbox);
+  }
+  free(rj.p);
 }
 
 void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
