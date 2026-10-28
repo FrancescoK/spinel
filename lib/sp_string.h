@@ -446,14 +446,16 @@ static inline int64_t sp_String_length(sp_String*s){return s->len;}
    --share-strings (SP_SHARE_BOX_HANDLES, which a program built with it
    defines) boxes a mutable heap String as a new handle over its bytes,
    which sp_String_new_fresh copies before it allocates, so every copy of
-   the box names the one String. A frozen or static String is boxed as
-   itself, as nothing can change it and its identity is its bytes'; so is
-   any String otherwise (sp_box_str). */
+   the box names the one String. So is an unfrozen static one (0xff, a
+   folded interpolation's bytes): it stands for a new String, which a
+   mutation through the box changes (`a = ["#{v}?"]; a[0] << "!"`). A
+   frozen String is boxed as itself, as nothing can change it and its
+   identity is its bytes'; so is any String otherwise (sp_box_str). */
 static inline sp_RbVal sp_box_str_new(const char *v) {
 #ifdef SP_SHARE_BOX_HANDLES
   if (v) {
     unsigned char m = ((const unsigned char *)v)[-1];
-    if (m == 0xfe || m == 0xfc) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
+    if (m == 0xfe || m == 0xfc || m == 0xff) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
     /* the runtime's empty answer is static, but stands for the new empty
        String the call made (`"" * 2`): nil.to_s's frozen one is not this */
     if (v == sp_str_empty) return sp_box_obj(sp_String_new_fresh(v), SP_BUILTIN_STRBUF);
