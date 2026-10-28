@@ -238,6 +238,7 @@ int elab_body_def(Compiler *c, int node);
 int elab_plan_enter(Compiler *c, int id);
 void elab_plan_leave(Compiler *c);
 void elab_check_version(Compiler *c, int id, int vi, int dc, int now, int ndc);   /* SPINEL_ELAB_CHECK */
+void elab_check_surface(Compiler *c);   /* SPINEL_ELAB_CHECK: the record's surface against the class tables */
 /* where the version recorded at def node `node` in cls's history of `name`
    (singleton when sg) is replaced: ELAB_YES with *end the next version's
    point; ELAB_NO when none follows, so it stays to the end; ELAB_UNKNOWN
@@ -339,6 +340,20 @@ int elab_body_visibility_at(Compiler *c, int node);
 /* method `name`'s visibility on cls (singleton when sg) at p: SP_VIS_*,
    -1 when not known or not defined */
 int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
+/* The entries a class side (cls, LR_MAIN for main's; sg) has of a name
+   as the load phase ends, as the registration applies them: an attr form,
+   an undef, a module_function copy or an alias counts when no condition in
+   its class body stands before it (one around the body is the body's) and
+   it is in no iterator's block; the visibility is the last one given,
+   under a condition too (SP_VIS_*, -1 for none). An entry with no load
+   point (L3) is not one. */
+typedef struct {
+  const char *name, *alias;   /* alias: the last alias's original name */
+  int node;                   /* the name's last entry */
+  signed char vis;
+  unsigned char reader, writer, undef, copy;
+} ElabSurface;
+const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n);
 /* did code the record cannot follow (a send, an eval of a String, a mixin
    of a module it does not know, a computed method name, a method of the
    program its body calls) run on cls before p? */

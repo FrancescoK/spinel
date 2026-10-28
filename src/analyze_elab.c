@@ -69,7 +69,7 @@ typedef struct { int node, file, region, top, rank, depth, frame, last, rep; uns
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
-enum { LR_CHECK_MAX = 16, LR_CHECK_SHOW = 100 };
+enum { LR_CHECK_MAX = 32, LR_CHECK_SHOW = 100 };
 
 enum { LR_LATE = 1, LR_BODY = 2 };   /* runs later: in a method body, a lambda or a block kept to run later; in a method body */
 
@@ -119,6 +119,7 @@ struct LoadRecord {
   struct LrVers *vers; int nvers, cvers, *vers_head;
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
+  ElabSurface *surf; int *surf_at;   /* elab_class_surface's, by class side: [2 * (cls + 1) + sg] .. [+ 1] */
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -807,6 +808,7 @@ static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
   x->v = lr_grow(x->v, &x->cap, x->n, sizeof *x->v);
   x->v[x->n++] = d;
   r->nentries++;
+  free(r->surf); free(r->surf_at); r->surf = NULL; r->surf_at = NULL;   /* elab_class_surface's are of fewer entries */
 }
 
 /* cls's history (LR_MAIN: main's, Object's), NULL for a class the record
@@ -1629,6 +1631,7 @@ static void lr_record_drop(LoadRecord *r) {
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
   r->nhist = 0; r->frontier = 0; r->nset = 0; r->builders = 0;
   r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
+  free(r->surf); free(r->surf_at); r->surf = NULL; r->surf_at = NULL;
 }
 
 static char *lr_dump_text(Compiler *c);
@@ -2842,6 +2845,51 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
   return lr_ready(c, p) ? lr_vis_at(c, cls, name, sg, p) : -1;
 }
 
+/* A history's end-of-load entries (ElabSurface); 0 when it has none */
+static int lr_surface_of(Compiler *c, const LrHist *h, ElabSurface *s) {
+  LoadRecord *r = c->lrec;
+  *s = (ElabSurface){ h->name, NULL, -1, -1, 0, 0, 0, 0 };
+  for (int j = 0; j < h->n; j++) {
+    const LrDef *v = &h->v[j];
+    LoadPoint p = elab_point_of(c, v->node);
+    if (p.region < 0 || v->kind > LR_VIS || r->st[p.seq].partial) continue;
+    s->node = v->node;
+    if (v->kind != LR_UNDEF && v->kind != LR_REMOVE) s->vis = (signed char)v->vis;
+    if (v->may && (r->st[p.seq].fmay || !r->st[p.seq].may)) continue;   /* a condition in the body, not around it */
+    s->reader |= v->kind == LR_READER; s->writer |= v->kind == LR_WRITER;
+    s->undef |= v->kind == LR_UNDEF; s->copy |= v->kind == LR_COPY;
+    if (v->kind == LR_ALIAS) s->alias = v->target;
+  }
+  return s->node >= 0;
+}
+
+const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n) {
+  LoadRecord *r = c->lrec;
+  *n = 0;
+  if (!r || !r->recorded || !lr_class(r, cls)) return NULL;
+  if (!r->surf_at) {   /* every class side's at once: a count, then a fill */
+    int nk = 2 * r->ncls + 1;
+    ElabSurface t;
+    r->surf_at = calloc((size_t)nk, sizeof *r->surf_at);
+    if (!r->surf_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < r->nhist; i++)
+      if (r->hist[i].a >= LR_MAIN && lr_class(r, r->hist[i].a) && lr_surface_of(c, &r->hist[i], &t))
+        r->surf_at[2 * (r->hist[i].a + 1) + r->hist[i].b + 1]++;
+    for (int k = 1; k < nk; k++) r->surf_at[k] += r->surf_at[k - 1];
+    r->surf = malloc(sizeof *r->surf * (size_t)(r->surf_at[nk - 1] + 1));
+    int *fill = malloc(sizeof *fill * (size_t)nk);
+    if (!r->surf || !fill) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(fill, r->surf_at, sizeof *fill * (size_t)nk);
+    for (int i = 0; i < r->nhist; i++)
+      if (r->hist[i].a >= LR_MAIN && lr_class(r, r->hist[i].a) && lr_surface_of(c, &r->hist[i], &t))
+        r->surf[fill[2 * (r->hist[i].a + 1) + r->hist[i].b]++] = t;
+    free(fill);
+  }
+  int k = 2 * (cls + 1) + (sg != 0);
+  *n = r->surf_at[k + 1] - r->surf_at[k];
+  return r->surf + r->surf_at[k];
+}
+
 int elab_opaque_before(Compiler *c, int cls, LoadPoint p) {
   if (!lr_ready(c, p)) return ELAB_UNKNOWN;
   return lr_last_before(c, lr_hist(c->lrec, LR_KEY_OPAQUE, lr_const_owner(cls), "", 0), p, p.region < 0, 0, NULL);
@@ -3159,6 +3207,94 @@ static void elab_check_visibility(Compiler *c) {
       }
     }
   }
+}
+
+/* The class table's entry of name in v[0..n): its kind (kinds, else 1),
+   0 for none */
+static int lr_table_has(char **v, const int *kinds, int n, const char *name) {
+  for (int i = 0; i < n; i++) if (sp_streq(v[i], name)) return kinds ? kinds[i] : 1;
+  return 0;
+}
+
+enum { LR_SF_READER, LR_SF_WRITER, LR_SF_UNDEF, LR_SF_COPY, LR_SF_ALIAS, LR_SF_VIS, LR_SF_N };
+
+/* The fields in mask of one name on class side (cls, sg): the class
+   table's (k) against the record's (s, NULL for none). A writer goes by
+   its base name, and a Struct member's is the builder's, not a body's; an
+   alias with another original counts 2. */
+static void lr_check_name(Compiler *c, ClassInfo *k, int cls, int sg, const char *name, const ElabSurface *s, int mask) {
+  const char *fam[] = { "the record's surface: readers", "the record's surface: writers", "the record's surface: undefs",
+                               "the record's surface: module_function copies", "the record's surface: aliases",
+                               "the record's surface: visibility" };
+  int now[LR_SF_N] = { 0 }, rec[LR_SF_N] = { 0 }, nl = (int)strlen(name), w = nl > 1 && name[nl - 1] == '=';
+  char base[256];
+  snprintf(base, sizeof base, "%.*s", w ? nl - 1 : nl, name);
+  if (cls >= 0) {
+    now[LR_SF_READER] = !w && (sg ? comp_is_sg_reader(k, name) : comp_is_own_reader(k, name));
+    now[LR_SF_WRITER] = w && (sg ? comp_is_sg_writer(k, base)
+                                 : comp_is_writer(k, base) && !(k->is_struct && comp_is_reader(k, base) && !comp_is_own_reader(k, base)));
+    now[LR_SF_UNDEF] = !sg && lr_table_has(k->undefs, NULL, k->nundefs, name);
+    int mf = 0;   /* a module_function copy: the table keeps its instance side's privacy as the Scope's flag */
+    for (int i = 0; i < c->nscopes && !mf; i++)
+      mf = c->scopes[i].is_module_function && c->scopes[i].class_id == cls && sp_streq(c->scopes[i].name, name);
+    now[LR_SF_COPY] = sg && mf;
+    int v = sg ? lr_table_has(k->cm_vis_names, k->cm_vis_kinds, k->ncm_vis, name) : lr_table_has(k->vis_names, k->vis_kinds, k->nvis, name);
+    /* ...and an initialize's by its name: a public entry in the table may be
+       a public section's, which those keep */
+    now[LR_SF_VIS] = v ? v : !sg && (mf || is_implicitly_private_name(name)) ? SP_VIS_PRIVATE : SP_VIS_PUBLIC;
+  }
+  const char *old = NULL;
+  for (int i = 0; i < k->naliases; i++) if (k->alias_sg[i] == sg && sp_streq(k->alias_new[i], name)) old = k->alias_old[i];
+  now[LR_SF_ALIAS] = old != NULL;
+  if (s && cls >= 0) {
+    rec[LR_SF_READER] = s->reader; rec[LR_SF_WRITER] = s->writer; rec[LR_SF_UNDEF] = s->undef && !sg;
+    rec[LR_SF_COPY] = s->copy && sg; rec[LR_SF_VIS] = s->vis > 0 ? s->vis : 0;
+  }
+  if (s && s->alias) rec[LR_SF_ALIAS] = old && !sp_streq(old, s->alias) ? 2 : 1;
+  LoadRecord *r = c->lrec;
+  for (int j = 0; j < LR_SF_N; j++) {
+    if (!(mask >> j & 1) || (!now[j] && !rec[j])) continue;
+    LrCheck *f = lr_family(r, fam[j]);
+    f->asked++;
+    if (now[j] == rec[j]) continue;
+    f->differ++;
+    if (r->shown++ < LR_CHECK_SHOW)
+      fprintf(stderr, "spinel-elab-check: surface %s %s%s%s now=%d record=%d\n", fam[j] + sizeof "the record's surface:",
+              cls == LR_MAIN ? "main" : k->name, sg ? "." : "#", name, now[j], rec[j]);
+  }
+}
+
+/* The class table's own entries, as the registration leaves them (before
+   a superclass's or a module's are copied in), against the record's
+   surface (elab_class_surface), on every class side the record holds:
+   each field of the record's names, then the table's names the record
+   has no entry of, once per field. main's aliases are the Toplevel
+   class's. */
+void elab_check_surface(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return;
+  int tl = comp_class_index(c, "Toplevel");
+  for (int cls = LR_MAIN; cls < c->nclasses; cls++)
+    for (int sg = 0; sg < 2 && lr_class(r, cls) && (cls >= 0 || tl >= 0); sg++) {
+      ClassInfo *k = &c->classes[cls >= 0 ? cls : tl];
+      int n;
+      const ElabSurface *v = elab_class_surface(c, cls, sg, &n);
+      for (int i = 0; i < n; i++) lr_check_name(c, k, cls, sg, v[i].name, &v[i], -1);
+      char **ls[] = { sg ? k->sg_readers : k->own_readers, sg ? k->sg_writers : k->writers, k->undefs, NULL, k->alias_new,
+                      sg ? k->cm_vis_names : k->vis_names };
+      int ln[] = { sg ? k->nsg_readers : k->nown_readers, sg ? k->nsg_writers : k->nwriters, sg ? 0 : k->nundefs,
+                   sg && cls >= 0 ? c->nscopes : 0, k->naliases, sg ? k->ncm_vis : k->nvis };
+      for (int f = cls >= 0 ? 0 : LR_SF_ALIAS; f < LR_SF_N; f++)
+        for (int i = 0; i < ln[f]; i++) {
+          const Scope *sc = f == LR_SF_COPY ? &c->scopes[i] : NULL;
+          if ((f == LR_SF_ALIAS && k->alias_sg[i] != sg) || (sc && !(sc->is_module_function && sc->class_id == cls))) continue;
+          char nm[256];
+          snprintf(nm, sizeof nm, "%s%s", f == LR_SF_COPY ? sc->name : ls[f][i], f == LR_SF_WRITER ? "=" : "");
+          const LrHist *h = lr_hist(r, cls, sg, nm, 0);
+          ElabSurface e;
+          if (!h || !lr_surface_of(c, h, &e)) lr_check_name(c, k, cls, sg, nm, NULL, 1 << f);
+        }
+    }
 }
 
 void elab_free(Compiler *c) {

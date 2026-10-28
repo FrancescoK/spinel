@@ -48106,6 +48106,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_aliases(c);
   AN_STEP_V("rewrite_builtin_alias_self_calls", rewrite_builtin_alias_self_calls(c, 0));  /* plus_without(o) -> self.+(o), the builtin's */
   register_undefs(c);
+  if (elab_check_on(c)) elab_check_surface(c);
   register_globals_consts(c);
   AN_STEP_V("rewrite_const_alias_receivers", rewrite_const_alias_receivers(c));
   AN_STEP_V("rewrite_builtin_cm_alias_calls", rewrite_builtin_cm_alias_calls(c));   /* Time.stamp -> Time.now, the builtin's */
