@@ -18200,6 +18200,28 @@ static int arr_src_param(Compiler *c, Scope *sc, const char *nm, TyKind seed, in
 }
 /* infer_return_types' derivation of scope s's value from its body and its
    explicit returns (x's tables); 1 when anything it sets changed */
+/* A yielding method whose body ends in `if block_given? ... else ... end`:
+   that if node, else -1 */
+int scope_block_given_tail(Compiler *c, Scope *sc) {
+  const NodeTable *nt = c->nt;
+  if (!sc->yields || sc->body < 0 || nt_kind(nt, sc->body) != NK_StatementsNode) return -1;
+  int bn = 0; const int *bb = nt_arr(nt, sc->body, "body", &bn);
+  int last = bn > 0 ? bb[bn - 1] : -1;
+  int pred = last >= 0 && nt_kind(nt, last) == NK_IfNode ? nt_ref(nt, last, "predicate") : -1;
+  int sub = last >= 0 ? nt_ref(nt, last, "subsequent") : -1;
+  if (pred >= 0 && nt_kind(nt, pred) == NK_CallNode && nt_ref(nt, pred, "receiver") < 0 &&
+      nt_str(nt, pred, "name") && sp_streq(nt_str(nt, pred, "name"), "block_given?") &&
+      sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) return last;
+  return -1;
+}
+/* ... the last node of its else arm, else -1 */
+int scope_block_given_else_last(Compiler *c, Scope *sc) {
+  int last = scope_block_given_tail(c, sc);
+  int es = last >= 0 ? nt_ref(c->nt, nt_ref(c->nt, last, "subsequent"), "statements") : -1;
+  int en = 0; const int *eb = es >= 0 ? nt_arr(c->nt, es, "body", &en) : NULL;
+  return en > 0 ? eb[en - 1] : -1;
+}
+
 static int irt_scope(Compiler *c, int s, IrtCtx *x) {
   const NodeTable *nt = c->nt;
   TyKind *ret_acc = x->ret_acc; char *has_ret = x->has_ret; char *ret_empty = x->ret_empty;
@@ -18322,14 +18344,10 @@ static int irt_scope(Compiler *c, int s, IrtCtx *x) {
      arm the call without one (Scope.ret_noblock, read by method_call_ret).
      Unified, the Enumerator of the one arm and the memo of the other made
      the method poly for both (builtins/enumerable.rb). */
-  if (!empty_body && !tail_unreachable && sc->yields && nt_kind(nt, sc->body) == NK_StatementsNode) {
-    int bn3 = 0; const int *bb3 = nt_arr(nt, sc->body, "body", &bn3);
-    int last = bn3 > 0 ? bb3[bn3 - 1] : -1;
-    int pred = last >= 0 && nt_kind(nt, last) == NK_IfNode ? nt_ref(nt, last, "predicate") : -1;
-    int sub = last >= 0 ? nt_ref(nt, last, "subsequent") : -1;
-    if (pred >= 0 && nt_kind(nt, pred) == NK_CallNode && nt_ref(nt, pred, "receiver") < 0 &&
-        nt_str(nt, pred, "name") && sp_streq(nt_str(nt, pred, "name"), "block_given?") &&
-        sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) {
+  int last = !empty_body && !tail_unreachable ? scope_block_given_tail(c, sc) : -1;
+  if (last >= 0) {
+    {
+      int sub = nt_ref(nt, last, "subsequent");
       int ts = nt_ref(nt, last, "statements"), es = nt_ref(nt, sub, "statements");
       int tn3 = 0; const int *tb3 = ts >= 0 ? nt_arr(nt, ts, "body", &tn3) : NULL;
       int en3 = 0; const int *eb3 = es >= 0 ? nt_arr(nt, es, "body", &en3) : NULL;

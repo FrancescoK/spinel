@@ -70,3 +70,22 @@ class Pairs < Hash
   def map(&b) = super(&b)
 end
 p Pairs[a: 1, b: 2].map { |k, v| [v, k] }
+
+# an `if block_given?` tail's blockless arm keeps its own kind when
+# --int-overflow=promote widens the parameters (it answered nil)
+def fill_with(n, v)
+  if block_given?
+    Array.new(n, v) { |i| yield i }
+  else
+    Array.new(n, v)
+  end
+end
+p fill_with(2, 5)
+p fill_with(2, 5) { |i| i * 7 }
+
+# a block forwarded through super in an Array subclass's own self.new
+class Grid < Array
+  def self.new(n, &b) = super(n, &b)
+end
+p Grid.new(2) { |i| i * 3 }
+p Grid.new(2)

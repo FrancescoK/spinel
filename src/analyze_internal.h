@@ -252,6 +252,8 @@ int struct_aset_may_reach(Compiler *c, int id);
 int an_arg_is_shared_handle(Compiler *c, int node);
 /* Last statement of a scope's body, or -1. */
 int scope_body_last(Compiler *c, int mi);
+int scope_block_given_tail(Compiler *c, Scope *sc);
+int scope_block_given_else_last(Compiler *c, Scope *sc);
 /* ...or the begin a def's own rescue makes its body (analyze_util.c). */
 int scope_body_value(Compiler *c, int mi);
 /* The expressions whose value method scope mi answers (its body's and each
