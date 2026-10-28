@@ -541,10 +541,10 @@ int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *n
 
 /* A row rendered as one arm of a boxed dispatch: the node answers what the
    dispatch answers, so the row is not compared with inference's for the
-   node (--plan-check) */
+   node (--plan-check). t0 is the dispatch's temp for the row's $T, or 0 */
 int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                             const char *rtext, Buf *b) {
-  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, 0, 0, bop_arg_ntype, 0, b);
+                             const char *rtext, int t0, Buf *b) {
+  return emit_builtin_op_ex(c, id, recv, rt, name, rtext, t0, 0, bop_arg_ntype, 0, b);
 }
 
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,

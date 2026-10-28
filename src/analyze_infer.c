@@ -5786,8 +5786,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
-      nt_type(nt, recv) && nt_kind(nt, recv) != NK_ConstantReadNode &&
-      nt_kind(nt, recv) != NK_ConstantPathNode) {
+      nt_type(nt, recv) && ((nt_kind(nt, recv) != NK_ConstantReadNode &&
+      nt_kind(nt, recv) != NK_ConstantPathNode) || class_recv_is_dynamic(c, recv))) {
     int _is_self_class = self_class_static_ci(c, recv) >= 0;
     /* a local statically holding one STRUCT class (k = Struct.new(..) /
        k = StructKlass) falls through to the static-class .new arms below --
@@ -5859,9 +5859,14 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     if (argc == 0 && sp_streq(name, "ancestors")) { *out = TY_POLY_ARRAY; return 1; }
     if (argc == 0 && sp_streq(name, "subclasses")) { *out = TY_POLY_ARRAY; return 1; }
     if (argc == 1 && is_kind_query(name)) { *out = TY_BOOL; return 1; }
-    if (argc == 1 && sp_streq(name, "include?")) {
+    /* the Class rows (Module#include?), unless the class answers with a
+       class method of its own */
+    if (bop_find(TY_CLASS, name, argc, nt_ref(nt, id, "block") >= 0)) {
       int oci = class_recv_static_ci(c, recv);
-      if (oci < 0 || call_target(c, id, oci, name, CT_CMETHOD, NULL) < 0) { *out = TY_BOOL; return 1; }
+      if (oci < 0 || call_target(c, id, oci, name, CT_CMETHOD, NULL) < 0) {
+        *out = an_bop_find_arg(c, id, TY_CLASS, name, argc, argv, nt_ref(nt, id, "block") >= 0)->result;
+        return 1;
+      }
     }
     if (argc == 1 && sp_streq(name, "class_variable_defined?")) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) { *out = TY_POLY; return 1; }

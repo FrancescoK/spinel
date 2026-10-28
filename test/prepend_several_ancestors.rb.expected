@@ -1,0 +1,9 @@
+[A, B, Bar]
+"a"
+"A>B>Bar"
+[B, C, A, Baz]
+"B>C>A>Baz"
+[Qux, A, B]
+"a"
+true
+true

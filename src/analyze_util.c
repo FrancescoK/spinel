@@ -910,6 +910,22 @@ int class_recv_static_ci(Compiler *c, int node) {
   return class_var_static_ci(c, node);
 }
 
+/* A constant that holds a class only known at run time: the write the
+   record resolves its read to (elab_const_at) assigns a class value
+   (`K = make`, a method returning `Struct.new(:a)`) and the name is no
+   class of the program's, no builtin class and no alias of either. Its
+   reads then take a variable's run-time dispatch (class_recv_is_dynamic):
+   read by name they found no class and raised NameError. */
+int const_class_value_only(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_kind(nt, node) == NK_ConstantReadNode ? nt_str(nt, node, "name") : NULL;
+  const LrDef *d = NULL;
+  if (!nm || class_recv_static_ci(c, node) >= 0 || is_builtin_class_name(nm)) return 0;
+  if (elab_const_at(c, node, nm, (LoadPoint){ -1, -1 }, &d) != ELAB_YES || !d || d->kind != LR_WRITE || nt_kind(nt, d->node) != NK_ConstantWriteNode) return 0;
+  int v = nt_ref(nt, d->node, "value");
+  return v >= 0 && infer_type(c, v) == TY_CLASS && !resolve_class_alias_chain(c, nm);
+}
+
 /* The class method `name` the program defines for the class a class-valued
    receiver names at compile time (class_recv_static_ci), up its ancestors;
    -1 when there is none or the class is known only at run time: the target

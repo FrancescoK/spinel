@@ -1295,6 +1295,12 @@ static int builtin_name_in(const char *name, const char *const *names) {
   return 0;
 }
 
+/* A builtin module the ancestors tables list by its (negative) builtin id
+   (Comparable, Enumerable, Kernel, Math): that id, 0 for any other name */
+int builtin_mixin_module_id(const char *n) {
+  int id = n ? builtin_class_id(n) : 0;
+  return id == -114 || id == -115 || id == -119 || id == -130 ? id : 0;
+}
 int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
 int is_load_name(const char *n) { return sp_streq(n, "load"); }

@@ -1987,7 +1987,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
       Buf sb = {0};
       char sr[48];
       snprintf(sr, sizeof sr, "((sp_File *)_t%d.v.p)", tv);
-      if (emit_builtin_op_arm_text(c, id, nt_ref(nt, id, "receiver"), TY_IO, name, sr, &sb)) {
+      if (emit_builtin_op_arm_text(c, id, nt_ref(nt, id, "receiver"), TY_IO, name, sr, 0, &sb)) {
         buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) { _t%d = ", tv, tv, tr);
         if (ret == TY_POLY) emit_boxed_text(c, sop->result, sb.p, b);
         else buf_puts(b, sb.p);
@@ -3556,8 +3556,27 @@ int emit_poly_prearms_n_blk(Compiler *c, int id, const char *name, const PolySpe
     } }
   /* a class-valued receiver dispatches class-side, ahead of the instance
      arms (#4218). */
-  emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, kw, tv,
-                             is_setter_val ? -1 : tr, ret, blk_tmp2, b);
+  int cls_side = emit_poly_cls_value_prearm(c, id, name, pos_argc, atmp, atmp_ty, htmp, kw, tv,
+                                            is_setter_val ? -1 : tr, ret, blk_tmp2, b);
+  /* Where no class method of the program's reaches a class value, so no
+     class-side switch answers it, a Class value answers as a typed one
+     does: through the call's Class row (Module#include?), the receiver's
+     temp the row's $T and each argument read from its temp. The bank
+     defines the class tests the rows read. */
+  if (!cls_side && g_needs_class_machinery && argc == pos_argc && !has_splat_arg && pos_argc <= 4 &&
+      bop_find(TY_CLASS, name, pos_argc, nt_ref(nt, id, "block") >= 0)) {
+    char crt[48];
+    snprintf(crt, sizeof crt, "sp_unbox_class(_t%d)", tv);
+    int slot[4];
+    for (int i = 0; i < pos_argc; i++)
+      slot[i] = view_bind(argv[i], atmp_ty[i] == TY_POLY ? "sp_unbox_class(_t%d)" : "_t%d", atmp[i]);
+    Buf cb; memset(&cb, 0, sizeof cb);
+    if (emit_builtin_op_arm_text(c, id, nt_ref(nt, id, "receiver"), TY_CLASS, name, crt, tv, &cb))
+      buf_printf(b, "if (_t%d.tag == SP_TAG_CLASS) _t%d = %s%s%s;\nelse ", tv, tr,
+                 ret == TY_POLY ? "sp_box_bool(" : "", cb.p ? cb.p : "0", ret == TY_POLY ? ")" : "");
+    if (pos_argc > 0) view_unbind(slot[0]);
+    free(cb.p);
+  }
   /* a boxed Proc/Curry/Method in a slot a user `call`/`[]` shadows (#4395);
      the keyword split binds by name to a user candidate, so skip it. A
      splatted argument is one temp holding an array, not one temp per

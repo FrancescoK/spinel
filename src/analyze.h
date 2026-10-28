@@ -193,8 +193,12 @@ typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /
 /* kind: LrMixKind; mod: the module's class, -2 one the record does not
    know; ref: the argument naming it; dup, once asked (lr_mixin_dup): 1 +
    whether mod is already among the class's ancestors where the mixin
-   runs, ELAB_YES / NO / UNKNOWN */
-typedef struct { int node, kind, mod, ref; unsigned char dup; } LrMixin;
+   runs, ELAB_YES / NO / UNKNOWN; cond: a condition (a branch, a loop, a
+   rescue clause, a modifier, the right of `&&` / `||`) stands between the
+   call and the body, or main's file, holding it, so it may not run when
+   that body does. A class body opened under a condition is no condition
+   of its statements. */
+typedef struct { int node, kind, mod, ref; unsigned char dup, cond; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the class builders' blocks recorded as their classes' bodies, once
@@ -290,6 +294,14 @@ ElabBody *elab_all_bodies(Compiler *c, int *n);
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
 int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
+/* the module mixin m names: the one the record resolved where the call
+   stands, else the one its constant names (elab_module_named); -1 for none */
+int elab_mixin_module(Compiler *c, const LrMixin *m);
+/* the module a constant named nm names, for a mixin the record did not
+   resolve: the class of the name, a builtin module's (negative) id
+   (builtin_mixin_module_id), or what an alias of either names (`Loud =
+   Shout`, `E = Enumerable`); -1 for none */
+int elab_module_named(Compiler *c, const char *nm);
 /* what constant `name`, read in node's lexical scopes, resolves to at p
    (node's own point when p has none): its lexical scopes' own constants,
    innermost first, then the innermost one's ancestors and Object's; *out

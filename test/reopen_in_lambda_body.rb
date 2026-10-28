@@ -71,3 +71,18 @@ lt = -> {
 }
 lt.call
 p T.new.t
+p T.ancestors.take(2), T.include?(Loud), T.new.is_a?(Loud)
+
+module Greet
+  def hi = "hi"
+end
+class U
+end
+pu = Proc.new do
+  class U
+    include Greet
+  end
+  nil
+end
+pu.call
+p U.new.hi, U.ancestors.take(2), U.include?(Greet), U.new.is_a?(Greet), [U.new, 1][0].is_a?(Greet)

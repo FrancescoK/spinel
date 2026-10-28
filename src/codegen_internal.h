@@ -1239,7 +1239,7 @@ const char *class_ruby_name(Compiler *c, int ci);
 int visible_cls_id(Compiler *c, int k);
 int cls_id_masquerades(Compiler *c, int cid);
 int visible_as_target(Compiler *c, int k, int target);
-int class_mixes_in(Compiler *c, int cid, const char *mod, int depth);
+int class_mixes_in(Compiler *c, int cid, int mod, int depth);
 int class_is_comparable(Compiler *c, int cid);
 int class_implicit_responds(Compiler *c, int cid, const char *qm);
 void emit_visible_cls_id(Compiler *c, const char *var, Buf *b);
@@ -2349,8 +2349,8 @@ int emit_arysub_call(Compiler *c, int id, Buf *b);
 int emit_arysub_call_stmt(Compiler *c, int id, Buf *b, int indent);
 const char *class_builtin_superclass_name(Compiler *c, int i);   /* codegen.c */
 int class_builtin_parent(Compiler *c, int cid);      /* codegen.c */
-int class_includes_module_named(Compiler *c, int cid, const char *mod_name);
-int class_isa_user(Compiler *c, int k, int cid, const char *cn);  /* codegen_call.c */
+int class_includes_module(Compiler *c, int cid, int mod);
+int class_isa_user(Compiler *c, int k, int cid);  /* codegen_call.c */
 int dispatch_impl_count(Compiler *c, int call, int cid, const char *name);
 /* do a dispatch switch's arms bind the call's arguments differently (each
    arm then lays them out itself)? the plan's CP_PER_ARM */
@@ -2436,9 +2436,10 @@ int emit_builtin_op_unguarded(Compiler *c, int id, int recv, TyKind rt, const ch
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b);
 /* the same, for a row rendered as one arm of a boxed dispatch, which the
-   node's --plan-check comparison leaves to the arm's own record */
+   node's --plan-check comparison leaves to the arm's own record; t0 the
+   dispatch's temp for the row's $T, or 0 */
 int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                             const char *rtext, Buf *b);
+                             const char *rtext, int t0, Buf *b);
 /* the same, with the temp t0 the family took before its arms ($T) */
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b);

@@ -382,10 +382,12 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    list (EP_LIST), whose elements are statements, or a lone expression
    (EP_NEW), which is one. Any other node is one of the statement's
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
-   keeps it to run later, so that its nodes are late. */
+   keeps it to run later, so that its nodes are late. fmay: may, counted
+   from the frame: a condition stands between the node and the body (or
+   main's file) holding it. */
 typedef struct {
   int e, file, top, frame, depth, rep;
-  unsigned char may, partial, kind, bits, defer;
+  unsigned char may, partial, kind, bits, defer, fmay;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);

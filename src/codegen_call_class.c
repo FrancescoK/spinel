@@ -2709,8 +2709,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      then cast to the struct pointer (#3992). */
   if (recv >= 0 && sp_streq(name, "new") && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      nt_kind(nt, recv) != NK_ConstantReadNode &&
-      nt_kind(nt, recv) != NK_ConstantPathNode &&
+      ((nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) ||
+       class_recv_is_dynamic(c, recv)) &&
       class_var_static_ci(c, recv) < 0 && self_class_static_ci(c, recv) < 0 &&
       argc == 0) {
     int kt = ++g_tmp, rt2 = ++g_tmp;
@@ -4132,17 +4132,8 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       buf_printf(b, "; sp_class_sclass_p(_cl%d); })", _clt);
       return 1;
     }
-    /* Module#include?(mod): mod must be a Module (a Class arg is a TypeError);
-       true when mod is a proper ancestor of the receiver (#2674). */
-    if (sp_streq(name, "include?") && argc == 1 && repr_of(c, argv[0]).as_ty == TY_CLASS) {
-      int m = ++g_tmp;
-      buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-      buf_printf(b, "; sp_Class _cl%d = ", m); emit_expr(c, argv[0], b);
-      buf_printf(b, "; if (!sp_class_is_module_val(_cl%d)) sp_raise_cls(\"TypeError\", "
-                    "\"wrong argument type Class (expected Module)\");", m);
-      buf_printf(b, " _cl%d.cls_id != _cl%d.cls_id && sp_class_le(_cl%d, _cl%d); })", _clt, m, _clt, m);
-      return 1;
-    }
+    /* the Class rows (Module#include?), in the family's temp */
+    if (emit_builtin_op_tmp(c, id, recv, TY_CLASS, name, _clt, b)) return 1;
     /* Module#class_variables: the registered cvars, own + ancestors (#2719) */
     if (sp_streq(name, "class_variables") && argc == 0) {
       const char *rcn9 = nt_kind(nt, recv) == NK_ConstantReadNode
