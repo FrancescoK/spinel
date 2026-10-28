@@ -24911,12 +24911,16 @@ static void nil_recv_raise_text(Compiler *c, int id, char *out, size_t n) {
    (emit_fold_recv_hold; 0 when there is nothing to test) and tests it once
    they have (emit_fold_recv_test), in code that only ever raises. The names
    nil answers (`&`, `|`, `<=>`) are no NoMethodError and keep their text. */
-int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
+int emit_fold_recv_tested(Compiler *c, int id, int recv) {
   TyKind rt = repr_of(c, recv).as_ty;
   const char *nm = nt_str(c->nt, id, "name");
   /* (nor one the plan's head has tested, cplan_nil_ivar_tested) */
-  if (nt_kind(c->nt, nt_paren_single(c->nt, recv)) != NK_InstanceVariableReadNode || !ty_is_array(rt) ||
-      !nm || is_nil_method(nm) || repr_of(c, recv).nil_tested) {
+  return nt_kind(c->nt, nt_paren_single(c->nt, recv)) == NK_InstanceVariableReadNode && ty_is_array(rt) &&
+         nm && !is_nil_method(nm) && !repr_of(c, recv).nil_tested;
+}
+int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b) {
+  TyKind rt = repr_of(c, recv).as_ty;
+  if (!emit_fold_recv_tested(c, id, recv)) {
     buf_puts(b, "(void)("); emit_expr(c, recv, b); buf_puts(b, "); ");
     return 0;
   }

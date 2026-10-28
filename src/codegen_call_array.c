@@ -1794,19 +1794,26 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
        side-effecting argument or one that reads the receiver sees pre-mutation
        state, per Ruby's arg-before-call evaluation order. */
     int base = g_tmp + 1; g_tmp += argc;
+    int vb = g_tmp + 1; g_tmp += argc;
+    Buf cv = {0, 0, 0};
     for (int ai = 0; ai < argc; ai++) {
       Repr ar = repr_of(c, argv[ai]);
       const char *from = ar.elem == TY_INT   ? "sp_PolyArray_from_int_array"
                        : ar.elem == TY_STRING   ? "sp_PolyArray_from_str_array"
                        : ar.elem == TY_FLOAT ? "sp_PolyArray_from_float_array" : NULL;
-      buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
-      if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
-      else if (ar.kind == RK_BOXED || ar.untyped) {
+      if (!from && (ar.kind == RK_BOXED || ar.untyped)) {
         /* a boxed argument (a rest param widened to poly): unbox to the
            working array through the runtime kind dispatch (#3317); one
-           that is no Array is CRuby's TypeError, not an empty list */
-        buf_puts(b, "sp_poly_set_operand("); emit_boxed(c, argv[ai], b); buf_puts(b, ")");
+           that is no Array is CRuby's TypeError, not an empty list. It
+           converts after the frozen test below, as CRuby converts it: a
+           frozen receiver raises FrozenError first. */
+        buf_printf(b, " sp_RbVal _t%d = ", vb + ai); emit_boxed(c, argv[ai], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", vb + ai);
+        buf_printf(&cv, " sp_PolyArray *_t%d = sp_poly_set_operand(_t%d); SP_GC_ROOT(_t%d);", base + ai, vb + ai, base + ai);
+        continue;
       }
+      buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
+      if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
       else if (comp_ntype(c, argv[ai]) == TY_VOID) {
         /* an argument that never returns (a method that only raises):
            run it for its raise; the empty array after it is never read */
@@ -1818,10 +1825,12 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
     /* ... and its length too: one aliasing the receiver is appended as it
        was, not as an earlier append grew it (CRuby) */
     int lb = g_tmp + 1; g_tmp += argc;
-    for (int ai = 0; ai < argc; ai++)
-      buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", lb + ai, base + ai);
     /* a frozen receiver raises even when every argument is empty */
     buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, SP_BUILTIN_POLY_ARRAY);", t, t, t);
+    if (cv.p) buf_puts(b, cv.p);
+    free(cv.p);
+    for (int ai = 0; ai < argc; ai++)
+      buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", lb + ai, base + ai);
     for (int ai = 0; ai < argc; ai++) {
       int ti = ++g_tmp;
       buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));",

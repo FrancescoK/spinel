@@ -1862,6 +1862,7 @@ int nil_recv_guard(Compiler *c, int id, int *recv_out);
 int emit_held_nil_guard(Compiler *c, int id, int th, Buf *b);
 void emit_ivar_nil_guard(Compiler *c, int id, int recv, Buf *b, int indent);
 int emit_fold_recv_hold(Compiler *c, int id, int recv, Buf *b);
+int emit_fold_recv_tested(Compiler *c, int id, int recv); /* does emit_fold_recv_hold hold and test the receiver */
 void emit_fold_recv_test(Compiler *c, int id, int t, Buf *b);
 int emit_ivar_nil_guarded(Compiler *c, int id, Buf *b, int indent,
                           int (*fn)(Compiler *, int, Buf *, int));
