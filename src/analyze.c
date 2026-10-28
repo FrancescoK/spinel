@@ -14648,6 +14648,23 @@ static void oa_restore_pin(Compiler *c, OAS *sl) {
   else c->scopes[sl->sidx].ret_oa_pin = back;
 }
 
+/* Whether an instance of class ci can answer a call named `name`: a reader,
+   a method or an alias by the name in its chain or a reopened Object's, or a
+   method_missing. An ivar slot is listed under its reader's name whether or
+   not the class has that reader, so a `.b` on any dynamic receiver, or a
+   Symbol :b (a Struct with a member :b anywhere in the program spells one),
+   killed every class's @b. A class with a subclass, a Struct and the like
+   make no ivar slot at all, so the class's own chain is all a dynamic
+   receiver of it can reach. */
+static int oa_class_may_answer(Compiler *c, int ci, const char *name) {
+  if (comp_resolve_member(c, ci, name, 0, NULL, NULL) != SP_MEMBER_NONE) return 1;
+  const char *rn = comp_resolve_alias(c, ci, name);
+  if (rn && !sp_streq(rn, name) && comp_resolve_member(c, ci, rn, 0, NULL, NULL) != SP_MEMBER_NONE) return 1;
+  if (comp_method_in_chain(c, ci, "method_missing", NULL) >= 0) return 1;
+  int oc = comp_class_index(c, "Object");
+  return oc >= 0 && oc != ci && comp_resolve_member(c, oc, name, 0, NULL, NULL) != SP_MEMBER_NONE;
+}
+
 /* The slots by the name a call on a dynamic receiver reaches them under: an
    ivar slot by its reader's name, a method's value and parameter slots by
    the method's. The kill such a call makes read every slot, at every such
@@ -15509,8 +15526,10 @@ static int narrow_object_arrays(Compiler *c) {
           for (int pi = oa_byname_first(&oa_bn, name); pi >= 0; pi = oa_bn.next[pi]) {
             if (!sl[pi].alive) continue;
             /* a dynamic receiver may be this class: its reader would hand
-               the unboxed array to a caller expecting the boxed one */
-            if (sl[pi].ici >= 0 || !sl[pi].lv) { sl[pi].alive = 0; continue; }
+               the unboxed array to a caller expecting the boxed one -- when
+               the class has a reader, or a method, by the name at all */
+            if (sl[pi].ici >= 0) { if (oa_class_may_answer(c, sl[pi].ici, name)) sl[pi].alive = 0; continue; }
+            if (!sl[pi].lv) { sl[pi].alive = 0; continue; }
             Scope *PS = &c->scopes[sl[pi].sidx];
             for (int pk = 0; pk < PS->nparams; pk++)
               if (PS->pnames[pk] && scope_local(PS, PS->pnames[pk]) == sl[pi].lv)
@@ -15696,9 +15715,12 @@ static int narrow_object_arrays(Compiler *c) {
     for (int i = 0; i < n; i++) {
       if (sl[i].ici >= 0) {
         /* `send(:items)`, `instance_variable_get(:@items)`, `method(:items)`,
-           a re-declared accessor: any symbol naming the ivar or its reader */
+           a re-declared accessor: any symbol naming the ivar, or naming its
+           reader when the class can answer it (a `:b` that only names a
+           Struct member elsewhere reaches no `b` of this class) */
         const char *ivn = c->classes[sl[i].ici].ivars[sl[i].iiv];
-        if (anh_has(&spelled, ivn) || anh_has(&spelled, ivn + 1)) sl[i].alive = 0;
+        if (anh_has(&spelled, ivn) ||
+            (anh_has(&spelled, ivn + 1) && oa_class_may_answer(c, sl[i].ici, ivn + 1))) sl[i].alive = 0;
         continue;
       }
       if (!sl[i].lv && c->scopes[sl[i].sidx].name &&
