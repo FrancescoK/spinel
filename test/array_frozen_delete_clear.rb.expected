@@ -37,3 +37,24 @@ boxed str delete_at miss: nil
 boxed mixed delete_at hit: FrozenError: can't modify frozen Array: [1, "a"]
 [[1, 2], ["x"], [1, "a"], nil]
 [[], [], ["a"], nil]
+int slice! miss: FrozenError: can't modify frozen Array: [1, 2]
+str slice! miss: FrozenError: can't modify frozen Array: ["a", "b"]
+sym slice! miss: FrozenError: can't modify frozen Array: [:a, :b]
+float slice! miss: FrozenError: can't modify frozen Array: [1.5, 2.5]
+mixed slice! miss: FrozenError: can't modify frozen Array: [1, "a"]
+int slice! hit: FrozenError: can't modify frozen Array: [1, 2]
+eq 1
+eq 2
+eq hit: FrozenError
+eq 1
+eq 2
+eq 3
+eq miss: nil
+eq 1
+eq 1
+eq 2
+eq hits in a row: FrozenError
+eq 1
+eq 2
+eq 3
+boxed eq hit: FrozenError

@@ -7741,18 +7741,26 @@ static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb
    sp_array.c, home of sp_IntArray_delete et al) because it needs
    sp_poly_eq, which is inline-per-TU in this file, not linkable from the
    separately-compiled cold array library. */
+/* Array#delete(v) on a frozen array: CRuby compares v with the elements in
+   order, as its in-place removal does, and raises at the first write. That
+   write is at the first element after a hit that does not match, or at the
+   end when the hits run to it. A miss compares every element and answers
+   nil. A user == runs the same number of times, in the same order. */
+static void sp_poly_frozen_delete_scan(sp_PolyArray *a, sp_RbVal v, void *owner, sp_int cls) {
+  SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
+  int found = 0;
+  for (sp_int i = 0; i < a->len; i++) {
+    if (sp_poly_rb_equal(a->data[i], v)) found = 1;
+    else if (found) break;
+  }
+  if (found) sp_raise_frozen_array_at(owner, cls);
+}
 static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {sp_gc_wb((void*)a); 
   if (SP_UNLIKELY(!a)) sp_nil_recv("delete");
   /* sp_poly_eq can allocate (bigint promotion) and so trigger a collection
      mid-loop; a and v may be reachable only through the call expression. */
   SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
-  /* a frozen array raises only when it holds v: CRuby answers nil when v
-     is absent */
-  if (a->frozen) {
-    for (sp_int i = 0; i < a->len; i++)
-      if (sp_poly_rb_equal(a->data[i], v)) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
-    return sp_box_nil();
-  }
+  if (a->frozen) { sp_poly_frozen_delete_scan(a, v, a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
   sp_int w = 0;
   sp_RbVal removed = sp_box_nil(); SP_GC_ROOT_RBVAL(removed);
   for (sp_int i = 0; i < a->len; i++) {
@@ -13042,13 +13050,13 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
       case SP_BUILTIN_PTR_ARRAY: {
         SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(key);
         sp_PolyArray *a = sp_PtrArray_to_poly((sp_PtrArray *)recv.v.p); SP_GC_ROOT(a);
+        if (((sp_PtrArray *)recv.v.p)->frozen) { sp_poly_frozen_delete_scan(a, key, recv.v.p, SP_BUILTIN_PTR_ARRAY); return sp_box_nil(); }
         sp_int w = 0, found = 0;
         for (sp_int i = 0; i < a->len; i++) {
           if (sp_poly_rb_equal(a->data[i], key)) { found = 1; continue; }
           a->data[w++] = a->data[i];
         }
         a->len = w;
-        if (found && ((sp_PtrArray *)recv.v.p)->frozen) sp_raise_frozen_array_at(recv.v.p, SP_BUILTIN_PTR_ARRAY);
         if (found) sp_poly_arr_writeback(recv, a);
         return found ? key : sp_box_nil();
       }
@@ -13057,12 +13065,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
   }
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
     sp_PolyArray *a = sp_poly_to_poly_array(recv);
-    /* a frozen array raises when it holds the key, before any removal */
-    if (a && a->frozen) {
-      for (sp_int i = 0; i < a->len; i++)
-        if (sp_poly_rb_equal(a->data[i], key)) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
-      return sp_box_nil();
-    }
+    if (a && a->frozen) { sp_poly_frozen_delete_scan(a, key, a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
     sp_int w = 0, found = 0;
     for (sp_int i = 0; a && i < a->len; i++) {
       if (sp_poly_rb_equal(a->data[i], key)) { found = 1; continue; }

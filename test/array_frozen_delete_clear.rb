@@ -68,3 +68,30 @@ c[0].clear
 c[2].delete(1)
 c[1].delete_at(0)
 p c
+
+# slice!(i) checks the frozen flag first, so a miss raises too
+t("int slice! miss") { ai.slice!(9) }
+t("str slice! miss") { as.slice!(-9) }
+t("sym slice! miss") { ay.slice!(9) }
+t("float slice! miss") { af.slice!(9) }
+t("mixed slice! miss") { ap.slice!(9) }
+t("int slice! hit") { ai.slice!(0) }
+
+# a frozen delete calls == as CRuby does: up to the first element after a
+# hit that does not match, or every element for a miss
+class K
+  attr_reader :v
+  def initialize(v) = @v = v
+  def ==(o)
+    puts "eq #{v}"
+    o.is_a?(K) && o.v == v
+  end
+end
+k1 = K.new(1)
+ks = [k1, K.new(2), K.new(3)].freeze
+t("eq hit") { ks.delete(K.new(1)) }
+t("eq miss") { ks.delete(K.new(9)) }
+kk = [k1, k1, K.new(2)].freeze
+t("eq hits in a row") { kk.delete(K.new(1)) }
+kb = [ks, 1]
+t("boxed eq hit") { kb[0].delete(K.new(2)) }
