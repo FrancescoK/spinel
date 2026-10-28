@@ -11681,7 +11681,10 @@ const char *block_param_multi_leaf(Compiler *c, int block, int idx, int leaf_idx
    not kept while the table's counts hold: the desugars between rounds
    rewrite nodes in place -- a dead arm blanked to NilNodes
    (bi_subtree_blank), a call renamed or retyped -- and a list kept across
-   them would read sites that are gone or miss ones that appeared. */
+   them would read sites that are gone or miss ones that appeared. Such a
+   rewrite counts in the table's version or edits, so a rebuild over a
+   table, scope map and scopes' block names that are all as the last one
+   found them is skipped: it would build the same lists (BsiKey). */
 static int *bsi_start, *bsi_len, *bsi_node;
 static int bsi_ns;
 /* ...the calls that hand its named &block on with `&blk`, and whether a
@@ -11868,11 +11871,59 @@ static void bsi_kept_mark(Compiler *c) {
   }
   free(parent); free(def_first); free(def_next);
 }
+/* What the last build read: the table (its version and edits count every
+   rename, retype, re-point and new node), its file roots, the scope of each
+   node, and each scope's definition and block name, which a desugar can
+   change without touching the table. */
+typedef struct {
+  const NodeTable *nt; unsigned version; unsigned long edits;
+  int built, count, nscopes, root_id, nroots;
+  int *roots, *nscope, *def; char **blk;
+} BsiKey;
+static BsiKey bsi_key;
+static int bsi_key_holds(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  const BsiKey *k = &bsi_key;
+  if (!k->built || k->nt != nt || k->version != nt->version || k->edits != nt->edits ||
+      k->count != nt->count || k->nscopes != c->nscopes || k->root_id != nt->root_id ||
+      k->nroots != nt_nroots(nt)) return 0;
+  for (int r = 0; r < k->nroots; r++) if (k->roots[r] != nt_root(nt, r)) return 0;
+  if (k->count > 0 && memcmp(k->nscope, c->nscope, sizeof(int) * (size_t)k->count) != 0) return 0;
+  for (int s = 0; s < k->nscopes; s++) {
+    const char *b = c->scopes[s].blk_param;
+    if (k->def[s] != c->scopes[s].def_node || !b != !k->blk[s] || (b && strcmp(b, k->blk[s]) != 0)) return 0;
+  }
+  return 1;
+}
+static void bsi_key_save(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  BsiKey *k = &bsi_key;
+  for (int s = 0; k->blk && s < k->nscopes; s++) free(k->blk[s]);
+  free(k->roots); free(k->nscope); free(k->def); free(k->blk);
+  memset(k, 0, sizeof *k);
+  int n = nt->count, ns = c->nscopes, nr = nt_nroots(nt);
+  k->roots = malloc(sizeof(int) * (size_t)(nr > 0 ? nr : 1));
+  k->nscope = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  k->def = malloc(sizeof(int) * (size_t)(ns > 0 ? ns : 1));
+  k->blk = calloc((size_t)(ns > 0 ? ns : 1), sizeof *k->blk);
+  if (!k->roots || !k->nscope || !k->def || !k->blk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int r = 0; r < nr; r++) k->roots[r] = nt_root(nt, r);
+  if (n > 0) memcpy(k->nscope, c->nscope, sizeof(int) * (size_t)n);
+  for (int s = 0; s < ns; s++) {
+    k->def[s] = c->scopes[s].def_node;
+    k->blk[s] = c->scopes[s].blk_param ? strdup(c->scopes[s].blk_param) : NULL;
+  }
+  k->nt = nt; k->version = nt->version; k->edits = nt->edits;
+  k->count = n; k->nscopes = ns; k->root_id = nt->root_id; k->nroots = nr;
+  k->built = 1;
+}
 void block_sites_index(Compiler *c) {
+  if (bsi_start && bsi_key_holds(c)) return;
   bsi_build(c, block_site_scope, &bsi_start, &bsi_len, &bsi_node);
   bsi_build(c, block_fwd_scope, &bsi_fstart, &bsi_flen, &bsi_fnode);
   bsi_kept_mark(c);
   bsi_ns = c->nscopes;
+  bsi_key_save(c);
 }
 int block_sites(Compiler *c, int si, const int **sites) {
   if (!bsi_start) block_sites_index(c);
