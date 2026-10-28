@@ -12,3 +12,5 @@ TypeError: no implicit conversion of nil into Hash
 TypeError: no implicit conversion of Integer into Hash
 {"a" => "b", "c" => "d"}
 TypeError: no implicit conversion of Integer into Hash
+{"a" => "b", "c" => "d", "v" => "x", "e" => "f"}
+{"a" => "b", "c" => "d", "v" => "x", "e" => "f"}

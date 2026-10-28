@@ -41,3 +41,18 @@ p w
     puts "TypeError: #{e.message}"
   end
 end
+# a member's #to_hash that changes the list does not change which members
+# merge in, and a receiver that only the call holds stays alive across it
+$list = nil
+class V
+  def to_hash
+    $list[2] = {"z" => "late"} if $list
+    GC.start
+    {"v" => "x"}
+  end
+end
+def fresh = {"a" => "b"}
+$list = [{"c" => "d"}, V.new, {"e" => "f"}]
+p fresh.merge!(*$list)
+$list = [{"c" => "d"}, V.new, {"e" => "f"}]
+p fresh.merge(*$list)
