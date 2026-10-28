@@ -112,6 +112,7 @@ struct LoadRecord {
   unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
   struct { int node; char *name; } *srcw; int nsrcw;   /* the constant writes the source has, before any pass (elab_note_const_writes) */
   struct LrVers *vers; int nvers, cvers, *vers_head;
+  int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
 };
 
@@ -718,7 +719,10 @@ typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink;
 /* sup: the superclass the first header naming one names, as resolved
    there (has_sup); LR_UNKNOWN_CLASS when it is not a class the record knows */
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup, sup_ref; unsigned char has_sup; } LrClass;
-enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2, LR_LATER = -3, LR_NEW = -4 };   /* LR_NEW: a header's entity names a new class (LrHeader.want) */
+/* LR_NEW: a header's entity names a new class; LR_LATER_ALIAS: one an
+   alias written after it reopens until N2b; LR_BUILTIN: it reopens a
+   builtin, whose class registration then names (LrHeader.want) */
+enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2, LR_LATER = -3, LR_NEW = -4, LR_LATER_ALIAS = -5, LR_BUILTIN = -6 };
 /* the histories that are not a method's or a variable's: a frame's bare
    visibility words, keyed by the frame's node; the code a class's body ran
    that the record cannot follow, keyed as a constant owner; and whether a
@@ -837,8 +841,6 @@ static const char *lr_written_name(const NodeTable *nt, int cp) {
 static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **out);
 static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth);
 
-/* The class a constant's write or definition holds: a class or module
-   header's (the scope walk's decision), a class builder's; else none known */
 static int lr_cref(Compiler *c, int e);
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 
@@ -857,11 +859,24 @@ static int lr_builder_class(Compiler *c, int node) {
   return LR_UNKNOWN_CLASS;
 }
 
+/* The class a constant's write or definition holds: a class or module
+   header's (the node -> class map), a class builder's; an alias's, a
+   write whose value is a constant reference (`A = Foo`, `A = M::Foo`),
+   the class that reference names at the write's point, along a chain of
+   aliases up to a cap; else none known */
 static int lr_class_of(Compiler *c, const LrDef *d) {
   NodeKind k = d ? nt_kind(c->nt, d->node) : NK_NilNode;
   if (k == NK_ClassNode || k == NK_ModuleNode) return elab_header_class(c, d->node, NULL, NULL);
-  if (k == NK_ConstantWriteNode && class_def_body(c, d->node) >= 0) return lr_builder_class(c, d->node);
-  return LR_UNKNOWN_CLASS;
+  if (k != NK_ConstantWriteNode) return LR_UNKNOWN_CLASS;
+  if (class_def_body(c, d->node) >= 0) return lr_builder_class(c, d->node);
+  int v = nt_ref(c->nt, d->node, "value");
+  NodeKind vk = v >= 0 ? nt_kind(c->nt, v) : NK_NilNode;
+  LoadRecord *r = c->lrec;
+  if ((vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) || r->follow >= 16) return LR_UNKNOWN_CLASS;
+  r->follow++;
+  int ci = elab_class_ref_at(c, v);
+  r->follow--;
+  return ci == LR_LATER ? LR_UNKNOWN_CLASS : ci;   /* a later reference keeps the name it is written with, not the alias's */
 }
 
 static int lr_name_cmp(const void *a, const void *b);
@@ -1230,10 +1245,13 @@ static void lr_record_stmt(ElabRec *x, int e) {
     LrClass *kc = lr_class(r, x->fc[e]);
     int body = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "body") : class_def_body(x->c, node);
     int cp = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "constant_path") : -1;
-    /* the first opening defines its constant: in the lexical scope for a
-       name, in the class the scope walk nested it in for a path */
+    /* the first opening defines its constant: in its entity's owner;
+       where that is not known, in the lexical scope for a name, in the
+       class the scope walk nested it in for a path */
     if (kc && !kc->nopen && cp >= 0) {
-      int owner = nt_kind(nt, cp) == NK_ConstantReadNode ? lr_cref(x->c, e) : x->c->classes[x->fc[e]].enclosing_class;
+      int owner;
+      elab_header_class(x->c, node, &owner, NULL);
+      if (owner < LR_MAIN) owner = nt_kind(nt, cp) == NK_ConstantReadNode ? lr_cref(x->c, e) : x->c->classes[x->fc[e]].enclosing_class;
       lr_write(r, ELAB_CONST, lr_const_owner(owner), lr_written_name(nt, cp), node, 0, may);
     }
     int sc = k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
@@ -2131,16 +2149,45 @@ static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **ou
    may not have run, or one in another region), else NULL. */
 int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
-  if (!lr_ready(c, p) || owner < LR_MAIN || !name) return ELAB_UNKNOWN;
+  /* a point the walk has not recorded up to answers nothing; a header
+     at no point (in a lambda or a block run later) may run after any
+     write the walk has recorded */
+  if (!c->lrec || owner < LR_MAIN || !name || (!lr_ready(c, p) && (p.region >= 0 || !c->lrec->walk))) return ELAB_UNKNOWN;
   const LrHist *h = lr_hist(c->lrec, -2 - (int)ELAB_CONST, lr_const_owner(owner), name, 0);
   const LrDef *d = NULL;
-  int o = lr_last_before(c, h, p, p.region < 0, 0, &d);
+  int o = lr_ready(c, p) ? lr_last_before(c, h, p, p.region < 0, 0, &d) : ELAB_UNKNOWN;
   for (int i = h ? h->n - 1 : -1; o == ELAB_UNKNOWN && i >= 0; i--) {
     int at = elab_cmp(elab_point_of(c, h->v[i].node), p);
     if (at == PROG_BEFORE || at == PROG_UNKNOWN) { d = &h->v[i]; break; }
   }
   if (out && o != ELAB_NO) *out = d;
   return o;
+}
+
+/* Until N2b: reads after the write still name the header's class by
+   name. So a header whose owner holds nothing of its leaf before it, and
+   writes it later to hold a class (`class A ... end; A = Foo`), keeps the
+   answer it had before the record: it reopens the class the write holds,
+   as CRuby's header would not, and every read of A then answers for that
+   class. The write the walk has not reached yet, by the source's writes
+   (elab_note_const_writes): the first of the leaf whose lexical scope is
+   owner's body, the top level for Object (main); -1 for none. */
+static int lr_later_alias(Compiler *c, int owner, const char *name) {
+  LoadRecord *r = c->lrec;
+  const NodeTable *nt = c->nt;
+  const int *par = NULL;
+  for (int i = 0; i < r->nsrcw; i++) {
+    int w = r->srcw[i].node, in = LR_MAIN;
+    if (!sp_streq(r->srcw[i].name, name) || nt_kind(nt, w) != NK_ConstantWriteNode || !sp_streq(lr_written_name(nt, w), name)) continue;
+    if (!par) par = comp_parent_map(c);
+    for (int a = par[w]; a >= 0; a = par[a]) {
+      NodeKind k = nt_kind(nt, a);
+      if (k == NK_SingletonClassNode) { in = LR_UNKNOWN_CLASS; break; }
+      if (k == NK_ClassNode || k == NK_ModuleNode) { in = elab_header_class(c, a, NULL, NULL); break; }
+    }
+    if (in == owner) return w;
+  }
+  return -1;
 }
 
 /* As the scope walk reaches class or module header `node`, which stands
@@ -2150,12 +2197,15 @@ int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, con
    lr_cref reads it), `class A::B` B in the class A names there, `class ::B`
    B in Object. Then what the owner itself held of the leaf before the
    header: a header's class, which this one reopens; a write, an alias; or
-   nothing, a new class. */
-void elab_header_entity(Compiler *c, int node, const ElabPos *pos) {
+   nothing, a new class. Where the record cannot tell (a write that may
+   not have run, one in another region, a header at no point), the last
+   write that may have run before it. Returns the write the header's name
+   aliases (a ConstantWriteNode), -1 for none. */
+int elab_header_entity(Compiler *c, int node, const ElabPos *pos) {
   LoadRecord *r = c->lrec;
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, node, "constant_path");
-  if (!r || !r->walk || pos->e < 0 || cp < 0) return;
+  if (!r || !r->walk || pos->e < 0 || cp < 0) return -1;
   /* the constant path is the header's own: placed now, as the walk places
      it next, for the lookup of its parent */
   lr_fit(r, nt->count);
@@ -2173,9 +2223,15 @@ void elab_header_entity(Compiler *c, int node, const ElabPos *pos) {
   const LrDef *d = NULL;
   h->verdict = elab_const_own_at(c, h->owner, h->leaf, elab_point_of(c, node), &d);
   h->found = d ? d->node : -1;
-  NodeKind dk = d ? nt_kind(nt, d->node) : NK_NilNode;
-  if (!d) h->want = h->verdict == ELAB_NO ? LR_NEW : LR_UNKNOWN_CLASS;
-  else h->want = dk == NK_ClassNode || dk == NK_ModuleNode ? elab_header_class(c, d->node, NULL, NULL) : LR_UNKNOWN_CLASS;
+  h->want = d ? lr_class_of(c, d) : h->verdict == ELAB_NO ? LR_NEW : LR_UNKNOWN_CLASS;
+  /* Object's constant of a builtin's name the program has not written yet
+     is the builtin's: the header reopens it, at the top level or in
+     `class Object` */
+  if (h->want == LR_NEW && (h->owner == LR_MAIN || h->owner == comp_class_index(c, "Object")) &&
+      (is_builtin_class_name(h->leaf) || is_builtin_module_name(h->leaf)))
+    h->want = LR_BUILTIN;
+  if (h->verdict == ELAB_NO && (h->found = lr_later_alias(c, h->owner, h->leaf)) >= 0) h->want = LR_LATER_ALIAS;
+  return h->found >= 0 && nt_kind(nt, h->found) == NK_ConstantWriteNode ? h->found : -1;
 }
 
 static const char *lr_class_name(Compiler *c, int cls) {
@@ -2186,20 +2242,25 @@ static const char *lr_class_name(Compiler *c, int cls) {
    the map answers from here on. Registration picks it by qualify's
    spelling of the name; check mode reports a header whose entity names
    another class: a reopen where CRuby makes a class, a new class where
-   CRuby reopens one, or another class than the one CRuby reopens. An
-   alias's class, and a header whose owner is not known, are counted
-   apart. */
+   CRuby reopens one, or another class than the one CRuby reopens. A
+   header whose class the record does not know (an alias of a value it
+   cannot follow, an owner it does not know) is counted apart. */
 void elab_header_opened(Compiler *c, int node, int cls, int made) {
   LoadRecord *r = lr_get(c);
   LrHeader *h = lr_header(r, node, 1);
+  int builtin = h->want == LR_BUILTIN;
   h->cls = cls >= 0 ? cls : LR_UNKNOWN_CLASS;
+  if (builtin) h->want = h->cls;
   if (!r->check || !r->walk || !h->leaf) return;
   NodeKind fk = h->found >= 0 ? nt_kind(c->nt, h->found) : NK_NilNode;
-  if (h->found >= 0 && fk != NK_ClassNode && fk != NK_ModuleNode) { lr_family(r, "class header, alias")->asked++; return; }
-  if (h->want == LR_UNKNOWN_CLASS) { lr_family(r, "class header, not known")->asked++; return; }
+  if (h->want == LR_LATER_ALIAS) { lr_family(r, "class header, alias written after it (until N2b)")->asked++; return; }
+  if (h->want < 0 && h->want != LR_NEW) {
+    lr_family(r, h->found >= 0 && fk != NK_ClassNode && fk != NK_ModuleNode ? "class header, alias" : "class header, not known")->asked++;
+    return;
+  }
   LrCheck *f = lr_family(r, "class header entity");
   f->asked++;
-  const char *kind = h->want == LR_NEW && !made ? "reopen-not-new" : h->want >= 0 && made ? "new-not-reopen" :
+  const char *kind = builtin ? NULL : h->want == LR_NEW && !made ? "reopen-not-new" : h->want >= 0 && made ? "new-not-reopen" :
                      h->want >= 0 && h->cls != h->want ? "other-class" : NULL;
   if (!kind) return;
   f->differ++;
