@@ -24821,8 +24821,7 @@ static int strbuf_demand_user_elem_call(Compiler *c, int call, int depth) {
     int vals[64], nv = 0;
     int last = scope_body_last(c, mi);
       if (last >= 0) vals[nv++] = last;
-    for (int u = comp_kind_first(c, NK_ReturnNode); u >= 0 && nv < 64; u = comp_kind_next(c, u)) {
-      if (nt_kind(nt, u) != NK_ReturnNode || comp_scope_of(c, u) != m) continue;
+    for (int u = comp_ret_first(c, mi); u >= 0 && nv < 64; u = comp_ret_next(c, u)) {
       int ra = nt_ref(nt, u, "arguments");
       int rn = 0; const int *rv = ra >= 0 ? nt_arr(nt, ra, "arguments", &rn) : NULL;
       if (rn == 1) vals[nv++] = rv[0];
@@ -52094,13 +52093,11 @@ static void an_phase_proc_returns(Compiler *c) {
           else if (br == TY_POLY) { scope_set_ret(sc, TY_POLY); changed = 1; }
           continue;
         }
-        /* the ReturnNodes, not every node: this ran per scope (roundhouse#72) */
-        for (int id = comp_kind_first(c, NK_ReturnNode); id >= 0 && br != TY_POLY_ARRAY; id = comp_kind_next(c, id)) {
-          if (nt_kind(nt, id) == NK_ReturnNode && comp_scope_of(c, id) == sc) {
-            int a = nt_ref(nt, id, "arguments"); int an = 0;
-            const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-            if (an == 1 && infer_type(c, av[0]) == TY_POLY_ARRAY) br = TY_POLY_ARRAY;
-          }
+        /* the scope's own ReturnNodes: this runs per scope (roundhouse#72) */
+        for (int id = comp_ret_first(c, s); id >= 0 && br != TY_POLY_ARRAY; id = comp_ret_next(c, id)) {
+          int a = nt_ref(nt, id, "arguments"); int an = 0;
+          const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+          if (an == 1 && infer_type(c, av[0]) == TY_POLY_ARRAY) br = TY_POLY_ARRAY;
         }
         if (br == TY_POLY_ARRAY) { scope_set_ret(sc, TY_POLY_ARRAY); changed = 1; }
       }
