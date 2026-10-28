@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-share-check-test share-spec-check arity-spec-check value-edges-check value-edges-regen lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-callbacks-test bop-share-check-test share-spec-check bop-callbacks-check arity-spec-check value-edges-check value-edges-regen lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -322,7 +322,7 @@ build/rbs/%.o: $(RBS_DIR)/src/%.c
 # `spinel` is the single binary: it emits C and then drives cc to link it.
 # (SPINEL itself is defined above, just before the `all` target.)
 
-SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/package_facts.inc src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/node_kinds.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h src/ct_value.h src/ct_eval.h $(PLATFORM_HDRS)
+SPINEL_HDRS = src/cext_bridge.h src/builtin_ops.h src/builtin_callbacks.inc src/builtin_name_traits.inc src/core_class_methods.inc src/builtin_zero_ops.inc src/builtin_arity.inc src/builtin_share_pure.inc src/codegen_call_arms.h src/builtin_names.h src/package_facts.inc src/ty_traits.inc src/call_plan.h src/value_pos.h src/value_pos_arms.inc src/value_pos_edges.inc src/node_kinds.inc src/codegen_poly.h src/repr.h src/holder.h src/share.h src/node_table.h src/codegen.h src/codegen_internal.h src/types.h src/compiler.h src/analyze.h src/analyze_internal.h src/ffi_spec.h src/csplit.h src/ct_value.h src/ct_eval.h $(PLATFORM_HDRS)
 build/csrc/analyze_desugar.o build/csrc-work/analyze_desugar.o build/csrc/codegen_call.o build/csrc-work/codegen_call.o: $(wildcard src/*_method_names.inc)
 SPINEL_OBJ  = build/csrc/node_table.o build/csrc/types.o build/csrc/compiler.o \
                build/csrc/ffi_spec.o build/csrc/ct_value.o build/csrc/ct_eval.o build/csrc/analyze_ct.o \
@@ -5337,7 +5337,7 @@ gate-test:
 # under the gate's job server (they took 181 s one after another, the
 # longest of the gate's legs; spin-check alone is 72 s).
 gate-props:
-	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check imemo-shadow-test bop-arity-check-test bop-share-check-test poly-cold-test share-strings-test wrap-test
+	+@$(MAKE) --no-print-directory alloc-report-test infer-test collect-errors-test spin-check diff-test scale-test traits-check-test ty-setter-check imemo-shadow-test bop-arity-check-test bop-callbacks-test bop-share-check-test poly-cold-test share-strings-test wrap-test
 
 # infer_type's answers kept across queries against fresh ones (#8852): a
 # write the setters do not count shows as a differing answer. The whole
@@ -5399,6 +5399,18 @@ build/spinel-share-check: $(SHARE_CHECK_OBJ) build/csrc/sp_parse_lib.o build/csr
 
 bop-share-check-test: build/spinel-share-check
 	@build/spinel-share-check --check-bop-share
+
+# The callbacks table (src/builtin_callbacks.inc) holds the order and shape
+# the lookups assume: sorted rows, a union row per builtin, known roles.
+bop-callbacks-test: $(SPINEL)
+	@$(SPINEL) --check-bop-callbacks
+
+# The same table against the CRuby it was generated from: regenerates it in
+# memory and fails on any drift. It runs every builtin with probe objects, a
+# minute or so, so it stays out of the gate. It needs a CRuby 4.0 (any patch
+# release); point it at one with `make bop-callbacks-check GATE_RUBY=/path/to/ruby`.
+bop-callbacks-check:
+	@$(if $(GATE_RUBY),$(GATE_RUBY),ruby) --enable-frozen-string-literal tools/gen_builtin_callbacks.rb --check
 
 SHARE_RUBY ?= ruby
 share-spec-check:
