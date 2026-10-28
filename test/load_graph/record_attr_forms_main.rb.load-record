@@ -1,0 +1,24 @@
+load record: 14 points, 1 regions
+r0 #0 f0 ProgramNode line 6
+r0 #1 f0 ClassNode A line 6
+  r0 #2 f0 CallNode attr line 7
+  r0 #3 f0 CallNode private line 8
+  r0 #4 f0 LocalVariableWriteNode r__cbp1A_0 line 9
+  r0 #5 f0 CallNode p line 10
+  r0 #6 f0 CallNode p line 11
+  r0 #7 f0 DefNode initialize line 12
+  r0 #8 f0 DefNode peek line 13
+r0 #9 f0 LocalVariableWriteNode o line 15
+r0 #10 f0 CallNode c= line 16
+r0 #11 f0 CallNode p line 17
+r0 #12 f0 CallNode p line 18
+r0 #13 f0 CallNode p line 19
+class A: body#1
+entity A: owner main leaf A
+const A: write#1
+A#a: reader#2 end=yes
+A#b: reader#3 vis#3 private end=yes
+A#c=: writer#4 end=yes
+A#e: reader#6 end=yes
+A#initialize: def#7 private end=yes
+A#peek: def#8 end=yes

@@ -2023,6 +2023,17 @@ int is_method_naming_call(const char *n) {
                sp_streq(n, "alias_method") || sp_streq(n, "remove_method") || sp_streq(n, "undef_method") ||
                sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n));
 }
+/* The attribute declarations (`attribute`/`attributes` are Spinel's own
+   compile-time class-body declarations, accessors as attr_accessor's) */
+int is_attr_decl_reader(const char *n) {
+  return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || sp_streq(n, "attribute") || sp_streq(n, "attributes"));
+}
+int is_attr_decl_writer(const char *n) {
+  return n && (is_attr_writer_family(n) || sp_streq(n, "attribute") || sp_streq(n, "attributes"));
+}
+int class_method_vis_of_name(const char *n) {
+  return !n ? 0 : sp_streq(n, "private_class_method") ? BVIS_PRIVATE : sp_streq(n, "public_class_method") ? BVIS_PUBLIC : 0;
+}
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
 /* The calls by which a method body changes what the load record holds:
    ones that define, undefine or set methods, constants or variables, mix

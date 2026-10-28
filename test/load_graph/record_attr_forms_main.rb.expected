@@ -1,0 +1,7 @@
+[:c=]
+[:e]
+1
+5
+2
+[:a, :c=, :e, :peek]
+[:b, :initialize]

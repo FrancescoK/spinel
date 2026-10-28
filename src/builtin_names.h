@@ -533,6 +533,9 @@ int is_hash_self_answer(const char *n);    /* each each_pair each_key each_value
 int is_core_change_call(const char *n);    /* class_eval .. module_exec include prepend define_method send family alias_method remove_method undef_method: may change a class's methods */
 int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
 int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
+int is_attr_decl_reader(const char *n);    /* attr attr_reader attr_accessor, and Spinel's class-body attribute attributes: declare a reader of each name */
+int is_attr_decl_writer(const char *n);    /* attr_writer attr_accessor attribute attributes: declare a writer of each name */
+int class_method_vis_of_name(const char *n); /* private_class_method public_class_method: BVIS_PRIVATE / BVIS_PUBLIC, else 0 */
 int is_refine_name(const char *n);         /* refine */
 int is_load_effect_call(const char *n);    /* a method body's call that defines, writes, loads or runs code the load record cannot follow */
 int is_using_name(const char *n);          /* using */

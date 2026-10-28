@@ -934,6 +934,27 @@ int nt_set_str(NodeTable *nt, int id, const char *key, const char *val) {
 
 
 
+/* A condition's predicate as a constant: 1 always truthy, 0 always falsy,
+   -1 a value known only when it runs. Only a literal folds: true and the
+   other non-nil literals, false and nil; parentheses around one statement
+   are the statement's, `()` is nil, and `(a; b)` is not folded. */
+int nt_pred_const(const NodeTable *nt, int pred) {
+  int p = pred >= 0 ? nt_paren_single(nt, pred) : -1;
+  if (p < 0) return -1;
+  switch (nt_kind(nt, p)) {
+    case NK_ParenthesesNode: {   /* not one statement: none, or several */
+      int body = nt_ref(nt, p, "body"), n = 0;
+      if (body >= 0) nt_arr(nt, body, "body", &n);
+      return n == 0 ? 0 : -1;
+    }
+    case NK_FalseNode: case NK_NilNode: return 0;
+    case NK_TrueNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode:
+    case NK_ArrayNode: case NK_HashNode: case NK_RegularExpressionNode:
+      return 1;
+    default: return -1;
+  }
+}
+
 const char *nt_content(const NodeTable *nt, int id) {
   const SpNode *nd = node_at(nt, id);
   return nd ? nd->content : NULL;

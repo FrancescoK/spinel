@@ -221,14 +221,18 @@ static ElabPos elab_value_pos(const NodeTable *nt, int v, ElabPos q) {
    it as one (class_eval and kin, a class builder), is a frame of its own,
    which the statement opened; a branch, a loop's body and a rescue clause
    may not run, and the next arm of an elsif ladder or a rescue chain is
-   on the path; a value written under `||=` / `&&=`, after `rescue`, or the right side of `&&` and `||`, may
-   not run, as the right side of `&&` and `||` does; a block run at once by a call the record does not know (a
-   program method may yield to it, or keep it) may not run, and an
-   iterator's may run partly (zero times, or several). */
+   on the path; a branch whose condition is a constant (`x if true`,
+   nt_pred_const, which the scope walk folds too) runs whenever the
+   condition is reached, and the arms after one that always runs never do,
+   which the record keeps as may not run; a value written under `||=` /
+   `&&=` or after `rescue` may not run, as the right side of `&&` and `||`
+   does; a block run at once by a call the record does not know (a program
+   method may yield to it, or keep it) may not run, and an iterator's may
+   run partly (zero times, or several). */
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   ElabPos q = *pp;
   NodeKind k = nt_kind(nt, p);
-  q.kind = EP_NODE; q.defer = 0;
+  q.kind = EP_NODE; q.defer = 0; q.sure = 0;
   if (pp->e < 0 || ch < 0) return q;
   if (k == NK_DefNode) q.bits |= LR_LATE | LR_BODY;
   else if (k == NK_LambdaNode || (k == NK_BlockNode && pp->defer)) q.bits |= LR_LATE;
@@ -245,16 +249,27 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (spine && ch == nt_ref(nt, p, "body")) return elab_body_pos(nt, ch, q);
       break;
     case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhenNode: case NK_InNode: case NK_RescueNode:
-    case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
+    case NK_WhileNode: case NK_UntilNode: case NK_ForNode: {
+      /* a condition's constant predicate: whether its statements, and its
+         else, run whenever the condition is reached */
+      int pc = k == NK_IfNode || k == NK_UnlessNode ? nt_pred_const(nt, nt_ref(nt, p, "predicate")) : -1;
+      int then_runs = k == NK_IfNode ? pc == 1 : k == NK_UnlessNode ? pc == 0 : k == NK_ElseNode && pp->sure;
       if (spine && ch == nt_ref(nt, p, "statements")) {
-        q.may = q.fmay = 1;
+        if (!then_runs) q.may = q.fmay = 1;
         if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) q.rep = pp->e;
         return elab_body_pos(nt, ch, q);
       }
       if (spine && (((k == NK_IfNode || k == NK_RescueNode) && ch == nt_ref(nt, p, "subsequent")) ||
-                    (k == NK_UnlessNode && ch == nt_ref(nt, p, "else_clause"))))
+                    (k == NK_UnlessNode && ch == nt_ref(nt, p, "else_clause")))) {
         q.kind = EP_SPINE;
+        /* the next arm is reached only when this one's predicate fails: for
+           sure where it is a constant false; an else then runs */
+        int falls = k == NK_IfNode ? pc == 0 : k == NK_UnlessNode && pc == 1;
+        if (!falls && k != NK_RescueNode) q.may = q.fmay = 1;
+        q.sure = falls && nt_kind(nt, ch) == NK_ElseNode;
+      }
       break;
+    }
     case NK_CaseNode: case NK_CaseMatchNode:   /* its branches and its else */
       if (spine && ch != nt_ref(nt, p, "predicate")) q.kind = EP_SPINE;
       break;
@@ -399,28 +414,49 @@ void elab_walk_rest(Compiler *c, int id, ElabPos pos) {
   elab_walk(r->walk, id, pos);
 }
 
-/* The requires under `id` (a top-level statement, or the tree of one), and
-   whether the load phase's walk reaches each where it stands -- not in a
-   method, a lambda or a block kept to run later, and not in a part it does
-   not enter (an argument, an operand): fn(ud, load, in_place). The same
-   elab_child the walk asks, from a position made up for the statement. */
-static void elab_sites_in(const NodeTable *nt, int id, ElabPos pos, void (*fn)(void *, int, int), void *ud) {
-  if (id < 0) return;
-  if (pos.kind == EP_NEW) pos.kind = EP_SPINE;
-  if (nt_kind(nt, id) == NK_LoadNode) fn(ud, id, pos.kind != EP_NODE && !(pos.bits & LR_LATE));
-  for (int i = 0; i < nt_num_refs(nt, id); i++) {
-    int ch = nt_ref_at(nt, id, i);
-    elab_sites_in(nt, ch, elab_child(nt, id, ch, &pos), fn, ud);
+/* The parts of node p, which stands at *pp, each where elab_child puts
+   it, its refs and then its arrays: fn(ud, ch, q) answers whether to go
+   into ch, from q, which it may change. A part that is the statement's own
+   (EP_NODE) may not run where it would not on the statement's path (a
+   branch of `c ? a : b`, the right side of `&&`): it takes the may, fmay
+   and partial the path would give it. */
+typedef int (*ElabPartFn)(void *ud, int ch, ElabPos *q);
+static void elab_parts(const NodeTable *nt, int p, const ElabPos *pp, ElabPartFn fn, void *ud) {
+  int nr = nt_num_refs(nt, p), na = nt_num_arrs(nt, p);
+  for (int i = 0; i < nr + na; i++) {
+    int m = 1, one = i < nr ? nt_ref_at(nt, p, i) : -1;
+    const int *v = i < nr ? &one : nt_arr_at(nt, p, i - nr, &m);
+    for (int j = 0; j < m; j++) {
+      if (v[j] < 0) continue;
+      ElabPos q = elab_child(nt, p, v[j], pp);
+      if (q.kind == EP_NODE) {
+        ElabPos on = *pp;
+        on.kind = EP_SPINE;
+        on = elab_child(nt, p, v[j], &on);
+        q.may = on.may; q.fmay = on.fmay; q.partial = on.partial;
+      }
+      if (fn(ud, v[j], &q)) elab_parts(nt, v[j], &q, fn, ud);
+    }
   }
-  for (int i = 0; i < nt_num_arrs(nt, id); i++) {
-    int m = 0;
-    const int *v = nt_arr_at(nt, id, i, &m);
-    for (int j = 0; j < m; j++) elab_sites_in(nt, v[j], elab_child(nt, id, v[j], &pos), fn, ud);
-  }
+}
+
+/* The requires under `stmt` (a top-level statement, or the tree of one),
+   and whether the load phase's walk reaches each where it stands -- not in
+   a method, a lambda or a block kept to run later, and not in a part it
+   does not enter (an argument, an operand): fn(ud, load, in_place). The
+   same elab_child the walk asks, from a position made up for the
+   statement; a lone statement's parts are on its path. */
+typedef struct { const NodeTable *nt; void (*fn)(void *, int, int); void *ud; } ElabSites;
+static int elab_site_part(void *ud, int id, ElabPos *q) {
+  const ElabSites *s = ud;
+  if (q->kind == EP_NEW) q->kind = EP_SPINE;
+  if (nt_kind(s->nt, id) == NK_LoadNode) s->fn(s->ud, id, q->kind != EP_NODE && !(q->bits & LR_LATE));
+  return 1;
 }
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud) {
   ElabPos at = { .e = 0, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW };
-  elab_sites_in(c->nt, stmt, at, fn, ud);
+  ElabSites s = { c->nt, fn, ud };
+  if (stmt >= 0 && elab_site_part(&s, stmt, &at)) elab_parts(c->nt, stmt, &at, elab_site_part, &s);
 }
 
 /* File f's top level, entered at its load: its root, its BEGIN blocks (run
@@ -1016,16 +1052,18 @@ static unsigned char lr_vis(int bvis) {
   return bvis == BVIS_PRIVATE || bvis == BVIS_MODULE_FUNCTION ? SP_VIS_PRIVATE : bvis == BVIS_PROTECTED ? SP_VIS_PROTECTED : SP_VIS_PUBLIC;
 }
 
-/* A method version of (cls, sg, name) by node, under the frame's
-   visibility state bvis; a module_function one also copies it to the
-   singleton */
+/* A method version of (cls, sg, name) by node, under the visibility state
+   bvis: the frame's where the version is the frame's own definee's (a
+   `class << self` body's def is the singleton's), public for one on
+   another receiver (`def self.m` in a class body, `K.attr_reader`); a
+   module_function one also copies it to the singleton */
 static int lr_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
 
 /* ...: a definition of initialize and its kin is private wherever it
    stands, and an alias takes its original's visibility */
 static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, LrKind kind, int bvis, int may, const char *target) {
   if (cls < LR_MAIN || !name) return;
-  int vis = sg ? SP_VIS_PUBLIC : lr_vis(bvis), ov = kind == LR_ALIAS && target ? lr_vis_at(x->c, cls, target, sg, elab_point_of(x->c, node)) : -1;
+  int vis = lr_vis(bvis), ov = kind == LR_ALIAS && target ? lr_vis_at(x->c, cls, target, sg, elab_point_of(x->c, node)) : -1;
   if (!sg && (kind == LR_DEF || kind == LR_DEFINE_METHOD) && is_implicitly_private_name(name)) vis = SP_VIS_PRIVATE;
   if (kind == LR_ALIAS && target) lr_settle_add(x->r, SET_ALIAS, node, cls, sg, may, vis, name);
   if (ov >= 0) vis = ov;
@@ -1043,7 +1081,7 @@ static int lr_definee(int fc, int fs, int *sg) {
 
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
   int recv = nt_ref(x->c->nt, def, "receiver"), sg, cls = lr_definee(fc, fs, &sg);
-  if (recv >= 0) { cls = lr_receiver(x, recv, fc, LR_FS_SCLASS, &sg); sg = 1; }
+  if (recv >= 0) { cls = lr_receiver(x, recv, fc, LR_FS_SCLASS, &sg); sg = 1; bvis = BVIS_PUBLIC; }
   lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
 }
 
@@ -1109,10 +1147,10 @@ static void lr_names_take(Compiler *c) {
       const char *fn = vis_arg_name(nt, av[0]);
       if (is_code_eval_name(nm) || !fn || is_method_naming_call(fn)) r->names_any = 1;
     }
-    else if (is_attr_reader_family(nm) || is_attr_writer_family(nm))
+    else if (is_attr_decl_reader(nm) || is_attr_decl_writer(nm))
       for (int i = 0; i < ac; i++) {
-        if (is_attr_reader_family(nm)) lr_name(r, vis_arg_name(nt, av[i]), "");
-        if (is_attr_writer_family(nm)) lr_name(r, vis_arg_name(nt, av[i]), "=");
+        if (is_attr_decl_reader(nm)) lr_name(r, vis_arg_name(nt, av[i]), "");
+        if (is_attr_decl_writer(nm)) lr_name(r, vis_arg_name(nt, av[i]), "=");
       }
     else if (is_define_method_name(nm) || is_define_singleton_method_name(nm) || is_alias_method_name(nm))
       lr_name(r, vis_arg_name(nt, av[0]), "");
@@ -1307,17 +1345,58 @@ static int lr_opaque_call(Compiler *c, int node, int cls, int sg) {
   return is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
          (!sg && lr_runs_defining(c, cls, 1, nm, p)) || (bare && lr_runs_defining(c, LR_MAIN, 0, nm, p));
 }
+/* Is call `node` (named nm) a definition form a statement may hold in its
+   parts (`r = attr_reader :a`, `p(private :b)`, `memoize private def c`):
+   one that gives, takes or sets methods its arguments name? */
+static int lr_nested_form(const char *nm) {
+  return nm && (visibility_of_name(nm) || class_method_vis_of_name(nm) || is_method_naming_call(nm) ||
+                is_attr_decl_reader(nm) || is_attr_decl_writer(nm));
+}
+
+/* A definition form a visibility word takes as its argument, whose value
+   names the methods it defines (`private attr_accessor :a`: [:a, :a=],
+   `private define_method(:m) { }`, `private alias_method :a, :b`): 1 when
+   it is one, its methods then set to bvis on (cls, sg) at the word's node */
+static int lr_wrapped_vis(ElabRec *x, int call, int cls, int sg, int node, int bvis, int may) {
+  const NodeTable *nt = x->c->nt;
+  const char *nm = nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+  int an = nm ? nt_ref(nt, call, "arguments") : -1, ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  if (is_attr_decl_reader(nm) || is_attr_decl_writer(nm)) {
+    for (int i = 0; i < ac; i++) {
+      const char *a = vis_arg_name(nt, av[i]);
+      char w[256];
+      if (is_attr_decl_reader(nm)) lr_method(x, cls, sg, a, node, LR_VIS, bvis, may, NULL);
+      if (a && is_attr_decl_writer(nm) && snprintf(w, sizeof w, "%s=", a) < (int)sizeof w)
+        lr_method(x, cls, sg, w, node, LR_VIS, bvis, may, NULL);
+    }
+    return 1;
+  }
+  if ((is_define_method_name(nm) || is_alias_method_name(nm)) && ac > 0) {
+    lr_method(x, cls, sg, vis_arg_name(nt, av[0]), node, LR_VIS, bvis, may, NULL);
+    return 1;
+  }
+  return 0;
+}
+
 /* A call statement's definitions: attrs, aliases, visibility, mixins,
    define_method, undef_method / remove_method, on the class its receiver
-   names. vs is the frame's visibility state. */
-static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int fnode, int may) {
+   names. vs is the frame's visibility state, which an attr form or a
+   define_method takes on its frame's own definee (self). A visibility word
+   given a definition form records that form and sets the methods it
+   defines; private_class_method and public_class_method set the class's
+   singleton methods. nested: a form the statement holds in its parts
+   (lr_nested_part), whose own call the form's answers (lr_form_runs, an opaque
+   call) are not asked of. */
+static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int fnode, int may, int nested) {
   const NodeTable *nt = x->c->nt;
   const char *nm = nt_str(nt, node, "name");
   int sg, recv = nt_ref(nt, node, "receiver"), cls = lr_receiver(x, recv, fc, fs, &sg), an = nt_ref(nt, node, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-  int bvis = visibility_of_name(nm), opaque = 0;
-  if (nm && (bvis || is_method_naming_call(nm) || is_mixin_call(nm))) lr_form_runs(x, node, cls, sg, may);
-  if (bvis && !ac && (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)) {
+  int bvis = visibility_of_name(nm), cvis = class_method_vis_of_name(nm), opaque = 0;
+  int self = recv < 0 || nt_kind(nt, recv) == NK_SelfNode, st = self ? *vs : BVIS_PUBLIC;
+  if (!nested && nm && (bvis || is_method_naming_call(nm) || is_mixin_call(nm))) lr_form_runs(x, node, cls, sg, may);
+  if (bvis && !ac && self) {
     /* the frame's visibility from here on: kept by the frame's node, so
        also in a body whose class the record does not know */
     *vs = (unsigned char)bvis;
@@ -1325,7 +1404,8 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     return;
   }
   if (!nm || cls < LR_MAIN) return;
-  int naming = bvis || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
+  int attr_r = is_attr_decl_reader(nm), attr_w = is_attr_decl_writer(nm);
+  int naming = bvis || cvis || attr_r || attr_w || is_method_naming_call(nm), dm = is_define_method_name(nm) || is_define_singleton_method_name(nm);
   /* `include A, B` puts A nearest the class (ancestors [C, A, B]), as
      `include B` then `include A` would, and so do prepend and extend: the
      arguments of a mixin are recorded last first */
@@ -1333,14 +1413,30 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
   for (int j = 0; j < ac; j++) {
     int i = mix ? ac - 1 - j : j;
     const char *an_ = vis_arg_name(nt, av[i]);
-    if (!an_ && nt_kind(nt, av[i]) != NK_DefNode && naming && (!dm || i == 0)) opaque = 1;   /* a computed name */
-    if (bvis && nt_kind(nt, av[i]) == NK_DefNode) lr_def(x, av[i], cls, sg, bvis, may);
-    else if (bvis) lr_method(x, cls, sg, an_, node, LR_VIS, bvis, may, NULL);
-    else if (is_attr_reader_family(nm) || is_attr_writer_family(nm)) {
-      if (is_attr_reader_family(nm)) lr_method(x, cls, sg, an_, node, LR_READER, *vs, may, NULL);
+    NodeKind ak = nt_kind(nt, av[i]);
+    int en = 1;
+    const int *ev = &av[i];
+    if ((bvis || cvis) && ak == NK_ArrayNode) ev = nt_arr(nt, av[i], "elements", &en);   /* private [:a, :b] */
+    if (bvis && ak == NK_CallNode && lr_nested_form(nt_str(nt, av[i], "name"))) {
+      lr_call(x, av[i], fc, fs, vs, fnode, may, 1);
+      if (lr_wrapped_vis(x, av[i], cls, sg, node, bvis, may)) continue;
+    }
+    for (int k = 0; (bvis || cvis) && ak == NK_ArrayNode && k < en; k++)
+      if (!vis_arg_name(nt, ev[k])) opaque = 1;
+    if (!an_ && ak != NK_DefNode && (ak != NK_ArrayNode || !(bvis || cvis)) && naming && (!dm || i == 0)) opaque = 1;   /* a computed name */
+    if ((bvis || cvis) && ak == NK_DefNode) {
+      /* private def m, private_class_method def self.m */
+      lr_def(x, av[i], cls, sg, bvis ? bvis : *vs, may);
+      if (cvis && !sg && nt_ref(nt, av[i], "receiver") >= 0) lr_method(x, cls, 1, nt_str(nt, av[i], "name"), node, LR_VIS, cvis, may, NULL);
+    }
+    else if (bvis || cvis)
+      for (int k = 0; k < en && (!cvis || !sg); k++)
+        lr_method(x, cls, bvis ? sg : 1, vis_arg_name(nt, ev[k]), node, LR_VIS, bvis ? bvis : cvis, may, NULL);
+    else if (attr_r || attr_w) {
+      if (attr_r) lr_method(x, cls, sg, an_, node, LR_READER, st, may, NULL);
       char w[256];
-      if (an_ && is_attr_writer_family(nm) && snprintf(w, sizeof w, "%s=", an_) < (int)sizeof w)
-        lr_method(x, cls, sg, w, node, LR_WRITER, *vs, may, NULL);
+      if (an_ && attr_w && snprintf(w, sizeof w, "%s=", an_) < (int)sizeof w)
+        lr_method(x, cls, sg, w, node, LR_WRITER, st, may, NULL);
     }
     else if (mix) {
       LrClass *k = lr_class(x->r, cls);
@@ -1354,16 +1450,41 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
   }
   if (dm && ac > 0)
-    lr_method(x, cls, sg || is_define_singleton_method_name(nm), vis_arg_name(nt, av[0]), node, LR_DEFINE_METHOD, *vs, may, NULL);
+    lr_method(x, cls, sg || is_define_singleton_method_name(nm), vis_arg_name(nt, av[0]), node, LR_DEFINE_METHOD,
+              is_define_singleton_method_name(nm) ? BVIS_PUBLIC : st, may, NULL);
   if (is_alias_method_name(nm) && ac == 2)
     lr_method(x, cls, sg, vis_arg_name(nt, av[0]), node, LR_ALIAS, *vs, may, vis_arg_name(nt, av[1]));
   /* code the record cannot follow, run on a class (lr_opaque_call) */
-  if (!naming && !mix) {
+  if (!naming && !mix && !nested) {
     opaque = lr_opaque_call(x->c, node, cls, sg);
     lr_settle_add(x->r, SET_OPAQUE, node, cls, sg, may, 0, NULL);
   }
   if (opaque && cls >= 0)
     lr_version(x->r, LR_KEY_OPAQUE, lr_const_owner(cls), "", (LrDef){ node, LR_OPAQUE, 0, (unsigned char)may, 0, NULL });
+}
+
+/* The definition forms statement node p (standing at pp, in the frame fc,
+   fs) holds in its parts, not as itself nor in a statement of its own: a
+   def in an argument or a written value (`memoize def m`, `x = def y`), a
+   definition form whose value is used (`r = attr_writer :c`, `p(attr_reader
+   :e)`, `x = private def m`, a bare `p(private)` too). Each part is where
+   elab_child puts it: a statement list, a lone statement and a body run
+   later are the walk's, as are the bodies with a self of their own (a
+   class's, a block's, a lambda's); `defined?(private)` runs nothing. Off
+   the statement's path a part may not run where it would not on the path
+   (elab_parts: a branch of `c ? attr_reader(:a) : nil`, the right side of
+   `&&`). A form records its own arguments (lr_call). */
+typedef struct { ElabRec *x; int fc, fs, fnode; unsigned char *vs; } LrNested;
+static int lr_nested_part(void *ud, int ch, ElabPos *q) {
+  LrNested *n = ud;
+  const NodeTable *nt = n->x->c->nt;
+  NodeKind k = nt_kind(nt, ch);
+  if (q->kind == EP_LIST || q->kind == EP_NEW || (q->bits & LR_LATE) || q->defer) return 0;
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode ||
+      k == NK_LambdaNode || k == NK_DefinedNode) return 0;
+  if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, q->may); return 0; }
+  if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, q->may, 1); return 0; }
+  return 1;
 }
 
 /* A write of a global or of main's instance variable by statement e (in
@@ -1436,7 +1557,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
       for (int i = 0; i < n; i++) lr_method(x, cls, sg, vis_arg_name(nt, v[i]), node, LR_UNDEF, *vs, may, NULL);
       break;
     }
-    case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may); break;
+    case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may, 0); break;
     case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: {   /* in its lexical scope */
       int v = nt_ref(nt, node, "value");
       lr_write(r, ELAB_CONST, lr_const_owner(lr_cref(x->c, e)), lr_written_name(nt, node), node, lr_nil_value(nt, v),
@@ -1444,6 +1565,16 @@ static void lr_record_stmt(ElabRec *x, int e) {
       break;
     }
     default: lr_value_write(x->c, e); break;
+  }
+  /* ...and the definition forms in its parts (a form records its own; a
+     file's root holds its statements, each one of its own) */
+  int own = k == NK_ProgramNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
+            k == NK_AliasMethodNode || k == NK_UndefNode || (k == NK_CallNode && lr_nested_form(nt_str(nt, node, "name")));
+  if (!own) {
+    ElabPos at = { .e = e, .file = s->file, .top = s->top, .frame = f, .depth = s->depth, .rep = s->rep,
+                   .may = s->may, .partial = s->partial, .fmay = s->fmay, .kind = EP_SPINE };
+    LrNested n = { x, fc, fs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), vs };
+    elab_parts(nt, node, &at, lr_nested_part, &n);
   }
 }
 

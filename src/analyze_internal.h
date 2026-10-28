@@ -384,10 +384,12 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
    keeps it to run later, so that its nodes are late. fmay: may, counted
    from the frame: a condition stands between the node and the body (or
-   main's file) holding it. */
+   main's file) holding it. sure: an else clause that runs whenever its
+   condition is reached (the condition's predicate is a constant false,
+   nt_pred_const). */
 typedef struct {
   int e, file, top, frame, depth, rep;
-  unsigned char may, partial, kind, bits, defer, fmay;
+  unsigned char may, partial, kind, bits, defer, fmay, sure;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);

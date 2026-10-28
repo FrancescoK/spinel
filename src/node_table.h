@@ -583,6 +583,7 @@ static inline int nt_paren_single(const NodeTable *nt, int n) {
   }
   return n;
 }
+int nt_pred_const(const NodeTable *nt, int pred);   /* a predicate's constant truth: 1, 0, -1 not constant */
 const char *nt_content(const NodeTable *nt, int id);
 
 /* Generic child iteration (for structural walks that don't know field
