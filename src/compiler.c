@@ -2979,17 +2979,30 @@ static int mixin_level_answers(Compiler *c, int k, const char *name) {
 /* The same positions and walker also answer Comparable membership and equality
    precedence; neither query reconstructs includes from the node table. */
 /* Whether Enumerable is among the ancestors class or module k brings: it
-   includes (or prepends) it, or includes a module that does, at any depth
-   (a module chain is no longer than the program's classes). */
-static int mixin_reaches(Compiler *c, int k, int comparable, int depth) {
+   includes (or prepends) it, or includes a module that does, at any depth.
+   Each module is asked once (`seen`), so a module several includes share
+   costs one visit. */
+static int mixin_reaches_from(Compiler *c, int k, int comparable, unsigned char *seen) {
   ClassInfo *ci = &c->classes[k];
+  seen[k] = 1;
   if (comparable ? (ci->cmp_inc_at || ci->cmp_prepended) :
                    (ci->enum_inc_at || ci->enum_prepended)) return 1;
-  for (int j = 0; j < ci->nincluded_mods && depth < c->nclasses; j++) {
+  for (int j = 0; j < ci->nincluded_mods; j++) {
     int m = ci->included_mods[j];
-    if (m >= 0 && m < c->nclasses && m != k && mixin_reaches(c, m, comparable, depth + 1)) return 1;
+    if (m >= 0 && m < c->nclasses && !seen[m] && mixin_reaches_from(c, m, comparable, seen)) return 1;
   }
   return 0;
+}
+static int mixin_reaches(Compiler *c, int k, int comparable) {
+  const ClassInfo *ci = &c->classes[k];
+  /* a class with no includes answers by its own flags, with no set */
+  if (ci->nincluded_mods == 0)
+    return comparable ? (ci->cmp_inc_at || ci->cmp_prepended) : (ci->enum_inc_at || ci->enum_prepended);
+  unsigned char *seen = (unsigned char *)calloc((size_t)c->nclasses, 1);
+  if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int r = mixin_reaches_from(c, k, comparable, seen);
+  free(seen);
+  return r;
 }
 static int mixin_level_walk(Compiler *c, int k, const char *name, int own_enum, int comparable, int depth) {
   ClassInfo *ci = &c->classes[k];
@@ -3041,7 +3054,7 @@ static int mixin_answers_first(Compiler *c, int cid, const char *name, int compa
       }
       return master;
     }
-    if (mixin_reaches(c, k, comparable, 0)) top = k;
+    if (mixin_reaches(c, k, comparable)) top = k;
     if (k == ci->parent) break;
   }
   n = 0;
@@ -3060,7 +3073,7 @@ int comp_comparable_answers_first(Compiler *c, int cid, const char *name) {
   return mixin_answers_first(c, cid, name, 1);
 }
 int comp_enum_reaches(Compiler *c, int cid) {
-  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 0, 0);
+  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 0);
 }
 /* Enumerable's methods are behind class `cid`: Enumerable is among its
    ancestors (itself or a superclass includes or prepends it), or an ancestor
@@ -3076,7 +3089,7 @@ int comp_enum_behind(Compiler *c, int cid) {
   return 0;
 }
 int comp_comparable_reaches(Compiler *c, int cid) {
-  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1, 0);
+  return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1);
 }
 
 /* ---- Poly-dispatch candidates by method name ----

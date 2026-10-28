@@ -13137,6 +13137,8 @@ static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, const
     nt_node_set_str(nt, cr, "name", c->classes[defcls[k]].name);
     nt_node_set_arr(nt, iaa, "arguments", &cr, 1);
     nt_node_set_str(nt, ia, "name", exact[k] ? "instance_of?" : "is_a?");
+    /* the class test itself, never a program's instance_of? of the name */
+    if (exact[k]) nt_node_set_int(nt, ia, "builtin_only", 1);
     nt_node_set_ref(nt, ia, "receiver", pr);
     nt_node_set_ref(nt, ia, "arguments", iaa);
     if (pred < 0) pred = ia;
@@ -13663,7 +13665,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
          (__r = recv; __r.is_a?(K) ? __r.m(args) { } : __enum_m(__r, args) { })
        over the classes that define it, the block copied for the second arm.
        Without such a class the call is rewritten in place. */
-    int ndef = 0;
+    int ndef = 0, nown = 0;   /* nown: the classes that define the name */
     /* the name the call was written with, where the pre-pass renamed it
        (detect to find): the one a class's own method or reader answers */
     const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
@@ -13683,6 +13685,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
         if (!defines && (in_copy || !class_lacks_enumerable(c, k))) continue;
         exact[ndef] = !defines;
         defcls[ndef++] = k;
+        nown += defines;
       }
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the
@@ -13698,8 +13701,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
        its Range arm left to the poly dispatch (the face table's Range
        owners). In the definition itself the test cost every copy its
        inlining, closures and all. */
-    int range_arm = rt == TY_POLY && ndef == 0 && !safe_nav && blk < 0 && an == 0 &&
-                    sp_streq(name, "minmax");
+    int range_arm = rt == TY_POLY && nown == 0 && !safe_nav && blk < 0 && an == 0 && is_minmax_pair(name);
     if (wo_arm) ndef = 0;   /* the arm as written answers every other class */
     if (ndef > 0 || safe_nav || range_arm || wo_arm) {
       char rn[64]; snprintf(rn, sizeof rn, "__enumrecv_%s", comp_node_tag(c, id));
@@ -13732,6 +13734,14 @@ int desugar_builtin_enum_calls(Compiler *c) {
       }
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
+      /* a class with no Enumerable joins the Range arm, whose call raises
+         its NoMethodError */
+      if (range_arm && ndef > 0 && pred >= 0) {
+        int cls = enum_is_a_chain(c, rn, defcls, exact, ndef);
+        int orn = cls >= 0 ? nt_new_node(nt, "OrNode") : -1;
+        if (orn >= 0) { nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", cls); }
+        pred = orn;
+      }
       if (pred < 0) { free(chained); free(in_default); free(defcls); return changed; }
       /* the class's own method, on the same receiver, with the block; under
          a safe navigation the nil arm answers nil and the class arm, when

@@ -1,0 +1,16 @@
+-- 0
+{3 => 1, 1 => 1, 2 => 1}
+false
+-- 1
+NoMethodError: undefined method 'tally' for an instance of Rows
+NoMethodError: undefined method 'any?' for an instance of Rows
+-- 2
+{4 => 1, 8 => 1}
+true
+-- 3
+{5 => 1, 9 => 1}
+true
+[1.0, 5.0]
+[2, 7]
+[1, 3]
+NoMethodError: undefined method 'minmax' for an instance of Pairs
