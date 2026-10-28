@@ -5112,6 +5112,34 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
   }
 }
 
+/* infer_write_multi_assign, with each table narrowed to a pointer array
+   (narrow_object_arrays' oa_pin) read as that table. The reset re-derived
+   such a local as the poly array its writes build, and lv_keep_decisions
+   puts the pin back only at the end of infer_write_types: read as the poly
+   array, each target of `x, y = cells[i]` took a boxed element. The rest
+   of the pass reads the local as before, so the pin is lifted again after. */
+static int infer_write_multi_assign_pinned(Compiler *c, const NodeTable *nt) {
+  int n = 0, cap = 0;
+  LocalVar **pinned = NULL;
+  for (int s = 0; s < c->nscopes; s++)
+    for (int i = 0; i < c->scopes[s].nlocals; i++) {
+      LocalVar *lv = &c->scopes[s].locals[i];
+      if (!ty_is_ptr_array(lv->oa_pin) || lv->type != TY_POLY_ARRAY) continue;
+      if (n == cap) {
+        cap = cap ? cap * 2 : 16;
+        pinned = (LocalVar **)realloc(pinned, sizeof *pinned * (size_t)cap);
+        if (!pinned) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      pinned[n++] = lv;
+      lv_set_type(lv, lv->oa_pin);
+    }
+  int changed = infer_write_multi_assign(c, nt);
+  for (int k = 0; k < n; k++)
+    if (pinned[k]->type == pinned[k]->oa_pin) lv_set_type(pinned[k], TY_POLY_ARRAY);
+  free(pinned);
+  return changed;
+}
+
 int infer_write_types(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -5264,7 +5292,7 @@ int infer_write_types(Compiler *c) {
     slot_take(c, lv, newt, val_id);
   }
 
-  changed |= infer_write_multi_assign(c, nt);
+  changed |= infer_write_multi_assign_pinned(c, nt);
   infer_write_reads_widened(c, nt);
 
   changed |= infer_case_pattern_locals(c);

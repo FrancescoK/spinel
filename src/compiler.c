@@ -611,6 +611,8 @@ void comp_free(Compiler *c) {
   free(c->ivar_widen_src);
   free((TyKind *)c->hash_want);
   free((TyKind *)c->arr_want);
+  free(c->oa_walked_node);
+  free(c->oa_walked_kind);
   free(c->lw_joined);
   free((TyKind *)c->poly_builtin_ty);
   free(c->bop_inf);

@@ -1414,24 +1414,77 @@ static void flatmap_coerce_from_poly(TyKind dst, int oint, const char *src, Buf 
   }
 }
 
+/* The binding the auto-splats share: each leading parameter j of `block`
+   (j < np, or every one for np < 0) takes the element `elem` writes for it.
+   An unused parameter has no C declaration, and the element read is pure,
+   so it is skipped (#2734). A negative indent writes the bindings on one
+   line, each led by a space. */
+typedef void (*SplatElemFn)(const LocalVar *lvp, int j, const void *src, Buf *out);
+static void emit_splat_params(Compiler *c, int block, int np, SplatElemFn elem, const void *src,
+                              Buf *out, int indent) {
+  Scope *asc = comp_scope_of(c, block);
+  if (np < 0) { np = 0; while (block_param_name(c, block, np)) np++; }
+  for (int pj = 0; pj < np; pj++) {
+    const char *pn = block_param_name(c, block, pj); if (!pn) continue;
+    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
+    if (!lvp || lvp->type == TY_UNKNOWN) continue;
+    if (indent >= 0) emit_indent(out, indent);
+    buf_printf(out, "%slv_%s = ", indent >= 0 ? "" : " ", rename_local(pn));
+    elem(lvp, pj, src, out);
+    buf_puts(out, indent >= 0 ? ";\n" : ";");
+  }
+}
+
+/* Element j of the boxed Array `src` (C text), coerced to the parameter's
+   pinned type. */
+static void splat_poly_elem(const LocalVar *lvp, int j, const void *src, Buf *out) {
+  char rd[200]; snprintf(rd, sizeof rd, "sp_poly_massign_get(%s, %d)", (const char *)src, j);
+  Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(lvp->type, slot_is_oint(lvp), rd, &cv);
+  buf_puts(out, cv.p ? cv.p : rd); free(cv.p);
+}
+
 /* CRuby proc auto-splat: bind each of the block's params to a positional element
    of the poly sub-array held in temp `_t<elem_temp>` (an sp_RbVal), coerced to
    each param's pinned type. Used where a multi-param block iterates a poly array
    whose elements are themselves arrays (map/select/reject/sort_by). */
 void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int indent) {
-  Scope *asc = comp_scope_of(c, block);
-  for (int pj = 0; pj < np; pj++) {
-    const char *pn = block_param_name(c, block, pj); if (!pn) continue;
-    const char *pnr = rename_local(pn);
-    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
-    /* an unused param has no C declaration; the element read is pure (#2734) */
-    if (!lvp || lvp->type == TY_UNKNOWN) continue;
-    TyKind pty = lvp ? lvp->type : TY_POLY;
-    char src[96]; snprintf(src, sizeof src, "sp_poly_massign_get(_t%d, %d)", elem_temp, pj);
-    emit_indent(g_pre, indent); buf_printf(g_pre, "lv_%s = ", pnr);
-    Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(pty, slot_is_oint(lvp), src, &cv);
-    buf_puts(g_pre, cv.p ? cv.p : src); free(cv.p); buf_puts(g_pre, ";\n");
-  }
+  char src[24]; snprintf(src, sizeof src, "_t%d", elem_temp);
+  emit_splat_params(c, block, np, splat_poly_elem, src, g_pre, indent);
+}
+
+/* A row of a table of Integer or Float rows, held in `_t<tr>`, of element kind et */
+typedef struct { TyKind et; int tr; } TableRow;
+/* Element j of that row, nil past the row's end or for a nil row. A parameter
+   of another kind takes the element boxed, as the poly auto-splat hands it. */
+static void splat_table_elem(const LocalVar *lvp, int j, const void *src, Buf *out) {
+  const TableRow *row = src;
+  const char *k = row->et == TY_INT ? "Int" : "Float";
+  int oint = slot_is_oint(lvp);
+  char rd[96];
+  snprintf(rd, sizeof rd, "sp_%sArray_%s(_t%d, %d)", k, lvp->type == row->et && !oint ? "get" : "oget", row->tr, j);
+  if (lvp->type == row->et) { buf_puts(out, rd); return; }
+  char boxed[128]; snprintf(boxed, sizeof boxed, "%s(%s)", oint_box(row->et), rd);
+  Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(lvp->type, oint, boxed, &cv);
+  buf_puts(out, cv.p ? cv.p : boxed); free(cv.p);
+}
+
+/* A table of Integer or Float rows walked by a block that takes each row
+   apart (`cells.each { |x, y| }`): parameter j takes element j of the row
+   `row` (C text of the sp_IntArray * / sp_FloatArray *), as CRuby's
+   auto-splat binds it. Answers 0, having emitted nothing, for another
+   receiver or another kind of block: one parameter takes the row itself. */
+int emit_table_row_params(Compiler *c, int block, TyKind rt, const char *row, Buf *out, int indent) {
+  if (rt != TY_INT_ARRAY_ARRAY && rt != TY_FLOAT_ARRAY_ARRAY) return 0;
+  if (!block_lead_only(c, block) || block_rest_marker(c, block) || block_keyword_name(c, block, 0) ||
+      !block_param_name(c, block, 1)) return 0;
+  for (int pj = 0; block_param_name(c, block, pj); pj++)
+    if (block_param_is_multi(c, block, pj)) return 0;
+  TableRow tr = { ty_array_elem(ty_array_elem(rt)), ++g_tmp };
+  const char *k = tr.et == TY_INT ? "Int" : "Float";
+  emit_indent(out, indent);
+  buf_printf(out, "sp_%sArray *_t%d = (sp_%sArray *)(%s);\n", k, tr.tr, k, row);
+  emit_splat_params(c, block, -1, splat_table_elem, &tr, out, indent);
+  return 1;
 }
 
 /* The block of an emitter that yields one Array per step (product's tuple)
@@ -1447,17 +1500,7 @@ int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_sr
       (block_rest_marker(c, block) && !block_lead_only(c, block)))
     unsupported_feature(c, id, "a block with a rest, optional or post parameter on this Array iterator");
   if (!block_lead_only(c, block)) return 0;
-  Scope *asc = comp_scope_of(c, block);
-  for (int pj = 0; block_param_name(c, block, pj); pj++) {
-    const char *pn = block_param_name(c, block, pj);
-    LocalVar *lvp = asc ? scope_local(asc, pn) : NULL;
-    /* an unused param has no C declaration; the element read is pure (#2734) */
-    if (!lvp || lvp->type == TY_UNKNOWN) continue;
-    char src[160]; snprintf(src, sizeof src, "sp_poly_massign_get(%s, %d)", tuple_src, pj);
-    buf_printf(out, " lv_%s = ", rename_local(pn));
-    Buf cv; memset(&cv, 0, sizeof cv); flatmap_coerce_from_poly(lvp->type, slot_is_oint(lvp), src, &cv);
-    buf_puts(out, cv.p ? cv.p : src); free(cv.p); buf_puts(out, ";");
-  }
+  emit_splat_params(c, block, -1, splat_poly_elem, tuple_src, out, -1);
   return 1;
 }
 
@@ -6093,23 +6136,37 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
      The handles of a fresh String Array are Strings, not sub-arrays: the
      first parameter binds one and the others stay nil. */
   int np_cl = 0; while (block_param_name(c, block, np_cl)) np_cl++;
-  int autosplat = (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0));
+  /* ... and over a table of Integer or Float rows, each param takes its
+     element of the row (emit_table_row_params). Either way the params are
+     bound here, and none of the one-param bindings below applies. */
+  int te_split = -1, splat_bound = 0;
+  if (np_cl >= 2 && rr.elem == TY_POLY && !block_param_is_multi(c, block, 0)) {
+    te_split = ++g_tmp;
+    emit_indent(g_pre, g_indent + 1);
+    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te_split, trecv, ti);
+    emit_autosplat_params(c, block, np_cl, te_split, g_indent + 1);
+    splat_bound = 1;
+  }
+  else if (!range_recv && np_cl >= 2) {
+    char row[96]; snprintf(row, sizeof row, "sp_PtrArray_get(_t%d, _t%d)", trecv, ti);
+    splat_bound = emit_table_row_params(c, block, rt, row, g_pre, g_indent + 1);
+  }
 
   /* If the block param's scope type was widened (e.g. TY_POLY), pin it to
      the element type and use a C shadow declaration so body emission sees the
      right type. */
-  Scope *csc = (p0 && !autosplat) ? comp_scope_of(c, block) : NULL;
+  Scope *csc = (p0 && !splat_bound) ? comp_scope_of(c, block) : NULL;
   LocalVar *clv0 = (csc && p0) ? scope_local(csc, p0) : NULL;
   TyKind csaved0 = clv0 ? clv0->type : TY_UNKNOWN;
   /* a parameter the scope holds as the shared handle binds each String
      element through it (elem_param_is_handle) rather than shadowing it */
-  int as_handle = !autosplat && elem_param_is_handle(clv0, et_elem);
+  int as_handle = elem_param_is_handle(clv0, et_elem);
   /* a lone parameter over an Enumerator that yields several values holds the
      packed arguments (desugar's enum_hop_yield_view "args"): each element of
      the hop's array is that Array, and the parameter keeps the Array type
      inference gave it rather than a shadow of the boxed element (#9643) */
   const char *yv = recv >= 0 ? nt_str(nt, recv, "enum_yield_view") : NULL;
-  int args_view = !autosplat && !as_handle && yv && sp_streq(yv, "args") && et_elem == TY_POLY &&
+  int args_view = !as_handle && yv && sp_streq(yv, "args") && et_elem == TY_POLY &&
                   clv0 && clv0->type == TY_POLY_ARRAY;
   /* a boxed parameter that a nested block captures lives in a cell, which
      the frame declares boxed. A shadow cannot retype that cell, so an
@@ -6126,14 +6183,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
 
   int bodyIndent = g_indent + 1;
   int innerIndent = use_shadow ? bodyIndent + 1 : bodyIndent;
-  int te_split = -1;
-  if (autosplat) {
-    te_split = ++g_tmp;
-    emit_indent(g_pre, bodyIndent);
-    buf_printf(g_pre, "sp_RbVal _t%d = sp_PolyArray_get(_t%d, _t%d);\n", te_split, trecv, ti);
-    emit_autosplat_params(c, block, np_cl, te_split, bodyIndent);
-  }
-  else if (use_shadow) {
+  if (use_shadow) {
     emit_indent(g_pre, bodyIndent); buf_puts(g_pre, "{\n");
     emit_indent(g_pre, innerIndent);
     if (bp_slot_oint(c, block, BP0(c, block), k)) buf_printf(g_pre, "%s lv_%s = sp_%sArray_oget(_t%d, _t%d);\n", oint_ctype(et_elem), p0, k, trecv, ti);
@@ -6157,7 +6207,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     emit_indent(g_pre, bodyIndent);
     buf_printf(g_pre, "lv_%s = sp_poly_to_poly_array(sp_%sArray_get(_t%d, _t%d));\n", p0, k, trecv, ti);
   }
-  else if (p0) {
+  else if (p0 && !splat_bound) {
     emit_indent(g_pre, bodyIndent);
     /* a param that holds its nil takes the element with it */
     int o0 = clv0 && oint_kind(clv0->type) && slot_is_oint(clv0) && !sp_streq(k, "Poly");
@@ -6165,7 +6215,7 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
   }
   /* a `*rest` param: splat-only wraps the whole element; alongside required
      params it binds empty (scalar elements never distribute) */
-  if (!autosplat && block_rest_name(c, block)) {
+  if (!splat_bound && block_rest_name(c, block)) {
     char es_r[256];
     snprintf(es_r, sizeof es_r, "sp_%sArray_get(_t%d, _t%d)", k, trecv, ti);
     /* the handles of a fresh String Array are Strings, which never spread:
@@ -6236,13 +6286,13 @@ int emit_collect_expr(Compiler *c, int id, Buf *b) {
     if (cond_poly)         buf_printf(g_pre, "if (%ssp_poly_truthy(_t%d)) ", is_rej ? "!" : "", tv);
     else if (cty == TY_INT || cty == TY_FLOAT) buf_printf(g_pre, "if (%s1) ", is_rej ? "!" : "");
     else                   buf_printf(g_pre, "if (%s(_t%d)) ", is_rej ? "!" : "", tv);
-    if (autosplat)
+    if (te_split >= 0)
       buf_printf(g_pre, "sp_%sArray_push(_t%d, _t%d);\n", rk, tres, te_split);
     /* a kept Integer or Float element is the receiver's, with its nil (the
        parameter may have been reassigned, or typed without the nil) */
     else if (!range_recv && k && rk && sp_streq(rk, k) && is_numeric_literal_tag(k))
       buf_printf(g_pre, "sp_%sArray_push_o(_t%d, sp_%sArray_oget(_t%d, _t%d));\n", rk, tres, k, trecv, ti);
-    else if (p0 && !boxed_cell)
+    else if (p0 && !boxed_cell && !splat_bound)
       { if (rk && sp_streq(rk, "Str")) buf_printf(g_pre, "sp_StrArray_push(_t%d, SP_STR_B(lv_%s));\n", tres, p0); else buf_printf(g_pre, "sp_%sArray_push(_t%d, lv_%s);\n", rk, tres, p0); }
     else
       /* splat-only block, or a boxed cell (the block may write the

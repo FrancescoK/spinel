@@ -13717,6 +13717,30 @@ static int oa_filter_arm(Compiler *c, int id, int recv, OAS *sl, int S, char *cl
   if (fk == 2 && id < nc) { call_ret[id] = S; value_ok[id] &= disc; }
   return 1;
 }
+/* narrow_object_arrays' arm for a walk on slot S that yields the row: each,
+   each_with_index, zip, map and reduce (nested_row_iter_call). Admitted so
+   the slot can still narrow. A nested numeric table takes all of them, and a
+   walk whose block takes the row apart (ROW_WALK_SPLITS, bit 16). An object
+   array takes the walks -- each, reverse_each, each_entry,
+   each_with_index, map, collect -- whose emitters bind an sp_X * element
+   (#4846); a reduce, an inject or a zip (bit 2) keeps it boxed, those
+   emitters walking only numeric rows. An each-family walk answers its
+   receiver: one whose value is used hands the array on (bit 8). A map
+   answers a new array. Answers 0 for any other call. */
+static int oa_walk_arm(Compiler *c, int id, int recv, OAS *sl, int S, char *claimed, const char *walk_disc, int nc) {
+  const char *name = nt_str(c->nt, id, "name");
+  int walk = nested_row_iter_call(c, id), splits = walk == ROW_WALK_SPLITS;
+  if (walk == ROW_WALK_NONE) return 0;
+  claimed[recv] = 1;
+  int fold = name && (sp_streq(name, "reduce") || sp_streq(name, "inject") || sp_streq(name, "zip"));
+  if (splits) sl[S].row_iter |= 16;
+  else {
+    sl[S].row_escape = 1;   /* the block binds each row */
+    sl[S].row_iter |= fold ? 2 : 1;
+  }
+  if (!fold && !(name && is_map_alias(name)) && !(id < nc && walk_disc[id])) sl[S].row_iter |= 8;
+  return 1;
+}
 static int oa_recv_op_ok(const char *nm, int argc, int has_block) {
   if (!nm || has_block) return 0;
   if ((is_element_at_alias(nm)) && argc == 1) return 1;
@@ -14439,6 +14463,20 @@ static int oa_read_is_param(Compiler *c, int node) {
   return rnm && sp_streq(rnm, rn);
 }
 
+/* The row kind a map's block answers (OA_CLS_IA / OA_CLS_FA), or -1: its
+   tail and every valued next or break are one kind of scalar row, and a
+   literal row has every element typed (oa_obj_class_of). An object, a
+   boxed value or an empty `[]` is no evidence: the emitters that read an
+   object table built by a map still want the boxed element. Nor is a block
+   that breaks: the map then answers the break's value, not a table. */
+static int oa_map_row_evidence(Compiler *c, int block, int tail) {
+  if (tail < 0 || block_body_breaks(c->nt, nt_ref(c->nt, block, "body"))) return -1;
+  TyKind et = infer_map_block_elem_ty(c, block);
+  int ec = oa_obj_class_of(c, tail);
+  if (!OA_CLS_IS_NESTED(ec) || et != (ec == OA_CLS_IA ? TY_INT_ARRAY : TY_FLOAT_ARRAY)) return -1;
+  return ec;
+}
+
 static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
                               const int *call_ret, char *claimed, int S, int v) {
   const NodeTable *nt = c->nt;
@@ -14561,7 +14599,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
     else if (cn && (is_map_alias(cn)) && can == 0 &&
              nt_ref(nt, v, "block") >= 0 &&
              nt_kind(nt, nt_ref(nt, v, "block")) == NK_BlockNode &&
-             crecv >= 0 && ty_is_array(infer_type(c, crecv))) {
+             crecv >= 0 && (ty_is_array(infer_type(c, crecv)) || infer_type(c, crecv) == TY_RANGE)) {
       int mb = nt_ref(nt, v, "block");
       int mbody = nt_ref(nt, mb, "body");
       int mn = 0;
@@ -14574,7 +14612,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
         int mta = nt_ref(nt, mtail, "arguments"); int mtan = 0;
         if (mta >= 0) nt_arr(nt, mta, "arguments", &mtan);
         if (mtn && (is_element_at_alias(mtn)) && mtan == 1 &&
-            mtr >= 0 && read_slot[mtr] >= 0) {
+            mtr >= 0 && read_slot[mtr] >= 0 && ty_is_array(infer_type(c, crecv))) {
           claimed[mtr] = 1;
           oa_uf_union(sl, S, read_slot[mtr]);
           /* the map BUILDS the table in place, so the emitter has to build it
@@ -14585,7 +14623,12 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
           joined = 1;
         }
       }
-      if (!joined) sl[S].alive = 0;   /* every other map source, as before */
+      /* `(0...n).map { |k| [k, k + 1] }`: a block that answers an Integer
+         or a Float row builds a table of such rows, the evidence a pushed
+         row gives, and the map builds it in place as above */
+      int ec = joined ? -1 : oa_map_row_evidence(c, mb, mtail);
+      if (OA_CLS_IS_NESTED(ec)) { sl[S].cls = oa_cls_join(sl[S].cls, ec); oa_note_src(S, v); }
+      else if (!joined) sl[S].alive = 0;   /* every other map source, as before */
     }
     /* a call whose own value is a tracked slot: join the two. */
     else if (call_ret[v] >= 0) {
@@ -14908,6 +14951,111 @@ static void oa_seeded_literal_rows(Compiler *c, OAS *sl, int n) {
   }
 }
 
+/* The kind of rows of a table that the receiver `recv` of a walk taking each
+   row apart builds on the spot: a literal (`[[1, 2], [3, 4]].each { |x, y| }`)
+   or a map (`(0...n).map { |k| [k, k] }.each { |x, y| }`) of Integer or
+   Float rows. Answers OA_CLS_IA / OA_CLS_FA, or -1 for anything else. */
+static int oa_walked_table_kind(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, recv) == NK_ArrayNode) {
+    int en = 0; const int *el = nt_arr(nt, recv, "elements", &en);
+    int cls = -1;
+    /* an empty row (`[]`, `Array.new`) has no kind of its own and is built
+       boxed, whatever kind it reads as */
+    for (int e = 0; e < en; e++)
+      cls = oa_cls_join(cls, nt_kind(nt, el[e]) == NK_SplatNode || node_is_empty_container(c, el[e])
+                             ? -2 : oa_obj_class_of(c, el[e]));
+    return OA_CLS_IS_NESTED(cls) ? cls : -1;
+  }
+  const char *nm = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  int blk = nm ? nt_ref(nt, recv, "block") : -1, mrecv = nm ? nt_ref(nt, recv, "receiver") : -1;
+  if (!nm || !is_map_alias(nm) || nt_ref(nt, recv, "arguments") >= 0 || blk < 0 ||
+      nt_kind(nt, blk) != NK_BlockNode || mrecv < 0) return -1;
+  TyKind mt = infer_type(c, mrecv);
+  if (!ty_is_array(mt) && mt != TY_RANGE) return -1;
+  int body = nt_ref(nt, blk, "body"), bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  return oa_map_row_evidence(c, blk, bn > 0 ? bb[bn - 1] : -1);
+}
+
+/* Such a table is held by no slot, so the slots never see it. Its one use
+   is the walk, which reads each row's elements and hands no row on, so it
+   is built in place as the table (arr_want), as the map a narrowed slot
+   takes is. An each answers its receiver, so it qualifies only where its
+   value is thrown away. The tables stamped last round are kept, so a
+   round that stamps the same ones again reports no change; one that stops
+   qualifying gets its want back. Answers whether the set changed. */
+static int oa_stamp_walked_tables(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  if (!c->arr_want) return 0;
+  int n = 0, cap = 0, changed = 0;
+  int *node = NULL; TyKind *kind = NULL;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    int recv = nt_ref(nt, id, "receiver");
+    if (recv < 0 || recv >= c->node_cap || nested_row_iter_call(c, id) != ROW_WALK_SPLITS) continue;
+    if (!is_map_alias(nt_str(nt, id, "name")) && !oa_value_dropped(c, id)) continue;
+    int rows = oa_walked_table_kind(c, recv);
+    if (!OA_CLS_IS_NESTED(rows)) continue;
+    TyKind k = rows == OA_CLS_IA ? TY_INT_ARRAY_ARRAY : TY_FLOAT_ARRAY_ARRAY;
+    if (c->arr_want[recv] != TY_UNKNOWN && c->arr_want[recv] != k) continue;   /* another producer's */
+    if (n == cap) {
+      cap = cap ? cap * 2 : 16;
+      node = (int *)realloc(node, sizeof(int) * (size_t)cap);
+      kind = (TyKind *)realloc(kind, sizeof(TyKind) * (size_t)cap);
+      if (!node || !kind) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    node[n] = recv; kind[n++] = k;
+  }
+  for (int i = 0; i < c->oa_walked_n; i++) {
+    int kept = 0;
+    for (int j = 0; j < n && !kept; j++) kept = node[j] == c->oa_walked_node[i] && kind[j] == c->oa_walked_kind[i];
+    if (kept) continue;
+    changed = 1;
+    int old = c->oa_walked_node[i];
+    if (old < c->node_cap && c->arr_want[old] == c->oa_walked_kind[i]) comp_set_arr_want(c, old, TY_UNKNOWN);
+  }
+  if (n != c->oa_walked_n) changed = 1;
+  for (int j = 0; j < n; j++)
+    if (c->arr_want[node[j]] != kind[j]) comp_set_arr_want(c, node[j], kind[j]);
+  free(c->oa_walked_node); free(c->oa_walked_kind);
+  c->oa_walked_node = node; c->oa_walked_kind = kind; c->oa_walked_n = n;
+  return changed;
+}
+
+/* The copy of Enumerable#each_with_index (and the other yielding builtins)
+   keeps both arms of `if block_given?` in the AST. Codegen folds the test,
+   so exactly one arm runs for this site. The other still reads the table
+   (`recv = self` in the Enumerator arm) and, unclaimed, killed the pin.
+   Mark that arm dead for the rest of this pass. The cell the else arm
+   allocates stays in the AST; this only stops it counting as a use.
+   Answers the mark per node, or NULL when it cannot be allocated. */
+static unsigned char *oa_dead_block_given_arms(Compiler *c, int nc) {
+  const NodeTable *nt = c->nt;
+  unsigned char *dead = (unsigned char *)calloc((size_t)nc, 1);
+  if (!dead) return NULL;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_IfNode) continue;
+    int pred = nt_ref(nt, id, "predicate");
+    if (pred < 0 || nt_kind(nt, pred) != NK_CallNode || nt_ref(nt, pred, "receiver") >= 0) continue;
+    const char *pn = nt_str(nt, pred, "name");
+    if (!pn || !sp_streq(pn, "block_given?")) continue;
+    Scope *sc = comp_scope_of(c, id);
+    int site = enum_copy_site(c, sc);
+    if (site < 0 || site >= nt->count || nt_kind(nt, site) != NK_CallNode) continue;
+    int has_block = nt_ref(nt, site, "block") >= 0;
+    int arm = -1;
+    if (has_block) {
+      int sub = nt_ref(nt, id, "subsequent");
+      if (sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) arm = sub;
+    }
+    else {
+      arm = nt_ref(nt, id, "statements");
+    }
+    if (arm >= 0) oa_mark_subtree(nt, arm, dead);
+  }
+  return dead;
+}
+
 static int narrow_object_arrays(Compiler *c) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -15079,7 +15227,8 @@ static int narrow_object_arrays(Compiler *c) {
   }
   /* the drop still has to be reported (and `cleared` freed) on the way out:
      a round with no candidate slot at all still cleared this pass's wants. */
-  if (n == 0) { int dropped = oa_want_dropped(c, cleared, n_cleared); free(cleared); free(sl); return dropped; }
+  int walked = oa_stamp_walked_tables(c);
+  if (n == 0) { int dropped = oa_want_dropped(c, cleared, n_cleared) | walked; free(cleared); free(sl); return dropped; }
   /* (class, ivar) -> slot + 1, so a read costs one ivar-name lookup in its
      own class rather than a scan of every slot: the scan was O(nodes x
      slots) per round and took a 100k-line program from seconds to minutes. */
@@ -15110,35 +15259,7 @@ static int narrow_object_arrays(Compiler *c) {
       _h = 1; } \
     _h; })
   int nc = nt->count ? nt->count : 1;
-  /* The copy of Enumerable#each_with_index (and the other yielding builtins)
-     keeps both arms of `if block_given?` in the AST. Codegen folds the test,
-     so exactly one arm runs for this site. The other still reads the table
-     (`recv = self` in the Enumerator arm) and, unclaimed, killed the pin.
-     Mark that arm dead for the rest of this pass. The cell the else arm
-     allocates stays in the AST; this only stops it counting as a use. */
-  unsigned char *dead = (unsigned char *)calloc((size_t)nc, 1);
-  if (dead) {
-    for (int id = 0; id < nt->count; id++) {
-      if (nt_kind(nt, id) != NK_IfNode) continue;
-      int pred = nt_ref(nt, id, "predicate");
-      if (pred < 0 || nt_kind(nt, pred) != NK_CallNode || nt_ref(nt, pred, "receiver") >= 0) continue;
-      const char *pn = nt_str(nt, pred, "name");
-      if (!pn || !sp_streq(pn, "block_given?")) continue;
-      Scope *sc = comp_scope_of(c, id);
-      int site = enum_copy_site(c, sc);
-      if (site < 0 || site >= nt->count || nt_kind(nt, site) != NK_CallNode) continue;
-      int has_block = nt_ref(nt, site, "block") >= 0;
-      int arm = -1;
-      if (has_block) {
-        int sub = nt_ref(nt, id, "subsequent");
-        if (sub >= 0 && nt_kind(nt, sub) == NK_ElseNode) arm = sub;
-      }
-      else {
-        arm = nt_ref(nt, id, "statements");
-      }
-      if (arm >= 0) oa_mark_subtree(nt, arm, dead);
-    }
-  }
+  unsigned char *dead = oa_dead_block_given_arms(c, nc);
   int *read_slot = (int *)malloc(sizeof(int) * nc);
   /* call_ret[id]: the return slot this CallNode's value comes from, or -1. */
   int *call_ret = (int *)malloc(sizeof(int) * nc);
@@ -15433,24 +15554,8 @@ static int narrow_object_arrays(Compiler *c) {
             sl[S].alive = 0;
         }
       }
-      /* each / each_with_index / zip / map / reduce yield the row. Admitted
-         here so the slot can still narrow. A nested numeric table takes all
-         of them. An object array takes the walks -- each, reverse_each,
-         each_entry, each_with_index, map, collect -- whose emitters bind an
-         sp_X * element (#4846); a reduce, an inject or a zip (bit 2) keeps it
-         boxed, those emitters walking only numeric rows. */
-      else if (nested_row_iter_call(c, id)) {
-        claimed[recv] = 1;
-        sl[S].row_escape = 1;   /* the block binds each row */
-        int fold = name && (sp_streq(name, "reduce") || sp_streq(name, "inject") ||
-                            sp_streq(name, "zip"));
-        sl[S].row_iter |= fold ? 2 : 1;
-        /* an each-family walk answers its receiver: one whose value is used
-           hands the array on (bit 8). A map answers a new array. */
-        int maps = name && (is_map_alias(name));
-        if (!fold && !maps && !(id < nc && walk_disc[id])) sl[S].row_iter |= 8;
-      }
-      else if (!oa_filter_arm(c, id, recv, sl, S, claimed, call_ret, value_ok, walk_disc, nc)) sl[S].alive = 0;
+      else if (!oa_walk_arm(c, id, recv, sl, S, claimed, walk_disc, nc) &&
+               !oa_filter_arm(c, id, recv, sl, S, claimed, call_ret, value_ok, walk_disc, nc)) sl[S].alive = 0;
     }
     /* Resolve the call target the way emission will: the enclosing self's
        ancestry first and a free function only as the fallback, then an
@@ -15822,15 +15927,15 @@ static int narrow_object_arrays(Compiler *c) {
     }
     /* A block iterator is kept for a numeric row, and for an object element
        only when it is one of the walks (bit 1): a reduce, an inject or a zip
-       (bit 2) on an object array would narrow a table those emitters do not
-       walk. */
+       (bit 2), or a block that takes the row apart (bit 16), on an object
+       array would narrow a table those emitters do not walk. */
     /* ... and only while nothing yet unsupported comes with it: a walk whose
        value is used (bit 8), or an element class that is itself Enumerable,
        whose Enumerable methods have no emitter on a typed receiver. An
        element class with its own `each` but no Enumerable has no such
        methods, and its `each` is an ordinary method call on the element. */
     if (!OA_CLS_IS_NESTED(sl[r].cls) &&
-        ((sl[r].row_iter & 10) ||
+        ((sl[r].row_iter & 26) ||
          (sl[r].row_iter && sl[r].cls >= 0 && an_class_includes_enumerable(c, sl[r].cls)))) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;
@@ -15918,7 +16023,7 @@ static int narrow_object_arrays(Compiler *c) {
      the slot's pin is simply restored. Report it, and the write types are
      re-derived without the want. Only a genuinely dropped one: the normal
      round clears and re-stamps, and reporting that would never converge. */
-  if (oa_want_dropped(c, cleared, n_cleared)) changed = 1;
+  if (oa_want_dropped(c, cleared, n_cleared) || walked) changed = 1;
   free(cleared);
   for (int k = 0; k < c->nclasses; k++) free(ivslot[k]);
   free(ivslot);
@@ -38614,6 +38719,49 @@ static int mark_block_param_arrays(Compiler *c) {
   return changed;
 }
 
+/* `[[1, 2], [3]].each { |a, b| }`: a literal table whose row is shorter
+   than the block's parameters (or is no literal row) leaves the
+   parameters past it nil. A table of Integer or Float rows built any
+   other way can hold a row of any length, or a nil row. */
+static int nullable_table_row_params(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int changed = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *rn2 = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    int blk = nt_ref(nt, id, "block");
+    if (!rn2 || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+    TyKind rtt = infer_type(c, recv);
+    int built = nt_kind(nt, recv) != NK_ArrayNode && (rtt == TY_INT_ARRAY_ARRAY || rtt == TY_FLOAT_ARRAY_ARRAY);
+    if (nt_kind(nt, recv) != NK_ArrayNode && !built) continue;
+    if (!sp_streq(rn2, "each") && !sp_streq(rn2, "each_entry") && !sp_streq(rn2, "map") &&
+        !sp_streq(rn2, "collect") && !sp_streq(rn2, "flat_map") && !sp_streq(rn2, "select") &&
+        !sp_streq(rn2, "filter") && !sp_streq(rn2, "reject") && !sp_streq(rn2, "each_with_object") &&
+        !sp_streq(rn2, "filter_map") && !sp_streq(rn2, "sum") && !sp_streq(rn2, "count")) continue;
+    int bp = nt_ref(nt, blk, "parameters");
+    int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
+    int pn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &pn) : NULL;
+    if (!reqs || pn < 2) continue;
+    int en = 0; const int *els = built ? NULL : nt_arr(nt, recv, "elements", &en);
+    int minlen = built ? 0 : 1 << 30;
+    for (int e = 0; els && e < en; e++) {
+      if (nt_kind(nt, els[e]) != NK_ArrayNode) { minlen = 0; break; }
+      int rl = 0; const int *rel = nt_arr(nt, els[e], "elements", &rl);
+      for (int q = 0; rel && q < rl; q++) if (nt_kind(nt, rel[q]) == NK_SplatNode) rl = 0;
+      if (rl < minlen) minlen = rl;
+    }
+    if (minlen >= pn) continue;
+    Scope *bsc = comp_scope_of(c, blk);
+    for (int pk = minlen; pk < pn; pk++) {
+      const char *pnm = nt_kind(nt, reqs[pk]) == NK_RequiredParameterNode ? nt_str(nt, reqs[pk], "name") : NULL;
+      LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
+      if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
+      plv->nullable_int = 1; changed = 1;
+    }
+  }
+  return changed;
+}
+
 /* a value position that reads a local holding only nil (for_each_value_position) */
 static int nn_nil_only_leaf(const VpLeaf *leaf, void *ud) {
   Compiler *c = ud;
@@ -38994,39 +39142,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         if (any_nil || past_n || (pk > 0 && !full_rows)) { plv->nullable_int = 1; changed = 1; }
       }
     }
-    /* `[[1, 2], [3]].each { |a, b| }`: a literal table whose row is shorter
-       than the block's parameters (or is no literal row) leaves the
-       parameters past it nil */
-    NT_FOREACH_KIND(nt, NK_CallNode, id) {
-      const char *rn2 = nt_str(nt, id, "name");
-      int recv = nt_ref(nt, id, "receiver");
-      int blk = nt_ref(nt, id, "block");
-      if (!rn2 || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ArrayNode) continue;
-      if (!sp_streq(rn2, "each") && !sp_streq(rn2, "each_entry") && !sp_streq(rn2, "map") &&
-          !sp_streq(rn2, "collect") && !sp_streq(rn2, "flat_map") && !sp_streq(rn2, "select") &&
-          !sp_streq(rn2, "filter") && !sp_streq(rn2, "reject") && !sp_streq(rn2, "each_with_object") &&
-          !sp_streq(rn2, "filter_map") && !sp_streq(rn2, "sum") && !sp_streq(rn2, "count")) continue;
-      int bp = nt_ref(nt, blk, "parameters");
-      int params = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1;
-      int pn = 0; const int *reqs = params >= 0 ? nt_arr(nt, params, "requireds", &pn) : NULL;
-      if (!reqs || pn < 2) continue;
-      int en = 0; const int *els = nt_arr(nt, recv, "elements", &en);
-      int minlen = 1 << 30;
-      for (int e = 0; els && e < en; e++) {
-        if (nt_kind(nt, els[e]) != NK_ArrayNode) { minlen = 0; break; }
-        int rl = 0; const int *rel = nt_arr(nt, els[e], "elements", &rl);
-        for (int q = 0; rel && q < rl; q++) if (nt_kind(nt, rel[q]) == NK_SplatNode) rl = 0;
-        if (rl < minlen) minlen = rl;
-      }
-      if (minlen >= pn) continue;
-      Scope *bsc = comp_scope_of(c, blk);
-      for (int pk = minlen; pk < pn; pk++) {
-        const char *pnm = nt_kind(nt, reqs[pk]) == NK_RequiredParameterNode ? nt_str(nt, reqs[pk], "name") : NULL;
-        LocalVar *plv = pnm && bsc ? scope_local(bsc, pnm) : NULL;
-        if (!plv || (plv->type != TY_INT && plv->type != TY_FLOAT) || plv->nullable_int) continue;
-        plv->nullable_int = 1; changed = 1;
-      }
-    }
+    changed |= nullable_table_row_params(c);
     /* An IVAR written from such a value hands its nil to every reader,
        including the attr_reader a caller goes through (`W.new(r.p_).v`). The
        slot keeps its scalar C type, its nil in its nil byte, so only the
