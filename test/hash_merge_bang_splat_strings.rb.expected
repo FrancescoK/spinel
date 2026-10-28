@@ -1,0 +1,16 @@
+true
+{"a" => "b", "c" => "d", "e" => "f"}
+{"a" => "b", "c" => "d", "e" => "f", "g" => "h"}
+{1 => "b", 2 => "d", 3 => "f"}
+{"a" => "z", "c" => "q!"}
+{"x" => "w", "c" => "d"}
+{"a" => "b", "c" => "d", "w" => "x"}
+{"a" => "b", "c" => "d", "w" => "x", "y" => "z"}
+TypeError: no implicit conversion of nil into Hash
+{"a" => "b", "c" => "d"}
+TypeError: no implicit conversion of nil into Hash
+TypeError: no implicit conversion of Integer into Hash
+{"a" => "b", "c" => "d"}
+TypeError: no implicit conversion of Integer into Hash
+{"a" => "b", "c" => "d", "v" => "x", "e" => "f"}
+{"a" => "b", "c" => "d", "v" => "x", "e" => "f"}

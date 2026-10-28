@@ -14664,6 +14664,14 @@ static sp_RbVal sp_kw_splat_conv(sp_RbVal v, int user_ok) {
   sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(v)));
   return v;
 }
+/* A member of merge's or merge!'s splatted list (`h.merge!(*hs)`), as
+   CRuby converts each argument: a Hash is itself, a user object answers its
+   #to_hash, and nil or any other value is a TypeError. The splat loops
+   skipped a member that was no Hash, and the call went on. */
+static SP_UNUSED sp_RbVal sp_merge_arg_conv(sp_RbVal v) {
+  if (v.tag == SP_TAG_NIL) sp_raise_cls("TypeError", SPL("no implicit conversion of nil into Hash"));
+  return sp_kw_splat_conv(v, 0);
+}
 /* String#encode's options from a `**` operand (sp_kw_splat_conv's answer:
    nil or a Hash), bound over the ones before it as a later key binds:
    invalid:, undef: and replace: by Symbol key, as CRuby reads them. An

@@ -7237,17 +7237,29 @@ else {
         if (inner < 0) return 0;
         TyKind it = comp_ntype(c, inner);
         if (!ty_is_array(it) && it != TY_POLY_ARRAY && it != TY_POLY) return 0;
-        int tr = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp;
-        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_puts(b, ";");
+        int tr = ++g_tmp, ts = ++g_tmp, ti = ++g_tmp, tc = ++g_tmp;
+        /* the receiver is rooted: a member's #to_hash runs program code,
+           which can collect a receiver nothing else holds (a call's value) */
+        buf_printf(b, "({ %s _t%d = ", c_type_name(rt), tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
         buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
         buf_printf(b, " sp_RbVal _t%d = ", ts); emit_boxed(c, inner, b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ts);
         buf_printf(b, " sp_int _t%d = sp_poly_arr_len_ex(_t%d);", ti, ts);
+        /* the members as the splat read them: a #to_hash that changes the
+           list does not change which members merge in, as CRuby's splat
+           copies it */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                      " for (sp_int _i8 = 0; _i8 < _t%d; _i8++) sp_PolyArray_push(_t%d, sp_poly_each_elem(_t%d, _i8));",
+                   tc, tc, ti, tc, ts);
         char rtxt[32]; snprintf(rtxt, sizeof rtxt, "_t%d", tr);
-        buf_printf(b, " for (sp_int _i8 = 0; _i8 < _t%d; _i8++)"
-                      " sp_poly_hash_merge_into(", ti);
+        /* an element that is no Hash converts as CRuby converts it, or
+           raises its TypeError (sp_merge_arg_conv) */
+        int te = ++g_tmp;
+        buf_printf(b, " for (sp_int _i8 = 0; _i8 < _t%d; _i8++) {"
+                      " sp_RbVal _t%d = sp_merge_arg_conv(sp_PolyArray_get(_t%d, _i8)); SP_GC_ROOT_RBVAL(_t%d);"
+                      " sp_poly_hash_merge_into(", ti, te, tc, te);
         emit_boxed_text(c, rt, rtxt, b);
-        buf_printf(b, ", sp_poly_each_elem(_t%d, _i8));", ts);
+        buf_printf(b, ", _t%d); }", te);
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
@@ -7556,12 +7568,14 @@ else {
         buf_printf(b, "({ sp_PolyPolyHash *_t%d = sp_poly_hash_merge(", tacc);
         emit_boxed(c, recv, b);
         buf_printf(b, ", sp_box_nil()); SP_GC_ROOT(_t%d);", tacc);
-        buf_printf(b, " sp_PolyArray *_t%d = sp_poly_to_poly_array(", tls);
+        /* (a copy: a member's #to_hash that changes the list does not change
+           which members merge in) */
+        buf_printf(b, " sp_PolyArray *_t%d = sp_PolyArray_dup(sp_poly_to_poly_array(", tls);
         if (sx >= 0) emit_boxed(c, sx, b); else buf_puts(b, "sp_box_nil()");
-        buf_printf(b, "); SP_GC_ROOT(_t%d);", tls);
+        buf_printf(b, ")); SP_GC_ROOT(_t%d);", tls);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
                       " _t%d = sp_poly_hash_merge(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_POLY_POLY_HASH),"
-                      " sp_PolyArray_get(_t%d, _t%d));",
+                      " sp_merge_arg_conv(sp_PolyArray_get(_t%d, _t%d)));",
                    tmi, tmi, tls, tmi, tacc, tacc, tls, tmi);
         buf_printf(b, " _t%d; })", tacc);
         return 1;

@@ -1036,50 +1036,22 @@ sp_RbVal sp_poly_dup(sp_RbVal v, int keep_frozen)
   return v;
 }
 
+/* Each pair of src stored into dst as a boxed `dst[k] = v` stores it
+   (sp_poly_set_poly): a typed variant takes a String key or value that comes
+   as a shared handle by its contents, and refuses a key or value of another
+   kind. Its own switch tested only the byte tag, so a String value read from
+   a String-valued source as its handle was refused as no String
+   (`h.merge!(*[{"c" => "d"}, {"e" => "f"}])`). */
 void sp_poly_hash_merge_into(sp_RbVal dst, sp_RbVal src)
 {
   if (dst.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(dst.cls_id)) return;
   if (src.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(src.cls_id)) return;
+  SP_GC_ROOT_RBVAL(dst); SP_GC_ROOT_RBVAL(src);
   sp_int n = sp_poly_length(src);
   for (sp_int i = 0; i < n; i++) {
     sp_RbVal k, v;
     sp_poly_hash_pair(src, i, &k, &v);
-    switch (dst.cls_id) {
-      case SP_BUILTIN_POLY_POLY_HASH: sp_PolyPolyHash_set((sp_PolyPolyHash *)dst.v.p, k, v); break;
-      case SP_BUILTIN_SYM_POLY_HASH:
-        if (k.tag == SP_TAG_SYM) sp_SymPolyHash_set((sp_SymPolyHash *)dst.v.p, (sp_sym)k.v.i, v);
-        else sp_poly_typed_hash_store_miss(k, v, "Symbol", NULL);
-        break;
-      case SP_BUILTIN_STR_POLY_HASH:
-        if (k.tag == SP_TAG_STR) sp_StrPolyHash_set((sp_StrPolyHash *)dst.v.p, k.v.s, v);
-        else sp_poly_typed_hash_store_miss(k, v, "String", NULL);
-        break;
-      case SP_BUILTIN_STR_STR_HASH:
-        if (k.tag == SP_TAG_STR && v.tag == SP_TAG_STR)
-          sp_StrStrHash_set_e((sp_StrStrHash *)dst.v.p, k.v.s, SP_SEF(v.v.s));
-        else sp_poly_typed_hash_store_miss(k, v, "String", "String");
-        break;
-      case SP_BUILTIN_STR_INT_HASH:
-        if (k.tag == SP_TAG_STR && v.tag == SP_TAG_INT)
-          sp_StrIntHash_set((sp_StrIntHash *)dst.v.p, k.v.s, v.v.i);
-        else if (k.tag == SP_TAG_STR && v.tag == SP_TAG_NIL)   /* a nil value is kept (D3b-ii) */
-          sp_StrIntHash_set_nil((sp_StrIntHash *)dst.v.p, k.v.s);
-        else sp_poly_typed_hash_store_miss(k, v, "String", "Integer");
-        break;
-      case SP_BUILTIN_INT_INT_HASH:
-        if (k.tag == SP_TAG_INT && v.tag == SP_TAG_INT)
-          sp_IntIntHash_set((sp_IntIntHash *)dst.v.p, k.v.i, v.v.i);
-        else if (k.tag == SP_TAG_INT && v.tag == SP_TAG_NIL)   /* a nil value is kept (D3b-ii) */
-          sp_IntIntHash_set_nil((sp_IntIntHash *)dst.v.p, k.v.i);
-        else sp_poly_typed_hash_store_miss(k, v, "Integer", "Integer");
-        break;
-      case SP_BUILTIN_INT_STR_HASH:
-        if (k.tag == SP_TAG_INT && v.tag == SP_TAG_STR)
-          sp_IntStrHash_set_e((sp_IntStrHash *)dst.v.p, k.v.i, SP_SEF(v.v.s));
-        else sp_poly_typed_hash_store_miss(k, v, "Integer", "String");
-        break;
-      default: break;
-    }
+    sp_poly_set_poly(dst, k, v);
   }
 }
 
