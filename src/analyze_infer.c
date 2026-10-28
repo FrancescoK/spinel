@@ -3724,12 +3724,13 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
              reader shared by K classes formatted it K times per ask
              (rubys in #5035); an alias names another ivar */
           char ivn[256];
+          const char *ivp = ivn_same;
           if (rname != name || !ivn_same[0]) {
             snprintf(ivn, sizeof ivn, "@%s", rname);
             if (rname == name) memcpy(ivn_same, ivn, sizeof ivn_same);
+            ivp = ivn;
           }
-          else memcpy(ivn, ivn_same, sizeof ivn);
-          int iv = comp_ivar_index(&c->classes[rdcls], ivn);
+          int iv = comp_ivar_index(&c->classes[rdcls], ivp);
           TyKind rt2 = iv >= 0 ? ivar_value_ty(&c->classes[rdcls], iv) : TY_UNKNOWN;
           r = found ? ty_unify(r, rt2) : rt2; found = 1;
         }
