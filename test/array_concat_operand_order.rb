@@ -30,3 +30,53 @@ rescue => e
   p e.class
 end
 p $b
+# a typed or poly operand before a boxed one is copied at its turn: a
+# later #to_ary that changes it does not change what is appended
+$s = [5, 6, 7, 8]
+class U
+  def to_ary
+    $s.clear
+    $s << 42
+    [1]
+  end
+end
+y = [U.new, 1].first
+i = [1, 2]
+i.concat($s, y)
+p i
+$s = [5, 6, 7, 8]
+p [0, "s"].concat($s, y)
+$q = [1, "a"]
+class V
+  def to_ary
+    $q << 9
+    [1]
+  end
+end
+w = [V.new, 1].first
+p [0, "s"].concat($q, w)
+$r = [0, "s"]
+$r.concat($r, w)
+p $r
+# a typed receiver a builtin call just built: the operands convert after
+# the frozen test, each copied at its turn
+$t = [5, 6, 7, 8]
+$log = []
+class Z
+  def to_ary
+    $log << :to_ary
+    $t.clear
+    GC.start
+    [1]
+  end
+end
+zz = [Z.new, 1].first
+def ofresh = [3]
+p ofresh.concat($t, zz)
+def ofrozen = [3].freeze
+begin
+  ofrozen.concat(zz, $t)
+rescue => e
+  p e.class
+end
+p $log

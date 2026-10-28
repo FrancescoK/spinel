@@ -2473,16 +2473,27 @@ else {
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
       int vbase = g_tmp + 1; g_tmp += 2 * argc;   /* each value, then its length */
+      /* the last operand that is boxed: its #to_ary (and an earlier one's)
+         can change an operand before it, which CRuby has already copied */
+      int last_boxed = -1;
+      for (int j = 0; j < argc; j++) if (repr_of(c, argv[j]).kind == RK_BOXED) last_boxed = j;
+      Buf ck = {0, 0, 0};
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1;
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[j], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
         /* (an Array, or what #to_ary answers: anything else is CRuby's
-           TypeError, where its length read as 0 appended nothing) */
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv, tv);
-        buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
+           TypeError, where its length read as 0 appended nothing; it
+           converts after the frozen test, as CRuby converts it) */
+        buf_printf(&ck, " _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv);
+        if (j < last_boxed)
+          buf_printf(&ck, " _t%d = sp_box_poly_array(sp_PolyArray_dup(sp_poly_to_poly_array(_t%d)));", tv, tv);
+        buf_printf(&ck, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
       }
       /* a frozen receiver raises even when every argument is empty */
       buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", ta, ta, ta, array_frozen_cls(rt));
+      if (ck.p) buf_puts(b, ck.p);
+      free(ck.p);
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1, ti = ++g_tmp;
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)", ti, ti, tn, ti);
