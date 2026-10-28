@@ -8053,10 +8053,38 @@ static const int *class_family(Compiler *c, int root, int *n) {
    fields first): a nil bit any class of the family keeps for it, every
    class keeps, so a parent's method that writes the field clears the bit a
    subclass's constructor seeded */
+static int ivar_has_nilbit_walk(Compiler *c, int cid, int iv);
+/* (once the analysis is done the answer holds: kept per class and ivar, as
+   the emitters ask it of every read and write of a field, and each ask
+   walked the field's whole family) */
 int ivar_has_nilbit(Compiler *c, int cid, int iv) {
   if (cid < 0 || cid >= c->nclasses) return 0;
   ClassInfo *ci = &c->classes[cid];
   if (iv < 0 || iv >= ci->nivars || !oint_kind(ci->ivar_types[iv])) return 0;
+  if (!g_scopes_settled) return ivar_has_nilbit_walk(c, cid, iv);
+  static signed char **memo = NULL;
+  static int *memo_n = NULL, memo_ncls = -1;
+  static unsigned memo_shape;
+  if (memo_ncls != c->nclasses || memo_shape != comp_class_shape_gen()) {
+    for (int k = 0; k < memo_ncls; k++) free(memo[k]);
+    free(memo); free(memo_n);
+    memo_ncls = c->nclasses; memo_shape = comp_class_shape_gen();
+    memo = calloc((size_t)(memo_ncls > 0 ? memo_ncls : 1), sizeof *memo);
+    memo_n = calloc((size_t)(memo_ncls > 0 ? memo_ncls : 1), sizeof *memo_n);
+    if (!memo || !memo_n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (memo_n[cid] != ci->nivars) {
+    free(memo[cid]);
+    memo[cid] = malloc((size_t)(ci->nivars > 0 ? ci->nivars : 1));
+    if (!memo[cid]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(memo[cid], -1, (size_t)(ci->nivars > 0 ? ci->nivars : 1));
+    memo_n[cid] = ci->nivars;
+  }
+  if (memo[cid][iv] < 0) memo[cid][iv] = (signed char)ivar_has_nilbit_walk(c, cid, iv);
+  return memo[cid][iv];
+}
+static int ivar_has_nilbit_walk(Compiler *c, int cid, int iv) {
+  ClassInfo *ci = &c->classes[cid];
   if (ivar_has_nilbit_own(c, cid, iv)) return 1;
   int root = class_root(c, cid), nfam = 0;
   const int *fam = class_family(c, root, &nfam);
