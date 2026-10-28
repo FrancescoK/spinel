@@ -6838,9 +6838,10 @@ const char *mc_ring_setf(Compiler *c, const char *fmt, ...) {
    (mc_method). Top-level ones: those the main file's statements define, in
    statement order whether emitted or not, then the other emitted ones,
    each number skipping a `f__redef<n>` the program defines itself. A
-   class's: the emitted ones, in scope order. A top-level version entry,
-   `f__entry`, is numbered only past a `f__entry` the program defines,
-   `f__entry1` on. */
+   class's: the emitted ones, in scope order. A version entry, `f__entry`
+   or `m#entry`, is numbered past the entries of its name its class has
+   before it (one per parameter count the calls need), `m#entry1` on, and
+   a top-level one past a `f__entry<n>` the program defines. */
 static int mc_def_named(Compiler *c, const char *to) {
   NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
     const char *dn = nt_str(c->nt, d, "name");
@@ -6854,11 +6855,22 @@ static void mc_number_top_version(Compiler *c, Scope *s, int *serial) {
   while (mc_def_named(c, to));
   s->version_n = *serial;
 }
-static void mc_number_top_entry(Compiler *c, Scope *s) {
+static void mc_number_entry(Compiler *c, int s) {
+  Scope *sc = &c->scopes[s];
   char to[300];
-  s->version_n = 0;
-  snprintf(to, sizeof to, "%s__entry", s->name);
-  while (mc_def_named(c, to)) snprintf(to, sizeof to, "%s__entry%d", s->name, ++s->version_n);
+  int n = 0;
+  for (int t = 1; t < s; t++) {
+    const Scope *o = &c->scopes[t];
+    if (o->entry && o->reachable && o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
+        sp_streq(o->name, sc->name) && o->version_n >= n)
+      n = o->version_n + 1;
+  }
+  for (; sc->class_id < 0; n++) {
+    if (n) snprintf(to, sizeof to, "%s__entry%d", sc->name, n);
+    else snprintf(to, sizeof to, "%s__entry", sc->name);
+    if (!mc_def_named(c, to)) break;
+  }
+  sc->version_n = n;
 }
 void mc_number_versions(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -6871,7 +6883,7 @@ void mc_number_versions(Compiler *c) {
   }
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (sc->entry && sc->reachable && sc->class_id < 0) mc_number_top_entry(c, sc);
+    if (sc->entry && sc->reachable) mc_number_entry(c, s);
     if (!sc->replaced || !sc->reachable || sc->version_n) continue;
     if (sc->class_id < 0) mc_number_top_version(c, sc, &top);
     else sc->version_n = ++cls;

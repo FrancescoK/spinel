@@ -464,9 +464,10 @@ typedef struct {
      replaced version in its C name (mc_method), 0 for none; entry, the
      method a call whose version is known only at run time reaches
      (call_plan.c's version entries): it calls the version the run-time
-     cells name. It has the method's name, as a replaced version does; no
-     lookup of the method by name answers it (sm_owns), only the calls
-     call_target binds to it reach it */
+     cells name, one per parameter count the calls need (version_n
+     numbers the later ones in C). It has the method's name, as a replaced
+     version does; no lookup of the method by name answers it (sm_owns),
+     only the calls call_target binds to it reach it */
   unsigned char versioned, replaced, entry;
   int version_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
@@ -1625,9 +1626,10 @@ typedef struct {
      (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
   int n_mixin_flags;
   /* the version entries (call_plan.c, ver_entries_build): one method per
-     (class, side, name) for the calls whose version is known only at run
-     time, and each of its arms' calls pinned to the version it runs */
-  struct VerEntry { const char *name; int cls, sg, scope; } *ver_entries;
+     (class, side, name, parameter count) for the calls whose version is
+     known only at run time, and each of its arms' calls pinned to the
+     version it runs */
+  struct VerEntry { const char *name; int cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
   struct VerPin { int node, scope; } *ver_pins;
   int nver_pins;

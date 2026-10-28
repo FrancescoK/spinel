@@ -741,19 +741,71 @@ static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const
   }
   return -1;
 }
-/* The version entry of `name` on rcls (singleton when sg; main when -1):
-   its index in Compiler.ver_entries, -1 for none asked (ver_entries_build);
-   ...and its method, -1 for none made */
-static int ver_entry_ix(const Compiler *c, int rcls, int sg, const char *name) {
+/* The version entry of `name` on rcls (singleton when sg; main when -1)
+   with ar parameters (ver_call_arity): its index in Compiler.ver_entries,
+   -1 for none asked (ver_entries_build); ...and its method, -1 for none
+   made */
+static int ver_entry_ix(const Compiler *c, int rcls, int sg, const char *name, int ar) {
   for (int i = 0; i < c->nver_entries; i++) {
     const struct VerEntry *e = &c->ver_entries[i];
-    if (e->cls == rcls && e->sg == sg && sp_streq(e->name, name)) return i;
+    if (e->cls == rcls && e->sg == sg && e->ar == ar && sp_streq(e->name, name)) return i;
   }
   return -1;
 }
-static int ct_entry_of(const Compiler *c, int rcls, int sg, const char *name) {
-  int i = ver_entry_ix(c, rcls, sg, name);
+static int ct_entry_of(const Compiler *c, int rcls, int sg, const char *name, int ar) {
+  int i = ver_entry_ix(c, rcls, sg, name, ar);
   return i >= 0 ? c->ver_entries[i].scope : -1;
+}
+static int ver_plain_arity(Compiler *c, int s) {   /* -1: not only required positionals */
+  const NodeTable *nt = c->nt;
+  int def = c->scopes[s].def_node, pn = def >= 0 && nt_kind(nt, def) == NK_DefNode ? nt_ref(nt, def, "parameters") : -2, n = 0;
+  const char *arrs[] = { "optionals", "posts", "keywords" };
+  if (pn == -1) return 0;
+  if (pn < 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) return -1;
+  for (int i = 0; i < 3; i++) {
+    nt_arr(nt, pn, arrs[i], &n);
+    if (n) return -1;
+  }
+  nt_arr(nt, pn, "requireds", &n);
+  return n;
+}
+/* Does version s take n plain positional arguments, and no keyword it
+   must be given? */
+static int ver_takes(Compiler *c, int s, int n) {
+  const NodeTable *nt = c->nt;
+  int def = c->scopes[s].def_node, pn = def >= 0 && nt_kind(nt, def) == NK_DefNode ? nt_ref(nt, def, "parameters") : -2;
+  int rn = 0, on = 0, qn = 0, kn = 0;
+  if (pn == -1) return n == 0;
+  if (pn < 0 || n < 0) return 0;
+  nt_arr(nt, pn, "requireds", &rn);
+  nt_arr(nt, pn, "optionals", &on);
+  nt_arr(nt, pn, "posts", &qn);
+  const int *kw = nt_arr(nt, pn, "keywords", &kn);
+  for (int i = 0; i < kn; i++) if (nt_kind(nt, kw[i]) == NK_RequiredKeywordParameterNode) return 0;
+  return n >= rn + qn && (nt_ref(nt, pn, "rest") >= 0 || n <= rn + qn + on);
+}
+/* The parameters of the entry call id of `name` on rcls reaches (mi, the
+   table's answer): the versions' required ones, when they all take that
+   many and nothing else; else the call's plain positional arguments, when
+   every version takes that many: each arm's call leaves out what the call
+   leaves out, so each version fills its own defaults; else -1, `*r, **k`,
+   which hands every version what the call gave */
+static int ver_call_arity(Compiler *c, int id, int rcls, int sg, const char *name, int mi) {
+  const NodeTable *nt = c->nt;
+  ElabVersion vs[VER_MAX_ARMS];
+  int a = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "arguments") : -1, ac = 0, dc;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  int n = nt_kind(nt, id) == NK_CallNode ? call_plain_argc(c, id) : -1;
+  for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_ForwardingArgumentsNode) n = -1;
+  int ar = ver_plain_arity(c, mi), fits = ver_takes(c, mi, n);
+  int nv = elab_chain_versions(c, rcls, sg, name, vs, VER_MAX_ARMS);
+  for (int i = 0; i < nv; i++) {
+    int s = vs[i].v->kind == LR_REMOVE || vs[i].v->kind == LR_UNDEF ? -1 : ct_def_version(c, rcls, name, sg, vs[i].v, &dc);
+    if (s < 0) continue;   /* (no entry arms it: ver_entry_make) */
+    if (ver_plain_arity(c, s) != ar) ar = -1;
+    fits &= ver_takes(c, s, n);
+  }
+  return ar >= 0 ? ar : fits ? n : -1;
 }
 /* The version an entry's arm (or else arm) call is pinned to, -1 for any
    other node: the pins are kept in the order of their nodes (ver_pin) */
@@ -803,7 +855,7 @@ static int ct_version_at(Compiler *c, int id, int cls, const char *name, unsigne
   else if (n >= 2 || n == ELAB_SPAN_ANY) {
     /* the entry, where the chain holds still over the window: asked of
        an entry that was made, or by the entries' build (span) */
-    vi = ct_entry_of(c, rcls, sg, name);
+    vi = ct_entry_of(c, rcls, sg, name, ver_call_arity(c, id, rcls, sg, name, mi));
     n = (span || vi >= 0) && elab_chain_settled(c, rcls, sg, name, w.from) ? 2 : 0;
     if (!n) vi = -1;
     dc = rcls;
@@ -3377,10 +3429,11 @@ int cplan_nil(Compiler *c, int id) {
 
 /* The version entries (#9898): a call whose version is known only at run
    time (ct_version_at's span of two or more versions) on class K reaches
-   K's entry method of the name (Scope.entry: a method of the name that
-   no lookup by name answers, spelled apart in C by mc_method),
+   K's entry method of the name with the call's parameters (Scope.entry: a
+   method of the name that no lookup by name answers, spelled apart in C by
+   mc_method),
 
-     def name(<the versions' parameters>)
+     def name(<the parameters>)
        if $__spinel_ver_<h> == 1 then <h's version 1>(<args>)
        elsif ...                 # each history on K's chain, nearest first
        else <mi>(<args>)         # no version made yet: the table's answer
@@ -3389,27 +3442,17 @@ int cplan_nil(Compiler *c, int id) {
 
    (disp_def_build), each arm's call pinned to its version (ct_pin_of), and
    each version's statement is followed by the write of its history's cell
-   (ver_cells_write). The parameters: the versions' required ones when they
-   all take the same that many and nothing else, else `*r, **k`; a block
-   when one takes or yields one. None when every version is a copy of the
-   method's own def (ver_same_source): the table's answer is each of
-   them. None when a version on the chain is one no arm can call (an
+   (ver_cells_write). The parameters (ver_call_arity): the versions'
+   required ones when they all take the same that many and nothing else;
+   else the call's positional arguments, where every version takes them,
+   so that a call leaving out a defaulted argument runs the version's own
+   default as CRuby does, and each version keeps the types its callers
+   give it; else `*r, **k`. A block when one takes or yields one. None
+   when every version is a copy of the method's own def
+   (ver_same_source): the table's answer is each of them. None when a version on the chain is one no arm can call (an
    undef, a version that is no function of its own, a module's version
    an include copies, which runs as the includer's copy of the last one):
    the calls keep the table's answer. */
-static int ver_plain_arity(Compiler *c, int s) {   /* -1: not only required positionals */
-  const NodeTable *nt = c->nt;
-  int def = c->scopes[s].def_node, pn = def >= 0 && nt_kind(nt, def) == NK_DefNode ? nt_ref(nt, def, "parameters") : -2, n = 0;
-  const char *arrs[] = { "optionals", "posts", "keywords" };
-  if (pn == -1) return 0;
-  if (pn < 0 || nt_ref(nt, pn, "rest") >= 0 || nt_ref(nt, pn, "keyword_rest") >= 0 || nt_ref(nt, pn, "block") >= 0) return -1;
-  for (int i = 0; i < 3; i++) {
-    nt_arr(nt, pn, arrs[i], &n);
-    if (n) return -1;
-  }
-  nt_arr(nt, pn, "requireds", &n);
-  return n;
-}
 /* Are defs a and b one def of the source, a file inlined twice (two
    requires of it the inline load model both keeps)? Its copies are one
    method: any of them answers as the others do. */
@@ -3436,10 +3479,10 @@ static void ver_pin(Compiler *c, int node, int scope) {
   for (; i > 0 && c->ver_pins[i - 1].node > node; i--) c->ver_pins[i] = c->ver_pins[i - 1];
   c->ver_pins[i] = (struct VerPin){ node, scope };
 }
-static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int mi) {
+static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int mi, int ar) {
   ElabVersion vs[VER_MAX_ARMS];
   DispArm arm[VER_MAX_ARMS];
-  int to[VER_MAX_ARMS], na = 0, ar = ver_plain_arity(c, mi), blk = c->scopes[mi].blk_param || c->scopes[mi].yields, dc, same = 1;
+  int to[VER_MAX_ARMS], na = 0, blk = c->scopes[mi].blk_param || c->scopes[mi].yields, dc, same = 1;
   int spliced = c->scopes[mi].yields;
   char sel[VER_MAX_ARMS][32];
   int nv = elab_chain_versions(c, rcls, sg, name, vs, VER_MAX_ARMS);
@@ -3448,8 +3491,6 @@ static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int m
     int s = vs[i].v->kind == LR_UNDEF ? -1 : ct_def_version(c, rcls, name, sg, vs[i].v, &dc);
     if (s < 0 || c->scopes[s].is_transplanted_source || (!c->scopes[s].replaced && scope_is_shadowed(c, s)))
       return -1;
-    int a = ver_plain_arity(c, s);
-    if (a != ar) ar = -1;
     blk |= c->scopes[s].blk_param || c->scopes[s].yields;
     spliced &= c->scopes[s].yields;
     snprintf(sel[na], sizeof sel[na], "$__spinel_ver_%d", vs[i].hist + 1);
@@ -3484,24 +3525,26 @@ int ver_entry_targets(const Compiler *c, int e, int *out) {
     out[n++] = ct_pin_of(c, ver_first_stmt(nt, nt_ref(nt, at, "statements")));
   return n;
 }
-typedef struct { int cls, sg, mi; const char *name; } VerNeed;
+typedef struct { int cls, sg, mi, ar; const char *name; } VerNeed;
 typedef struct { VerNeed *v; int n; } VerNeeds;
 static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   VerNeeds *o = arg;
   ElabVersion vs[VER_MAX_ARMS];
-  int mi, n = 0, rcls = flags & CT_TOP ? -1 : k, sg = (flags & CT_CMETHOD) != 0;
-  if (ver_entry_ix(c, rcls, sg, nm) >= 0) return;
-  for (int i = 0; i < o->n; i++) if (o->v[i].cls == rcls && o->v[i].sg == sg && sp_streq(o->v[i].name, nm)) return;
+  int mi, n = 0, ar, rcls = flags & CT_TOP ? -1 : k, sg = (flags & CT_CMETHOD) != 0;
   /* (an entry arms two or more versions of the chain: with fewer, or a
      chain the record does not hold, no call is asked) */
   if (elab_chain_versions(c, rcls, sg, nm, vs, VER_MAX_ARMS) < 2) return;
   if ((mi = ct_table(c, k, nm, flags, NULL)) < 0 || !c->scopes[mi].versioned) return;
+  ar = ver_call_arity(c, id, rcls, sg, nm, mi);
+  if (ver_entry_ix(c, rcls, sg, nm, ar) >= 0) return;
+  for (int i = 0; i < o->n; i++)
+    if (o->v[i].cls == rcls && o->v[i].sg == sg && o->v[i].ar == ar && sp_streq(o->v[i].name, nm)) return;
   ct_version(c, id, k, nm, flags, mi, NULL, &n);
   if (n < 2) return;
   if (!(o->n & (o->n - 1)) && !(o->v = realloc(o->v, sizeof *o->v * (size_t)(o->n ? 2 * o->n : 1)))) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
-  o->v[o->n++] = (VerNeed){ rcls, sg, mi, nm };
+  o->v[o->n++] = (VerNeed){ rcls, sg, mi, ar, nm };
 }
 /* The entries the calls need, made once the passes after the record have
    made their methods (an_phase_pre_fixpoint, before the scope index
@@ -3516,12 +3559,12 @@ void ver_entries_build(Compiler *c) {
     for (int i = 0, nn = call_node_names(nt, id, names); i < nn; i++)
       if (ct_version_named(c, names[i])) ct_version_classes(c, id, names[i], ver_need, &o);
   for (int i = 0; i < o.n; i++) {
-    int e = ver_entry_make(c, o.v[i].cls, o.v[i].sg, o.v[i].name, o.v[i].mi);
+    int e = ver_entry_make(c, o.v[i].cls, o.v[i].sg, o.v[i].name, o.v[i].mi, o.v[i].ar);
     if (!(c->nver_entries & (c->nver_entries - 1)) &&
         !(c->ver_entries = realloc(c->ver_entries, sizeof *c->ver_entries * (size_t)(c->nver_entries ? 2 * c->nver_entries : 1)))) {
       fprintf(stderr, "spinel: out of memory\n"); exit(1);
     }
-    c->ver_entries[c->nver_entries++] = (struct VerEntry){ o.v[i].name, o.v[i].cls, o.v[i].sg, e };
+    c->ver_entries[c->nver_entries++] = (struct VerEntry){ o.v[i].name, o.v[i].cls, o.v[i].sg, o.v[i].ar, e };
   }
   free(o.v);
   c->ver_built = 1;
