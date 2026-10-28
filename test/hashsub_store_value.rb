@@ -52,3 +52,23 @@ begin
 rescue FrozenError => ex
   p ex.class
 end
+
+# undefined or private: NoMethodError, except on self
+class NoStore < Hash; undef_method :store; end
+class PrivStore < Hash
+  private :store
+  def go = store(:q, 2)
+end
+begin
+  p NoStore.new.store(:a, 1)
+rescue NoMethodError
+  p NoStore
+end
+begin
+  p PrivStore.new.store(:a, 1)
+rescue NoMethodError
+  p PrivStore
+end
+ps = PrivStore.new
+p ps.go
+p ps

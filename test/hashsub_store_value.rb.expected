@@ -14,3 +14,7 @@ H
 3
 {y: 3, x: 7}
 FrozenError
+NoStore
+PrivStore
+2
+{q: 2}
