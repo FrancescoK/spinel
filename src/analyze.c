@@ -632,14 +632,11 @@ void compute_reachable(Compiler *c, int typed) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     { sc->reachable = 0; comp_touch_scope(sc->idx); }
-    int is_root = (s == 0 || !sc->name || (!sc->replaced && sp_streq(sc->name, "initialize")) ||
-                   (!sc->replaced && method_name_implicitly_invoked(sc->name)) || sc->is_ext_entry ||
-                   /* an exception's message: the runtime asks it where the
-                      exception is printed or inspected (sp_user_exc_message),
-                      so a private helper only the override calls (sqlite3's
-                      sql_error) is reached through it */
-                   (sp_streq(sc->name, "message") && !sc->replaced && !sc->is_cmethod && sc->class_id >= 0 &&
-                    class_is_exc_subclass(c, sc->class_id)));
+    /* The roots: the top level, a def with no name, initialize, and an
+       --ext-entry. A method CRuby calls back is no root of its own: a node
+       that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
+       of the program the message of an exception class. */
+    int is_root = (s == 0 || !sc->name || (!sc->replaced && is_initialize_name(sc->name)) || sc->is_ext_entry);
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
@@ -907,15 +904,25 @@ void compute_reachable(Compiler *c, int typed) {
   int changed = 1;
   while (changed) {
     changed = 0;
+    /* a name the compiler synthesized for a protocol method (`__enum_to_a`
+       for each, to_a and deconstruct, `__noarg to_s` for to_s) is as live as
+       one of the protocol names it answers for is */
+    for (int t = 0; t < c->nscopes; t++) {
+      const char *proto = NULL;
+      const Scope *st = &c->scopes[t];
+      int live = 0;
+      if (st->reachable || !st->name || st->replaced) continue;
+      for (int i = 0; !live && synth_stands_for(st->name, i, &proto); i++) live = cn_live(&cn_set, proto);
+      if (!live) continue;
+      MARK_NAME(st->name);
+      changed = 1;
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+    }
     for (int ci = 0; ci < c->nclasses; ci++) {
       ClassInfo *cls = &c->classes[ci];
       for (int i = 0; i < cls->naliases; i++) {
         const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
         int an_live = (an && cn_live(&cn_set, an)), ao_live = (ao && cn_live(&cn_set, ao));
-        /* an alias under a name the runtime calls by itself (`alias inspect
-           readable_inspect`: p, interpolation) is live as a def of that name
-           is a root */
-        if (an && method_name_implicitly_invoked(an)) an_live = 1;
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;

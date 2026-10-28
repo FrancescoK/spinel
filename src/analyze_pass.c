@@ -19080,7 +19080,10 @@ static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char *
 static void cr_mark_implied(Compiler *c, char ***out, int *n, int *cap, const char *name, unsigned side, const char *cause) {
   char mark[300];
   if (!ic_defined(c, name)) return;
-  snprintf(mark, sizeof mark, "%s%s", side == IC_INST ? "\x03" : "", name);
+  /* by bare name, whatever the side: a def on one object (`def obj.to_a`) is a
+     class method of the class registered for it, and an instance call reaches it */
+  (void)side;
+  snprintf(mark, sizeof mark, "%s", name);
   if (cr_add_name(out, n, cap, mark)) ic_record(c, name, side, cause);
 }
 
