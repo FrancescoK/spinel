@@ -21387,6 +21387,29 @@ static int sb_int_cmp(const void *a, const void *b) {
   int x = *(const int *)a, y = *(const int *)b;
   return (x > y) - (x < y);
 }
+/* v[0..n), made of nr ascending runs starting at run[0..nr) (run[nr] == n),
+   in ascending order: adjacent runs merged pairwise until one is left. v
+   is freed; the merged copy is returned. */
+static int *sb_merge_runs(int *v, int n, int *run, int nr) {
+  int *w = malloc(sizeof(int) * (size_t)(n > 0 ? n : 1));
+  if (!w) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  while (nr > 1) {
+    int k = 0;
+    for (int r = 0; r < nr; r += 2) {
+      int lo = run[r], mid = run[r + 1 < nr ? r + 1 : nr], hi = run[r + 2 < nr ? r + 2 : nr];
+      int i = lo, j = mid, o = lo;
+      while (i < mid && j < hi) w[o++] = v[i] <= v[j] ? v[i++] : v[j++];
+      while (i < mid) w[o++] = v[i++];
+      while (j < hi) w[o++] = v[j++];
+      run[k++] = lo;
+    }
+    run[k] = n;
+    nr = k;
+    int *t = v; v = w; w = t;
+  }
+  free(w);
+  return v;
+}
 int *an_scope_call_candidates(Compiler *c, Scope *m, int *n) {
   int cap = 16, cnt = 0;
   int *v = malloc(sizeof(int) * (size_t)cap);
@@ -21415,16 +21438,29 @@ int *an_scope_call_candidates(Compiler *c, Scope *m, int *n) {
       anh_add(&seen, an);
       all = realloc(all, sizeof *all * (size_t)(nnames + 1)); all[nnames++] = an;
     }
-  for (int i = 0; i < nnames; i++)
+  /* each name's chain is ascending (an_calls_named_first), so v is one
+     ascending run per name: the runs are merged, not sorted. qsort of a
+     common name's calls, asked again for each method of the name, was most
+     of this function on a Rails program. A run out of order is sorted as
+     before. */
+  int *run = malloc(sizeof(int) * (size_t)(nnames + 1)), runs_sorted = 1;
+  if (!run) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < nnames; i++) {
+    run[i] = cnt;
     for (int u = an_calls_named_first(c, all[i]); u >= 0; u = an_calls_named_next(u)) {
       if (cnt == cap) {
         cap *= 2; v = realloc(v, sizeof(int) * (size_t)cap);
         if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
       }
+      if (cnt > run[i] && v[cnt - 1] > u) runs_sorted = 0;
       v[cnt++] = u;
     }
+  }
+  run[nnames] = cnt;
   anh_free(&seen); free(all);
-  qsort(v, (size_t)cnt, sizeof(int), sb_int_cmp);
+  if (!runs_sorted) qsort(v, (size_t)cnt, sizeof(int), sb_int_cmp);
+  else if (nnames > 1) v = sb_merge_runs(v, cnt, run, nnames);
+  free(run);
   *n = cnt;
   return v;
 }
