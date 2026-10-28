@@ -18330,6 +18330,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   for (int i = 0; i < en && !store_alloc; i++) {
     Repr vr = repr_of(c, els[i]);
     store_alloc = (vr.kind == RK_STRUCT || vr.kind == RK_VOBJ) && masgn_slot_boxes(c, id, lefts, ln, i, vr.as_ty);
+    /* a box into a general Array ivar is converted at its store, and a box
+       holding a typed Array converts to a new one */
+    if (!store_alloc && i < ln && vr.kind == RK_BOXED && nt_kind(nt, lefts[i]) == NK_InstanceVariableTargetNode)
+      store_alloc = masgn_slot_type(c, id, lefts[i]) == TY_POLY_ARRAY;
   }
   /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
      Save each temp index separately: emit_expr may consume extra g_tmp

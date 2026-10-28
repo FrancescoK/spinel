@@ -6,7 +6,7 @@
 # build.
 class Cause
   def initialize(message, children)
-    @message, @children = message, children
+    @children, @message = children, message
   end
 
   #: () -> Array[untyped]
@@ -25,3 +25,12 @@ c = Cause.new("d", nil)
 c.children << :k
 p c.children
 p c.message
+
+# the element converted at its store allocates (a box holding an Integer
+# Array converts to a new one), so the values after it are held across it
+def label(i) = ARGV.size > 9 ? nil : "m#{i}" * 3
+ok = (1..300).all? do |i|
+  c = Cause.new(label(i), ARGV.size > 9 ? nil : [i, i + 1])
+  c.message == "m#{i}" * 3 && c.children == [i, i + 1]
+end
+p ok
