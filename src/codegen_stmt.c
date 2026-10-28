@@ -24879,8 +24879,10 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       emit_indent(&hd, indent + 1);
       buf_printf(&hd, "{ sp_%sArray *_t%d = ", ak, ts); emit_expr(c, argv[a], &hd);
       buf_printf(&hd, "; SP_GC_ROOT(_t%d);\n", ts);
-      emit_indent(&hd, indent + 1);
-      buf_printf(&hd, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
+      /* (its length is read in order with the boxed operands' conversions:
+         an earlier operand's #to_ary can change this one) */
+      emit_indent(&ck, indent + 1);
+      buf_printf(&ck, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
       emit_indent(&lp, indent + 1);
       /* the same number kind copies each element with its nil */
       int same_o = *nilable && sp_streq(ak, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"));

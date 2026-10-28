@@ -1812,9 +1812,16 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
         buf_printf(&cv, " sp_PolyArray *_t%d = sp_poly_set_operand(_t%d); SP_GC_ROOT(_t%d);", base + ai, vb + ai, base + ai);
         continue;
       }
+      if (from) {
+        /* a typed operand is read into the working array in order with the
+           boxed ones' conversions: an earlier operand's #to_ary can change it */
+        emit_ctype(c, comp_ntype(c, argv[ai]), b); buf_printf(b, " _t%d = ", vb + ai); emit_expr(c, argv[ai], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", vb + ai);
+        buf_printf(&cv, " sp_PolyArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);", base + ai, from, vb + ai, base + ai);
+        continue;
+      }
       buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
-      if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
-      else if (comp_ntype(c, argv[ai]) == TY_VOID) {
+      if (comp_ntype(c, argv[ai]) == TY_VOID) {
         /* an argument that never returns (a method that only raises):
            run it for its raise; the empty array after it is never read */
         buf_puts(b, "((void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), sp_PolyArray_new())");

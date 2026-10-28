@@ -3243,7 +3243,7 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   int tf = 0, tr;
   if (fcls) {
     tf = ++g_tmp;
-    emit_ctype(c, rrt, b); buf_printf(b, " _t%d = (", tf); emit_expr(c, recv, b); buf_puts(b, "); ");
+    emit_ctype(c, rrt, b); buf_printf(b, " _t%d = (", tf); emit_expr(c, recv, b); buf_printf(b, "); SP_GC_ROOT(_t%d); ", tf);
     tr = emit_fold_recv_tested(c, id, recv) ? tf : 0;
   }
   else tr = emit_fold_recv_hold(c, id, recv, b);
