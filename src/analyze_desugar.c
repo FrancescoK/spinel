@@ -9233,12 +9233,8 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   const NodeTable *nt = c->nt;
   if (!ms || !ms->name) return 0;
   int init = !ms->is_cmethod && sp_streq(ms->name, "initialize");
-  if (init) {
-    NT_FOREACH_KIND(nt, NK_SuperNode, u) {
-      Scope *us = comp_scope_of(c, u);
-      if (us && us->name && sp_streq(us->name, "initialize")) return 1;
-    }
-    NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, u) {
+  for (int sk = 0; init && sk < 2; sk++) {
+    NT_FOREACH_KIND(nt, sk ? NK_ForwardingSuperNode : NK_SuperNode, u) {
       Scope *us = comp_scope_of(c, u);
       if (us && us->name && sp_streq(us->name, "initialize")) return 1;
     }

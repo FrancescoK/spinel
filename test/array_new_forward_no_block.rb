@@ -64,3 +64,9 @@ class Table < Hash
 end
 p Table.new[:x]
 p Table.new { |_, k| k.to_s }[:y]
+
+# a super with the method's own block outside initialize keeps it
+class Pairs < Hash
+  def map(&b) = super(&b)
+end
+p Pairs[a: 1, b: 2].map { |k, v| [v, k] }
