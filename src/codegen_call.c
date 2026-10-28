@@ -2528,8 +2528,7 @@ int string_reopen_defines(Compiler *c, const char *name) {
   return si >= 0 && (comp_method_in_chain(c, si, name, NULL) >= 0 || comp_reader_in_chain(c, si, name, NULL));
 }
 
-int user_defines_or_reads(Compiler *c, const char *name) {
-  if (g_poly_builtin_arm) return 0;
+static int user_defines_or_reads_walk(Compiler *c, const char *name) {
   /* Instance reachability only: a CLASS method of the same name is reached
      through a Class-valued receiver and can never answer an instance call, so
      counting it made a String receiver decline the String method and bind to
@@ -2542,6 +2541,48 @@ int user_defines_or_reads(Compiler *c, const char *name) {
   for (int uk = 0; uk < c->nclasses; uk++)
     if (comp_reader_in_chain(c, uk, name, NULL) && uk_class_can_be_reached(c, uk)) return 1;
   return 0;
+}
+/* The answer per name, kept while the scope index is frozen and neither the
+   class shape nor the counts move: each ask walked every class of the
+   program, and the emitters ask it at each call site, which grew with the
+   square of the program (8% of a scale-400 compile). */
+static char **udrc_name; static unsigned char *udrc_ans; static int udrc_cap, udrc_n;
+static unsigned udrc_gen, udrc_shape; static int udrc_nscopes = -1, udrc_nclasses = -1;
+int user_defines_or_reads(Compiler *c, const char *name) {
+  if (g_poly_builtin_arm) return 0;
+  if (!name || !comp_scope_index_is_frozen()) return user_defines_or_reads_walk(c, name);
+  if (udrc_gen != comp_scope_index_gen() || udrc_shape != comp_class_shape_gen() ||
+      udrc_nscopes != c->nscopes || udrc_nclasses != c->nclasses) {
+    for (int i = 0; i < udrc_cap; i++) free(udrc_name ? udrc_name[i] : NULL);
+    free(udrc_name); free(udrc_ans);
+    udrc_name = NULL; udrc_ans = NULL; udrc_cap = udrc_n = 0;
+    udrc_gen = comp_scope_index_gen(); udrc_shape = comp_class_shape_gen();
+    udrc_nscopes = c->nscopes; udrc_nclasses = c->nclasses;
+  }
+  if (udrc_n * 2 >= udrc_cap) {
+    int ocap = udrc_cap; char **on = udrc_name; unsigned char *oa = udrc_ans;
+    udrc_cap = ocap ? ocap * 2 : 256;
+    udrc_name = calloc((size_t)udrc_cap, sizeof(char *));
+    udrc_ans = calloc((size_t)udrc_cap, 1);
+    if (!udrc_name || !udrc_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!on[i]) continue;
+      unsigned j = sp_strhash(on[i]) & (unsigned)(udrc_cap - 1);
+      while (udrc_name[j]) j = (j + 1) & (unsigned)(udrc_cap - 1);
+      udrc_name[j] = on[i]; udrc_ans[j] = oa[i];
+    }
+    free(on); free(oa);
+  }
+  unsigned j = sp_strhash(name) & (unsigned)(udrc_cap - 1);
+  while (udrc_name[j]) {
+    if (sp_streq(udrc_name[j], name)) return udrc_ans[j];
+    j = (j + 1) & (unsigned)(udrc_cap - 1);
+  }
+  int ans = user_defines_or_reads_walk(c, name);
+  udrc_name[j] = strdup(name);
+  if (!udrc_name[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  udrc_ans[j] = (unsigned char)ans; udrc_n++;
+  return ans;
 }
 
 /* A class method of `name` on one of the Class values the boxed receiver of
