@@ -3707,12 +3707,16 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           continue;
         }
         int rdcls = pcs[pi].rdcls;
-        /* A reader takes no argument: the dispatch builds it no arm for a
-           call that passes one, so its ivar is no answer to `md.end(1)`.
-           Unified in, an `attr_reader :end` holding a Time typed a boxed
-           MatchData's end(1) as a Time wherever the builtin answer below
-           was not asked (under a face pin), and the call raised. */
-        if (rdcls >= 0 && argc == 0) {
+        /* A reader takes no argument, so a call that passes one gets no
+           reader arm: the arm that answers it is the builtin's or the
+           raise. Its ivar's type is no answer, but the call still has the
+           boxed slot every such dispatch has, so it answers poly, the same
+           where the dispatch is emitted and where its value is read.
+           Taken as the ivar's Time, `md.end(1)` beside an
+           `attr_reader :end` came out a Time wherever the builtin answer
+           below was not asked (under a face pin). */
+        if (rdcls >= 0 && argc > 0) { r = TY_POLY; found = 1; continue; }
+        if (rdcls >= 0) {
           /* resolve alias so `alias_method :required?, :required` reads the
              backing @required, not a bogus @required? */
           const char *rname = comp_resolve_alias(c, k, name);
