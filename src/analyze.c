@@ -14502,7 +14502,8 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
          An empty `[]` element is a row with no kind of its own yet: neutral,
          and built at the component's kind if it narrows (oa_note_empty). */
       if (is_empty_array_literal(nt, el[e], c->node_cap) && !OA_CLS_IS_NESTED(ec)) continue;
-      if (ec < 0 && !OA_CLS_IS_ROW(ec)) { sl[S].alive = 0; break; }
+      /* a foreign row is the conflict the seed check reports, whatever rows came before it */
+      if (ec < 0 && !OA_CLS_IS_ROW(ec)) { if (ec == -2 && ek != NK_SplatNode) sl[S].cls = -2; sl[S].alive = 0; break; }
       sl[S].cls = oa_cls_join(sl[S].cls, ec);
     }
     return;
