@@ -24731,6 +24731,14 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     return 1;
   }
   if (sp_streq(name, "concat") && argc >= 1) {
+    /* an argument no Array conversion takes (nil, a boolean, an Integer,
+       a String, ...) is the value form's TypeError (emit_array_operand_misfit):
+       read below as an Array of the receiver's kind, one of the element's
+       own kind gave C that does not build (`a = [1]; a.concat(1)`) */
+    for (int a = 0; a < argc; a++) {
+      TyKind at = comp_ntype(c, argv[a]);
+      if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) return 0;
+    }
     /* Every argument is evaluated, and its length taken, before anything is
        appended, as CRuby concatenates the arguments as they were: with one
        aliasing the receiver, `a.concat(a, a)` appended the grown array the
@@ -24744,7 +24752,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     emit_indent(b, indent);
     /* rooted across the arguments, which can allocate */
     buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);\n", tr);
-    Buf hd, lp; memset(&hd, 0, sizeof hd); memset(&lp, 0, sizeof lp);
+    Buf hd, ck, lp; memset(&hd, 0, sizeof hd); memset(&ck, 0, sizeof ck); memset(&lp, 0, sizeof lp);
     for (int a = 0; a < argc; a++) {
       int tn = ++g_tmp, ti = ++g_tmp;
       /* the source array may be a different kind than the receiver (e.g.
@@ -24767,9 +24775,11 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
         buf_printf(&hd, "{ sp_RbVal _t%d = ", tv); emit_boxed(c, argv[a], &hd);
         /* (an Array, or one #to_ary answers: anything else is CRuby's
            TypeError, where its length read as 0 appended nothing) */
-        buf_printf(&hd, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_ary_arg_ck(_t%d);\n", tv, tv, tv);
-        emit_indent(&hd, indent + 1);
-        buf_printf(&hd, "sp_int _t%d = sp_poly_length(_t%d);\n", tn, tv);
+        buf_printf(&hd, "; SP_GC_ROOT_RBVAL(_t%d);\n", tv);
+        /* (converted after the frozen test, as CRuby converts it: a frozen
+           receiver raises FrozenError ahead of the operand's TypeError) */
+        emit_indent(&ck, indent + 1);
+        buf_printf(&ck, "_t%d = sp_poly_ary_arg_ck(_t%d); sp_int _t%d = sp_poly_length(_t%d);\n", tv, tv, tn, tv);
         emit_indent(&lp, indent + 1);
         buf_printf(&lp, "for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
                    ti, ti, tn, ti, k, nilable, tr);
@@ -24829,11 +24839,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       buf_printf(b, "if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);\n",
                  tr, tr, tr, array_frozen_cls(rt));
     }
+    if (ck.p) buf_puts(b, ck.p);
     if (lp.p) buf_puts(b, lp.p);
     emit_indent(b, indent + 1);
     for (int a = 0; a < argc; a++) buf_puts(b, "}");
     buf_puts(b, "\n");
-    free(hd.p); free(lp.p);
+    free(hd.p); free(ck.p); free(lp.p);
     emit_indent(b, indent);
     buf_puts(b, "}\n");
     return 1;

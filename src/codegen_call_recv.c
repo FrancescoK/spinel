@@ -3235,7 +3235,18 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   g_tmp += argc;
   Buf *sv_pre = g_pre;
   buf_puts(b, "({ ");
-  int tr = emit_fold_recv_hold(c, id, recv, b);
+  /* concat and replace change the receiver: CRuby's frozen check comes
+     before any argument converts, so a frozen one raises FrozenError, not
+     the operand's TypeError. The receiver is held for that test. */
+  TyKind rrt = repr_of(c, recv).as_ty;
+  const char *fcls = (sp_streq(name, "concat") || sp_streq(name, "replace")) ? array_frozen_cls(rrt) : NULL;
+  int tf = 0, tr;
+  if (fcls) {
+    tf = ++g_tmp;
+    emit_ctype(c, rrt, b); buf_printf(b, " _t%d = (", tf); emit_expr(c, recv, b); buf_puts(b, "); ");
+    tr = emit_fold_recv_tested(c, id, recv) ? tf : 0;
+  }
+  else tr = emit_fold_recv_hold(c, id, recv, b);
   for (int ai = 0; ai < argc; ai++) {
     Buf ap = {0, 0, 0}, av = {0, 0, 0};
     Repr ar = repr_of(c, argv[ai]);
@@ -3254,6 +3265,7 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   }
   /* a nil receiver raises before any operand is converted */
   emit_fold_recv_test(c, id, tr, b);
+  if (fcls) buf_printf(b, "if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s); ", tf, tf, tf, fcls);
   for (int ai = 0; ai < bad; ai++)
     if (repr_of(c, argv[ai]).kind == RK_BOXED)
       buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
