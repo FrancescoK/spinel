@@ -1,0 +1,48 @@
+load record: 27 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ModuleNode Chime line 7
+  r0 #2 f0 DefNode ring line 8
+r0 #3 f0 ClassNode ZeroDivisionError line 11
+  r0 #4 f0 DefNode ring line 12
+r0 #5 f0 ClassNode Integer line 15
+  r0 #6 f0 DefNode ring line 16
+r0 #7 f0 ClassNode Fizz line 19
+  r0 #8 f0 DefNode ring line 20
+r0 #9 f0 DefNode divide line 23
+r0 #10 f0 ConstantWriteNode FIRST line 25
+r0 #11 f0 ClassNode ZeroDivisionError line 31
+  r0 #12 f0 CallNode include line 32
+r0 #13 f0 ClassNode Integer line 35
+  r0 #14 f0 CallNode include line 36
+r0 #15 f0 ClassNode Fizz line 39
+  r0 #16 f0 CallNode include line 40
+r0 #17 f0 ClassNode ZeroDivisionError line 43
+  r0 #18 f0 DefNode ring line 44
+r0 #19 f0 ClassNode Integer line 47
+  r0 #20 f0 DefNode ring line 48
+r0 #21 f0 ClassNode Fizz line 51
+  r0 #22 f0 DefNode ring line 52
+r0 #23 f0 CallNode puts line 55
+r0 #24 f0 DefNode __int_ring__0 line 48
+r0 #25 f0 DefNode __int_ring__1 line 48
+r0 #26 f0 DefNode __int_ring__2 line 48
+class Chime: body#1
+class ZeroDivisionError: body#3 body#11 body#17 include Chime#12
+class Integer: body#5 body#13 body#19 include Chime#14
+class Fizz: body#7 body#15 body#21 include Chime#16
+entity Chime: owner main leaf Chime
+entity Fizz: owner main leaf Fizz
+const Chime: write#1
+Chime#ring: def#2 runs=#10 end=yes
+ZeroDivisionError#ring: def#4 runs=#10 def#18 runs=#10 end=yes
+Integer#ring: def#6 runs=#10 def#20 runs=#10 end=yes
+const Fizz: write#7
+Fizz#ring: def#8 runs=#23 def#22 runs=#23 end=yes
+main#divide: def#9 private end=yes
+const FIRST: write#10
+main#__int_ring__0: def#24 private end=yes
+main#__int_ring__1: def#25 private end=yes
+main#__int_ring__2: def#26 private end=yes
+versions ZeroDivisionError#ring: def#4..#18 seen=unknown, def#18..end seen=def#18; 7 of the name
+versions Integer#ring: def#6..#20 seen=unknown, def#20..end seen=def#20; 7 of the name
+versions Fizz#ring: def#8..#22 seen=def#8 idle, def#22..end seen=def#22; 7 of the name

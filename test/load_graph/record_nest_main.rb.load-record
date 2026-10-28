@@ -29,10 +29,10 @@ entity B: owner main leaf B
 entity B__Inner: owner B leaf Inner
 const A: write#1
 const A::Inner: write#2
-A__Inner#who: def#3 end=yes
+A__Inner#who: def#3 runs=#14 end=yes
 const B: write#4
 const B::Inner: write#5
-B__Inner#who: def#6 end=yes
+B__Inner#who: def#6 runs=#15 end=yes
 visibility in #8: vis#9 public
 main#lib_helper: def#10 end=yes
 A__Inner#more: def#12 end=yes

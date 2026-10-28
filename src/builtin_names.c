@@ -684,15 +684,16 @@ int is_definition_hook_name(const char *n) {
 
 /* The hooks definition form `form` (given its arguments) fires, on the
    class that receives it (sg: as its singleton's), into out[0..1]: a
-   mixin's on the module (included, extended, prepended); a form that adds a
+   mixin's on the module (included and append_features, extended and
+   extend_object, prepended and prepend_features); a form that adds a
    method or changes one's visibility, method_added (singleton_method_added
    for a singleton's; module_function both); remove_method method_removed,
    undef_method method_undefined. Answers how many. */
 int definition_form_hooks(const char *form, int sg, const char **out) {
   if (!form) return 0;
-  if (sp_streq(form, "include")) { out[0] = "included"; return 1; }
-  if (sp_streq(form, "extend")) { out[0] = "extended"; return 1; }
-  if (sp_streq(form, "prepend")) { out[0] = "prepended"; return 1; }
+  if (sp_streq(form, "include")) { out[0] = "included"; out[1] = "append_features"; return 2; }
+  if (sp_streq(form, "extend")) { out[0] = "extended"; out[1] = "extend_object"; return 2; }
+  if (sp_streq(form, "prepend")) { out[0] = "prepended"; out[1] = "prepend_features"; return 2; }
   if (sp_streq(form, "remove_method")) { out[0] = sg ? "singleton_method_removed" : "method_removed"; return 1; }
   if (sp_streq(form, "undef_method")) { out[0] = sg ? "singleton_method_undefined" : "method_undefined"; return 1; }
   if (sp_streq(form, "module_function")) { out[0] = "singleton_method_added"; out[1] = "method_added"; return 2; }
@@ -737,6 +738,65 @@ int is_marshal_dump(const char *recv, const char *meth) {
 /* `Marshal.load`, which builds the objects it reads without their initialize */
 int is_marshal_load(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "load") && sp_streq(recv, "Marshal");
+}
+
+/* A core call that makes objects of whatever classes its data names (or
+   finds any object): Marshal.load and restore, YAML's and Psych's load
+   family, JSON.load, JSON.parse given options (create_additions),
+   ObjectSpace._id2ref; argc its argument count */
+int is_object_loader(const char *recv, const char *meth, int argc) {
+  if (!recv || !meth) return 0;
+  if (sp_streq(recv, "Marshal")) return sp_streq(meth, "load") || sp_streq(meth, "restore");
+  if (sp_streq(recv, "YAML") || sp_streq(recv, "Psych"))
+    return sp_streq(meth, "load") || sp_streq(meth, "unsafe_load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load_file");
+  if (sp_streq(recv, "ObjectSpace")) return sp_streq(meth, "_id2ref");
+  return sp_streq(recv, "JSON") && (sp_streq(meth, "load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load") ||
+                                    ((sp_streq(meth, "parse") || sp_streq(meth, "parse!")) && argc > 1));
+}
+
+/* UnboundMethod#bind and bind_call */
+int is_method_bind_name(const char *n) {
+  return n && (sp_streq(n, "bind") || is_bind_call(n));
+}
+
+/* Timeout.timeout(sec, klass): raises klass.new when the time runs out */
+int is_timeout_call(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(recv, "Timeout") && sp_streq(meth, "timeout");
+}
+
+/* exception: Exception's class-level constructor (raise calls it) */
+int is_exception_ctor_name(const char *n) {
+  return n && sp_streq(n, "exception");
+}
+
+static int builtin_name_in(const char *name, const char *const *names);
+/* A name CRuby's core may call on an object it is given (sg 0) or on a
+   class object (sg 1), beyond method_name_implicitly_invoked and
+   method_missing: every operator (case/when's ===, sum's +, sort's <=>,
+   !); pattern matching's deconstruct; respond_to? and
+   respond_to_missing?; the conversions Float(), Rational(), Complex(),
+   format and Regexp.union make; a Range's succ, begin and end; the
+   messages of an uncaught error; Marshal's; dup's and clone's
+   initialize_*; a Hash subclass's default; an output port's write; a
+   Numeric's arithmetic helpers. On a class: succ, name, const_missing,
+   exception (_load only Marshal.load calls, which may call any method) */
+int is_core_callback_name(const char *n, int sg) {
+  static const char *const inst[] = {
+    "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r", "to_c", "to_sym",
+    "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message", "detailed_message",
+    "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result", "marshal_dump", "_dump",
+    "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read", "readpartial", "flush",
+    "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?", "nonzero?", "positive?",
+    "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate", "div", "modulo", "divmod",
+    "remainder", "fdiv", "quo", NULL };
+  if (!n) return 0;
+  if (!((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_')) return 1;
+  return sg ? sp_streq(n, "succ") || sp_streq(n, "name") || is_const_missing_name(n) || is_exception_ctor_name(n) : builtin_name_in(n, inst);
+}
+
+/* to_enum and enum_for: an Enumerator that calls the method they name */
+int is_enumerator_maker(const char *n) {
+  return n && (sp_streq(n, "to_enum") || sp_streq(n, "enum_for"));
 }
 
 /* Class#allocate, an object without its initialize run */

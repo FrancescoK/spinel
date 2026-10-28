@@ -3,12 +3,12 @@
 # the versions of its name a call can reach there, one for each stretch
 # between changes on the class's chain in which a statement may run the
 # program's code (idle: none does). An instance method counts only once an
-# instance can exist: not before the class's first body ends, unless that
-# body may run the program's code itself, so Bell's include, in a first
-# body that runs none, changes nothing a call sees. No object of the
-# program's exists before the first statement that runs its code (the
-# first `puts`), so Bell's `map` cannot reach Base#to_s; Drum's, after it,
-# may, and Drum's include lands where an instance may see it: unknown.
+# instance can exist: from the first statement that may make one of the
+# class or a subclass of it. No Bell or Drum exists before the last `puts`
+# (Base's to_s, which a call may reach, makes none either), so their
+# includes change nothing a call sees, before the program's code first
+# runs (the first `puts`) and after it. The record_version_span_*_main.rb
+# tests make one in a body.
 module Chime
   def ring = "chime"
 end

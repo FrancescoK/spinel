@@ -40,20 +40,20 @@ entity Pod: owner main leaf Pod
 entity Drum: owner main leaf Drum
 entity Gong: owner main leaf Gong
 const Chime: write#1
-Chime#ring: def#2 end=yes
+Chime#ring: def#2 runs=#27 end=yes
 const Base: write#3
 Base#to_s: def#4 end=yes
 const Bell: write#5
-Bell#ring: def#6 def#22 end=yes
+Bell#ring: def#6 runs=#27 def#22 runs=#27 end=yes
 const Bell::SIZES: write#7
 const Pod: write#10
-Pod#ring: def#11 def#24 end=yes
+Pod#ring: def#11 runs=#12 def#24 runs=#12 end=yes
 const Drum: write#13
-Drum#ring: def#14 def#26 end=yes
+Drum#ring: def#14 runs=#27 def#26 runs=#27 end=yes
 const Drum::SIZES: write#15
 const Gong: write#18
-Gong#ring: def#19 def#20 end=yes
-versions Bell#ring: def#6..#22 seen=def#6, def#22..end seen=def#22; 9 of the name
+Gong#ring: def#19 runs=#27 def#20 runs=#27 end=yes
+versions Bell#ring: def#6..#22 seen=def#6 idle, def#22..end seen=def#22; 9 of the name
 versions Pod#ring: def#11..#24 seen=def#11, def#24..end seen=def#24; 9 of the name
-versions Drum#ring: def#14..#26 seen=unknown, def#26..end seen=def#26; 9 of the name
+versions Drum#ring: def#14..#26 seen=def#14 idle, def#26..end seen=def#26; 9 of the name
 versions Gong#ring: def#19..#20 seen=def#19 idle, def#20..end seen=def#20; 9 of the name

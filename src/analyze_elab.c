@@ -71,7 +71,8 @@ int g_dump_load_record = 0;
    a lone expression), up: the statement whose body holds it (-1 at a
    file's top level), which lr_may_dominates climbs. kept: in a block a
    call may keep to run later (ElabPos.kept). runs: it may run code of the
-   program's (lr_run_points); nrun: how many statements before it may. */
+   program's (lr_run_points); nrun: how many statements before it
+   do. */
 typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay, fpartial, kept; int list, up, nrun; unsigned char runs; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
@@ -132,6 +133,8 @@ struct LoadRecord {
   LrSlot *slot; int nslot, cslot, *slot_head, slot_builds;
   LrSlotPoint *slotp; int nslotp, cslotp; long slot_entries;
   int runs_of, nrun, *rend;  /* lr_run_points: the build its bits are of, how many statements run code, each region's end */
+  int *rinst, *urun;         /* ...from which statement on an object of each class may exist, each def's body may run (lr_rta) */
+  unsigned char defs_computed;          /* ...and whether the program makes or copies a method by a computed name */
   struct LrVers *vers; int nvers, cvers, *vers_head;
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
@@ -2096,6 +2099,7 @@ void elab_record_builders(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r || !r->recorded) return;
   r->structs = 1;
+  r->runs_of = -1;   /* lr_rta's facts are of the builders' classes from here: computed afresh */
   lr_fit_classes(r, c);
   for (int ci = 0; ci < c->nclasses; ci++) if (lr_builder_body(c, ci) >= 0) r->held[ci + 1] = 1;
   if (r->builders) {
@@ -2569,12 +2573,17 @@ int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, L
   return ELAB_NO;
 }
 
+/* Is k cls or a superclass of it? */
+static int lr_under(Compiler *c, int cls, int k) {
+  for (int a = cls, d = 0; a >= LR_MAIN && d < 64; a = lr_super(c, a), d++)
+    if (a == k) return 1;
+  return 0;
+}
+
 /* Is class or module k one of cls's ancestors (its singleton's when sg)
    at p, or may it be: cls, a superclass, a module mixed into one of them? */
 static int lr_in_ancestry(Compiler *c, int cls, int sg, int k, LoadPoint p) {
-  for (int a = cls, d = 0; a >= LR_MAIN && d < 64; a = lr_super(c, a), d++)
-    if (a == k) return 1;
-  return k >= 0 && lr_search(c, cls, sg, NULL, k, p, 0, 0, NULL, 0) != ELAB_NO;
+  return lr_under(c, cls, k) || (k >= 0 && lr_search(c, cls, sg, NULL, k, p, 0, 0, NULL, 0) != ELAB_NO);
 }
 
 /* Does node's statement run strictly between p0 and p1, or is it not
@@ -2609,6 +2618,41 @@ static int lr_chain_moves(Compiler *c, int cls, int sg, const char *name, LoadPo
 
 static int lr_defines(const LoadRecord *r, const char *name);
 
+static int lr_literal_kind(NodeKind k) {
+  switch (k) {
+    case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_InterpolatedStringNode: case NK_SymbolNode:
+    case NK_ArrayNode: case NK_HashNode: case NK_RangeNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode:
+      return 1;
+    default: return 0;
+  }
+}
+
+/* Is call id a definition form given literals or the modules it names,
+   or a builtin literal's method given literals when the program reopens
+   no builtin, with no block argument: one with nothing of the program's
+   to call (a hook the program defines aside)? */
+static int lr_literal_args(const NodeTable *nt, const int *av, int ac, int form);
+static int lr_call_on_literals(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name"), *hook[2];
+  int recv = nt_ref(nt, id, "receiver"), an = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  int form = recv < 0 && nm && definition_form_hooks(nm, 0, hook) > 0;
+  return nm && (blk < 0 || nt_kind(nt, blk) == NK_BlockNode) && lr_literal_args(nt, av, ac, form) &&
+         (form || (recv >= 0 && !c->lrec->nreopens && lr_literal_kind(nt_kind(nt, recv))));
+}
+
+/* Are the arguments av[0..ac) literals (or, to a form, defs as in
+   `private def m`, and constants)? */
+static int lr_literal_args(const NodeTable *nt, const int *av, int ac, int form) {
+  for (int i = 0; i < ac; i++) {
+    NodeKind k = nt_kind(nt, av[i]);
+    if (!lr_literal_kind(k) && !(form && (k == NK_DefNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode))) return 0;
+  }
+  return 1;
+}
+
+
 /* Does node run code of the program's where its statement runs (LR_RUN):
    a call, super or yield of a name the program defines a method by (sent
    by a literal name too); a `new`, `allocate` or raise, which makes an
@@ -2627,7 +2671,7 @@ static int lr_node_runs(Compiler *c, int id) {
   const LoadRecord *r = c->lrec;
   const int *par = comp_parent_map(c);
   const char *nm = NULL, *hook[2];
-  int recv, an, ac = 0, hooks = r->names_any ? LR_DISPATCH : 0;
+  int recv, an, ac = 0, hooks = r->defs_computed ? LR_DISPATCH : 0;
   const int *av;
   switch (nt_kind(nt, id)) {
     case NK_CallNode:
@@ -2642,7 +2686,8 @@ static int lr_node_runs(Compiler *c, int id) {
       for (int sg = 0; sg < 2; sg++)
         for (int i = definition_form_hooks(nm, sg, hook) - 1; i >= 0; i--)
           if (lr_defines(r, hook[i])) return LR_RUN;
-      return LR_DISPATCH;
+      return lr_call_on_literals(c, id) ? 0 : LR_DISPATCH;
+    case NK_AssocNode: recv = nt_ref(nt, id, "key"); return recv >= 0 && lr_literal_kind(nt_kind(nt, recv)) ? 0 : LR_DISPATCH;
     case NK_SuperNode: case NK_ForwardingSuperNode: case NK_YieldNode: case NK_LambdaNode: case NK_BlockArgumentNode: return LR_RUN;
     case NK_BlockNode:
       nm = par[id] >= 0 && nt_kind(nt, par[id]) == NK_CallNode ? nt_str(nt, par[id], "name") : NULL;
@@ -2653,7 +2698,7 @@ static int lr_node_runs(Compiler *c, int id) {
     case NK_ProgramNode: case NK_StatementsNode: case NK_ModuleNode: case NK_SingletonClassNode:
     case NK_ConstantReadNode: case NK_ConstantPathNode: case NK_SelfNode: case NK_NilNode: case NK_TrueNode:
     case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode:
-    case NK_ArrayNode: case NK_ParenthesesNode: case NK_BeginNode: case NK_IfNode: case NK_UnlessNode:
+    case NK_ArrayNode: case NK_HashNode: case NK_KeywordHashNode: case NK_ParenthesesNode: case NK_BeginNode: case NK_IfNode: case NK_UnlessNode:
     case NK_ElseNode: case NK_WhileNode: case NK_UntilNode: case NK_AndNode: case NK_OrNode:
     case NK_ArgumentsNode: case NK_BlockParametersNode: case NK_ParametersNode: case NK_RequiredParameterNode:
     case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode: case NK_InstanceVariableReadNode:
@@ -2662,6 +2707,357 @@ static int lr_node_runs(Compiler *c, int id) {
       return 0;
     default: return LR_DISPATCH;
   }
+}
+
+/* The load-order rapid type analysis (lr_rta): from which statement on an
+   instance of each class may exist, and each method body may run.
+   Statement by statement it scans the code that statement runs: its own
+   nodes, the blocks and lambdas it makes (live where made), and the body
+   of each method it may reach, once, when first reached. A call reaches
+   the methods of its name: on a constant the record resolves, those of its
+   singleton chain; on any receiver, the instance methods of each class an
+   instance of which may exist so far (E), and on one not resolved, every
+   singleton method too. A node that may call into the runtime
+   (lr_node_runs' LR_DISPATCH) calls the names it may call back
+   (method_name_implicitly_invoked, method_missing) and those CRuby's core
+   calls on the objects and class objects it is given
+   (is_core_callback_name); a definition form its hooks; super its
+   method's name; send, a method object, an Enumerator or `&:sym` its name
+   (`&:new` making any class); refine the refining module's methods. A computed
+   name, eval, bind or an object loader calls every name and makes any
+   class; a method defined by a computed name only calls every name. new,
+   allocate, a builder's [], exception and raise make the class
+   of a constant they are given (of a class method's self, that class and
+   its subclasses; of `x.class`, none new; else any). Main and the core
+   classes have instances from the start. rinst[k + 1]: the first statement
+   an object with k among its ancestors may exist (LR_NEVER: none);
+   urun[def]: the first statement a recorded def's body may run, 0 for one
+   the record did not record. */
+enum { LR_NEVER = INT_MAX, LR_CORE = -4, RQ_INST = 1, RQ_CLASS = 2 };
+/* The class constant write w holds when a builder made it (`P =
+   Struct.new(:x)`): the program's class of it, or LR_CORE when the program
+   has none (no block, no header reopens it: only core ancestors);
+   LR_UNKNOWN_CLASS for any other write. Unlike lr_builder_class, which
+   homes a builder's block once registration has made its class, this
+   checks that the write is a builder call, and answers before
+   elab_record_builders too (the dump's walk) */
+static int lr_rta_builder(Compiler *c, int w) {
+  const NodeTable *nt = c->nt;
+  int v = nt_kind(nt, w) == NK_ConstantWriteNode ? nt_ref(nt, w, "value") : -1;
+  int recv = v >= 0 && nt_kind(nt, v) == NK_CallNode ? nt_ref(nt, v, "receiver") : -1, k;
+  if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode || !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, v, "name"))) return LR_UNKNOWN_CLASS;
+  return (k = comp_class_index(c, lr_written_name(nt, w))) >= 0 ? k : LR_CORE;
+}
+typedef struct { const char *name; int cls; } LrRtaName;
+typedef struct {
+  Compiler *c; LoadRecord *r;
+  int s, n, *key, *ustart, *ulist, *stack, nstack, *hnext, *hfirst;
+  unsigned char *hreach, *rq, *sub, *ext, *seen;
+  int allinst, cb, allcls, any, builders, ncname;
+  LrRtaName *cname;
+} LrRta;
+
+/* name's index in the program's method names (r->names), -1 for none */
+static int lr_name_ix(const LoadRecord *r, const char *nm) {
+  char **p = nm ? bsearch(&nm, r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp) : NULL;
+  return p ? (int)(p - r->names) : -1;
+}
+static void lr_rta_reach(LrRta *t, int hi);
+static void lr_rta_recv(LrRta *t, int a) {   /* an object with a among its ancestors may exist */
+  LoadRecord *r = t->r;
+  LrClass *kc = lr_class(r, a);
+  if (a < LR_MAIN || a >= t->c->nclasses || r->rinst[a + 1] != LR_NEVER) return;
+  r->rinst[a + 1] = t->s;
+  for (int h = t->hfirst[a + 1]; h >= 0; h = t->hnext[h])
+    if (t->allinst || t->rq[lr_name_ix(r, r->hist[h].name)] & RQ_INST) lr_rta_reach(t, h);
+  for (int j = 0; kc && j < kc->nmix; j++)
+    if (!elab_mix_on_singleton(kc->mix[j].kind)) lr_rta_recv(t, lr_later(t->c, &kc->mix[j].mod, kc->mix[j].ref));
+}
+static void lr_rta_add(LrRta *t, int k) {   /* k into E */
+  for (int a = k, d = 0; a >= LR_MAIN && a < t->c->nclasses && d < 64; a = lr_super(t->c, a), d++) lr_rta_recv(t, a);
+}
+static void lr_rta_ext(LrRta *t, int m, int d) {   /* module m extended onto a class, or included into one that is */
+  LrClass *mc = lr_class(t->r, m);
+  if (m < 0 || m >= t->c->nclasses || t->ext[m + 1] || d > 64) return;
+  t->ext[m + 1] = 1;
+  for (int j = 0; mc && j < mc->nmix; j++)
+    if (!elab_mix_on_singleton(mc->mix[j].kind)) lr_rta_ext(t, lr_later(t->c, &mc->mix[j].mod, mc->mix[j].ref), d + 1);
+}
+/* name called on an object of E (RQ_INST) or on any class object (RQ_CLASS) */
+static void lr_rta_call(LrRta *t, const char *name, int how) {
+  LoadRecord *r = t->r;
+  int x = lr_name_ix(r, name);
+  if (x < 0 || (t->rq[x] & how) == how) return;
+  how &= ~t->rq[x];
+  t->rq[x] |= (unsigned char)how;
+  const LrVers *v = lr_vers(r, name);
+  for (int i = v ? v->first : -1; i >= 0; i = r->hist[i].nlink) {
+    const LrHist *h = &r->hist[i];
+    if (h->a >= LR_MAIN && h->a < t->c->nclasses && (((how & RQ_INST) && !h->b && r->rinst[h->a + 1] != LR_NEVER) ||
+                                                     ((how & RQ_CLASS) && (h->b || t->ext[h->a + 1])))) lr_rta_reach(t, i);
+  }
+}
+/* name called on class k: its singleton chain's, its extended modules' */
+static void lr_rta_call_on(LrRta *t, const char *name, int k) {
+  LoadRecord *r = t->r;
+  lr_rta_call(t, name, RQ_INST);
+  for (int a = k, d = 0; a >= LR_MAIN && a < t->c->nclasses && d < 64; a = lr_super(t->c, a), d++) {
+    LrClass *kc = lr_class(r, a);
+    LrHist *h = lr_hist(r, a, 1, name, 0);
+    if (h) lr_rta_reach(t, (int)(h - r->hist));
+    for (int j = 0; kc && j < kc->nmix; j++)
+      if (elab_mix_on_singleton(kc->mix[j].kind)) lr_rta_call(t, name, RQ_CLASS);   /* the modules extended (lr_rta_ext) */
+  }
+}
+static void lr_rta_unit(LrRta *t, int d) {
+  if (d < 0 || d >= t->n || t->seen[d]) return;
+  t->seen[d] = 1;
+  if (t->r->urun[d] == LR_NEVER) t->r->urun[d] = t->s;
+  t->stack[t->nstack++] = d;
+}
+static void lr_rta_all(LrRta *t, int inst);
+static void lr_rta_reach(LrRta *t, int hi) {
+  const LrHist *h = &t->r->hist[hi];
+  if (t->hreach[hi]) return;
+  t->hreach[hi] = 1;
+  for (int j = 0; j < h->n; j++) {
+    const LrDef *v = &h->v[j];
+    if (v->kind == LR_DEF) lr_rta_unit(t, v->node);
+    else if ((v->kind == LR_ALIAS || v->kind == LR_COPY) && !v->target) lr_rta_all(t, 0);
+    else if (v->kind == LR_ALIAS || v->kind == LR_COPY) h->b ? lr_rta_call_on(t, v->target, h->a) : lr_rta_call(t, v->target, RQ_INST);
+  }
+}
+/* every name (disp 0: every instance method of E, every singleton
+   method), or what the runtime may call back (disp 1: the implicitly
+   invoked names, and on class objects its callbacks) */
+static void lr_rta_all(LrRta *t, int disp) {
+  LoadRecord *r = t->r;
+  if (!disp && !t->allinst) {
+    t->allinst = 1;
+    for (int i = 0; i < r->nhist; i++)
+      if (r->hist[i].a >= LR_MAIN && r->hist[i].a < t->c->nclasses && r->hist[i].name && !r->hist[i].b && r->rinst[r->hist[i].a + 1] != LR_NEVER) lr_rta_reach(t, i);
+  }
+  if (t->allcls || (disp && t->cb)) return;
+  *(disp ? &t->cb : &t->allcls) = 1;
+  for (int x = 0; x < r->nnames; x++) {
+    const char *n = r->names[x];
+    int imp = disp && (method_name_implicitly_invoked(n) || is_method_missing_name(n));
+    int how = (!disp || imp || is_core_callback_name(n, 1) ? RQ_CLASS : 0) | (imp || (disp && is_core_callback_name(n, 0)) ? RQ_INST : 0);
+    if (how) lr_rta_call(t, n, how);
+  }
+}
+static void lr_rta_any(LrRta *t) {
+  for (int k = LR_MAIN; !t->any && k < t->c->nclasses; k++) lr_rta_add(t, k);
+  t->any = 1;
+}
+
+/* The class a constant names: the record's answer; else, where the record
+   cannot tell (a method body), the one class the program binds that name
+   to by headers and builder writes alone (lr_rta_names); LR_CORE for a
+   core class the program binds nothing to, or one a builder made that the
+   program has no class of (lr_rta_builder) */
+static int lr_rta_const(LrRta *t, int node) {
+  const NodeTable *nt = t->c->nt;
+  const LrDef *d = NULL;
+  int k = elab_class_ref_at(t->c, node), lo = 0, hi = t->ncname;
+  const char *nm = lr_written_name(nt, node);
+  if (k >= LR_MAIN) return k;
+  if (nt_kind(nt, node) == NK_ConstantReadNode && lr_const_at(t->c, node, nm, elab_point_of(t->c, node), &d) == ELAB_YES && d && (k = lr_rta_builder(t->c, d->node)) != LR_UNKNOWN_CLASS) return k;
+  while (lo < hi) { int mid = (lo + hi) / 2; if (strcmp(t->cname[mid].name, nm) < 0) lo = mid + 1; else hi = mid; }
+  if (lo < t->ncname && !strcmp(t->cname[lo].name, nm)) return t->cname[lo].cls;
+  return t->ncname >= 0 && (is_builtin_class_name(nm) || is_builtin_module_const_name(nm)) ? LR_CORE : LR_UNKNOWN_CLASS;
+}
+
+/* Does a call of name make an object of its receiver's class: new,
+   allocate, exception, a builder's [] */
+static int lr_rta_ctor(const LrRta *t, const char *name) {
+  return name && (is_new_name(name) || is_allocate_name(name) || is_exception_ctor_name(name) || (t->builders && is_struct_constructor(name)));
+}
+
+/* What new, allocate, a builder's [], exception or raise on recv makes */
+static void lr_rta_made(LrRta *t, int id, int recv) {
+  const NodeTable *nt = t->c->nt;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  const Scope *v = rk == NK_SelfNode ? comp_scope_of(t->c, id) : NULL;
+  int k = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? lr_rta_const(t, recv) : v && v->is_cmethod ? v->class_id : LR_UNKNOWN_CLASS;
+  if (k == LR_CORE || (rk == NK_CallNode && is_class_query(nt_str(nt, recv, "name")) && !lr_defines(t->r, "class"))) return;
+  if (k < LR_MAIN || k >= t->c->nclasses) { lr_rta_any(t); return; }
+  lr_rta_add(t, k);
+  for (int j = LR_MAIN; v && !t->sub[k + 1] && j < t->c->nclasses; j++)
+    if (lr_under(t->c, j, k)) lr_rta_add(t, j);
+  if (v) t->sub[k + 1] = 1;
+}
+
+static void lr_rta_node(LrRta *t, int id) {
+  const NodeTable *nt = t->c->nt;
+  const char *nm, *hook[2], *by;
+  NodeKind k = nt_kind(nt, id);
+  int recv, an, ac = 0, d;
+  const int *av;
+  switch (k) {
+    case NK_SuperNode: case NK_ForwardingSuperNode:
+      d = elab_body_def(t->c, id);
+      if (d < 0) lr_rta_all(t, 0);
+      else lr_rta_call(t, nt_str(nt, d, "name"), RQ_INST | RQ_CLASS);
+      return;
+    case NK_DefNode:
+      if (t->r->urun[id] == 0) lr_rta_unit(t, id);   /* a def the record did not record: from here */
+      /* fallthrough */
+    case NK_AliasMethodNode:
+      lr_rta_call(t, "method_added", RQ_INST | RQ_CLASS);
+      lr_rta_call(t, "singleton_method_added", RQ_INST | RQ_CLASS);
+      return;
+    case NK_UndefNode:
+      lr_rta_call(t, "method_undefined", RQ_INST | RQ_CLASS);
+      lr_rta_call(t, "singleton_method_undefined", RQ_INST | RQ_CLASS);
+      return;
+    case NK_ClassNode: lr_rta_call(t, "inherited", RQ_CLASS); return;
+    case NK_ConstantWriteNode: case NK_ConstantPathWriteNode: lr_rta_call(t, "const_added", RQ_CLASS); return;
+    case NK_ConstantReadNode: case NK_ConstantPathNode: lr_rta_call(t, "const_missing", RQ_CLASS); return;
+    case NK_BlockArgumentNode:
+      an = nt_ref(nt, id, "expression");
+      nm = an >= 0 && nt_kind(nt, an) == NK_SymbolNode ? nt_str(nt, an, "value") : NULL;
+      if (nm) lr_rta_call(t, nm, RQ_INST | RQ_CLASS);
+      else lr_rta_all(t, 1);
+      if (lr_rta_ctor(t, nm)) {   /* `&:new`: objects of whatever classes are yielded */
+        lr_rta_any(t);
+        lr_rta_call(t, "initialize", RQ_INST);
+      }
+      return;
+    case NK_CallNode: break;
+    default:
+      if (lr_node_runs(t->c, id) == LR_DISPATCH) lr_rta_all(t, 1);
+      return;
+  }
+  nm = nt_str(nt, id, "name");
+  recv = nt_ref(nt, id, "receiver");
+  an = nt_ref(nt, id, "arguments");
+  av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode, ak;
+  int rc = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? lr_rta_const(t, recv) : LR_UNKNOWN_CLASS;
+  by = nm && (is_send_family(nm) || is_method_object_maker(nm) || is_enumerator_maker(nm)) ? (ac ? vis_arg_name(nt, av[0]) : "") : nm;
+  if (!by || (ac && is_code_eval_name(nm)) || is_method_bind_name(by) || is_object_loader(rk == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL, by, ac)) {
+    lr_rta_all(t, 0);
+    lr_rta_any(t);
+    return;
+  }
+  if (ac && is_method_naming_call(nm) && !vis_arg_name(nt, av[0])) lr_rta_all(t, 0);   /* a method of a name not known: any name's, though it makes no object */
+  if (!lr_call_on_literals(t->c, id)) lr_rta_all(t, 1);
+  if (by != nm) lr_rta_call(t, nm, RQ_INST | RQ_CLASS);   /* send itself, which the program may define */
+  if (rk == NK_SymbolNode && is_proc_conversion_name(nm)) lr_rta_call(t, nt_str(nt, recv, "value"), RQ_INST | RQ_CLASS);
+  if (is_refine_name(nm)) {   /* a refinement's methods: the refining module's, live from here */
+    int m = id;
+    while (m >= 0 && nt_kind(nt, m) != NK_ModuleNode) m = comp_parent_map(t->c)[m];
+    if ((m = m >= 0 ? elab_header_class(t->c, m, NULL, NULL) : LR_UNKNOWN_CLASS) >= 0) lr_rta_recv(t, m);
+    else lr_rta_any(t);
+  }
+  if (rc >= LR_MAIN) lr_rta_call_on(t, by, rc);   /* a method called, sent or made a callable by its name */
+  else lr_rta_call(t, by, RQ_INST | RQ_CLASS);
+  if (lr_rta_ctor(t, by)) {
+    lr_rta_made(t, id, recv);
+    lr_rta_call(t, "initialize", RQ_INST);
+  }
+  /* raise makes an object of a class it is given, or a core one of a
+     message; Timeout.timeout one of its klass */
+  int ka = is_raise_alias(by) ? 0 : rk == NK_ConstantReadNode && is_timeout_call(nt_str(nt, recv, "name"), by) ? 1 : -1;
+  ak = ka >= 0 && ka < ac ? nt_kind(nt, av[ka]) : NK_StringNode;
+  if (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) {
+    if ((d = lr_rta_const(t, av[ka])) >= LR_MAIN) lr_rta_call_on(t, "exception", d);
+    lr_rta_made(t, id, av[ka]);
+    lr_rta_call(t, "initialize", RQ_INST);
+  }
+  else if (ak != NK_StringNode && ak != NK_InterpolatedStringNode && !(ak == NK_CallNode && lr_rta_ctor(t, nt_str(nt, av[ka], "name")))) {
+    lr_rta_call(t, "exception", RQ_CLASS | RQ_INST);
+    lr_rta_any(t);
+  }
+  /* a module mixed in by a call the record does not hold as a class's
+     (on an object, in a method body): its methods have instances */
+  for (int i = 0; is_mixin_call(by) && (rk != NK_SelfNode || elab_body_def(t->c, id) >= 0) && i < ac; i++) {
+    int m = nt_kind(nt, av[i]) == NK_ConstantReadNode || nt_kind(nt, av[i]) == NK_ConstantPathNode ? lr_rta_const(t, av[i]) : LR_UNKNOWN_CLASS;
+    if (m >= 0) lr_rta_recv(t, m);
+    else lr_rta_any(t);
+  }
+  for (int sg = 0; sg < 2; sg++)
+    for (int i = definition_form_hooks(by, sg, hook) - 1; i >= 0; i--) lr_rta_call(t, hook[i], RQ_INST | RQ_CLASS);
+}
+
+/* The constants the program binds by class and module headers and builder
+   writes alone, sorted, each with its one class (LR_CORE: a builder's no
+   header reopens; LR_UNKNOWN_CLASS: bound otherwise too, or to two);
+   none (ncname -1) when the program sets or removes a constant by a call */
+static int lr_rta_name_cmp(const void *a, const void *b) {
+  return strcmp(((const LrRtaName *)a)->name, ((const LrRtaName *)b)->name);
+}
+static void lr_rta_names(LrRta *t) {
+  const NodeTable *nt = t->c->nt;
+  int n = 0, m = 0;
+  if (!(t->cname = malloc(sizeof *t->cname * (size_t)t->n + 1))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < t->n; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *cn = k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    int path = k == NK_ConstantPathWriteNode || k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathOperatorWriteNode;
+    if (k == NK_ClassNode || k == NK_ModuleNode)
+      t->cname[n++] = (LrRtaName){ lr_written_name(nt, nt_ref(nt, id, "constant_path")), elab_header_class(t->c, id, NULL, NULL) };
+    else if (path || k == NK_ConstantWriteNode || k == NK_ConstantOrWriteNode || k == NK_ConstantOperatorWriteNode) {
+      int b = lr_rta_builder(t->c, id);
+      t->cname[n++] = (LrRtaName){ lr_written_name(nt, path ? nt_ref(nt, id, "target") : id), b != LR_UNKNOWN_CLASS ? b : lr_class_of(t->c, &(LrDef){ .node = id }) };
+    }
+    if ((cn && (is_const_set_name(cn) || is_remove_const_name(cn))) || (n && !t->cname[n - 1].name)) { t->ncname = -1; return; }
+  }
+  qsort(t->cname, (size_t)n, sizeof *t->cname, lr_rta_name_cmp);
+  for (int i = 0; i < n; i++)   /* a name bound to two classes, or otherwise too: unknown */
+    if (m && !strcmp(t->cname[m - 1].name, t->cname[i].name)) { if (t->cname[m - 1].cls != t->cname[i].cls) t->cname[m - 1].cls = LR_UNKNOWN_CLASS; }
+    else t->cname[m++] = t->cname[i];
+  t->ncname = m;
+}
+
+static void lr_rta(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  const int *par = comp_parent_map(c);
+  LrRta t = { .c = c, .r = r, .n = c->nt->count < r->n ? c->nt->count : r->n };
+  int n = t.n, ncl = c->nclasses + 1, nk = r->nst + n;
+  t.key = malloc(sizeof(int) * (size_t)(4 * n + r->nst + 2 + r->nhist + ncl));
+  t.hreach = calloc((size_t)(r->nhist + r->nnames + 3 * ncl + n) + 1, 1);
+  if (!t.key || !t.hreach) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  t.ustart = t.key + n; t.ulist = t.ustart + nk + 2; t.stack = t.ulist + n; t.hnext = t.stack + n; t.hfirst = t.hnext + r->nhist;
+  t.rq = t.hreach + r->nhist; t.sub = t.rq + r->nnames; t.ext = t.sub + ncl; t.seen = t.ext + ncl;
+  for (int i = 0; i < n; i++) {   /* each node's innermost def (the def itself is its outer one's) */
+    int p = par[i];
+    while (p >= 0 && p < n && p > i && nt_kind(c->nt, p) != NK_DefNode) p = par[p];
+    t.key[i] = p < 0 || p >= n ? -1 : nt_kind(c->nt, p) == NK_DefNode ? p : t.key[p];
+  }
+  for (int i = 0; i < n; i++)   /* grouped: a def's nodes; the others by their statement of region 0 */
+    t.key[i] = t.key[i] >= 0 ? r->nst + t.key[i] : r->at[i] >= 0 && r->st[r->at[i]].region == 0 ? r->at[i] : -1;
+  memset(t.ustart, 0, sizeof(int) * (size_t)(nk + 2));
+  for (int i = 0; i < n; i++) if (t.key[i] >= 0) t.ustart[t.key[i] + 2]++;
+  for (int i = 1; i < nk + 2; i++) t.ustart[i] += t.ustart[i - 1];
+  for (int i = 0; i < n; i++) if (t.key[i] >= 0) t.ulist[t.ustart[t.key[i] + 1]++] = i;
+  for (int k = 0; k < ncl; k++) { t.hfirst[k] = -1; r->rinst[k] = LR_NEVER; }
+  for (int i = r->nhist - 1; i >= 0; i--) {
+    const LrHist *h = &r->hist[i];
+    if (h->a < LR_MAIN || !h->name || h->a >= c->nclasses) continue;
+    for (int j = 0; j < h->n; j++) if (h->v[j].kind == LR_DEF && h->v[j].node < n) r->urun[h->v[j].node] = LR_NEVER;
+    if (!h->b) { t.hnext[i] = t.hfirst[h->a + 1]; t.hfirst[h->a + 1] = i; }
+  }
+  for (int k = LR_MAIN; k < c->nclasses; k++) {
+    LrClass *kc = lr_class(r, k);
+    for (int j = 0; kc && j < kc->nmix; j++)
+      if (elab_mix_on_singleton(kc->mix[j].kind)) lr_rta_ext(&t, lr_later(c, &kc->mix[j].mod, kc->mix[j].ref), 0);
+  }
+  NT_FOREACH_KIND(c->nt, NK_CallNode, b) {
+    int recv = nt_ref(c->nt, b, "receiver");
+    if (recv >= 0 && nt_kind(c->nt, recv) == NK_ConstantReadNode && is_record_class_builder(nt_str(c->nt, recv, "name"), nt_str(c->nt, b, "name"))) t.builders = 1;
+  }
+  lr_rta_names(&t);
+  lr_rta_add(&t, LR_MAIN);
+  for (int k = 0; k < c->nclasses; k++) if (c->classes[k].is_builtin_const) lr_rta_add(&t, k);
+  for (t.s = 0; t.s < r->nst; t.s++)
+    for (int i = t.ustart[t.s]; i < t.ustart[t.s + 1]; i++)
+      for (lr_rta_node(&t, t.ulist[i]); t.nstack;) {
+        int d = r->nst + t.stack[--t.nstack];
+        for (int j = t.ustart[d]; j < t.ustart[d + 1]; j++) lr_rta_node(&t, t.ulist[j]);
+      }
+  free(t.key); free(t.hreach); free(t.cname);
 }
 
 /* Each statement's run bit and the count before it (LrStmt.runs, nrun),
@@ -2690,9 +3086,18 @@ static void lr_run_points(Compiler *c) {
       global = k == LR_MAIN || c->classes[k].is_builtin_const || elab_mix_on_singleton(kc->mix[j].kind);
   }
   if (!(r->rend = realloc(r->rend, sizeof(int) * (size_t)r->nregion))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  r->defs_computed = 0;
+  NT_FOREACH_KIND(c->nt, NK_CallNode, b) {
+    const char *bn = nt_str(c->nt, b, "name");
+    int an = nt_ref(c->nt, b, "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(c->nt, an, "arguments", &ac) : NULL;
+    if (bn && is_method_naming_call(bn) && ac && !vis_arg_name(c->nt, av[0])) r->defs_computed = 1;
+  }
   for (int s = 0; s < r->nst; s++) r->st[s].runs = 0;
   for (int id = 0; id < r->n; id++)
-    if (r->at[id] >= 0 && !(r->bits[id] & LR_LATE)) r->st[r->at[id]].runs |= (unsigned char)lr_node_runs(c, id);
+    if (r->at[id] >= 0 && !(r->bits[id] & LR_LATE)) {
+      r->st[r->at[id]].runs |= (unsigned char)lr_node_runs(c, id);
+    }
   for (int s = 0; s < r->nst; s++) {
     LrStmt *e = &r->st[s];
     seen |= e->region != 0;
@@ -2703,6 +3108,11 @@ static void lr_run_points(Compiler *c) {
     r->rend[e->region] = s + 1;
   }
   r->nrun = n;
+  free(r->rinst); free(r->urun);
+  r->rinst = calloc((size_t)(r->ncls > c->nclasses ? r->ncls : c->nclasses + 1) + 1, sizeof(int));
+  r->urun = calloc((size_t)r->n + 1, sizeof(int));
+  if (!r->rinst || !r->urun) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (r->nregion == 1) lr_rta(c);
   r->runs_of = r->builds;
 }
 
@@ -2739,6 +3149,8 @@ int elab_call_window(Compiler *c, int id, ElabWindow *w) {
     w->to = end;
     w->closed = 1;
   }
+  if (nt_kind(c->nt, a) == NK_DefNode && r->urun[a] > w->from.seq)   /* nor before the body may first run (lr_rta) */
+    w->from.seq = r->urun[a] < w->to.seq ? r->urun[a] : w->to.seq - 1;
   return ELAB_YES;
 }
 
@@ -2749,11 +3161,14 @@ static int lr_span(Compiler *c, int cls, const char *name, int sg, const ElabWin
   LoadPoint p0 = w->from, p1 = w->to;
   if (!r || !r->recorded || !name || cls < LR_MAIN || p0.region < 0 || elab_cmp(p0, p1) != PROG_BEFORE) return -1;
   lr_run_points(c);
-  /* no instance of a class before it opens, nor before its first body
-     ends unless the body may run code of the program's (a `new` among it) */
-  const LrClass *kc = !sg && cls >= 0 && !c->classes[cls].is_builtin_const && r->nregion == 1 ? lr_class(r, cls) : NULL;
+  /* no call on a class before it opens, nor on an instance of it before
+     the first statement one may exist (lr_rta); none in w: w's last
+     statement. In a program of more regions, from w's start: more
+     versions, never fewer */
+  const LrClass *kc = cls >= 0 && !c->classes[cls].is_builtin_const && r->nregion == 1 ? lr_class(r, cls) : NULL;
   LoadPoint b = kc && kc->nopen ? elab_point_of(c, kc->open[0].node) : (LoadPoint){ -1, -1 };
-  int bl = b.region == p0.region ? (lr_runs_in(r, b.seq, r->st[b.seq].last + 1) ? b.seq : r->st[b.seq].last) : -1;
+  int bl = b.region != p0.region ? -1 : sg || r->rinst[cls + 1] < b.seq ? b.seq : r->rinst[cls + 1];
+  if (bl >= p1.seq) bl = p1.seq - 1;
   if (p0.seq < bl && bl < p1.seq) p0.seq = bl;
   int m = 0, nh = 0, *cp = NULL, n = 0, obs0 = 0;
   const LrVers *x = lr_vers(r, name);
@@ -4009,6 +4424,7 @@ void elab_dump(Compiler *c, FILE *out) {
   for (int i = 0; i < r->nhdr; i++)
     if (r->hdr[i].want == LR_NEW)
       fprintf(out, "entity %s: owner %s leaf %s\n", lr_class_name(c, r->hdr[i].cls), lr_class_name(c, r->hdr[i].owner), r->hdr[i].leaf);
+  if (r->nhist) lr_run_points(c);
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
     if (h->a == LR_KEY_DEFINES) continue;
@@ -4028,6 +4444,8 @@ void elab_dump(Compiler *c, FILE *out) {
       const LrDef *v = &h->v[j];
       fprintf(out, " %s#%d%s%s%s", kinds[v->kind], elab_point_of(c, v->node).seq, v->may ? " may" : "", v->nil ? " nil" : "",
               v->unplaced ? " unplaced" : "");
+      if (v->kind == LR_DEF && h->a >= LR_MAIN && r->nregion == 1 && v->node < r->n && elab_method_versions(c, h->name) > 1)   /* lr_rta */
+        r->urun[v->node] == LR_NEVER ? fputs(" runs=never", out) : fprintf(out, " runs=#%d", r->urun[v->node]);
       if (v->kind == LR_ALIAS && v->target) {   /* the version the alias takes, as the query answers it */
         const LrDef *d = NULL;
         int o = elab_method_at(c, h->a, v->target, h->b, elab_point_of(c, v->node), &d);
@@ -4047,7 +4465,6 @@ void elab_dump(Compiler *c, FILE *out) {
      reaches over it (elab_method_span; idle: no statement in it may run
      code of the program's); the versions of the name in every history;
      whether the program names it */
-  if (r->nhist) lr_run_points(c);
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
     int nv = 0;
@@ -4232,7 +4649,7 @@ void elab_free(Compiler *c) {
   free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   for (int i = 0; i < r->nhdr; i++) free(r->hdr[i].leaf);
   free(r->hdr); free(r->hdr_head);
-  free(r->st); free(r->at); free(r->bits); free(r->dscope); free(r->rend); free(r);
+  free(r->st); free(r->at); free(r->bits); free(r->dscope); free(r->rend); free(r->rinst); free(r->urun); free(r);
   c->lrec = NULL;
 }
 

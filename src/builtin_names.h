@@ -160,6 +160,12 @@ int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
 int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
 int is_marshal_load(const char *recv, const char *meth); /* Marshal.load */
+int is_object_loader(const char *recv, const char *meth, int argc); /* Marshal.load/restore, YAML/Psych.load family, JSON.load, JSON.parse with options, ObjectSpace._id2ref */
+int is_method_bind_name(const char *n); /* bind bind_call */
+int is_timeout_call(const char *recv, const char *meth); /* Timeout.timeout(sec, klass) */
+int is_exception_ctor_name(const char *n); /* exception */
+int is_core_callback_name(const char *n, int sg); /* what CRuby's core may call on an object it is given (sg 0) or a class object (sg 1): operators, deconstruct, respond_to?, to_f, ... */
+int is_enumerator_maker(const char *n); /* to_enum enum_for */
 int is_allocate_name(const char *n); /* allocate */
 int is_ivar_remove_name(const char *n); /* remove_instance_variable */
 int is_ivar_presence_read(const char *n); /* instance_variables instance_variable_defined? remove_instance_variable inspect p pp */
@@ -275,7 +281,7 @@ int is_const_query_name(const char *n); /* const_get const_defined? const_source
 int is_constants_list_name(const char *n); /* constants */
 int is_definition_hook_name(const char *n); /* inherited included extended prepended method_added singleton_method_added const_added */
 int is_method_missing_name(const char *n); /* method_missing respond_to_missing?: what a call of a name an object has no method by runs */
-int definition_form_hooks(const char *form, int sg, const char **out); /* the hooks a definition form fires: included for include, method_added for attr_accessor, ... (up to 2) */
+int definition_form_hooks(const char *form, int sg, const char **out); /* the hooks a definition form fires: included and append_features for include, method_added for attr_accessor, ... (up to 2) */
 int is_const_missing_name(const char *n); /* const_missing */
 int is_const_table_def_name(const char *n); /* __const_get__ __const_defined__ */
 int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice! */
