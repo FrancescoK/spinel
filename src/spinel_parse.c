@@ -325,6 +325,7 @@ static char *cstr(pm_constant_id_t id) {
 
 static void sp_find_builtin_ranges(const char *src);
 static int sp_in_builtin(const uint8_t *at);
+#include "prism_eval.c"
 #include "sp_macro.c"
 #include "sp_const_loop.c"
 

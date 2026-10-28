@@ -31,7 +31,7 @@
  *    nowhere else, and named elsewhere only as the receiver of a call that
  *    reads it;
  *  - its block writes only its own locals, from values the evaluator computes
- *    (sp_macro.c's mx_eval), a constant, an `if` / `case` choosing among
+ *    (prism_eval.c's pev_eval), a constant, an `if` / `case` choosing among
  *    those, or `Class.new(Constant)`;
  *  - and otherwise only calls `const_set(name, value)` with a computed
  *    constant name, `instance_variable_set(:@x, value)` on a class it made
@@ -57,7 +57,7 @@ typedef struct {
   ClVar loc[64]; int nloc;
   ClKlass *kl; int nkl, ckl;
   MvBuf *out;
-  MxCtx mx;          /* the plain values, for mx_eval */
+  MxCtx mx;          /* the plain values, for pev_eval */
   const char *src;   /* the whole program */
   const pm_node_t *root;          /* its tree, to look for other definitions of a name */
   const uint8_t *lo, *hi;         /* the loop's own text */
@@ -218,9 +218,9 @@ static int cl_changed(const pm_node_t *root, const char *const *names, const cha
 }
 
 static void cl_sync(ClCtx *c) {
-  c->mx.nloc = 0;
+  c->mx.ev.nloc = 0;
   for (int i = 0; i < c->nloc && i < 64; i++)
-    if (c->loc[i].v.k == CL_MV) mx_set(c->mx.loc, &c->mx.nloc, 64, c->loc[i].name, c->loc[i].v.mv);
+    if (c->loc[i].v.k == CL_MV) pev_bind(&c->mx.ev, c->loc[i].name, c->loc[i].v.mv);
 }
 
 static ClVal *cl_lookup(ClCtx *c, const char *name) {
@@ -285,7 +285,7 @@ static int cl_eval(ClCtx *c, pm_node_t *n, ClVal *out) {
   case PM_IF_NODE: {
     pm_if_node_t *in = (pm_if_node_t *)n;
     Mv pv;
-    if (!mx_eval(&c->mx, in->predicate, &pv)) return 0;
+    if (!pev_eval(&c->mx.ev, in->predicate, &pv)) return 0;
     pm_statements_node_t *arm = in->statements;
     if (!mv_truthy(pv)) {
       pm_node_t *e = in->subsequent;
@@ -320,7 +320,7 @@ static int cl_eval(ClCtx *c, pm_node_t *n, ClVal *out) {
   default: break;
   }
   out->k = CL_MV;
-  return mx_eval(&c->mx, n, &out->mv);
+  return pev_eval(&c->mx.ev, n, &out->mv);
 }
 
 /* `when` values: an Integer, String or Symbol literal, or an Integer range */
@@ -328,14 +328,14 @@ static int cl_when_matches(ClCtx *c, pm_node_t *w, Mv v, int *hit) {
   if (PM_NODE_TYPE(w) == PM_RANGE_NODE) {
     pm_range_node_t *rg = (pm_range_node_t *)w;
     Mv lo, hi;
-    if (!rg->left || !rg->right || !mx_eval(&c->mx, rg->left, &lo) || !mx_eval(&c->mx, rg->right, &hi) ||
+    if (!rg->left || !rg->right || !pev_eval(&c->mx.ev, rg->left, &lo) || !pev_eval(&c->mx.ev, rg->right, &hi) ||
         lo.k != MV_INT || hi.k != MV_INT) return 0;
     int excl = (w->flags & PM_RANGE_FLAGS_EXCLUDE_END) != 0;
     *hit = v.k == MV_INT && v.i >= lo.i && (excl ? v.i < hi.i : v.i <= hi.i);
     return 1;
   }
   Mv wv;
-  if (!mx_eval(&c->mx, w, &wv) || (wv.k != MV_INT && wv.k != MV_STR && wv.k != MV_SYM)) return 0;
+  if (!pev_eval(&c->mx.ev, w, &wv) || (wv.k != MV_INT && wv.k != MV_STR && wv.k != MV_SYM)) return 0;
   *hit = mv_eq(v, wv);
   return 1;
 }
@@ -359,7 +359,7 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
     int is_if = PM_NODE_TYPE(n) == PM_IF_NODE;
     pm_node_t *pred = is_if ? ((pm_if_node_t *)n)->predicate : ((pm_unless_node_t *)n)->predicate;
     Mv pv;
-    if (!mx_eval(&c->mx, pred, &pv)) return 0;
+    if (!pev_eval(&c->mx.ev, pred, &pv)) return 0;
     pm_statements_node_t *then = is_if ? ((pm_if_node_t *)n)->statements : ((pm_unless_node_t *)n)->statements;
     pm_node_t *els = is_if ? ((pm_if_node_t *)n)->subsequent : (pm_node_t *)((pm_unless_node_t *)n)->else_clause;
     if (mv_truthy(pv) == is_if) return cl_exec_stmts(c, then);
@@ -370,7 +370,7 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
   case PM_CASE_NODE: {
     pm_case_node_t *cs = (pm_case_node_t *)n;
     Mv v;
-    if (!cs->predicate || !mx_eval(&c->mx, cs->predicate, &v)) return 0;
+    if (!cs->predicate || !pev_eval(&c->mx.ev, cs->predicate, &v)) return 0;
     for (size_t i = 0; i < cs->conditions.size; i++) {
       pm_when_node_t *wn = (pm_when_node_t *)cs->conditions.nodes[i];
       if (PM_NODE_TYPE(cs->conditions.nodes[i]) != PM_WHEN_NODE) return 0;
@@ -395,7 +395,7 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
     int ok = 0;
     if (self_recv && argc == 2 && strcmp(name, "const_set") == 0) {
       Mv cnm; ClVal v;
-      if (mx_eval(&c->mx, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
+      if (pev_eval(&c->mx.ev, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
           isupper((unsigned char)cnm.s[0]) && mv_sym_plain(cnm.s) && cnm.s[strlen(cnm.s) - 1] != '?' &&
           cnm.s[strlen(cnm.s) - 1] != '!' && cnm.s[strlen(cnm.s) - 1] != '=' &&
           !cl_name_taken(c, cnm.s) && cl_eval(c, args->nodes[1], &v)) {
@@ -421,7 +421,7 @@ static int cl_exec(ClCtx *c, pm_node_t *n) {
     else if (!self_recv && argc == 2 && strcmp(name, "instance_variable_set") == 0) {
       ClVal r, v; Mv ivn;
       if (cl_eval(c, cn->receiver, &r) && r.k == CL_KLASS && !c->kl[r.klass].name &&
-          mx_eval(&c->mx, args->nodes[0], &ivn) && (ivn.k == MV_SYM || ivn.k == MV_STR) &&
+          pev_eval(&c->mx.ev, args->nodes[0], &ivn) && (ivn.k == MV_SYM || ivn.k == MV_STR) &&
           ivn.s[0] == '@' && ivn.s[1] != '@' && mv_sym_plain(ivn.s + 1) && cl_eval(c, args->nodes[1], &v)) {
         MvBuf vb = {0};
         if (cl_spell(c, v, &vb)) {
@@ -550,7 +550,7 @@ static int cl_table(ClCtx *c, pm_node_t *h, Mv **keys, Mv **vals, int *n) {
     pm_node_t *e = hn->elements.nodes[i];
     if (PM_NODE_TYPE(e) != PM_ASSOC_NODE) return 0;
     pm_assoc_node_t *as = (pm_assoc_node_t *)e;
-    if (!mx_eval(&c->mx, as->key, &(*keys)[i]) || !mx_eval(&c->mx, as->value, &(*vals)[i])) return 0;
+    if (!pev_eval(&c->mx.ev, as->key, &(*keys)[i]) || !pev_eval(&c->mx.ev, as->value, &(*vals)[i])) return 0;
     if ((*keys)[i].k == MV_ARR || (*vals)[i].k == MV_ARR) return 0;
     for (int j = 0; j < i; j++) if (mv_eq((*keys)[i], (*keys)[j])) return 0;   /* a repeated key */
   }
