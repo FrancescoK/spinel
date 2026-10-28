@@ -479,6 +479,10 @@ static int yield_site_listed(const char *name, TyKind recv) {
       !strcmp(name, "last") || !strcmp(name, "min") || !strcmp(name, "max") ||
       !strcmp(name, "pop") || !strcmp(name, "shift"))
     return ty_recv_is_plain_array(recv);
+  /* minmax was never listed here at all (K-033) -- an Int Array site beside
+     a String Array one failed to compile even with no Hash anywhere in the
+     picture, a plainer bug than the Hash-specific one below. */
+  if (!strcmp(name, "minmax")) return ty_recv_is_plain_array(recv);
   return -1;
 }
 int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
@@ -515,7 +519,8 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        over; the root cause is in the per-site boxing emitter this fix does
        not touch, not in this table. */
     if (ty_is_hash(recv) &&
-        (!strcmp(name, "min") || !strcmp(name, "max") || !strcmp(name, "uniq"))) {
+        (!strcmp(name, "min") || !strcmp(name, "max") || !strcmp(name, "uniq") ||
+         !strcmp(name, "minmax"))) {
       const BuiltinOp *op = bop_find(bop_family_of(TY_POLY_ARRAY), name, 0, 0);
       TyKind r = op ? bop_result(op, TY_POLY_ARRAY) : TY_UNKNOWN;
       if (r == TY_UNKNOWN) return 0;
