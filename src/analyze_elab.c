@@ -838,7 +838,7 @@ static const char *lr_written_name(const NodeTable *nt, int cp) {
   return rn ? q : nt_str(nt, cp, "qc_orig_name") ? nt_str(nt, cp, "qc_orig_name") : nt_str(nt, cp, "name");
 }
 
-static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **out);
+static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out);
 static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth);
 
 static int lr_cref(Compiler *c, int e);
@@ -922,7 +922,7 @@ int elab_class_ref_at(Compiler *c, int node) {
   if (k != NK_ConstantPathNode && k != NK_ConstantReadNode) return LR_UNKNOWN_CLASS;
   const char *nm = lr_written_name(nt, node);
   int o, ci, pc = LR_MAIN;
-  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) o = lr_const_at(c, node, nm, &d);
+  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) o = lr_const_at(c, node, nm, elab_point_of(c, node), &d);
   else {
     int par = k == NK_ConstantPathNode ? nt_ref(nt, node, "parent") : -1;
     LoadPoint p = elab_point_of(c, node);
@@ -1042,8 +1042,10 @@ static int lr_const_owner(int cls) { return cls >= LR_MAIN ? cls + 2 : 0; }
 static int lr_nil_value(const NodeTable *nt, int v) {
   return v < 0 || nt_kind(nt, v) == NK_NilNode || comp_nil_chain_bottom(nt, v) >= 0;
 }
+/* Record a write under owner, numbered as lr_const_owner numbers it; the
+   version keeps the class it names (LrDef.owner) */
 static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, int node, int nilv, int may) {
-  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL });
+  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner - 2 });
 }
 
 static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may);
@@ -1787,24 +1789,20 @@ static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
   return m->dup - 1;
 }
 
-/* The search of `name` (or, with name NULL, of module `mod`) along cls's
-   ancestors at p: its prepends (the last first), cls, its includes (the
-   last first), then its superclass; a singleton's own methods, its extends,
-   then the superclass's singleton. With vis, an ancestor's visibility
-   change of the name is found as well, for the visibility it gives. */
-static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth) {
-  LoadRecord *r = c->lrec;
-  if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
-  if (!name && cls == mod && !sg) return ELAB_YES;
-  LrClass *k = lr_class(r, cls);
-  if (!k) return ELAB_UNKNOWN;   /* a class the record does not hold (LoadRecord.held) */
-  int unsure = 0;
+/* One ancestor's part of the search of `name` (or of module `mod`): cls's
+   prepends (the last first), its own entries, its includes (the last
+   first); a singleton's prepends, own methods and extends. ELAB_YES found,
+   LR_STOP an undef stops the search there, ELAB_NO go on to the next,
+   ELAB_UNKNOWN for a class the record does not hold (LoadRecord.held);
+   *unsure is set where an entry or a mixin may have happened. */
+static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
+  LrClass *k = lr_class(c->lrec, cls);
+  if (!k) return ELAB_UNKNOWN;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
-      int o = name ? lr_own(c, lr_hist(r, cls, sg, name, 0), p, late, vis, out) : ELAB_NO;
-      if (o == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
-      if (o == LR_STOP) return unsure ? ELAB_UNKNOWN : ELAB_NO;
-      if (o == ELAB_UNKNOWN) unsure = 1;
+      int o = name ? lr_own(c, lr_hist(c->lrec, cls, sg, name, 0), p, late, vis, out) : ELAB_NO;
+      if (o == ELAB_YES || o == LR_STOP) return o;
+      if (o == ELAB_UNKNOWN) *unsure = 1;
       continue;
     }
     for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
@@ -1817,18 +1815,54 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
          earlier mixin's, the superclass's) stays where it is */
       int dup = lr_mixin_dup(c, cls, sg, m);
       if (dup == ELAB_YES) continue;
-      if (dup == ELAB_UNKNOWN) unsure = 1;
+      if (dup == ELAB_UNKNOWN) *unsure = 1;
       int o = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
-      if (o == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
-      if (o != ELAB_NO) unsure = 1;
+      if (o == ELAB_YES && b == ELAB_YES) return ELAB_YES;
+      if (o != ELAB_NO) *unsure = 1;
     }
   }
-  /* a class's chain ends at Object, whose methods main's top level defines
-     (main's own singleton is not Object's) */
-  int sup = lr_super(c, cls);
-  if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
-  int o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, vis, out, depth + 1) : ELAB_NO;
-  return o == ELAB_NO ? (unsure ? ELAB_UNKNOWN : ELAB_NO) : unsure ? ELAB_UNKNOWN : o;
+  return ELAB_NO;
+}
+
+/* Where a singleton's chain ends, the search goes on into instance
+   methods: a class's singleton into Class's, then Module's, Object's
+   (main's top level's among them) and Kernel's; a module's from Module's;
+   main's own singleton from Object's. Each is the program's reopening of
+   that class as registered so far (Class's is class_reopen_class): the
+   histories it searches have no entry before its header. */
+static int lr_sg_tail(Compiler *c, int cls, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth, int *unsure) {
+  int tail[5] = { class_reopen_class(c), comp_class_index(c, "Module"), comp_class_index(c, "Object"), LR_MAIN, comp_class_index(c, "Kernel") };
+  int d = cls >= 0 ? c->classes[cls].def_node : -1;
+  for (int i = cls == LR_MAIN ? 2 : d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? 1 : 0; i < 5; i++) {
+    int t = tail[i];
+    if (t < LR_MAIN) continue;
+    if (!name && t == mod) return ELAB_YES;
+    int o = lr_search_one(c, t, 0, name, mod, p, late, vis, out, depth + 1, unsure);
+    if (o != ELAB_NO) return o;
+  }
+  return ELAB_NO;
+}
+
+/* The search of `name` (or, with name NULL, of module `mod`) along cls's
+   ancestors at p (lr_search_one for each), then its superclass; for a
+   singleton, the superclass's singleton, and where that chain ends the
+   instance methods every singleton's ancestors end in (lr_sg_tail). With
+   vis, an ancestor's visibility change of the name is found as well, for
+   the visibility it gives. */
+static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth) {
+  if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
+  if (!name && cls == mod && !sg) return ELAB_YES;
+  int unsure = 0, o = lr_search_one(c, cls, sg, name, mod, p, late, vis, out, depth, &unsure);
+  if (o == ELAB_NO) {
+    /* a class's chain ends at Object, whose methods main's top level
+       defines (main's own singleton is not Object's) */
+    int sup = lr_super(c, cls);
+    if (sg && sup == LR_MAIN) sup = LR_UNKNOWN_CLASS;
+    o = sup >= LR_MAIN ? lr_search(c, sup, sg, name, mod, p, late, vis, out, depth + 1)
+      : sg ? lr_sg_tail(c, cls, name, mod, p, late, vis, out, depth, &unsure) : ELAB_NO;
+  }
+  if (o == LR_STOP) o = ELAB_NO;
+  return unsure ? ELAB_UNKNOWN : o;
 }
 
 /* Can the record answer at p: once it is made, and while the walk records
@@ -2006,25 +2040,13 @@ void elab_names_add(Compiler *c, const char *name) {
   r->names[i] = d;
 }
 
-/* The Object/Class/Module tail lr_runs searches, as registered so far: the
-   program's class of one is made where its header stands, and the
-   histories it searches have no entry before that */
-static void lr_tail(Compiler *c, int *tail) {
-  static const char *const names[] = { "Class", "Module", "Object" };
-  for (int i = 0; i < 3; i++) tail[i] = comp_class_index(c, names[i]);
-}
-
 /* Is a method of the program's what a call of `name` on class cls (main
-   for LR_MAIN) finds at p: along its singleton's ancestors, then Class's,
-   Module's and Object's own methods (main's top level's among them)? A
-   class the record does not know: by name. */
+   for LR_MAIN) finds at p: along its singleton's ancestors, which end in
+   Class's, Module's, Object's and Kernel's instance methods (main's top
+   level's among them)? A class the record does not know: by name. */
 static int lr_runs(Compiler *c, int cls, const char *name, LoadPoint p) {
   if (cls < LR_MAIN) return lr_named(c, name) ? ELAB_UNKNOWN : ELAB_NO;
-  int o = lr_search(c, cls, 1, name, -1, p, 0, 0, NULL, 0), tail[3];
-  lr_tail(c, tail);
-  for (int i = 0; i < 3 && o != ELAB_YES; i++)
-    if (tail[i] >= 0) o = lr_either(o, lr_search(c, tail[i], 0, name, -1, p, 0, 0, NULL, 0));
-  return o == ELAB_YES ? o : lr_either(o, lr_search(c, LR_MAIN, 0, name, -1, p, 0, 0, NULL, 0));
+  return lr_search(c, cls, 1, name, -1, p, 0, 0, NULL, 0);
 }
 
 /* Does definition form `nm` at node, on class cls (sg: in its singleton),
@@ -2117,12 +2139,11 @@ static int lr_cref(Compiler *c, int e) {
   return LR_MAIN;
 }
 
-/* What constant `name` read at node resolves to, as CRuby resolves it there:
-   each lexical scope's own constants, innermost first, then the ancestors
-   of the innermost (Object's last) */
-static int lr_const_at(Compiler *c, int node, const char *name, const LrDef **out) {
+/* What constant `name` read in node's lexical scopes resolves to at p, as
+   CRuby resolves it there: each lexical scope's own constants, innermost
+   first, then the ancestors of the innermost (Object's last) */
+static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   LoadRecord *r = elab_fresh(c);
-  LoadPoint p = elab_point_of(c, node);
   int e = node >= 0 && node < r->n ? r->at[node] : -1, late = p.region < 0, first = LR_MAIN;
   if (e < 0 || !name) return ELAB_UNKNOWN;
   for (int g = r->st[e].frame; g >= 0; g = r->st[g].frame) {   /* the class and module bodies around it */
@@ -2271,9 +2292,10 @@ void elab_header_opened(Compiler *c, int node, int cls, int made) {
           lr_class_name(c, h->cls), lr_class_name(c, h->owner), h->leaf, lr_class_name(c, h->want));
 }
 
-int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out) {
+int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
-  return c->lrec && lr_ready(c, elab_point_of(c, node)) ? lr_const_at(c, node, name, out) : ELAB_UNKNOWN;
+  if (p.region < 0) p = elab_point_of(c, node);
+  return c->lrec && lr_ready(c, p) ? lr_const_at(c, node, name, p, out) : ELAB_UNKNOWN;
 }
 
 /* The constant name a node that writes a constant writes: a write of any
@@ -2441,7 +2463,7 @@ static int lr_ref_at(Compiler *c, int ref, int site, int *cls, const char **miss
       if (in == LR_MAIN) in = ci;
       if (ci < 0 || lr_builtin_consts(c, ci)) return ELAB_UNKNOWN;
     }
-    o = lr_const_at(c, site, nm, &d);
+    o = lr_const_at(c, site, nm, p, &d);
   }
   else {
     int par = k == NK_ConstantPathNode ? nt_ref(nt, ref, "parent") : -1;

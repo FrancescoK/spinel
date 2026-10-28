@@ -1067,13 +1067,15 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
    register_extends extends it into every root class, whose subclasses inherit. */
 static const char *const class_reopen_mod = "Class__reopen";
 
+int class_reopen_class(Compiler *c) { return comp_class_index(c, class_reopen_mod); }
+
 int is_class_const(const NodeTable *nt, int id) {
   return id >= 0 && nt_kind(nt, id) == NK_ConstantReadNode &&
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
 
 int class_reopen_cmethod(Compiler *c, int call, int recv, const char *name) {
-  int cm = comp_class_index(c, class_reopen_mod);
+  int cm = class_reopen_class(c);
   if (cm < 0 || !name) return -1;
   if (recv >= 0) {
     NodeKind rk = nt_kind(c->nt, recv);
@@ -8281,7 +8283,7 @@ void desugar_module_prepends(Compiler *c) {
 void register_extends(Compiler *c) {
   const NodeTable *nt = c->nt;
   int did_clone = 0;
-  int cls_mod = comp_class_index(c, class_reopen_mod);
+  int cls_mod = class_reopen_class(c);
   int nseen = 0, capseen = 8;
   int *seen = malloc(sizeof(int) * (size_t)capseen);
   if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
