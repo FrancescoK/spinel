@@ -2107,16 +2107,20 @@ enum { LR_STOP = 3 };
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
    one -- at the load phase's end too, as elab_written_before answers.
-   skip_vis passes over the visibility versions of a method. */
+   skip_vis passes over the visibility versions of a method. A constant
+   history with only uncertain writes supplies a candidate in *out. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if ((skip_vis && v->kind == LR_VIS) || v->unplaced) continue;
     int o = late ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
-    if (o == PROG_UNKNOWN) { unsure = 1; continue; }
+    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && v->may)) {
+      unsure = 1;
+      if (out && h->a == -2 - (int)ELAB_CONST && !*out) *out = v;
+      continue;
+    }
     if (o != PROG_BEFORE) continue;
-    if (v->may) { unsure = 1; continue; }
     if (out) *out = v;
     return unsure ? ELAB_UNKNOWN : ELAB_YES;
   }
@@ -2690,8 +2694,12 @@ void elab_header_opened(Compiler *c, int node, int cls, int made) {
 
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
+  const char *nm = node >= 0 ? nt_str(c->nt, node, "name") : NULL;
+  if (name && nm && sp_streq(name, nm)) name = lr_written_name(c->nt, node);
   if (p.region < 0) p = elab_point_of(c, node);
-  return c->lrec && lr_ready(c, p) ? lr_const_at(c, node, name, p, out) : ELAB_UNKNOWN;
+  if (!c->lrec || !lr_ready(c, p)) return ELAB_UNKNOWN;
+  return lr_root_read(c->nt, node) ? lr_const_in(c, LR_MAIN, name, p, p.region < 0, 1, out, 0)
+                                 : lr_const_at(c, node, name, p, out);
 }
 
 /* The constant name a node that writes a constant writes: a write of any

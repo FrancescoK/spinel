@@ -309,7 +309,10 @@ int elab_module_named(Compiler *c, const char *nm);
 /* what constant `name`, read in node's lexical scopes, resolves to at p
    (node's own point when p has none): its lexical scopes' own constants,
    innermost first, then the innermost one's ancestors and Object's; *out
-   the write or class definition found, its owner the class it is in */
+   the write or class definition found, its owner the class it is in;
+   on ELAB_UNKNOWN a visible candidate, or NULL when no searched table
+   supplies a binding (such as an unknown builtin module's constants).
+   A lowered read name is searched under its original lexical name. */
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out);
 /* what constant `name` of class owner's own (-1: Object's) was before p,
    as `class X` asks it of its owner: no lexical scope's, no ancestor's;
