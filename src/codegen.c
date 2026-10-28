@@ -4486,12 +4486,18 @@ static void fi_callees_walk(Compiler *c, int callnode, int *out, int *n, int max
   }
   int first = fi_first_scope_named(c, nm);
   int indexed = first != -2;
+  /* (the receiver's class reaches one method of the name: asked once, not
+     once per scope of the name, which a name every class overrides made
+     the number of classes) */
+  int tgt = -2;
   for (int si = indexed ? first : 0; si >= 0 && si < c->nscopes && *n < max;
        si = indexed ? g_fi_nm_next[si] : si + 1) {
     Scope *m = &c->scopes[si];
     if (!m->name || !sp_streq(m->name, nm)) continue;
-    if (cid >= 0 && m->class_id != cid &&
-        call_target(c, callnode, cid, nm, 0, NULL) != si) continue;
+    if (cid >= 0 && m->class_id != cid) {
+      if (tgt == -2) tgt = call_target(c, callnode, cid, nm, 0, NULL);
+      if (tgt != si) continue;
+    }
     out[(*n)++] = si;
   }
   fi_alias_index(c);
