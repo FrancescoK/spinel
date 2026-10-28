@@ -6661,8 +6661,9 @@ static void inline_warn(const char *where, const char *fmt, const char *a, const
 
 /* The class a class-level node belongs to: the struct's, for a direct
    statement of a `Name = Struct.new(...) do` / `Data.define do` block, whose
-   node_cbody still names the class around the write (fix_struct_block_scopes
-   re-homes only the block's defs); otherwise its class body's. */
+   node_cbody still names the class around the write (only the block's
+   defs take the struct's class, from the load record); otherwise its class
+   body's. */
 static int *inline_struct_owner(Compiler *c) {
   const NodeTable *nt = c->nt;
   int *own = malloc(sizeof(int) * (size_t)(nt->count ? nt->count : 1));

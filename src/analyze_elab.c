@@ -120,6 +120,7 @@ struct LoadRecord {
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
   ElabSurface *surf; int *surf_at;   /* elab_class_surface's, by class side: [2 * (cls + 1) + sg] .. [+ 1] */
+  int *dscope, ndscope;      /* [ndscope] by node: the method scope the scope walk made of a def or define_method (elab_def_scope), 0 for none */
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -1054,6 +1055,25 @@ static unsigned char lr_vis(int bvis) {
   return bvis == BVIS_PRIVATE || bvis == BVIS_MODULE_FUNCTION ? SP_VIS_PRIVATE : bvis == BVIS_PROTECTED ? SP_VIS_PROTECTED : SP_VIS_PUBLIC;
 }
 
+/* The method scope the scope walk made of def or define_method node
+   `node`, which it tells as it makes one (elab_def_scope), ahead of the
+   record's version of it; 0 for none */
+void elab_def_scope(Compiler *c, int node, int scope) {
+  LoadRecord *r = lr_get(c);
+  if (node < 0) return;
+  if (node >= r->ndscope) {
+    int n = node + 1 > 2 * r->ndscope ? node + 1 : 2 * r->ndscope;
+    r->dscope = realloc(r->dscope, sizeof *r->dscope * (size_t)n);
+    if (!r->dscope) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(r->dscope + r->ndscope, 0, sizeof *r->dscope * (size_t)(n - r->ndscope));
+    r->ndscope = n;
+  }
+  r->dscope[node] = scope;
+}
+static int lr_def_scope(const LoadRecord *r, int node) {
+  return node >= 0 && node < r->ndscope ? r->dscope[node] : 0;
+}
+
 /* A method version of (cls, sg, name) by node, under the visibility state
    bvis: the frame's where the version is the frame's own definee's (a
    `class << self` body's def is the singleton's), public for one on
@@ -1072,7 +1092,8 @@ static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, L
   if (!sg && (kind == LR_DEF || kind == LR_DEFINE_METHOD) && is_implicitly_private_name(name)) vis = SP_VIS_PRIVATE;
   if (kind == LR_ALIAS && target && !x->unplaced) lr_settle_add(x->r, SET_ALIAS, node, cls, sg, may, vis, name);
   if (ov >= 0) vis = ov;
-  lr_version(x->r, cls, sg, name, (LrDef){ node, (unsigned char)kind, (unsigned char)vis, (unsigned char)may, 0, target, .unplaced = x->unplaced });
+  int sc = kind == LR_DEF || kind == LR_DEFINE_METHOD ? lr_def_scope(x->r, node) : 0;
+  lr_version(x->r, cls, sg, name, (LrDef){ node, (unsigned char)kind, (unsigned char)vis, (unsigned char)may, 0, target, .unplaced = x->unplaced, .scope = sc });
   if (!sg && bvis == BVIS_MODULE_FUNCTION)
     lr_version(x->r, cls, 1, name, (LrDef){ node, LR_COPY, SP_VIS_PUBLIC, (unsigned char)may, 0, name, .unplaced = x->unplaced });
 }
@@ -1086,7 +1107,7 @@ static int lr_definee(int fc, int fs, int *sg) {
 
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
   int recv = nt_ref(x->c->nt, def, "receiver"), sg, cls = lr_definee(fc, fs, &sg);
-  if (recv >= 0) { cls = lr_receiver(x, recv, fc, LR_FS_SCLASS, &sg); sg = 1; bvis = BVIS_PUBLIC; }
+  if (recv >= 0) { cls = lr_receiver(x, nt_def_receiver(x->c->nt, recv), fc, LR_FS_SCLASS, &sg); sg = 1; bvis = BVIS_PUBLIC; }
   lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
 }
 
@@ -1641,6 +1662,8 @@ static void lr_record_drop(LoadRecord *r) {
 
 static char *lr_dump_text(Compiler *c);
 static void lr_check_walked(Compiler *c, const char *walked);
+enum { LR_OWNERS_WALK = 1, LR_OWNERS_HELD = 2 };   /* lr_def_owners' checks */
+static void lr_def_owners(Compiler *c, int check);
 static void lr_later_settle(Compiler *c);
 
 /* The definitions of a body of class ci that the record holds with no
@@ -1767,8 +1790,67 @@ void elab_program(Compiler *c) {
      what was recorded by then (lr_mixin_dup) */
   for (int k = 0; k < r->ncls; k++)
     for (int i = 0; i < r->cls[k].nmix; i++) r->cls[k].mix[i].dup = 0;
+  lr_def_owners(c, r->check ? LR_OWNERS_WALK : 0);
   elab_mark_versions(c);
   sp_timing_end(t0, "an_elab_record", "");
+}
+
+static int lr_applied(Compiler *c, const LrDef *v);
+
+/* A def's or define_method's owner, the class side it defines on, is its
+   history's: each method scope the scope walk made of one the registration
+   applies (lr_applied) takes it. The walk's own class for it, its lexical
+   one, stays for the rest: a def in a method body, a lambda or a block
+   kept to run later, one on an object, and one under a condition, which
+   keeps master's. check, under SPINEL_ELAB_CHECK: LR_OWNERS_WALK, where
+   the walk's class differs (as the walk leaves the scopes, before the
+   class builders' classes are made); LR_OWNERS_HELD, each def or
+   define_method the walk made a scope of where a load point stands, on
+   self or a class's constant, that the record does not apply. */
+static int lr_def_on_object(const NodeTable *nt, int def);
+static void lr_def_owners(Compiler *c, int check) {
+  LoadRecord *r = c->lrec;
+  unsigned char *held = check & LR_OWNERS_HELD ? calloc((size_t)c->nscopes + 1, 1) : NULL;
+  if ((check & LR_OWNERS_HELD) && !held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->a < LR_MAIN) continue;
+    int cls = h->a == LR_MAIN ? -1 : h->a;
+    for (int j = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      if ((v->kind != LR_DEF && v->kind != LR_DEFINE_METHOD) || !v->scope || v->scope >= c->nscopes || lr_applied(c, v) != 1) continue;
+      Scope *sc = &c->scopes[v->scope];
+      if (held) held[v->scope] = 1;
+      if (check & LR_OWNERS_WALK) {
+        LrCheck *f = lr_family(r, "the record's def owners");
+        f->asked++;
+        if ((sc->class_id != cls || sc->is_cmethod != h->b) && f->differ++ < LR_CHECK_SHOW)
+          fprintf(stderr, "spinel-elab-check: owner %s walk=%d/%d record=%d/%d\n", sc->name, sc->class_id, sc->is_cmethod, cls, h->b);
+      }
+      if (sc->class_id != cls || sc->is_cmethod != h->b) { sc->class_id = cls; sc->is_cmethod = h->b; comp_touch_scope(sc->idx); }
+    }
+  }
+  for (int n = 0; held && n < r->ndscope && n < r->n; n++) {
+    int s = r->dscope[n];
+    if (!s || s >= c->nscopes || held[s] || r->at[n] < 0 || (r->bits[n] & LR_LATE) || elab_point_of(c, n).region < 0 ||
+        lr_def_on_object(c->nt, n)) continue;
+    LrCheck *f = lr_family(r, "the record's def owners: a def at a point the record does not apply");
+    f->asked++;
+    if (f->differ++ < LR_CHECK_SHOW) {
+      char d[96];
+      lr_node_desc(c, n, d, sizeof d);
+      fprintf(stderr, "spinel-elab-check: owner %s not applied (%s) walk=%d/%d\n", c->scopes[s].name, d, c->scopes[s].class_id, c->scopes[s].is_cmethod);
+    }
+  }
+  free(held);
+}
+
+/* Is def node `def` on an object: on a receiver neither self nor a
+   constant (`def obj.m`), which value flow homes (register_singleton_defs)? */
+static int lr_def_on_object(const NodeTable *nt, int def) {
+  int recv = nt_kind(nt, def) == NK_DefNode && nt_ref(nt, def, "receiver") >= 0 ? nt_def_receiver(nt, nt_ref(nt, def, "receiver")) : -1;
+  NodeKind k = recv >= 0 ? nt_kind(nt, recv) : NK_SelfNode;
+  return k != NK_SelfNode && k != NK_ConstantReadNode && k != NK_ConstantPathNode;
 }
 
 /* The block of the class builder class ci is made by (`X = Struct.new(:a)
@@ -1815,6 +1897,7 @@ void elab_record_builders(Compiler *c) {
     kc->open[kc->nopen++] = (LrOpen){ d, body };
     lr_body_defs(c, ci, body, d);
   }
+  lr_def_owners(c, r->check ? LR_OWNERS_HELD : 0);
 }
 
 static void lr_settle_add(LoadRecord *r, int fam, int node, int cls, int sg, int may, int vis0, const char *name) {
@@ -2851,17 +2934,28 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
   return lr_ready(c, p) ? lr_vis_at(c, cls, name, sg, p) : -1;
 }
 
+/* Does the registration apply entry v as the load phase ends: 0 for one
+   with no point (unless its body is one the walk does not place) or in an
+   iterator's block; 1 for one it applies; 2 for one under a condition in
+   its class body (one around the body is the body's), whose visibility
+   alone it applies */
+static int lr_applied(Compiler *c, const LrDef *v) {
+  LoadRecord *r = c->lrec;
+  LoadPoint p = elab_point_of(c, v->node);
+  if ((p.region < 0 && !v->unplaced) || (p.region >= 0 && r->st[p.seq].partial)) return 0;
+  return v->may && p.region >= 0 && (r->st[p.seq].fmay || !r->st[p.seq].may) ? 2 : 1;
+}
+
 /* A history's end-of-load entries (ElabSurface); 0 when it has none */
 static int lr_surface_of(Compiler *c, const LrHist *h, ElabSurface *s) {
-  LoadRecord *r = c->lrec;
   *s = (ElabSurface){ h->name, NULL, -1, -1, 0, 0, 0, 0 };
   for (int j = 0; j < h->n; j++) {
     const LrDef *v = &h->v[j];
-    LoadPoint p = elab_point_of(c, v->node);
-    if ((p.region < 0 && !v->unplaced) || v->kind > LR_VIS || (p.region >= 0 && r->st[p.seq].partial)) continue;
+    int ap = v->kind > LR_VIS ? 0 : lr_applied(c, v);
+    if (!ap) continue;
     s->node = v->node;
     if (v->kind != LR_UNDEF && v->kind != LR_REMOVE) s->vis = (signed char)v->vis;
-    if (v->may && p.region >= 0 && (r->st[p.seq].fmay || !r->st[p.seq].may)) continue;   /* a condition in the body, not around it */
+    if (ap == 2) continue;
     s->reader |= v->kind == LR_READER; s->writer |= v->kind == LR_WRITER;
     s->undef |= v->kind == LR_UNDEF; s->copy |= v->kind == LR_COPY;
     if (v->kind == LR_ALIAS) s->alias = v->target;
@@ -3325,6 +3419,6 @@ void elab_free(Compiler *c) {
   free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   for (int i = 0; i < r->nhdr; i++) free(r->hdr[i].leaf);
   free(r->hdr); free(r->hdr_head);
-  free(r->st); free(r->at); free(r->bits); free(r);
+  free(r->st); free(r->at); free(r->bits); free(r->dscope); free(r);
   c->lrec = NULL;
 }

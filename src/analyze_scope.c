@@ -1215,6 +1215,7 @@ static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_cl
     if (!name) return;
     Scope *sc = comp_scope_new(c, name, s);
     int new_idx = c->nscopes - 1;
+    elab_def_scope(c, s, new_idx);
     { sc->body = nt_ref(nt, s, "body"); comp_touch_scope(sc->idx); }
     { sc->class_id = target_class; comp_touch_scope(sc->idx); }
     { sc->is_cmethod = 1; comp_touch_scope(sc->idx); }
@@ -1471,16 +1472,6 @@ static void header_parent_encloses(Compiler *c, int par, int child, const char *
 }
 
 
-/* `def (expr).m`: Prism gives the receiver's own parentheses the expression
-   itself as body; parentheses inside it hold statements as usual. */
-static int sg_def_receiver(const NodeTable *nt, int recv) {
-  if (nt_kind(nt, recv) == NK_ParenthesesNode) {
-    int b = nt_ref(nt, recv, "body");
-    if (b >= 0 && nt_kind(nt, b) != NK_StatementsNode) recv = b;
-  }
-  return nt_paren_single(nt, recv);
-}
-
 /* `class C < S` where the constant S names nothing where the header
    stands (elab_const_ref_at): CRuby raises NameError there, before the
    class exists or its body runs. The header becomes that raise, and its
@@ -1698,13 +1689,14 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     const char *name = nt_str(c->nt, id, "name");
     Scope *s = comp_scope_new(c, name, id);
     int new_idx = c->nscopes - 1;
+    elab_def_scope(c, id, new_idx);
     { s->body = nt_ref(c->nt, id, "body"); comp_touch_scope(s->idx); }
     { s->class_id = class_id; comp_touch_scope(s->idx); }   /* instance method of the enclosing class */
     /* `def self.foo` / `def Klass.foo`: a class (singleton) method. */
     int defrecv = nt_ref(c->nt, id, "receiver");
     if (defrecv >= 0) {
       { s->is_cmethod = 1; comp_touch_scope(s->idx); }
-      defrecv = sg_def_receiver(c->nt, defrecv);
+      defrecv = nt_def_receiver(c->nt, defrecv);
       /* `def Klass.foo` with an explicit constant receiver (typically defined
          outside the class body, where the enclosing class_id is -1) attaches
          to that class's singleton chain rather than becoming a top-level free
@@ -1833,6 +1825,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
         if (dm_mname && dm_blk >= 0) {
           Scope *dm_s = comp_scope_new(c, dm_mname, id);
           int dm_new_idx = c->nscopes - 1;
+          elab_def_scope(c, id, dm_new_idx);
           { dm_s->body = nt_ref(c->nt, dm_blk, "body"); comp_touch_scope(dm_s->idx); }
           /* the block is a method's body from here on: its `next` is a `return` */
           method_body_next_to_return((NodeTable *)c->nt, dm_s->body);
@@ -3379,7 +3372,7 @@ void register_singleton_defs(Compiler *c) {
          constant stay as the walk filed them.
          `def (self).m`, `def (Foo).m`: the receiver inside its parentheses
          has one direct-expression body; inner parentheses hold statements. */
-      int ur = sg_def_receiver(nt, recv);
+      int ur = nt_def_receiver(nt, recv);
       NodeKind uk = ur >= 0 && ur != recv ? nt_kind(nt, ur) : NK_NilNode;
       if (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode ||
           uk == NK_ClassVariableReadNode || uk == NK_GlobalVariableReadNode ||
@@ -3417,7 +3410,7 @@ void register_singleton_defs(Compiler *c) {
          call on the object reaches. Left alone: self, a class's constant and
          `self.class`, in parentheses or not, which name that class. */
       if (recv < 0) continue;
-      int ur = sg_def_receiver(nt, recv);
+      int ur = nt_def_receiver(nt, recv);
       NodeKind rk = ur >= 0 ? nt_kind(nt, ur) : NK_SelfNode;
       const char *un = rk == NK_CallNode ? nt_str(nt, ur, "name") : NULL;
       int self_class = un && sp_streq(un, "class") &&
@@ -3743,27 +3736,23 @@ static void struct_block_cbody(Compiler *c, int node, int ci) {
   }
 }
 
-/* Home the methods a Struct block statement defines with define_method:
-   `define_method(:m) { }`, or `[lits].each { |v| define_method(...) { } }`
-   with one scope per element on the inner call (collect_dm_each_unroll). */
+/* Home the methods a Struct block statement unrolls with define_method,
+   `[lits].each { |v| define_method("m_#{v}") { } }`: one scope per element
+   on the inner call (collect_dm_each_unroll), whose names are computed, so
+   the load record holds no version of them to give them their class
+   (elab_record_builders). */
 static void struct_home_dm(Compiler *c, int stmt, int ci) {
   const NodeTable *nt = c->nt;
-  if (nt_kind(nt, stmt) != NK_CallNode) return;
-  int dn = dm_each_inner(nt, stmt);
-  int unrolled = dn >= 0;
-  if (!unrolled && !dm_defined_name(nt, stmt)) return;
-  if (!unrolled) dn = stmt;
-  for (int s = 0; s < c->nscopes; s++) {
-    if (c->scopes[s].def_node != dn) continue;
-    { c->scopes[s].class_id = ci; comp_touch_scope(c->scopes[s].idx); }
-    if (!unrolled) break;
-  }
+  int dn = nt_kind(nt, stmt) == NK_CallNode ? dm_each_inner(nt, stmt) : -1;
+  if (dn < 0) return;
+  for (int s = 0; s < c->nscopes; s++)
+    if (c->scopes[s].def_node == dn) { c->scopes[s].class_id = ci; comp_touch_scope(c->scopes[s].idx); }
 }
 
 /* The arm of an if/unless in a Struct block that a constant condition
-   takes runs, so its define_methods are the struct's, as alias's are
-   (register_aliases_body). Under a condition only the run time decides,
-   struct_cond_dm_refuse catches them. */
+   takes runs, so its unrolled define_methods are the struct's, as alias's
+   are (register_aliases_body). Under a condition only the run time
+   decides, struct_cond_dm_refuse catches them. */
 static void struct_home_cond_dm(Compiler *c, int cond, int ci) {
   const NodeTable *nt = c->nt;
   while (cond >= 0) {
@@ -3811,9 +3800,11 @@ static void struct_cond_dm_refuse(Compiler *c, int ci) {
   }
 }
 
-/* Fix scope class_id for DefNodes inside Struct.new { } blocks.
-   walk_scope runs before register_structs, so defs in struct blocks get
-   class_id=-1. This pass corrects them after the class is registered. */
+/* What a Struct.new / Data.define block's class needs once register_structs
+   has made it, beyond the class its defs and define_methods take from the
+   load record (elab_record_builders): its nodes' class body, its unrolled
+   define_methods' class, and the refusal of a define_method left under a
+   condition. */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
   for (int id = 0; id < nt->count; id++) {
@@ -3821,8 +3812,6 @@ void fix_struct_block_scopes(Compiler *c) {
     if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
     int bbody = class_def_body(c, id);
     if (bbody < 0) continue;
-    /* `k = Struct.new(...) do ... end` held in a local: register_structs
-       named its class after the write */
     char an[48];
     const char *cname = nt_str(nt, id, "name");
     if (wk == NK_LocalVariableWriteNode) { snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id)); cname = an; }
@@ -3832,54 +3821,9 @@ void fix_struct_block_scopes(Compiler *c) {
     int bn = 0;
     const int *stmts = nt_arr(nt, bbody, "body", &bn);
     for (int k = 0; k < bn; k++) {
-      const char *sty = nt_type(nt, stmts[k]);
       NodeKind sk = nt_kind(nt, stmts[k]);
-      if (!sty) continue;
-      /* `class << self` in the block: walk_scope already made its defs class
-         methods, but of no class (the block had none yet), so they were
-         missing from the struct and a bare `new` in one had no receiver
-         (#4823). Home them the same way. */
-      if (sk == NK_SingletonClassNode) {
-        int sx = nt_ref(nt, stmts[k], "expression");
-        if (sx < 0 || nt_kind(nt, sx) != NK_SelfNode) continue;
-        int sb = nt_ref(nt, stmts[k], "body");
-        int sn = 0;
-        const int *sst = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
-        for (int j = 0; j < sn; j++) {
-          if (nt_kind(nt, sst[j]) != NK_DefNode) continue;
-          for (int s = 0; s < c->nscopes; s++)
-            if (c->scopes[s].def_node == sst[j] && c->scopes[s].is_cmethod) {
-              { c->scopes[s].class_id = ci; comp_touch_scope(c->scopes[s].idx); }
-              break;
-            }
-        }
-        continue;
-      }
-      int dn = stmts[k];
-      /* `private def m` / `protected def m` / `public def m` */
-      if (sk == NK_CallNode && nt_ref(nt, dn, "receiver") < 0 && nt_ref(nt, dn, "block") < 0) {
-        const char *vn = nt_str(nt, dn, "name");
-        int va = nt_ref(nt, dn, "arguments");
-        int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
-        if (vn && visibility_of_name(vn) > BVIS_MODULE_FUNCTION &&
-            vc == 1 && nt_kind(nt, vv[0]) == NK_DefNode && nt_ref(nt, vv[0], "receiver") < 0)
-          dn = vv[0];
-      }
-      if (sk == NK_IfNode || sk == NK_UnlessNode) {
-        struct_home_cond_dm(c, dn, ci);
-        continue;
-      }
-      if (nt_kind(nt, dn) != NK_DefNode) {
-        struct_home_dm(c, dn, ci);
-        continue;
-      }
-      /* Find the scope whose def_node == dn and fix its class_id */
-      for (int s = 0; s < c->nscopes; s++) {
-        if (c->scopes[s].def_node == dn) {
-          { c->scopes[s].class_id = ci; comp_touch_scope(c->scopes[s].idx); }
-          break;
-        }
-      }
+      if (sk == NK_IfNode || sk == NK_UnlessNode) struct_home_cond_dm(c, stmts[k], ci);
+      else struct_home_dm(c, stmts[k], ci);
     }
     struct_cond_dm_refuse(c, ci);
   }

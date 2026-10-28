@@ -190,6 +190,9 @@ typedef struct {
   unsigned char unplaced; /* in a body the walk does not place (a builder's
                              block, lr_body_defs): no version, and no query
                              at a point sees it */
+  int scope;            /* a def's or a define_method's: the method scope
+                           the scope walk made of it (its Scope index; 0,
+                           the program's top level, for none) */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
@@ -232,6 +235,9 @@ void elab_mark_versions(Compiler *c);
 /* does node run whenever the body of def node `def` runs: is it inside that
    body with no lambda, nested def or deferred block between? */
 int elab_runs_with(Compiler *c, int node, int def);
+/* the scope walk made method scope `scope` of def or define_method node
+   `node`: the record's version of it holds it (LrDef.scope) */
+void elab_def_scope(Compiler *c, int node, int scope);
 /* the def node whose body holds node, with no class body or other def
    between; -1 for none */
 int elab_body_def(Compiler *c, int node);
