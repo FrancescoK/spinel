@@ -858,6 +858,11 @@ static int empty_array_poly_view(Compiler *c, int arg) {
 static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb, TyKind *at,
                           const char *rlen, Buf *b) {
   for (int j = 0; j < nargs; j++) {
+    /* an empty `{}` literal has no node type of its own: it is a Hash
+       (`[1, 2].zip({})`), which the Hash arm below materializes; read as
+       an Array, its pointer stopped the C build */
+    if (at[j] == TY_UNKNOWN && nt_kind(c->nt, nt_paren_single(c->nt, argv[j])) == NK_HashNode)
+      at[j] = TY_POLY_POLY_HASH;
     /* a Range argument materializes to its int array, as far as the
        receiver reaches: `[1, 2].zip(10.upto(Float::INFINITY))` */
     if (at[j] == TY_RANGE) {
