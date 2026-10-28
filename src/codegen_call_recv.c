@@ -2437,6 +2437,9 @@ else {
      widened the receiver to poly in inference. */
   if (sp_streq(name, "concat") && argc >= 1) {
     int same = 1, all_poly = 1;
+    /* the last operand that is boxed: its #to_ary (and an earlier one's)
+       can change an operand before it, which CRuby has already copied */
+    int last_boxed = -1;
     for (int j = 0; j < argc; j++) {
       /* Ask the SLOT, not the node: a block parameter's node type can
          read as the element kind while its declaration is boxed, and
@@ -2450,6 +2453,7 @@ else {
            node, viewed as the instance's Array, is what is read) */
         if (alv && alv->type != TY_UNKNOWN && comp_ty_ary_root(c, alv->type) < 0) ar = repr_of_slot(c, alv);
       }
+      if (ar.kind == RK_BOXED) last_boxed = j;
       if (ar.elem != ty_array_elem(rt)) same = 0;
       if (ar.kind != RK_BOXED && ar.elem != TY_POLY && ar.elem != ty_array_elem(rt)) all_poly = 0;
     }
@@ -2473,10 +2477,6 @@ else {
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
       int vbase = g_tmp + 1; g_tmp += 2 * argc;   /* each value, then its length */
-      /* the last operand that is boxed: its #to_ary (and an earlier one's)
-         can change an operand before it, which CRuby has already copied */
-      int last_boxed = -1;
-      for (int j = 0; j < argc; j++) if (repr_of(c, argv[j]).kind == RK_BOXED) last_boxed = j;
       Buf ck = {0, 0, 0};
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1;
@@ -2486,8 +2486,14 @@ else {
            TypeError, where its length read as 0 appended nothing; it
            converts after the frozen test, as CRuby converts it) */
         buf_printf(&ck, " _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv);
-        if (j < last_boxed)
-          buf_printf(&ck, " _t%d = sp_box_poly_array(sp_PolyArray_dup(sp_poly_to_poly_array(_t%d)));", tv, tv);
+        /* copied at its turn when a boxed operand follows (a typed
+           Array's general view is already a new array; a general Array's
+           view is the array itself) */
+        if (j < last_boxed) {
+          int tc = ++g_tmp;
+          buf_printf(&ck, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); if (_t%d == (sp_PolyArray *)_t%d.v.p) _t%d = sp_PolyArray_dup(_t%d); _t%d = sp_box_poly_array(_t%d); }",
+                     tc, tv, tc, tv, tc, tc, tv, tc);
+        }
         buf_printf(&ck, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
       }
       /* a frozen receiver raises even when every argument is empty */
