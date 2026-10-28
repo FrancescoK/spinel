@@ -204,6 +204,29 @@ else
   fail "exact did not compile"; sed -n 1,3p "$tmp/exact/cc"
 fi
 
+# A computed path that runs through a symlink names the file it points to,
+# as CRuby's does: a require_relative of a symlinked file in a symlinked
+# directory runs the file, and one of the symlink or an absolute path
+# through the directory's link answers false once it has run.
+mkdir "$tmp/link" "$tmp/link/sub"
+printf 'puts "lib ran"\n' > "$tmp/link/sub/lib.rb"
+ln -s lib.rb "$tmp/link/sub/alias.rb"
+ln -s sub "$tmp/link/linkdir"
+cat > "$tmp/link/main.rb" <<'RB'
+def pull(path) = require_relative(path)
+p pull("linkdir/alias")
+require_relative "sub/lib"
+p pull("sub/alias")
+p require(File.join(__dir__, "linkdir", "lib"))
+RB
+if "$SPINEL" --load-model=graph "$tmp/link/main.rb" -o "$tmp/link/bin" >"$tmp/link/cc" 2>&1; then
+  "$tmp/link/bin" > "$tmp/link/out" 2>&1 || fail "link exits $?"
+  printf 'lib ran\ntrue\nfalse\nfalse\n' | cmp -s - "$tmp/link/out" ||
+    { fail "a computed path through a symlink did not name the file it points to"; cat "$tmp/link/out"; }
+else
+  fail "link did not compile"; sed -n 1,3p "$tmp/link/cc"
+fi
+
 # The run-time $LOAD_PATH starts as CRuby's does: the directories from -I,
 # then the library roots, so a bare computed path searches them in order and
 # a directory the program adds comes after (<<, push, insert past the -I
