@@ -241,6 +241,12 @@ void elab_def_scope(Compiler *c, int node, int scope);
 /* the def node whose body holds node, with no class body or other def
    between; -1 for none */
 int elab_body_def(Compiler *c, int node);
+/* does the load phase apply def or define_method node `def` whenever the
+   body it stands in runs (lr_stmt_applied): not under a run-time
+   condition there, nor in an iterator's block, except a define_method an
+   applied `[lits].each` unrolls (dm_each_inner)? 1 for one at no point,
+   which the record leaves to its body */
+int elab_def_applied(Compiler *c, int def);
 /* call_target's questions about call id read the record's facts as its
    first such question found them (analyze_elab.c): 1 when the frame is in,
    until elab_plan_leave; 0 for a node it cannot place */

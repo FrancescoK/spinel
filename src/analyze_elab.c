@@ -64,8 +64,10 @@ int g_dump_load_record = 0;
    clauses, where a raise skips the rest): a write there is on no path for
    sure. rep: the nearest statement around it whose body may run more than
    once (a loop, an iterator's block, a begin body a rescue may retry), -1
-   for none: a statement after it in that body may also run before it. */
-typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay; } LrStmt;
+   for none: a statement after it in that body may also run before it.
+   fmay, fpartial: may and partial counted from the frame (ElabPos): a
+   class body opened in an iterator's block runs its statements whole. */
+typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay, fpartial; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -169,7 +171,7 @@ static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial, pos->fmay };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial, pos->fmay, pos->fpartial };
   r->at[node] = k;
   pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
@@ -242,7 +244,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   int spine = pp->kind == EP_SPINE;
   switch (k) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; q.fmay = 0; return elab_body_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; q.fmay = q.fpartial = 0; return elab_body_pos(nt, ch, q); }
       break;
     case NK_PreExecutionNode: case NK_EnsureNode:
       if (spine && ch == nt_ref(nt, p, "statements")) return elab_body_pos(nt, ch, q);
@@ -278,6 +280,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_BeginNode:
       if (spine && ch == nt_ref(nt, p, "statements")) {
         q.partial |= nt_ref(nt, p, "rescue_clause") >= 0;
+        q.fpartial |= nt_ref(nt, p, "rescue_clause") >= 0;
         if (nt_ref(nt, p, "rescue_clause") >= 0) q.rep = pp->e;   /* `retry` runs it again */
         return elab_body_pos(nt, ch, q);
       }
@@ -307,8 +310,8 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (!spine) break;
       q.kind = EP_SPINE;
       if (runs == 0) q.may = q.fmay = 1;
-      if (elab_opens_frame(nt, p)) { q.frame = pp->e; q.fmay = 0; }
-      else { q.partial = 1; q.rep = pp->e; }   /* an iterator's: zero times, or several */
+      if (elab_opens_frame(nt, p)) { q.frame = pp->e; q.fmay = q.fpartial = 0; }
+      else { q.partial = q.fpartial = 1; q.rep = pp->e; }   /* an iterator's: zero times, or several */
       break;
     }
     default: break;
@@ -420,8 +423,8 @@ void elab_walk_rest(Compiler *c, int id, ElabPos pos) {
    it, its refs and then its arrays: fn(ud, ch, q) answers whether to go
    into ch, from q, which it may change. A part that is the statement's own
    (EP_NODE) may not run where it would not on the statement's path (a
-   branch of `c ? a : b`, the right side of `&&`): it takes the may, fmay
-   and partial the path would give it. */
+   branch of `c ? a : b`, the right side of `&&`): it takes the may, fmay,
+   partial and fpartial the path would give it. */
 typedef int (*ElabPartFn)(void *ud, int ch, ElabPos *q);
 static void elab_parts(const NodeTable *nt, int p, const ElabPos *pp, ElabPartFn fn, void *ud) {
   int nr = nt_num_refs(nt, p), na = nt_num_arrs(nt, p);
@@ -435,7 +438,7 @@ static void elab_parts(const NodeTable *nt, int p, const ElabPos *pp, ElabPartFn
         ElabPos on = *pp;
         on.kind = EP_SPINE;
         on = elab_child(nt, p, v[j], &on);
-        q.may = on.may; q.fmay = on.fmay; q.partial = on.partial;
+        q.may = on.may; q.fmay = on.fmay; q.partial = on.partial; q.fpartial = on.fpartial;
       }
       if (fn(ud, v[j], &q)) elab_parts(nt, v[j], &q, fn, ud);
     }
@@ -480,7 +483,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
   ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW }, rp = at;
-  if (site) { at.may = rp.may = at.fmay = rp.fmay = site->may; at.partial = rp.partial = site->partial; }
+  if (site) { at.may = rp.may = at.fmay = rp.fmay = site->may; at.partial = rp.partial = at.fpartial = rp.fpartial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
   w->r->st[e].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
@@ -665,13 +668,34 @@ void elab_plan_leave(Compiler *c) {
   if (!--r->plan_depth) lr_plan_swap(r);
 }
 
+/* The statement entry of node's point in record r as it stands: NULL for
+   a node in a method body, a lambda or a block run later; region -1 under
+   no file */
+static const LrStmt *lr_stmt_of(const LoadRecord *r, int node) {
+  int e = node >= 0 && node < r->n ? r->at[node] : -1;
+  return e < 0 || (r->bits[node] & LR_LATE) ? NULL : &r->st[e];
+}
+
 /* The point at which node's statement runs; region -1 (no point) for a
    node in a method body, a lambda or a block run later, or under no file. */
 LoadPoint elab_point_of(Compiler *c, int node) {
   LoadRecord *r = elab_fresh(c);
-  int e = node >= 0 && node < r->n ? r->at[node] : -1;
-  if (e < 0 || (r->bits[node] & LR_LATE)) return (LoadPoint){ -1, -1 };
-  return (LoadPoint){ r->st[e].region, e };
+  const LrStmt *s = lr_stmt_of(r, node);
+  return s ? (LoadPoint){ s->region, (int)(s - r->st) } : (LoadPoint){ -1, -1 };
+}
+
+/* Does the registration apply an entry (LrDef, LrMixin) recorded under
+   condition may at statement s as the load phase ends: 0 for one with no
+   point (s NULL, or of region -1) unless its body is one the walk does
+   not place (unplaced), or that may run partly in its class body (in an
+   iterator's block or a begin body with rescue clauses there: a body
+   opened in one runs whole, LrStmt.fpartial); 1 for one it applies; 2 for
+   one under a condition in its class body (one around the body is the
+   body's), whose visibility alone it applies (lr_applied) */
+static int lr_stmt_applied(const LrStmt *s, int unplaced, int may) {
+  if (s && s->region < 0) s = NULL;
+  if ((!s && !unplaced) || (s && s->fpartial)) return 0;
+  return may && s && (s->fmay || !s->may) ? 2 : 1;
 }
 
 /* The point from which node can run: its statement's, and for a node in a
@@ -1600,7 +1624,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
             k == NK_AliasMethodNode || k == NK_UndefNode || (k == NK_CallNode && lr_nested_form(nt_str(nt, node, "name")));
   if (!own) {
     ElabPos at = { .e = e, .file = s->file, .top = s->top, .frame = f, .depth = s->depth, .rep = s->rep,
-                   .may = s->may, .partial = s->partial, .fmay = s->fmay, .kind = EP_SPINE };
+                   .may = s->may, .partial = s->partial, .fmay = s->fmay, .fpartial = s->fpartial, .kind = EP_SPINE };
     LrNested n = { x, fc, fs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), vs };
     elab_parts(nt, node, &at, lr_nested_part, &n);
   }
@@ -1797,30 +1821,35 @@ void elab_program(Compiler *c) {
 
 static int lr_applied(Compiler *c, const LrDef *v);
 
-/* A def's or define_method's owner, the class side it defines on, is its
-   history's: each method scope the scope walk made of one the registration
-   applies (lr_applied) takes it. The walk's own class for it, its lexical
-   one, stays for the rest: a def in a method body, a lambda or a block
-   kept to run later, one on an object, and one under a condition, which
-   keeps master's. check, under SPINEL_ELAB_CHECK: LR_OWNERS_WALK, where
-   the walk's class differs (as the walk leaves the scopes, before the
-   class builders' classes are made); LR_OWNERS_HELD, each def or
-   define_method the walk made a scope of where a load point stands, on
-   self or a class's constant, that the record does not apply. */
+/* A def's or define_method's owner, the class side it defines on, is a
+   fact of the frame it is written in: each method scope the scope walk made
+   of one the record holds takes its history's, whether or not a load point
+   applies it (a def under a condition or in an iterator's block, one in a
+   body the walk does not place), and a define_method unrolled over computed
+   names, which no history holds, takes the class of the record's body it
+   runs in (lr_unrolled_owners). The walk's own class stays for what the
+   record holds no entry of: a def in a method body, in a lambda or a block
+   kept to run later, on an object, or in a frame whose class the record
+   does not know (a class_eval on a value). check, under SPINEL_ELAB_CHECK:
+   LR_OWNERS_WALK, where the walk's class differs (as the walk leaves the
+   scopes, before the class builders' classes are made); LR_OWNERS_HELD,
+   each def or define_method the walk made a scope of that the record has
+   no owner for, and why. */
 static int lr_def_on_object(const NodeTable *nt, int def);
+static void lr_unrolled_owners(Compiler *c);
 static void lr_def_owners(Compiler *c, int check) {
   LoadRecord *r = c->lrec;
   unsigned char *held = check & LR_OWNERS_HELD ? calloc((size_t)c->nscopes + 1, 1) : NULL;
   if ((check & LR_OWNERS_HELD) && !held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
-    if (h->a < LR_MAIN) continue;
     int cls = h->a == LR_MAIN ? -1 : h->a;
     for (int j = 0; j < h->n; j++) {
       const LrDef *v = &h->v[j];
-      if ((v->kind != LR_DEF && v->kind != LR_DEFINE_METHOD) || !v->scope || v->scope >= c->nscopes || lr_applied(c, v) != 1) continue;
+      if ((v->kind != LR_DEF && v->kind != LR_DEFINE_METHOD) || !v->scope || v->scope >= c->nscopes) continue;
+      if (held) held[v->scope] = h->a < LR_MAIN ? 2 : 1;
+      if (h->a < LR_MAIN) continue;
       Scope *sc = &c->scopes[v->scope];
-      if (held) held[v->scope] = 1;
       if (check & LR_OWNERS_WALK) {
         LrCheck *f = lr_family(r, "the record's def owners");
         f->asked++;
@@ -1830,19 +1859,71 @@ static void lr_def_owners(Compiler *c, int check) {
       if (sc->class_id != cls || sc->is_cmethod != h->b) { sc->class_id = cls; sc->is_cmethod = h->b; comp_touch_scope(sc->idx); }
     }
   }
-  for (int n = 0; held && n < r->ndscope && n < r->n; n++) {
+  lr_unrolled_owners(c);
+  for (int n = 0; held && n < r->ndscope; n++) {
     int s = r->dscope[n];
-    if (!s || s >= c->nscopes || held[s] || r->at[n] < 0 || (r->bits[n] & LR_LATE) || elab_point_of(c, n).region < 0 ||
-        lr_def_on_object(c->nt, n)) continue;
-    LrCheck *f = lr_family(r, "the record's def owners: a def at a point the record does not apply");
+    if (!s || s >= c->nscopes || held[s] == 1) continue;
+    LrCheck *f = lr_family(r, "the record's def owners: a def left to the walk's class");
     f->asked++;
     if (f->differ++ < LR_CHECK_SHOW) {
       char d[96];
       lr_node_desc(c, n, d, sizeof d);
-      fprintf(stderr, "spinel-elab-check: owner %s not applied (%s) walk=%d/%d\n", c->scopes[s].name, d, c->scopes[s].class_id, c->scopes[s].is_cmethod);
+      const char *why = held[s] ? "in a frame of no known class" : lr_def_on_object(c->nt, n) ? "on an object"
+                        : elab_body_def(c, n) >= 0 ? "in a method body" : "with no entry in the record";
+      fprintf(stderr, "spinel-elab-check: owner %s left to the walk (%s), %s, walk=%d/%d\n", c->scopes[s].name, d, why,
+              c->scopes[s].class_id, c->scopes[s].is_cmethod);
     }
   }
   free(held);
+}
+
+/* A define_method statement that unrolls, `[lits].each { |v|
+   define_method("m_#{v}") { } }`, one method scope per element on the
+   inner call (collect_dm_each_unroll): its names are computed, so no
+   history holds it, but it defines on the class of the body it is a
+   statement of, as the record has its statements: in a placed body, a
+   record statement whose frame is the body's (a class's LrOpen) that the
+   load phase applies (lr_stmt_applied): in the arm a constant condition
+   takes, which the record folds, but not under a run-time condition, which
+   only the run time decides, nor in an iterator's block, where the walk's
+   class stays (fix_struct_block_scopes refuses one in a class builder's
+   block); in a body the walk does not place, one of its own statements, as
+   lr_body_defs has them. */
+static void lr_unrolled_owner(Compiler *c, int call, int ci) {
+  int dn = nt_kind(c->nt, call) == NK_CallNode ? dm_each_inner(c->nt, call) : -1;
+  for (int k = 0; dn >= 0 && k < c->nscopes; k++)
+    if (c->scopes[k].def_node == dn && c->scopes[k].class_id != ci) { c->scopes[k].class_id = ci; comp_touch_scope(c->scopes[k].idx); }
+}
+static void lr_unrolled_owners(Compiler *c) {
+  LoadRecord *r = elab_fresh(c);
+  int *fc = malloc(sizeof(int) * (size_t)(r->nst + 1));
+  if (!fc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int e = 0; e < r->nst; e++) fc[e] = -1;
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int nb = 0;
+    const LrOpen *o = elab_class_bodies(c, ci, &nb);
+    for (int i = 0; i < nb; i++) {
+      const LrStmt *f = lr_stmt_of(r, o[i].node);
+      int n = 0;
+      const int *st = !f && o[i].body >= 0 && nt_kind(c->nt, o[i].body) == NK_StatementsNode ? nt_arr(c->nt, o[i].body, "body", &n) : NULL;
+      if (f) fc[f - r->st] = ci;
+      for (int k = 0; k < n; k++) lr_unrolled_owner(c, st[k], ci);
+    }
+  }
+  for (int e = 0; e < r->nst; e++) {
+    const LrStmt *s = &r->st[e];
+    if (s->frame >= 0 && fc[s->frame] >= 0 && lr_stmt_applied(s, 0, s->may) == 1) lr_unrolled_owner(c, s->node, fc[s->frame]);
+  }
+  free(fc);
+}
+
+/* See analyze.h */
+int elab_def_applied(Compiler *c, int def) {
+  LoadRecord *r = elab_fresh(c);
+  const LrStmt *s = lr_stmt_of(r, def);
+  if (!s || s->region < 0) return 1;
+  if (s->fpartial && s->rep >= 0 && dm_each_inner(c->nt, r->st[s->rep].node) == def) s = &r->st[s->rep];
+  return lr_stmt_applied(s, 0, s->may) == 1;
 }
 
 /* Is def node `def` on an object: on a receiver neither self nor a
@@ -2934,16 +3015,11 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
   return lr_ready(c, p) ? lr_vis_at(c, cls, name, sg, p) : -1;
 }
 
-/* Does the registration apply entry v as the load phase ends: 0 for one
-   with no point (unless its body is one the walk does not place) or in an
-   iterator's block; 1 for one it applies; 2 for one under a condition in
-   its class body (one around the body is the body's), whose visibility
-   alone it applies */
+/* Does the registration apply entry v as the load phase ends
+   (lr_stmt_applied, at v's point now) */
 static int lr_applied(Compiler *c, const LrDef *v) {
-  LoadRecord *r = c->lrec;
-  LoadPoint p = elab_point_of(c, v->node);
-  if ((p.region < 0 && !v->unplaced) || (p.region >= 0 && r->st[p.seq].partial)) return 0;
-  return v->may && p.region >= 0 && (r->st[p.seq].fmay || !r->st[p.seq].may) ? 2 : 1;
+  LoadRecord *r = elab_fresh(c);
+  return lr_stmt_applied(lr_stmt_of(r, v->node), v->unplaced, v->may);
 }
 
 /* A history's end-of-load entries (ElabSurface); 0 when it has none */

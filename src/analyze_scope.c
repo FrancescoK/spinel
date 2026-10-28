@@ -549,7 +549,8 @@ void expand_struct_forwarding_super(Compiler *c) {
    g_class_body_id so a self/bare `class_eval` reopen is recognized
    identically by analyze and codegen); whether it is directly in the block
    of `Name = Struct.new(...) do ... end`, whose class register_structs
-   makes only after the walk (fix_struct_block_scopes); and whether it is a
+   makes only after the walk (its methods take it from the load record,
+   elab_record_builders); and whether it is a
    define_method of a `class << X` body, which defines a class method. pos:
    where the load phase stands there (analyze_elab.c), as the load record's
    walk, which this walk is, enters it; e -1 in a walk after it. */
@@ -675,7 +676,8 @@ TyKind dm_lit_type(Compiler *c, int lit) {
 /* Detect `[lit, ...].each { |v| define_method("m_#{v}") { body } }` in a
    class body and synthesize one method scope per literal element, each with
    a compile-time substitution of `v`. In a Struct.new block class_id is
-   still -1; fix_struct_block_scopes homes the scopes. The loop itself still
+   still -1; the load record's body gives the scopes their class
+   (lr_unrolled_owners). The loop itself still
    runs in the walk's scope, binding `v` to each element there, so `v` is a
    local of that scope too: a class body's is the program's, but a method's
    (a class method that defines them when called) had no such local. Returns
@@ -971,7 +973,7 @@ void collect_compiler_state(Compiler *c, int id, int class_id) {
 }
 
 /* The define_method call of `[...].each { |v| define_method(...) { } }`, else -1. */
-static int dm_each_inner(const NodeTable *nt, int call) {
+int dm_each_inner(const NodeTable *nt, int call) {
   const char *nm = nt_str(nt, call, "name");
   int blk = nt_ref(nt, call, "block");
   if (!nm || !sp_streq(nm, "each") || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
@@ -3736,61 +3738,20 @@ static void struct_block_cbody(Compiler *c, int node, int ci) {
   }
 }
 
-/* Home the methods a Struct block statement unrolls with define_method,
-   `[lits].each { |v| define_method("m_#{v}") { } }`: one scope per element
-   on the inner call (collect_dm_each_unroll), whose names are computed, so
-   the load record holds no version of them to give them their class
-   (elab_record_builders). */
-static void struct_home_dm(Compiler *c, int stmt, int ci) {
-  const NodeTable *nt = c->nt;
-  int dn = nt_kind(nt, stmt) == NK_CallNode ? dm_each_inner(nt, stmt) : -1;
-  if (dn < 0) return;
-  for (int s = 0; s < c->nscopes; s++)
-    if (c->scopes[s].def_node == dn) { c->scopes[s].class_id = ci; comp_touch_scope(c->scopes[s].idx); }
-}
-
-/* The arm of an if/unless in a Struct block that a constant condition
-   takes runs, so its unrolled define_methods are the struct's, as alias's
-   are (register_aliases_body). Under a condition only the run time
-   decides, struct_cond_dm_refuse catches them. */
-static void struct_home_cond_dm(Compiler *c, int cond, int ci) {
-  const NodeTable *nt = c->nt;
-  while (cond >= 0) {
-    NodeKind k = nt_kind(nt, cond);
-    int arm = -1;
-    if (k == NK_ElseNode) arm = nt_ref(nt, cond, "statements");
-    else if (k == NK_IfNode || k == NK_UnlessNode) {
-      int unl = k == NK_UnlessNode;
-      int pc = nt_pred_const(nt, nt_ref(nt, cond, "predicate"));
-      if (pc < 0) return;
-      if (pc == !unl) arm = nt_ref(nt, cond, "statements");
-      else {
-        cond = nt_ref(nt, cond, unl ? "else_clause" : "subsequent");
-        continue;
-      }
-    }
-    int n = 0;
-    const int *st = arm >= 0 ? nt_arr(nt, arm, "body", &n) : NULL;
-    for (int j = 0; j < n; j++) {
-      NodeKind sk = nt_kind(nt, st[j]);
-      if (sk == NK_IfNode || sk == NK_UnlessNode) struct_home_cond_dm(c, st[j], ci);
-      else struct_home_dm(c, st[j], ci);
-    }
-    return;
-  }
-}
-
-/* A define_method in a Struct block that is left without a class (under a
-   run-time condition, in a loop, a case, a rescue) defines its method only
-   when that code runs: the struct would answer it from the start or not at
-   all. It is refused, as a def there is (cond_def_class_new). */
+/* A define_method in a Struct block that the load phase does not apply
+   whenever the block runs (elab_def_applied: under a run-time condition,
+   in a loop, a case, a rescue), or that is left without a class, defines
+   its method only when that code runs: the struct would answer it from
+   the start or not at all. It is refused, as a def there is
+   (cond_def_class_new). */
 static void struct_cond_dm_refuse(Compiler *c, int ci) {
   NodeTable *nt = (NodeTable *)c->nt;
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     int dn = sc->def_node;
-    if (sc->class_id >= 0 || sc->is_cmethod || dn < 0 || c->node_cbody[dn] != ci) continue;
+    if (sc->is_cmethod || dn < 0 || c->node_cbody[dn] != ci) continue;
     if (nt_kind(nt, dn) != NK_CallNode || !sp_streq(nt_str(nt, dn, "name"), "define_method")) continue;
+    if (sc->class_id >= 0 && elab_def_applied(c, dn)) continue;
     if (nt_int(nt, dn, "dm_host", 0)) continue;  /* in a method's body */
     nt_node_set_int(nt, dn, "struct_cond_dm", 1);
     nt_node_set_str(nt, dn, "name", "raise");
@@ -3801,31 +3762,22 @@ static void struct_cond_dm_refuse(Compiler *c, int ci) {
 }
 
 /* What a Struct.new / Data.define block's class needs once register_structs
-   has made it, beyond the class its defs and define_methods take from the
-   load record (elab_record_builders): its nodes' class body, its unrolled
-   define_methods' class, and the refusal of a define_method left under a
-   condition. */
+   has made it, beyond the classes its methods take from the load record
+   (lr_def_owners): its nodes' class body, and the refusal of a
+   define_method left under a condition. The record names the class each
+   block is a body of (elab_class_bodies). */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    NodeKind wk = nt_kind(nt, id);
-    if (wk != NK_ConstantWriteNode && wk != NK_LocalVariableWriteNode) continue;
-    int bbody = class_def_body(c, id);
-    if (bbody < 0) continue;
-    char an[48];
-    const char *cname = nt_str(nt, id, "name");
-    if (wk == NK_LocalVariableWriteNode) { snprintf(an, sizeof an, "StructAnon_%s", comp_node_tag(c, id)); cname = an; }
-    int ci = cname ? comp_class_index(c, cname) : -1;
-    if (ci < 0) continue;
-    struct_block_cbody(c, bbody, ci);
-    int bn = 0;
-    const int *stmts = nt_arr(nt, bbody, "body", &bn);
-    for (int k = 0; k < bn; k++) {
-      NodeKind sk = nt_kind(nt, stmts[k]);
-      if (sk == NK_IfNode || sk == NK_UnlessNode) struct_home_cond_dm(c, stmts[k], ci);
-      else struct_home_dm(c, stmts[k], ci);
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int nb = 0, block = 0;
+    const LrOpen *o = elab_class_bodies(c, ci, &nb);
+    for (int i = 0; i < nb; i++) {
+      NodeKind k = nt_kind(nt, o[i].node);
+      if ((k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) || o[i].body < 0) continue;
+      struct_block_cbody(c, o[i].body, ci);
+      block = 1;
     }
-    struct_cond_dm_refuse(c, ci);
+    if (block) struct_cond_dm_refuse(c, ci);
   }
 }
 
