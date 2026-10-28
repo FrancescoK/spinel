@@ -22,10 +22,12 @@ const char *sp_poly_to_s(sp_RbVal v);                   /* the runtime archive (
 
 /* Growable buffer, finalized into a right-sized GC string at the end.
 
-   It starts off the GC heap, and it has to: the escaper below reads an
-   unrooted source through it -- one that may be a rodata literal, whose [-1]
-   is not a marker byte for the collector to read -- and that is only safe
-   while nothing in here can collect.
+   It starts off the GC heap -- in the caller's stack array (JB_ON_STACK),
+   which holds a short document such as an object's own #to_json with no
+   allocation at all, and in a malloc'd block once it outgrows that -- and it
+   has to: the escaper below reads an unrooted source through it -- one that
+   may be a rodata literal, whose [-1] is not a marker byte for the collector
+   to read -- and that is only safe while nothing in here can collect.
 
    A document walk, though, does not always return through its frame. A user
    #to_json can raise, throw, or return from a proc, and every one of those
@@ -45,7 +47,13 @@ typedef struct {
      caller's (0: none) in place of generate's 100, and NaN / Infinity
      written out rather than refused */
   int dump, dump_limit;
+  int stk;      /* p is the caller's stack array: grown by a copy, never freed */
 } jbuf;
+#define JB_STACK_N 512
+#define JB_ON_STACK(b, arr) do { memset(&(b), 0, sizeof (b)); (b).p = (arr); (b).cap = sizeof (arr); (b).stk = 1; } while (0)
+/* what a walk that ends early, or the end of one, gives back: a malloc'd
+   block; the stack array is the caller's, and a moved one the collector's */
+static inline void jb_release(jbuf *b) { if (!b->heap && !b->stk) free(b->p); }
 /* A moved buffer's grow, out of line: jb_add is inlined into loops that append
    a byte at a time, and a second allocator inside its body stops that. With
    the grow written inline, nm gives jb_add a symbol of its own and the
@@ -60,7 +68,13 @@ static void jb_add(jbuf *b, const char *s, size_t n) {
   if (b->len + n + 1 > b->cap) {
     size_t cap = (b->len + n + 1) * 2;
     if (b->heap) jb_grow_heap(b, cap);
-    else {
+    else if (b->stk) {
+      char *q = (char *)malloc(cap);
+      if (!q) sp_oom_die();
+      if (b->len) memcpy(q, b->p, b->len);
+      b->p = q; b->stk = 0;
+      b->cap = cap;
+    } else {
       b->p = (char *)realloc(b->p, cap);
       if (!b->p) sp_oom_die();
       b->cap = cap;
@@ -69,7 +83,13 @@ static void jb_add(jbuf *b, const char *s, size_t n) {
   memcpy(b->p + b->len, s, n);
   b->len += n;
 }
-static void jb_c(jbuf *b, char c) { jb_add(b, &c, 1); }
+/* one byte, the walk's punctuation: stored directly while it fits (with
+   jb_add's room for a terminator), where a one-byte copy through jb_add was a
+   call and a memcpy per comma and colon */
+static inline void jb_c(jbuf *b, char c) {
+  if (b->len + 2 <= b->cap) { b->p[b->len++] = c; return; }
+  jb_add(b, &c, 1);
+}
 /* Hand the buffer to the collector before running code that may not come back.
    The allocation here can collect, and that is safe at exactly this moment:
    b->heap is still NULL, so the walk's root marks nothing, and what it is
@@ -79,7 +99,8 @@ static void jb_to_heap(jbuf *b) {
   size_t cap = b->cap ? b->cap : 1;
   char *q = sp_str_alloc(cap);
   if (b->len) memcpy(q, b->p, b->len);
-  free(b->p);
+  if (!b->stk) free(b->p);
+  b->stk = 0;
   b->p = b->heap = q;
   b->cap = cap;
 }
@@ -104,7 +125,7 @@ static const char *jb_finish(jbuf *b) {
   char *r = sp_str_alloc(b->len);
   if (b->len) memcpy(r, b->p, b->len);
   sp_str_set_len(r, b->len);
-  if (!b->heap) free(b->p);
+  jb_release(b);
   return r;
 }
 
@@ -125,25 +146,51 @@ static const char *sp_json_obj_to_s(sp_RbVal v) {
                     (unsigned long long)(uintptr_t)v.v.p);
 }
 
-const char *sp_json_str(const char *s) {
-  jbuf b; memset(&b, 0, sizeof b);
-  jb_c(&b, '"');
+/* The escape a byte takes in a JSON string: 0 for none, 'u' for \u00XX, and
+   otherwise the letter after the backslash. */
+static const char jb_esc[256] = {
+  'u','u','u','u','u','u','u','u','b','t','n','u','f','r','u','u',
+  'u','u','u','u','u','u','u','u','u','u','u','u','u','u','u','u',
+  0, 0, '"', 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ['\\'] = '\\',
+};
+/* A String quoted and escaped straight into the buffer, the bytes between two
+   escapes copied as one run. S is read while the buffer grows, and a moved
+   buffer's growth can collect: every caller's S is held by the document the
+   walk has rooted (a value, a key, a Symbol's name) or is not on the GC heap,
+   and the collector moves nothing, so it is still there to read. */
+static void jb_str(jbuf *b, const char *s) {
+  jb_c(b, '"');
   if (s) {
-    for (const char *p = s; *p; p++) {
-      unsigned char c = (unsigned char)*p;
-      if (c == '"') jb_add(&b, "\\\"", 2);
-      else if (c == '\\') jb_add(&b, "\\\\", 2);
-      else if (c == '\n') jb_add(&b, "\\n", 2);
-      else if (c == '\t') jb_add(&b, "\\t", 2);
-      else if (c == '\r') jb_add(&b, "\\r", 2);
-      else if (c == '\b') jb_add(&b, "\\b", 2);
-      else if (c == '\f') jb_add(&b, "\\f", 2);
-      else if (c < 0x20) { char u[8]; int n = snprintf(u, sizeof u, "\\u%04x", (unsigned)c); jb_add(&b, u, (size_t)n); }
-      else jb_c(&b, (char)c);
+    const char *run = s, *p = s;
+    unsigned char c;
+    while ((c = (unsigned char)*p)) {
+      char e = jb_esc[c];
+      if (!e) { p++; continue; }
+      if (p > run) jb_add(b, run, (size_t)(p - run));
+      if (e == 'u') {
+        char u[6] = { '\\', 'u', '0', '0', "0123456789abcdef"[c >> 4], "0123456789abcdef"[c & 15] };
+        jb_add(b, u, 6);
+      }
+      else { char t[2] = { '\\', e }; jb_add(b, t, 2); }
+      run = ++p;
     }
+    if (p > run) jb_add(b, run, (size_t)(p - run));
   }
-  jb_c(&b, '"');
+  jb_c(b, '"');
+}
+const char *sp_json_str(const char *s) {
+  char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
+  jb_str(&b, s);
   return jb_finish(&b);
+}
+/* An Integer's digits into the buffer, as sp_int_to_s writes them */
+static void jb_int(jbuf *b, sp_int n) {
+  uint64_t u = n < 0 ? (uint64_t)(-(n + 1)) + 1 : (uint64_t)n;
+  char t[24]; size_t len = (size_t)sp_u64_ndigits(u) + (n < 0);
+  sp_u64_write_back(t + len, u);
+  if (n < 0) t[0] = '-';
+  jb_add(b, t, len);
 }
 
 static const char *sp_json_key(sp_RbVal k) {
@@ -160,6 +207,14 @@ static const char *sp_json_key(sp_RbVal k) {
    raise, throw, or return past the walk: the buffer moves to the heap first,
    as before any user code. */
 static void sp_json_key_b(jbuf *b, sp_RbVal k) {
+  /* the usual keys straight into the buffer, as sp_json_key would write them */
+  sp_RbVal ks = sp_rbval_str(k);
+  switch (ks.tag) {
+    case SP_TAG_STR: jb_str(b, ks.v.s); return;
+    case SP_TAG_SYM: jb_str(b, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)ks.v.i) : ""); return;
+    case SP_TAG_INT: jb_c(b, '"'); jb_int(b, ks.v.i); jb_c(b, '"'); return;
+    default: break;
+  }
   if (k.tag == SP_TAG_OBJ) jb_to_heap(b);
   const char *jk = sp_json_key(k);
   jb_gcs(b, jk, (size_t)sp_str_byte_len(jk));
@@ -201,7 +256,7 @@ SP_COLD static SP_NOINLINE SP_NORETURN void sp_json_too_deep(jbuf *b) {
   /* The walk's own raise, so the walk can hand it the buffer to release (#4355).
      One it has already moved onto the GC heap needs nothing: the collector
      takes that with the root the landing frame drops. */
-  if (!b->heap) free(b->p);
+  jb_release(b);
   if (b->dump && b->dump_limit > 0) sp_raise_cls("ArgumentError", "exceed depth limit");
   if (b->dump) sp_raise_cls("SystemStackError", "stack level too deep");
   sp_raise_cls("JSON::NestingError",
@@ -221,7 +276,7 @@ static int sp_json_max_depth(const jbuf *b) {
    to 1e-7 (or one whose exponent is under 10), and scientific notation
    otherwise, the exponent unpadded -- "1e+20", "0.00000015", "1e-10".
    Float#to_s writes some of these differently ("1.0e+20", "1.5e-07"). */
-static const char *sp_json_float(double d) {
+static int sp_json_float_fmt(double d, char out[64]) {
   /* the shortest digits that read back as d (Float#to_s's), and the decimal
      exponent of the first: one integer computation where probing
      snprintf("%.*e") with strtod at each precision took up to 17 of each,
@@ -233,7 +288,7 @@ static const char *sp_json_float(double d) {
   while (nd > 1 && digits[nd - 1] == '0') nd--;   /* "1000" at 1e20 -> "1" */
   int K = e10 - (nd - 1);              /* value = digits * 10^K */
   int ex = K + nd - 1; if (ex < 0) ex = -ex;
-  char out[64]; int o = 0;
+  int o = 0;
   if (neg) out[o++] = '-';
   if (K >= 0 && ex < 15) {
     memcpy(out + o, digits, nd); o += nd;
@@ -256,8 +311,12 @@ static const char *sp_json_float(double d) {
   else {
     out[o++] = digits[0];
     if (nd > 1) { out[o++] = '.'; memcpy(out + o, digits + 1, nd - 1); o += nd - 1; }
-    o += snprintf(out + o, sizeof out - o, "e%c%d", K + nd - 1 < 0 ? '-' : '+', ex);
+    o += snprintf(out + o, (size_t)(64 - o), "e%c%d", K + nd - 1 < 0 ? '-' : '+', ex);
   }
+  return o;
+}
+static const char *sp_json_float(double d) {
+  char out[64]; int o = sp_json_float_fmt(d, out);
   char *r = sp_str_alloc((size_t)o);
   memcpy(r, out, (size_t)o);
   sp_str_set_len(r, (size_t)o);
@@ -301,7 +360,7 @@ static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth);
 const char *sp_json_val(sp_RbVal v) {
   if (v.tag != SP_TAG_OBJ) return sp_json_scalar(v);
   SP_GC_ROOT_RBVAL(v);   /* see sp_json_pretty below */
-  jbuf b; memset(&b, 0, sizeof b);
+  char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
   SP_GC_ROOT_STR(b.heap);
   sp_json_val_b(&b, v, 0);
   return jb_finish(&b);
@@ -312,17 +371,37 @@ const char *sp_json_val(sp_RbVal v) {
 const char *sp_json_dump(sp_RbVal v, sp_int limit) {
   if (v.tag != SP_TAG_OBJ) return sp_json_scalar_o(v, 1);
   SP_GC_ROOT_RBVAL(v);
-  jbuf b; memset(&b, 0, sizeof b);
+  char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
   b.dump = 1;
   b.dump_limit = limit > 0 ? (int)(limit > SP_JSON_DUMP_GUARD ? SP_JSON_DUMP_GUARD : limit) : 0;
   SP_GC_ROOT_STR(b.heap);
   sp_json_val_b(&b, v, 0);
   return jb_finish(&b);
 }
+/* A leaf in the walk: the common ones written into the buffer, where each
+   used to be a GC string of its own (sp_json_scalar_o's) copied in and left
+   for the collector -- a dozen per small object; the rest (a Bigint,
+   NaN and the Infinities, which raise or are dump's) as before. */
+static void sp_json_leaf_b(jbuf *b, sp_RbVal v) {
+  v = sp_rbval_str(v);
+  switch (v.tag) {
+    case SP_TAG_INT: jb_int(b, v.v.i); return;
+    case SP_TAG_FLT:
+      if (isfinite(v.v.f)) { char out[64]; jb_add(b, out, (size_t)sp_json_float_fmt(v.v.f, out)); return; }
+      break;
+    case SP_TAG_STR: jb_str(b, v.v.s); return;
+    case SP_TAG_SYM: jb_str(b, sp_sym_name_fn ? sp_sym_name_fn((sp_sym)v.v.i) : ""); return;
+    case SP_TAG_BOOL: if (v.v.b) jb_add(b, "true", 4); else jb_add(b, "false", 5); return;
+    case SP_TAG_NIL: jb_add(b, "null", 4); return;
+    default: break;
+  }
+  const char *sc = sp_json_scalar_o(v, b->dump);
+  jb_gcs(b, sc, strlen(sc));
+}
 /* `depth` counts the containers already entered, so a container reached at
    depth 100 would be the 101st level. */
 static void sp_json_val_b(jbuf *b, sp_RbVal v, int depth) {
-  if (v.tag != SP_TAG_OBJ) { const char *sc = sp_json_scalar_o(v, b->dump); jb_gcs(b, sc, strlen(sc)); return; }
+  if (v.tag != SP_TAG_OBJ) { sp_json_leaf_b(b, v); return; }
   int kind = sp_json_kind_fn ? sp_json_kind_fn(v) : 0;
   if (kind == 1) {  /* array */
     if (depth >= sp_json_max_depth(b)) sp_json_too_deep(b);
@@ -470,7 +549,7 @@ static void sp_json_pretty_val(jbuf *b, sp_RbVal v, int depth) {
    freed. */
 const char *sp_json_pretty(sp_RbVal v) {
   SP_GC_ROOT_RBVAL(v);
-  jbuf b; memset(&b, 0, sizeof b);
+  char stk[JB_STACK_N]; jbuf b; JB_ON_STACK(b, stk);
   SP_GC_ROOT_STR(b.heap);
   sp_json_pretty_val(&b, v, 0);
   return jb_finish(&b);

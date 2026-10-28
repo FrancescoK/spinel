@@ -1,0 +1,50 @@
+{"s":"a\"b\\c\nd\te\rf\bg\fh\u0001i\u001fjk/l","a\"b\\c\nd\te\rf\bg\fh\u0001i\u001fjk/l":1}
+["","\"","\\","\n\n","xxx","é ü 日本"]
+480 495 {"k":"xx xxx\n\"yyy"}
+480 484 \t\t"]
+505 520 {"k":"xx xxx\n\"yyy"}
+505 508 \t\t"]
+506 521 {"k":"xx xxx\n\"yyy"}
+506 510 \t\t"]
+507 522 {"k":"xx xxx\n\"yyy"}
+507 510 \t\t"]
+508 523 {"k":"xx xxx\n\"yyy"}
+508 512 \t\t"]
+509 524 {"k":"xx xxx\n\"yyy"}
+509 512 \t\t"]
+510 525 {"k":"xx xxx\n\"yyy"}
+510 514 \t\t"]
+511 526 {"k":"xx xxx\n\"yyy"}
+511 514 \t\t"]
+512 527 {"k":"xx xxx\n\"yyy"}
+512 516 \t\t"]
+520 535 {"k":"xx xxx\n\"yyy"}
+520 524 \t\t"]
+1500 1515 {"k":"xx xxx\n\"yyy"}
+1500 1504 \t\t"]
+{"1":2,"-3":-4,"0":0,"sym":"val","true":false,"":null,"1.5":2.25}
+[0,-1,7,1234567,-987654321,1.0,-0.0,0.1,1e+20,0.00000015,123.456,1e-10]
+834
+9615
+{"points":[{"x":0,"y":0.0,"name":"p0"},{"x":1,"y":0.5,"name"
+zzzzzzzzzzzzzzzzzzzzzzz"}],"info":"end"}
+rescued bad 3
+rescued bad 5
+935
+thrown
+thrown
+JSON::NestingError
+JSON::NestingError
+{"after":[1,"two",3.0]}
+627
+[1,"two"]
+580
+{
+  "a": [
+    1,
+    2
+  ],
+  "b": {
+    "c": null
+  }
+}
