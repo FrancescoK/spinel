@@ -3673,6 +3673,10 @@ static SP_NOINLINE sp_int sp_poly_to_i_cold(sp_RbVal v) {
    filled speculatively, never for one the program really indexes by. */
 static sp_int sp_poly_slot_i(sp_RbVal v) {
   if (v.tag == SP_TAG_OBJ && v.cls_id >= 0) return 0;
+  /* nor is a String: to_i raises past the Integer word (#9941), and a block
+     handed a boxed String of a hundred digits raised before it ran (#10462) */
+  sp_RbVal s = sp_poly_strbuf_deref(v);
+  if (s.tag == SP_TAG_STR) return (sp_int)strtoll(s.v.s ? s.v.s : sp_str_empty, NULL, 10);
   return sp_poly_to_i(v);
 }
 
