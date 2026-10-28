@@ -19970,6 +19970,32 @@ static int strbuf_promote_ivar(Compiler *c, int cid, const char *nm) {
   return 1;
 }
 
+/* Every String instance variable, class variable and global holds the
+   handle, as every String local does (one-string) */
+static int all_handle_static_slots(Compiler *c) {
+  int changed = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    ClassInfo *ci = &c->classes[k];
+    for (int i = 0; i < ci->nivars; i++)
+      if (ci->ivar_types[i] == TY_STRING || (ci->ivar_types[i] == TY_STRBUF && !ci->ivar_str_shared[i]))
+        changed |= strbuf_promote_ivar(c, k, ci->ivars[i]);
+    for (int i = 0; i < ci->ncvars; i++)
+      if (ci->cvar_types[i] == TY_STRING) {
+        cvar_set_type(ci, i, TY_STRBUF);
+        ci->cvar_str_shared[i] = 1;
+        changed = 1;
+      }
+  }
+  for (int g = 0; g < c->ngvars; g++) {
+    LocalVar *gv = &c->gvars[g];
+    if (gv->type != TY_STRING || gv->rbs_seeded) continue;
+    lv_set_type(gv, TY_STRBUF);
+    { gv->str_shared = 1; comp_touch_scope(gv->owner); }
+    changed = 1;
+  }
+  return changed;
+}
+
 /* The class whose C-global ivar slots `self` reads at `node`: Toplevel at
    top level or in a top-level method, the class in one of its class
    methods; -1 elsewhere. */
@@ -50045,26 +50071,13 @@ static void an_phase_infer_fixpoint(Compiler *c) {
        first feeds the settled type into ivar inference. */
     ch |= AN_PASS("infer_global_const_types", infer_global_const_types(c));
     ch |= AN_PASS("infer_multiwrite_const_types", infer_multiwrite_const_types(c));
-    /* (kept apart until the round's end: see below) */
-    int pss_ch = AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
-    int pss_waited = g_share_waited;
-    ch |= AN_PASS("promote_dyncall_string_args", promote_dyncall_string_args(c));
-    ch |= AN_PASS("promote_spread_string_args", promote_spread_string_args(c));
     ch |= AN_PASS("promote_forwarded_rest_args", promote_forwarded_rest_args(c));
-    ch |= AN_PASS("promote_append_accumulators", promote_append_accumulators(c));
     ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
+    ch |= AN_PASS("all_handle_static_slots", all_handle_static_slots(c));
     ch |= AN_PASS("infer_cvar_types", infer_cvar_types(c, 0));
     ch |= AN_PASS("infer_inherited_ivars", infer_inherited_ivars(c));
     ch |= AN_PASS("infer_return_types", infer_return_types(c));
     ch |= AN_PASS("backprop_hash_return_types", backprop_hash_return_types(c));
-    /* A round whose one change was the share rule's wait (the types moved in
-       the round before, and it waited for them to hold still) has just seen
-       them hold still: every other pass found nothing. The rule is applied
-       now, where the next round would have spent all of its passes finding
-       the same before it (#10325). */
-    if (!ch && pss_ch && pss_waited)
-      pss_ch = AN_PASS("promote_shared_stored_strings", promote_shared_stored_strings(c));
-    ch |= pss_ch;
     if (!ch) {
       /* Converged with the ambiguous guesses held at bottom. Clear the flag
          and keep going: a slot whose evidence never arrived is genuinely
@@ -50313,14 +50326,11 @@ static void an_phase_infer_fixpoint(Compiler *c) {
         { int _w = AN_PASS_T("infer_global_const_types", infer_global_const_types(c)); ch |= _w; ch_other |= _w; }
         { int _w = AN_PASS_T("infer_multiwrite_const_types", infer_multiwrite_const_types(c)); ch |= _w; ch_other |= _w; }
         ch |= AN_PASS("infer_ivar_types", infer_ivar_types(c));
+        ch |= AN_PASS("all_handle_static_slots", all_handle_static_slots(c));
         /* AFTER the ivar write-merge: the re-clear zeroes recorded ivars at
            each iteration's top, so a promote gated on STRING must see the
            freshly re-derived type, not the cleared UNKNOWN (#3227 P4) */
-        { int _w = AN_PASS_T("promote_shared_stored_strings", promote_shared_stored_strings(c)); ch |= _w; ch_other |= _w; }
-        { int _w = AN_PASS_T("promote_dyncall_string_args", promote_dyncall_string_args(c)); ch |= _w; ch_other |= _w; }
-        { int _w = AN_PASS_T("promote_spread_string_args", promote_spread_string_args(c)); ch |= _w; ch_other |= _w; }
         { int _w = AN_PASS_T("promote_forwarded_rest_args", promote_forwarded_rest_args(c)); ch |= _w; ch_other |= _w; }
-        { int _w = AN_PASS_T("promote_append_accumulators", promote_append_accumulators(c)); ch |= _w; ch_other |= _w; }
         { int _w = AN_PASS_T("widen_shared_cmp_params", widen_shared_cmp_params(c)); ch |= _w; ch_other |= _w; }
         { int _w = AN_PASS_T("infer_cvar_types", infer_cvar_types(c, 0)); ch |= _w; ch_other |= _w; }
         int ivsame = c->nclasses == ivncls;
@@ -52705,6 +52715,9 @@ static void an_phase_storage(Compiler *c) {
            until those bindings settle too. */
         c->sb_args->changed = infer_param_types_settle(c);
         if (c->sb_args->changed) ch = late_widened = 1;
+        /* and the block parameters a widened parameter's iteration hands
+           its blocks */
+        if (c->sb_args->changed && infer_block_params(c)) ch = 1;
       }
       if (ch) {
         g_ret_no_new_poly = 3;
@@ -54104,6 +54117,30 @@ static void an_phase_enum_late(Compiler *c) {
   infer_memo_boundary();
   g_enum_late = 0;
 }
+/* A String mutator's receiver that a program method answers (a reader's
+   String, `c.name << "x"`) is mutated through the handle the call's view
+   carries: the String the method's slot holds, not a copy of it. */
+static void an_phase_mutated_answers(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, u) {
+    const char *nm = nt_str(nt, u, "name");
+    int r = nt_ref(nt, u, "receiver");
+    if (!nm || r < 0 || !(sp_str_mutator(nm, 0) || bop_name_mutates(nm, BOP_MUT_STATE))) continue;
+    r = nt_paren_single(nt, r);
+    if (nt_kind(nt, r) != NK_CallNode || infer_type(c, r) != TY_STRING) continue;
+    /* (one that may answer nil keeps the view's path, which raises the
+       NoMethodError a nil receiver gets) */
+    if (nil_fact_node(c, r) == NF_MAY_NIL) continue;
+    /* (only a method of the program's: a reader hands out its slot's
+       String; a builtin's answer is a String of its own) */
+    char ivb[300]; int defc = -1;
+    int tg[CPT_MAX];
+    if (!call_reaches_program_method(c, r) && cplan_targets(c, r, tg, CPT_MAX) <= 0 &&
+        !an_reader_ivar_of(c, r, &defc, ivb, sizeof ivb)) continue;
+    c->strbuf_handle_demand[r] = 1;
+  }
+}
+
 void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   g_an_src_nodes = c->nt->count;
@@ -54137,6 +54174,7 @@ void analyze_program(Compiler *c) {
   AN_PHASE("proc_returns", an_phase_proc_returns(c));
   AN_PHASE("storage", an_phase_storage(c));
   AN_PHASE("value_types", an_phase_value_types(c));
+  AN_PHASE("mutated_answers", an_phase_mutated_answers(c));
   AN_PHASE("reconcile_check", an_phase_reconcile_check(c));
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */

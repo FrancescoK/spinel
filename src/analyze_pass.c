@@ -2162,6 +2162,9 @@ static TyRef ivar_evidence_slot(Compiler *c, const LWIndex *ivw, int ivar_cls_id
       int _wv = nt_ref(nt, _wi, "value");
       if (_wv < 0) continue;
       TyKind _wt = infer_type(c, _wv);
+      /* a call that has not answered yet (its receiver re-cleared with
+         this slot) may answer a String this push appends to: wait for it */
+      if (_wt == TY_UNKNOWN && nt_kind(nt, _wv) == NK_CallNode) { nonarray_write = 1; break; }
       if (_wt == TY_UNKNOWN || _wt == TY_NIL) continue;
       if (!ty_is_array(_wt)) { nonarray_write = 1; break; }
       if (_wt != want0 && _wt != TY_POLY_ARRAY) other_kind_write = 1;
@@ -5102,6 +5105,11 @@ static void lv_keep_decisions(LocalVar *lv, int stashed) {
      above, and for the same reason. */
   if ((lv->str_shared || lv->str_append) &&
       (lv->type == TY_STRING || lv->type == TY_STR_ARRAY)) lv_set_type(lv, TY_STRBUF);
+  /* every String local holds the handle (one-string) */
+  if (lv->type == TY_STRING && !lv->is_param && !lv->rbs_seeded && !lv->byref_out) {
+    lv_set_type(lv, TY_STRBUF);
+    if (!lv->str_shared) { lv->str_shared = 1; comp_touch_scope(lv->owner); }
+  }
 }
 
 int infer_write_types(Compiler *c) {
@@ -15877,6 +15885,7 @@ static int fetch_params_may_box(Compiler *c) {
     TyKind kt = f->kt != TY_UNKNOWN ? f->kt : infer_type(c, f->key);
     LocalVar *lv = fetch_param_local(c, f->blk, f->p0);
     TyKind st = lv ? lv->type : TY_UNKNOWN;
+    if (st == TY_STRBUF) st = TY_STRING;   /* (the handle is the String's) */
     if (!fetch_key_boxes(nt, f->key, kt) && st != TY_POLY &&
         !(st == kt && (kt == TY_STRING || kt == TY_SYMBOL))) return 0;
   }

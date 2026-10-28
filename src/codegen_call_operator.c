@@ -1515,8 +1515,8 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        first -- the empty append is still a mutation attempt (#3339). The
        receiver once: a call with effects must not run twice. */
     int tcc = ++g_tmp;
-    buf_printf(b, "({ const char *_t%d = ", tcc); emit_expr(c, recv, b);
-    buf_printf(b, "; sp_str_check_mutable(_t%d); _t%d; })", tcc, tcc);
+    buf_printf(b, "({ const char *_t%d = SP_STR_B(", tcc); emit_expr(c, recv, b);
+    buf_printf(b, "); sp_str_check_mutable(_t%d); _t%d; })", tcc, tcc);
     return 1;
   }
   /* String#clear consumed as a value: empty the assignable receiver in place

@@ -1102,6 +1102,11 @@ static void emit_fetch_blk_param(Compiler *c, int id, int blk, TyKind kt, int tk
     char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
     buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_unbox_text(c, repr_of_slot(c, own).as_ty, ktn, b); buf_puts(b, "; ");
   }
+  /* a boxed key into a parameter of a type of its own: unboxed to it */
+  else if (own && kt == TY_POLY && repr_of_slot(c, own).as_ty != TY_POLY && repr_of_slot(c, own).as_ty != TY_UNKNOWN) {
+    char ktn[32]; snprintf(ktn, sizeof ktn, "_t%d", tk);
+    buf_printf(b, "lv_%s = ", rename_local(fp0)); emit_unbox_text(c, repr_of_slot(c, own).as_ty, ktn, b); buf_puts(b, "; ");
+  }
   else buf_printf(b, "lv_%s = _t%d; ", rename_local(fp0), tk);
   free(kref.p);
 }

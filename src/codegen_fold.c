@@ -9258,7 +9258,10 @@ static void emit_arg_temp(Compiler *c, int v) {
   if (at == TY_POLY) buf_puts(g_pre, "sp_RbVal");
   else if (to) buf_puts(g_pre, oint_ctype(at));
   else emit_ctype(c, at, g_pre);
-  buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : to ? oint_nil(at) : default_value_from_compiler(c, at));
+  /* (a String's bytes read through its face: the argument may answer its
+     handle) */
+  if (at == TY_STRING && !to && hb.p) buf_printf(g_pre, " _t%d = SP_STR_B(%s);", t, hb.p);
+  else buf_printf(g_pre, " _t%d = %s;", t, hb.p ? hb.p : to ? oint_nil(at) : default_value_from_compiler(c, at));
   }
   if (at == TY_POLY) buf_printf(g_pre, " SP_GC_ROOT_RBVAL(_t%d);", t);
   else if (comp_ty_value_obj(c, at)) { buf_puts(g_pre, " "); emit_gc_root_tmp_refs(c, at, t, g_pre); }

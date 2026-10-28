@@ -496,13 +496,14 @@ void emit_str_box_leaf(Compiler *c, int v, int wrap, Buf *b) {
   if (wrap) {
     sf.tmp = ++g_tmp;
     sf.needs = SF_EVAL_ONCE | SF_ROOT_UNTIL_USE | SF_ALLOCATES;
-    buf_puts(&sf.expr, "sp_box_str_new(");
+    /* (the new handle around its bytes, whichever face the leaf answers) */
+    buf_puts(&sf.expr, "sp_box_str_new(SP_STR_B(");
   }
   /* (one representation: the leaf's text may be the handle, boxed through
      its face) */
   else buf_puts(&sf.expr, "SP_STR_BOX(");
   emit_expr(c, v, &sf.expr);
-  buf_puts(&sf.expr, ")");
+  buf_puts(&sf.expr, wrap ? "))" : ")");
   str_form_settle(c, &sf, b);
   if (wrap) buf_printf(b, "_t%d", sf.tmp);
   str_form_close(&sf, b);

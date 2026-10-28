@@ -1401,6 +1401,7 @@ static int sh_blocks_fresh(Compiler *c, int mi, int depth) {
   ShareFacts *F = c->share;
   const NodeTable *nt = c->nt;
   Scope *m = &c->scopes[mi];
+  if (!F) return 0;
   if (F->fresh_blk[mi] >= 0) return F->fresh_blk[mi];
   if (depth > 8 || F->blk_unk[mi] || m->is_lowered_yield || m->is_proc_form || !F->mb_start) return 0;
   F->fresh_blk[mi] = 0;
@@ -1440,6 +1441,7 @@ static int sh_callable_fresh(Compiler *c, int k, int depth) {
    (pivs_callables), a new String or no String whichever it runs? */
 static int sh_call_fresh(Compiler *c, int n, int depth) {
   ShareFacts *F = c->share;
+  if (!F) return 0;
   if (!F->fresh_call) {
     F->fresh_call = malloc((size_t)(F->nnodes > 0 ? F->nnodes : 1));
     if (!F->fresh_call) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }

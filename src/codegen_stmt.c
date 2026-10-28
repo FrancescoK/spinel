@@ -3694,7 +3694,7 @@ static int strbuf_route_nonnil(Compiler *c, int v) {
 /* --share-strings: is recv a deep-return pickup (emit_deep_return_pickup)
    that can answer nil (strbuf_pickup_answers_nil)? */
 int strbuf_pickup_may_nil(Compiler *c, int recv) {
-  return recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && c->strbuf_box[recv] &&
+  return recv >= 0 && nt_kind(c->nt, recv) == NK_CallNode && (c->strbuf_box[recv] || c->strbuf_handle_demand[recv]) &&
          strbuf_pickup_answers_nil(c, recv);
 }
 static int strbuf_route_recv(Compiler *c, int id, int recv, Buf *out);
@@ -3735,7 +3735,7 @@ int strbuf_pickup_nil_check(Compiler *c, const char *name, int recv, Buf *out) {
      own check did; its text runs the call, so it is read once. */
   Buf rb; memset(&rb, 0, sizeof rb);
   if (!strbuf_slot_text(c, recv, &rb)) { free(rb.p); return 0; }
-  if (!strbuf_pickup_may_nil(c, recv)) {
+  if (!strbuf_pickup_may_nil(c, recv) && !repr_of(c, recv).may_nil) {
     buf_puts(out, rb.p);
     free(rb.p);
     return 1;
@@ -23711,6 +23711,15 @@ static int str_mutate_append_bang_arms(Compiler *c, int id, Buf *b, int indent, 
     }
     Buf srefC; memset(&srefC, 0, sizeof srefC);
     int slotC = nchain > 0 && strbuf_slot_text(c, cur, &srefC);
+    /* (a slot that may hold nil raises NoMethodError for the append, as a
+       read of it does: its handle is tested once, ahead of the chain) */
+    if (slotC && repr_of(c, cur).may_nil) {
+      int tn = ++g_tmp;
+      Buf w; memset(&w, 0, sizeof w);
+      buf_printf(&w, "({ sp_String *_t%d = %s; if (SP_UNLIKELY(!_t%d)) sp_nil_recv_raise(\"%s\"); _t%d; })",
+                 tn, srefC.p, tn, name, tn);
+      free(srefC.p); srefC = w;
+    }
     /* (one representation: an element read of any typed String container,
        a call's answer's included, is the handle, held once for the chain) */
     int one_elem_hold = 0;

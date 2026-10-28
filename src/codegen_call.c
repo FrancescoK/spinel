@@ -25916,7 +25916,7 @@ static const char *strvar_arg(Compiler *c, int a, int *shared) {
     Scope *vs = vn ? comp_scope_of(c, a) : NULL;
     LocalVar *lv = vs ? scope_local(vs, vn) : NULL;
     if (!lv) return NULL;
-    *shared = at == TY_STRBUF && repr_of_slot(c, lv).handle;
+    *shared = (at == TY_STRBUF || lv->type == TY_STRBUF) && repr_of_slot(c, lv).handle;
     if (lv->is_block_param) return "a block's parameter";
     if (lv->is_cell) return "a variable a block or a proc captures";
     return lv->is_param ? "a parameter" : "a local variable";
@@ -27178,7 +27178,7 @@ static void refuse_string_copies(Compiler *c, int id) {
     for (int e = 1; e < en; e++) {
       int value, shared;
       const char *key = dyn_kw_elem_key(c, el[e], &value);
-      if (!key || !strvar_arg(c, value, &shared) || repr_of(c, value).handle) continue;
+      if (!key || !strvar_arg(c, value, &shared) || shared || repr_of(c, value).handle) continue;
       int repeated = 0;
       for (int h = 0; h < e && !repeated; h++) {
         int earlier;
@@ -27793,9 +27793,11 @@ static void emit_call_unwrapped(Compiler *c, int id, Buf *b) {
         ((r >= 0 && comp_ntype(c, r) == TY_CLASS && class_recv_user_cmethod(c, id, r, cn) < 0) ||
          (r < 0 && es && es->is_cmethod && es->class_id >= 0))) {
       in_name = 1;
-      buf_puts(b, "sp_str_frozen_name(");
+      /* (through its bytes: the call may answer its handle where one is
+         demanded, and SP_STR_B reads either face) */
+      buf_puts(b, "sp_str_frozen_name(SP_STR_B(");
       emit_call(c, id, b);
-      buf_puts(b, ")");
+      buf_puts(b, "))");
       in_name = 0;
       return;
     } }
