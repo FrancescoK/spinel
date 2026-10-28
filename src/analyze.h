@@ -189,6 +189,9 @@ typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /
 typedef struct { int node, kind, mod, ref; } LrMixin;   /* kind: LrMixKind; mod: the module's class, -2 one the record does not know; ref: the argument naming it */
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
+/* the class builders' blocks recorded as their classes' bodies, once
+   register_structs has made them */
+void elab_record_builders(Compiler *c);
 /* the version of cls's method `name` (singleton when sg) live at p, through
    its ancestors as they stood at p; *out (when asked) the version found. A
    hook (`inherited`, `included`, `method_added`, ...) is asked as the
@@ -237,8 +240,18 @@ int elab_form_runs(Compiler *c, int node);
 int elab_names_method(Compiler *c, const char *name);
 /* adds a method the compiler makes for the program to that set */
 void elab_names_add(Compiler *c, const char *name);
-/* the bodies cls runs, in the order they run; *n their number */
+/* the bodies cls runs, in the order they run, each as the tree has it now
+   (-1: empty); *n their number. The call updates the record's body ids
+   from the tree. */
 const LrOpen *elab_class_bodies(Compiler *c, int cls, int *n);
+/* every class's bodies (-1 for an empty one), in the order the class-body
+   passes take them: each class's bodies up to its definition's (the
+   def_node's, also where the record holds no opening of it), the classes
+   in index order, then every other body in the order they run. A class's own bodies are in run order either way; the
+   interleaving of classes orders only what the passes make. The caller
+   frees the array. */
+typedef struct { int cls, body; } ElabBody;
+ElabBody *elab_all_bodies(Compiler *c, int *n);
 /* the mixins run on cls (-1: main's, at a file's top level), one per
    module, in the order they run: `include A, B` as `include B` then
    `include A`, A nearest; *n their number */

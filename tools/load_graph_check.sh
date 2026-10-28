@@ -203,6 +203,12 @@ mkdir "$tmp/late_include"
 printf 'module Loud\n  def speak = "LOUD"\nend\nclass Dog\nend\nd = Dog.new\nbegin\n  puts d.speak\nrescue NoMethodError\n  puts "no speak yet"\nend\nclass Dog\n  include Loud\nend\n' > "$tmp/late_include/lib.rb"
 printf 'require_relative "lib"\n' > "$tmp/late_include/main.rb"
 refused late_include "a later statement mixes module Loud into class Dog"
+# a file a method requires, once that method may run ahead of the include,
+# as a call in its body may (refuse_mixin_after_calls)
+mkdir "$tmp/late_include_method"
+printf 'p C.new.tag\n' > "$tmp/late_include_method/lib.rb"
+printf 'module M\n  def tag = "m"\nend\nclass C\nend\ndef load_plugin\n  require_relative "lib"\nend\nbegin\n  load_plugin\nrescue NoMethodError\n  puts "no tag yet"\nend\nclass C\n  include M\nend\n' > "$tmp/late_include_method/main.rb"
+refused late_include_method "a later statement mixes module M into class C"
 
 # --strict-require holds in graph mode as in the inline one: a feature no
 # require names is not there (CRuby's NoMethodError for winsize, refused

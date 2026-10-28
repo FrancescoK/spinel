@@ -400,7 +400,6 @@ void register_locals(Compiler *c);
 int is_struct_call(Compiler *c, int val);
 int new_recv_classes(Compiler *c, int recv, int *out, int cap);
 int new_recv_every_class(Compiler *c, int recv);
-int class_body_list(Compiler *c, int **out_ci, int **out_body);
 int class_def_body(Compiler *c, int def_node);
 const char *vis_arg_name(const NodeTable *nt, int arg);   /* a Symbol or String argument's method name (analyze_scope.c) */
 void register_struct_members(Compiler *c, ClassInfo *cls, int val);

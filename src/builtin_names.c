@@ -1299,6 +1299,7 @@ int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
 int is_load_name(const char *n) { return sp_streq(n, "load"); }
 int is_require_name(const char *n) { return sp_streq(n, "require") || sp_streq(n, "require_relative"); }
+int is_extend_name(const char *n) { return sp_streq(n, "extend"); }
 int is_autoload_name(const char *n) { return sp_streq(n, "autoload"); }
 int is_file_load_name(const char *n) {
   return n && (is_require_name(n) || is_load_name(n) || is_autoload_name(n));
