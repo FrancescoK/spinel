@@ -191,6 +191,14 @@ static int node_is_oint_asked(Compiler *c, int node) {
         return 1; }
     /* `o.x = v` as a value answers v, whatever the writer returns */
     if (call_is_setter_assign(nt, node)) {
+      /* ...except a native class's binding (StringScanner#pos=), which the
+         call emitter answers with the binding's own return, typed by its
+         spec (analyze_infer_recv): its Integer argument is converted
+         strictly, so a nil one raises before the binding answers */
+      int sr = nt_ref(nt, node, "receiver");
+      TyKind srt = sr >= 0 ? comp_ntype(c, sr) : TY_UNKNOWN;
+      int snk = ty_is_object(srt) ? comp_native_answer_class(c, ty_object_class(srt), nm) : -1;
+      if (snk >= 0 && comp_native_method_find(c, snk, nm, 1, 0) >= 0) return 0;
       int sa = nt_ref(nt, node, "arguments"), san = 0;
       const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &san) : NULL;
       if (sav && san >= 1) return nt_kind(nt, sav[san - 1]) == NK_NilNode || nullable_int_value(c, sav[san - 1]);
