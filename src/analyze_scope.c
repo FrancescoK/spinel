@@ -3573,39 +3573,6 @@ void fix_struct_block_scopes(Compiler *c) {
   }
 }
 
-/* Process attr_accessor/reader/writer call: register ivars + reader/writer names.
-   If `singleton` is non-zero, registers singleton (class-level) accessors instead. */
-void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton) {
-  const NodeTable *nt = c->nt;
-  const char *nm = nt_str(nt, s, "name");
-  if (!nm) return;
-  int accessor = sp_streq(nm, "attr_accessor") ||
-                 sp_streq(nm, "attribute") || sp_streq(nm, "attributes");
-  int reader = sp_streq(nm, "attr_reader") || accessor || sp_streq(nm, "attr");
-  int writer = sp_streq(nm, "attr_writer") || accessor;
-  if (!reader && !writer) return;
-  int args = nt_ref(nt, s, "arguments");
-  int an = 0;
-  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  for (int a = 0; a < an; a++) {
-    NodeKind ak = nt_kind(nt, argv[a]);
-    if (ak != NK_SymbolNode) continue;
-    const char *base = nt_str(nt, argv[a], "value");
-    if (!base) continue;
-    if (singleton) {
-      if (reader) { comp_add_sg_reader(cls, base); comp_add_sg_decl(cls, base, 0, s); }
-      if (writer) { comp_add_sg_writer(cls, base); comp_add_sg_decl(cls, base, 1, s); }
-    }
-else {
-      char ivname[256];
-      snprintf(ivname, sizeof ivname, "@%s", base);
-      comp_ivar_intern(cls, ivname);
-      if (reader) comp_add_own_reader(cls, base);
-      if (writer) comp_add_writer(cls, base);
-    }
-  }
-}
-
 /* A body statement that is, or holds under an if / unless, a write of `ivname` */
 static int body_stmt_assigns_civ(const NodeTable *nt, int n, const char *ivname) {
   if (n < 0) return 0;
@@ -3670,112 +3637,44 @@ static int cmethod_names_ivar(Compiler *c, int ci, const char *ivname) {
   return 0;
 }
 
-/* An attr call whose value the class body uses (`r = attr_reader :a`,
-   `p(attr_accessor :b)`) declares its methods as the bare statement does.
-   Nested bodies with their own self are not walked. */
-static void register_attrs_in_value(Compiler *c, ClassInfo *cls, int node, int singleton) {
-  const NodeTable *nt = c->nt;
-  if (node < 0) return;
-  NodeKind k = nt_kind(nt, node);
-  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
-      k == NK_BlockNode || k == NK_LambdaNode)
-    return;
-  if (k == NK_CallNode && nt_ref(nt, node, "receiver") < 0) register_attr_call(c, cls, node, singleton);
-  int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) register_attrs_in_value(c, cls, nt_ref_at(nt, node, i), singleton);
-  int na = nt_num_arrs(nt, node);
-  for (int i = 0; i < na; i++) {
-    int m = 0; const int *ids = nt_arr_at(nt, node, i, &m);
-    for (int j = 0; j < m; j++) register_attrs_in_value(c, cls, ids[j], singleton);
-  }
-}
-
-/* Collect attr_reader/attr_writer/attr_accessor declarations in class
-   bodies, registering backing ivars + reader/writer method names.
-   Also scans class << self bodies for singleton-level attr_accessors. */
-/* The singleton accessors a `class << X` body declares on class `cls`. */
-static void register_sclass_attrs(Compiler *c, ClassInfo *cls, int sbody) {
-  const NodeTable *nt = c->nt;
-  if (sbody < 0) return;
-  int sn = 0;
-  const int *sstmts = nt_arr(nt, sbody, "body", &sn);
-  for (int j = 0; j < sn; j++) {
-    int ss = sstmts[j];
-    NodeKind ssk = nt_kind(nt, ss);
-    if (ssk == NK_CallNode)
-      register_attr_call(c, cls, ss, 1);
-    else if (ssk == NK_LocalVariableWriteNode)
-      register_attrs_in_value(c, cls, nt_ref(nt, ss, "value"), 1);
-  }
-}
-
-void register_attrs_body(Compiler *c, ClassInfo *cls, int body) {
-  const NodeTable *nt = c->nt;
-  int n = 0;
-  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    NodeKind sk = nt_kind(nt, s);
-    if (!sty) continue;
-    if (sk == NK_CallNode) {
-      register_attr_call(c, cls, s, 0);
-      /* `private attr_writer :x` declares the writer too: the visibility
-         call's argument is the attr call (#4922) */
-      const char *vn = nt_str(nt, s, "name");
-      if (vn && nt_ref(nt, s, "receiver") < 0 &&
-          visibility_of_name(vn) > BVIS_MODULE_FUNCTION) {
-        int va = nt_ref(nt, s, "arguments");
-        int vc = 0; const int *vv = va >= 0 ? nt_arr(nt, va, "arguments", &vc) : NULL;
-        for (int q = 0; q < vc; q++)
-          if (nt_kind(nt, vv[q]) == NK_CallNode) register_attr_call(c, cls, vv[q], 0);
-      }
-      /* `p(attr_reader :a)` */
-      int ca = nt_ref(nt, s, "arguments");
-      int cn = 0; const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cn) : NULL;
-      for (int q = 0; q < cn; q++) register_attrs_in_value(c, cls, cv[q], 0);
-    }
-    else if (sk == NK_LocalVariableWriteNode || sk == NK_ConstantWriteNode ||
-             sk == NK_InstanceVariableWriteNode || sk == NK_ClassVariableWriteNode ||
-             sk == NK_GlobalVariableWriteNode)
-      register_attrs_in_value(c, cls, nt_ref(nt, s, "value"), 0);
-    else if (sk == NK_SingletonClassNode) {
-      /* class << self; attr_accessor :x; end (a `class << Const` is the
-         named class's, register_attrs) */
-      int sx = nt_ref(nt, s, "expression");
-      if (sx < 0 || nt_kind(nt, sx) != NK_SelfNode) continue;
-      register_sclass_attrs(c, cls, nt_ref(nt, s, "body"));
-      /* An accessor whose name the CLASS BODY also assigns as `@x` names the
-         class-level ivar, which is where `def self.m; @x; end` reads too: mark
-         it so both spellings share civ_<Class>_<x> (#3776). */
-      for (int j = 0; j < cls->nsg_readers + cls->nsg_writers; j++) {
-        const char *base = j < cls->nsg_readers ? cls->sg_readers[j]
-                                                : cls->sg_writers[j - cls->nsg_readers];
-        char ivname[256];
-        snprintf(ivname, sizeof ivname, "@%s", base);
-        for (int k2 = 0; k2 < n; k2++)
-          if (body_stmt_assigns_civ(nt, stmts[k2], ivname)) { comp_add_sg_civ(cls, base); break; }
-        if (!comp_is_sg_civ(cls, base) && cmethod_names_ivar(c, (int)(cls - c->classes), ivname))
-          comp_add_sg_civ(cls, base);
-      }
-    }
-  }
-}
-
+/* Each class side's attr readers and writers, from the load record
+   (elab_entries), in the order the load phase defines them: an instance
+   side's with their backing ivars, a singleton side's with the call that
+   declares them. A singleton accessor whose name a body of the class
+   assigns as `@x`, or one of its class methods names, is the class-level
+   ivar's, which `def self.m; @x; end` reads too: both spellings share
+   civ_<Class>_<x> (#3776). */
 void register_attrs(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int nb = 0;
-  ElabBody *bo = elab_all_bodies(c, &nb);
-  for (int b = 0; b < nb; b++) register_attrs_body(c, &c->classes[bo[b].cls], bo[b].body);
-  free(bo);
-  /* `class << Const; attr_accessor :x; end`, at the top level or in another
-     class's body: the accessors are the named class's own */
-  for (int n = comp_kind_first(c, NK_SingletonClassNode); n >= 0; n = comp_kind_next(c, n)) {
-    int recv = nt_ref(nt, n, "expression");
-    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-    if (ci >= 0) register_sclass_attrs(c, &c->classes[ci], nt_ref(nt, n, "body"));
+  int n = 0;
+  ElabEntry *a = elab_entries(c, 1u << LR_READER | 1u << LR_WRITER, &n);
+  for (int i = 0; i < n; i++) {
+    if (a[i].cls < 0) continue;   /* main's: methods of Object, no class table's */
+    ClassInfo *k = &c->classes[a[i].cls];
+    int w = a[i].kind == LR_WRITER;
+    char base[256];
+    snprintf(base, sizeof base, "%.*s", (int)strlen(a[i].name) - w, a[i].name);
+    if (a[i].sg) {
+      if (w) comp_add_sg_writer(k, base);
+      else comp_add_sg_reader(k, base);
+      comp_add_sg_decl(k, base, w, a[i].node);
+      continue;
+    }
+    char ivname[260];
+    snprintf(ivname, sizeof ivname, "@%s", base);
+    comp_ivar_intern(k, ivname);
+    if (w) comp_add_writer(k, base);
+    else comp_add_own_reader(k, base);
   }
+  for (int i = 0; i < n; i++) {
+    if (a[i].cls < 0 || !a[i].sg) continue;
+    ClassInfo *k = &c->classes[a[i].cls];
+    char base[256], ivname[260];
+    snprintf(base, sizeof base, "%.*s", (int)strlen(a[i].name) - (a[i].kind == LR_WRITER), a[i].name);
+    snprintf(ivname, sizeof ivname, "@%s", base);
+    if (!comp_is_sg_civ(k, base) && (body_assigns_civ(c, a[i].cls, ivname) || cmethod_names_ivar(c, a[i].cls, ivname)))
+      comp_add_sg_civ(k, base);
+  }
+  free(a);
 }
 
 /* Collect `alias new old` (AliasMethodNode) and `alias_method :new, :old`

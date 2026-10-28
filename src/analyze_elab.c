@@ -3078,6 +3078,55 @@ const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n) {
   return r->surf + r->surf_at[k];
 }
 
+/* elab_entries' order: class side, statement, argument, reader first */
+typedef struct { ElabEntry e; long long at; int arg; } LrEntryKey;
+static int lr_entry_cmp(const void *x, const void *y) {
+  const LrEntryKey *a = x, *b = y;
+  if (a->e.cls != b->e.cls) return a->e.cls < b->e.cls ? -1 : 1;
+  if (a->e.sg != b->e.sg) return a->e.sg < b->e.sg ? -1 : 1;
+  if (a->at != b->at) return a->at < b->at ? -1 : 1;
+  if (a->arg != b->arg) return a->arg < b->arg ? -1 : 1;
+  return a->e.kind - b->e.kind;
+}
+
+/* The place among the names form `node` lists (a call's arguments, an
+   undef's names) of the one that gives `name` (an attr writer's by its
+   base name); 0 for a form of one name */
+static int lr_entry_arg(const NodeTable *nt, int node, const char *name, int writer) {
+  int an = nt_kind(nt, node) == NK_CallNode ? nt_ref(nt, node, "arguments") : -1, ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : nt_kind(nt, node) == NK_UndefNode ? nt_arr(nt, node, "names", &ac) : NULL;
+  size_t bl = strlen(name) - (size_t)(writer != 0);
+  for (int i = 0; i < ac; i++) {
+    const char *a = vis_arg_name(nt, av[i]);
+    if (a && strlen(a) == bl && !strncmp(a, name, bl)) return i;
+  }
+  return 0;
+}
+
+ElabEntry *elab_entries(Compiler *c, unsigned mask, int *n) {
+  LoadRecord *r = c->lrec;
+  int k = 0, cap = 0;
+  LrEntryKey *v = NULL;
+  for (int i = 0; r && r->recorded && i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->a < LR_MAIN || !lr_class(r, h->a)) continue;
+    for (int j = 0; j < h->n; j++) {
+      const LrDef *d = &h->v[j];
+      if (!(mask >> d->kind & 1) || lr_applied(c, d) != 1) continue;
+      v = lr_grow(v, &cap, k, sizeof *v);
+      v[k++] = (LrEntryKey){ { h->a, h->b, d->kind, d->node, h->name, d->target }, elab_sort_key(c, d->node),
+                             lr_entry_arg(c->nt, d->node, h->name, d->kind == LR_WRITER) };
+    }
+  }
+  qsort(v, (size_t)k, sizeof *v, lr_entry_cmp);
+  ElabEntry *out = malloc(sizeof *out * (size_t)(k ? k : 1));
+  if (!out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < k; i++) out[i] = v[i].e;
+  free(v);
+  *n = k;
+  return out;
+}
+
 int elab_opaque_before(Compiler *c, int cls, LoadPoint p) {
   if (!lr_ready(c, p)) return ELAB_UNKNOWN;
   return lr_last_before(c, lr_hist(c->lrec, LR_KEY_OPAQUE, lr_const_owner(cls), "", 0), p, p.region < 0, 0, NULL);

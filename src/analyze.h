@@ -371,6 +371,15 @@ typedef struct {
   unsigned char reader, writer, undef, copy;
 } ElabSurface;
 const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n);
+/* An entry the registration applies, as the load phase ends (lr_applied):
+   on class side (cls, LR_MAIN for main's; sg), of kind LrKind, by node, of
+   name (an alias's original in target); names point into the record */
+typedef struct { int cls, sg, kind, node; const char *name, *target; } ElabEntry;
+/* every class side's entries of the kinds in mask (1 << LrKind), in the
+   order the load phase makes them: by class and side, then statement, then
+   the argument that names them (a reader before its writer); *n of them,
+   the caller frees the array */
+ElabEntry *elab_entries(Compiler *c, unsigned mask, int *n);
 /* did code the record cannot follow (a send, an eval of a String, a mixin
    of a module it does not know, a computed method name, a method of the
    program its body calls) run on cls before p? */

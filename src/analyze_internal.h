@@ -417,8 +417,6 @@ void register_struct_members(Compiler *c, ClassInfo *cls, int val);
 void register_structs(Compiler *c);
 void register_singleton_defs(Compiler *c);
 void fix_struct_block_scopes(Compiler *c);
-void register_attr_call(Compiler *c, ClassInfo *cls, int s, int singleton);
-void register_attrs_body(Compiler *c, ClassInfo *cls, int body);
 void register_attrs(Compiler *c);
 void register_aliases_body(Compiler *c, ClassInfo *cls, int body);
 void register_aliases(Compiler *c);
