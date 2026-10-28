@@ -197,7 +197,7 @@ rescue LoadError => e
 end
 RB
 if "$SPINEL" --load-model=graph -I "$tmp/exact/root" "$tmp/exact/main.rb" -o "$tmp/exact/bin" >"$tmp/exact/cc" 2>&1; then
-  (cd "$tmp/exact" && ./bin > out 2>&1)
+  (cd "$tmp/exact" && ./bin > out 2>&1) || fail "exact exits $?"
   printf 'root dup\ntrue\nbeside dup\ntrue\nfalse\nfalse\nLoadError\n' | cmp -s - "$tmp/exact/out" ||
     { fail "a computed path did not name the file CRuby finds"; cat "$tmp/exact/out"; }
 else
@@ -240,7 +240,7 @@ order() {   # NAME STATEMENT EXPECTED-OUTPUT
   printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\n  require_relative "../app/dup"\nend\n%s\ndef load_it(n) = require(n)\np load_it("dup")\np load_it("dup")\n' \
     "$2" > "$tmp/order/$1/main.rb"
   if "$SPINEL" --load-model=graph -I "$tmp/order/inc" "$tmp/order/$1/main.rb" -o "$tmp/order/$1/bin" >"$tmp/order/$1/cc" 2>&1; then
-    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1
+    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1 || fail "order $1 exits $?"
     printf '%s\n' "$3" | cmp -s - "$tmp/order/$1/out" || { fail "order $1: \$LOAD_PATH did not search as CRuby's does"; cat "$tmp/order/$1/out"; }
   else
     fail "order $1 did not compile"; sed -n 1,3p "$tmp/order/$1/cc"
@@ -304,7 +304,7 @@ mkdir "$tmp/order/sym"
 ln -s "$tmp/order/inc" "$tmp/order/sym/lnk"
 printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\nend\np $LOAD_PATH[0].end_with?("/sym/lnk")\np File.directory?($LOAD_PATH[1])\ndef load_it(n) = require(n)\np load_it("dup")\n' > "$tmp/order/sym/main.rb"
 if "$SPINEL" --load-model=graph -I "$tmp/order/sym/lnk" "$tmp/order/sym/main.rb" -o "$tmp/order/sym/bin" >"$tmp/order/sym/cc" 2>&1; then
-  "$tmp/order/sym/bin" > "$tmp/order/sym/out" 2>&1
+  "$tmp/order/sym/bin" > "$tmp/order/sym/out" 2>&1 || fail "sym exits $?"
   printf 'true\ntrue\ninc\ntrue\n' | cmp -s - "$tmp/order/sym/out" ||
     { fail "a symlinked -I directory was not on \$LOAD_PATH as written, or did not name its file"; cat "$tmp/order/sym/out"; }
 else
@@ -338,7 +338,7 @@ printf '$LOAD_PATH.unshift __dir__ if false\ndef never = require_relative("x")\n
 printf 'def pull(path) = require(path)\ndef never = require_relative("x")\nbegin\n  pull("x")\nrescue LoadError => e\n  p e.class\nend\n$LOAD_PATH.unshift __dir__\np pull("x")\n' > "$tmp/lp_cbefore/main.rb"
 printf '$LOAD_PATH.unshift __dir__ if ARGV.empty?\ndef pull(path) = require(path)\ndef never = require_relative("x")\np pull("x")\n' > "$tmp/lp_ccond/main.rb"
 for d in lp_no lp_yes lp_before lp_cond lp_cbefore lp_ccond; do
-  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then "$tmp/$d/bin" > "$tmp/$d/out" 2>&1
+  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then "$tmp/$d/bin" > "$tmp/$d/out" 2>&1 || fail "$d exits $?"
   else fail "$d did not compile"; sed -n 1,3p "$tmp/$d/cc"; fi
 done
 printf 'LoadError\n' | cmp -s - "$tmp/lp_no/out" || { fail "a bare computed path found a file beside the program, which is not on the load path"; cat "$tmp/lp_no/out"; }
