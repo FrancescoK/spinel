@@ -9269,24 +9269,30 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
    method is spliced into each of its sites, where block_given? is known, and
    a site that passed no block takes the builtin's blockless form instead of
    a yield to nothing. The call keeps its number (its parents refer to it);
-   the conditional takes it over and the call moves to a new node. */
-static void fwd_branch_on_block_given(Compiler *c, int id) {
+   the conditional takes it over and the call moves to a new node. With a
+   test cx (>= 0), `t = callable` for the temp t the block calls, the test is
+   cx in place of block_given?: `recv.m(args) { |x| t.call(x) }` runs where
+   the callable is one, and `recv.m(args)` where it is nil, as
+   `recv.m(args, &callable)` does. */
+static void fwd_branch_on_callable(Compiler *c, int id, int cx) {
   NodeTable *nt = (NodeTable *)c->nt;
   int base = nt->count;
   int noblk = nt_clone_subtree(nt, id);
   if (noblk < 0) return;
   nt_node_set_ref(nt, noblk, "block", -1);
   int ifn = nt_new_node(nt, "IfNode");
-  int pred = nt_new_node(nt, "CallNode");
+  int pred = cx >= 0 ? cx : nt_new_node(nt, "CallNode");
   int then = nt_new_node(nt, "StatementsNode");
   int other = nt_new_node(nt, "StatementsNode");
   int els = nt_new_node(nt, "ElseNode");
   if (ifn < 0 || pred < 0 || then < 0 || other < 0 || els < 0) return;
   long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
-  nt_node_set_str(nt, pred, "name", "block_given?");
-  nt_node_set_ref(nt, pred, "receiver", -1);
-  nt_node_set_ref(nt, pred, "arguments", -1);
-  nt_node_set_ref(nt, pred, "block", -1);
+  if (cx < 0) {
+    nt_node_set_str(nt, pred, "name", "block_given?");
+    nt_node_set_ref(nt, pred, "receiver", -1);
+    nt_node_set_ref(nt, pred, "arguments", -1);
+    nt_node_set_ref(nt, pred, "block", -1);
+  }
   /* the call moves to `ifn`'s number, the conditional takes `id`'s */
   nt_swap_nodes(nt, id, ifn);
   int call = ifn;
@@ -9312,6 +9318,25 @@ static void fwd_branch_on_block_given(Compiler *c, int id) {
      spread to the builtin's arguments as the original's would have been,
      had it carried no block */
   expand_static_splat_args(c, base, nt->count);
+}
+static void fwd_branch_on_block_given(Compiler *c, int id) { fwd_branch_on_callable(c, id, -1); }
+
+/* May evaluating e change what the read cx (a local, an instance variable
+   or a constant) answers? A local only by a write to it; the others also by
+   any call, which may write them. */
+static int fwd_subtree_may_rebind(const NodeTable *nt, int e, int cx) {
+  if (e < 0 || e >= nt->count) return 0;
+  const char *ty = nt->nodes[e].type;
+  const char *cn = nt_str(nt, cx, "name"), *en = nt_str(nt, e, "name");
+  int local = nt_kind(nt, cx) == NK_LocalVariableReadNode;
+  if (ty && cn && en && sp_streq(cn, en) && (strstr(ty, "WriteNode") || strstr(ty, "TargetNode"))) return 1;
+  if (!local && ty && (sp_streq(ty, "CallNode") || sp_streq(ty, "SuperNode") ||
+                       sp_streq(ty, "ForwardingSuperNode") || sp_streq(ty, "YieldNode"))) return 1;
+  const SpNode *nd = &nt->nodes[e];
+  for (int j = 0; j < nd->nr; j++) if (fwd_subtree_may_rebind(nt, nd->r[j].ref, cx)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int k = 0; k < nd->a[j].n; k++) if (fwd_subtree_may_rebind(nt, nd->a[j].ids[k], cx)) return 1;
+  return 0;
 }
 
 /* Does any class, module or the top level define an instance method `name`? */
@@ -9420,9 +9445,15 @@ int desugar_value_callable_forwards(Compiler *c) {
     /* Array#fill keeps its `&b` form where the program defines a fill of
        its own that an Array reaches, or a splat gives the arguments
        (`super(*a, &b)` in an Array subclass's fill: the fill emitter reads
-       each argument as one start or length), or a callable other than the
+       each argument as one start or length). A callable other than the
        method's own block may be nil (`fill(0, &pr)` with a nil pr fills
-       with 0: a block calling pr raised NoMethodError) */
+       with 0: a block calling pr raised NoMethodError): it is read once,
+       into a temp (fwd_hoist_callable: the Proc may assign pr), and the
+       temp is tested where the call runs (fwd_branch_on_callable). The read
+       goes ahead of the receiver, so a plain read keeps the `&b` form where
+       the receiver or an argument may change what it answers (any other
+       expression desugar_block_arg_order put in order already). */
+    int fill_nilable = 0;
     if (sp_streq(name, "fill")) {
       int fa = nt_ref(nt, id, "arguments"), fn = 0;
       const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
@@ -9432,7 +9463,17 @@ int desugar_value_callable_forwards(Compiler *c) {
       int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
       int fown = ami >= 0 && ami < c->nscopes && c->scopes[ami].def_node >= 0 &&
                  !nt_int(nt, c->scopes[ami].def_node, "node_bi", 0);
-      if (fsplat || fown || (!anon && ct != TY_PROC && ct != TY_METHOD)) continue;
+      if (fsplat || fown) continue;
+      if (!anon) {
+        NodeKind xk = nt_kind(nt, ex);
+        int rd = xk == NK_LocalVariableReadNode || xk == NK_InstanceVariableReadNode ||
+                 xk == NK_ConstantReadNode || xk == NK_ConstantPathNode;
+        if (rd && (fwd_subtree_may_rebind(nt, recv, ex) ||
+                   fwd_subtree_may_rebind(nt, nt_ref(nt, id, "arguments"), ex)))
+          continue;
+        hoist = 0;
+        fill_nilable = 1;
+      }
     }
     int encl = c->nscope[id];
     TyKind rt = infer_type(c, recv);
@@ -9590,6 +9631,19 @@ int desugar_value_callable_forwards(Compiler *c) {
 
     int base = nt->count;
     if (hoist) fwd_hoist_callable(c, id, blk, &ex);
+    int fill_test = -1;
+    if (fill_nilable) {
+      /* the callable is read once, into the temp the test assigns */
+      char tn[48];
+      snprintf(tn, sizeof tn, "__fwdc_%s", comp_node_tag(c, id));
+      fill_test = nt_new_node(nt, "LocalVariableWriteNode");
+      nt_node_set_str(nt, fill_test, "name", tn);
+      nt_node_set_ref(nt, fill_test, "value", ex);
+      scope_local_intern(comp_scope_of(c, id), tn);
+      ex = nt_new_node(nt, "LocalVariableReadNode");
+      nt_node_set_str(nt, ex, "name", tn);
+      nt_node_set_ref(nt, blk, "expression", ex);
+    }
     int proc_clone = anon ? -1 : nt_clone_subtree(nt, ex);  /* re-read the proc per element */
     if (!anon && proc_clone < 0) continue;
 
@@ -9696,6 +9750,7 @@ int desugar_value_callable_forwards(Compiler *c) {
                          fwd_array_new_call(nt, id);
     if (own && blockless_form && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
+    else if (fill_nilable) fwd_branch_on_callable(c, id, fill_test);
     /* a splat beside the forward was kept whole while the block was an
        `&` (a block goes on one arm only); the literal now spreads it */
     else if (anon) expand_static_splat_args(c, id, id + 1);

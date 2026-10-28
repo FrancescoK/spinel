@@ -59,6 +59,35 @@ p $calls
 p a4([1, 2, 3, 4]) { |i| next 7 if i == 1; side(i) }
 p $calls
 
-# a Proc argument that may be nil fills with the value when it is nil
+# a Proc argument that may be nil fills with the value when it is nil,
+# and runs the Proc when it holds one
 def fv(a, pr) = a.fill(0, &pr)
 p fv([1, 2], nil)
+p fv([1, 2], proc { |i| i + 5 })
+class FillHolder
+  def initialize(pr) = @pr = pr
+  def go(a) = a.fill(1, 1, &@pr)
+end
+p FillHolder.new(nil).go([1, 2, 3])
+p FillHolder.new(->(i) { i * 10 }).go([1, 2, 3])
+$args = 0
+def fill_start = ($args += 1; 0)
+def fa(a, pr) = a.fill(fill_start, &pr)
+p fa([1, 2], nil), fa([1, 2], proc { |i| i * 2 }), $args
+
+# the Proc argument is read once, after the receiver and the arguments
+def fd(a, pr = nil) = a.fill(0, &pr)
+p fd([1, 2]), fd([1, 2], proc { |i| i + 1 })
+def fm(n) = n > 0 ? proc { |i| i + n } : nil
+def fe(a, n) = a.fill(0, &fm(n))
+p fe([1, 2], 1), fe([1, 2], 0)
+def fs(a)
+  pr = nil
+  pr = proc { |i| pr = proc { |j| j * 100 }; i + 1 }
+  a.fill(0, &pr)
+end
+p fs([1, 2, 3])
+fa2 = [1, 2]
+fpr = proc { |i| i + 1 }
+fa2.fill((fpr = nil; 0), &fpr)
+p fa2
