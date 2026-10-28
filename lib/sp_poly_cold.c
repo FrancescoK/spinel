@@ -817,6 +817,8 @@ sp_RbVal sp_poly_clear(sp_RbVal v)
   sp_poly_coll_chk(v, "clear");
   sp_poly_hash_check_mutable(v);
   if (v.tag != SP_TAG_OBJ || !v.v.p) return v;
+  /* a frozen Array raises, as the typed clear does; it was emptied */
+  if (sp_poly_is_array_kind(v.cls_id) && sp_poly_array_frozen(v)) sp_raise_frozen_array_at(v.v.p, v.cls_id);
   switch (v.cls_id) {
     case SP_BUILTIN_INT_ARRAY:      ((sp_IntArray *)v.v.p)->len = 0; break;
     case SP_BUILTIN_FLT_ARRAY:      ((sp_FloatArray *)v.v.p)->len = 0; break;

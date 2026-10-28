@@ -7732,7 +7732,7 @@ double sp_lgamma_pos(double x);
 sp_PolyArray *sp_math_lgamma(double x);
 /* O(1): the array steps past its first element (sp_PolyArray in sp_alloc.h) */
 static sp_RbVal sp_PolyArray_shift(sp_PolyArray *a) { if (SP_UNLIKELY(!a)) sp_nil_recv("shift"); if (a->len <= 0) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } sp_RbVal v = a->data[0]; if (SP_LIKELY(a->head < INT32_MAX)) { a->data++; a->cap--; a->head++; a->len--; } else memmove(a->data, a->data+1, (size_t)(--a->len)*sizeof(sp_RbVal)); return v; }
-static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, sp_int i) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("delete_at"); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); sp_RbVal v = a->data[i]; for (sp_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
+static sp_RbVal sp_PolyArray_delete_at(sp_PolyArray *a, sp_int i) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("delete_at"); if (i < 0) i += a->len; if (i < 0 || i >= a->len) return sp_box_nil(); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); } sp_RbVal v = a->data[i]; for (sp_int j = i; j < a->len - 1; j++) a->data[j] = a->data[j+1]; a->len--; return v; }
 static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb((void*)a);  if (SP_UNLIKELY(!a)) sp_nil_recv("insert"); if (a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return; } sp_int orig = i; if (i < 0) i += a->len + 1; if (i < 0) sp_raise_cls("IndexError", sp_sprintf("index %lld too small for array; minimum: %lld", (long long)orig, (long long)(-(a->len + 1)))); while (i > a->len) sp_PolyArray_push(a, sp_box_nil()); /* CRuby pads with nils past the end */ sp_PolyArray_push(a, sp_box_nil()); for (sp_int j = a->len - 1; j > i; j--) a->data[j] = a->data[j-1]; a->data[i] = v; }
 /* Array#delete(v): removes every element sp_poly_eq to v, returns the
    last one (nil if none). Was missing for TY_POLY_ARRAY -- only TY_INT_ARRAY/
@@ -7742,11 +7742,17 @@ static void sp_PolyArray_insert(sp_PolyArray *a, sp_int i, sp_RbVal v) {sp_gc_wb
    sp_poly_eq, which is inline-per-TU in this file, not linkable from the
    separately-compiled cold array library. */
 static sp_RbVal sp_PolyArray_delete(sp_PolyArray *a, sp_RbVal v) {sp_gc_wb((void*)a); 
-  if (a && a->frozen) { sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY); return sp_box_nil(); }
   if (SP_UNLIKELY(!a)) sp_nil_recv("delete");
   /* sp_poly_eq can allocate (bigint promotion) and so trigger a collection
      mid-loop; a and v may be reachable only through the call expression. */
   SP_GC_ROOT(a); SP_GC_ROOT_RBVAL(v);
+  /* a frozen array raises only when it holds v: CRuby answers nil when v
+     is absent */
+  if (a->frozen) {
+    for (sp_int i = 0; i < a->len; i++)
+      if (sp_poly_rb_equal(a->data[i], v)) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
+    return sp_box_nil();
+  }
   sp_int w = 0;
   sp_RbVal removed = sp_box_nil(); SP_GC_ROOT_RBVAL(removed);
   for (sp_int i = 0; i < a->len; i++) {
@@ -13042,6 +13048,7 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
           a->data[w++] = a->data[i];
         }
         a->len = w;
+        if (found && ((sp_PtrArray *)recv.v.p)->frozen) sp_raise_frozen_array_at(recv.v.p, SP_BUILTIN_PTR_ARRAY);
         if (found) sp_poly_arr_writeback(recv, a);
         return found ? key : sp_box_nil();
       }
@@ -13050,6 +13057,12 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
   }
   if (recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id)) {
     sp_PolyArray *a = sp_poly_to_poly_array(recv);
+    /* a frozen array raises when it holds the key, before any removal */
+    if (a && a->frozen) {
+      for (sp_int i = 0; i < a->len; i++)
+        if (sp_poly_rb_equal(a->data[i], key)) sp_raise_frozen_array_at(a, SP_BUILTIN_POLY_ARRAY);
+      return sp_box_nil();
+    }
     sp_int w = 0, found = 0;
     for (sp_int i = 0; a && i < a->len; i++) {
       if (sp_poly_rb_equal(a->data[i], key)) { found = 1; continue; }
