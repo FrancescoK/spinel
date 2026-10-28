@@ -551,6 +551,7 @@ void comp_free(Compiler *c) {
   }
   free(c->scopes);
   free(c->file_scope);
+  free(c->load_sets_flag);
   elab_free(c);
   for (int i = 0; i < c->nsymbols; i++) free(c->symbols[i]);
   free(c->symbols);

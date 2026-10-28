@@ -1273,6 +1273,10 @@ typedef struct {
   /* the load-phase record: where each statement of the load phase runs
      (analyze_elab.c), rebuilt when the node table changes */
   struct LoadRecord *lrec;
+  /* the program module's memo of prog_load_sets_flag: [node] a load that
+     sets its loaded flag where its value is read by nothing, since another
+     load reads that flag (analyze_program.c); NULL until first asked */
+  unsigned char *load_sets_flag;
   /* the program names or makes a method by something its text does not
      spell -- a send, a method object or a define_method of a computed name,
      text it evaluates -- as an_note_written_names reads the tree; a module

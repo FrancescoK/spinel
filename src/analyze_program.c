@@ -419,22 +419,14 @@ static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *
   free(stack);
 }
 
-/* Which required files run a function of their own when loaded
-   (sp_file_N_top, emit_file_tops): has[i] for each file i below nt_nroots.
-   A file that does more than define things has one. One that only defines
-   things has nothing to run, and a load whose value nothing reads is
-   nothing; but a load that is emitted as an expression (anywhere but as a
-   statement whose value nothing reads) answers whether it ran the file, once,
-   so the file has its loaded flag and an empty function for that load to
-   call. A load of a native library
-   that stands that way as well has no file: native(ud, load) for each. */
-void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, int load), void *ud) {
+/* has[] (see prog_file_tops) over the nodes the program runs (seen, live:
+   prog_reach); native(ud, load), when given, for each load of a native
+   library that is a value. */
+static void prog_tops_scan(Compiler *c, unsigned char *has, const unsigned char *seen, const unsigned char *live,
+                           void (*native)(void *ud, int load), void *ud) {
   const NodeTable *nt = c->nt;
   int n = nt_nroots(nt);
   for (int i = 0; i < n; i++) has[i] = i > 0 && !prog_defines_only(c, i);
-  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
-  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  prog_reach(nt, seen, live);
   const int *parent = comp_parent_map(c);
   NT_FOREACH_KIND(nt, NK_LoadNode, id) {
     int f = (int)nt_int(nt, id, "target_file", -1);
@@ -451,7 +443,93 @@ void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, in
     if (f > 0 && f < n) has[f] = 1;
     else if (is_load_how_native(nt_str(nt, id, "how"))) native(ud, id);
   }
+}
+
+/* Which required files run a function of their own when loaded
+   (sp_file_N_top, emit_file_tops): has[i] for each file i below nt_nroots.
+   A file that does more than define things has one. One that only defines
+   things has nothing to run, and a load whose value nothing reads is
+   nothing; but a load that is emitted as an expression (anywhere but as a
+   statement whose value nothing reads) answers whether it ran the file, once,
+   so the file has its loaded flag and an empty function for that load to
+   call. A load of a native library
+   that stands that way as well has no file: native(ud, load) for each, and
+   for each one whose value nothing reads that sets its flag all the same
+   (prog_load_sets_flag). */
+void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, int load), void *ud) {
+  const NodeTable *nt = c->nt;
+  int n = nt_nroots(nt);
+  unsigned char *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n, 1);
+  if (!seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  prog_reach(nt, seen, live);
+  prog_tops_scan(c, has, seen, live, native, ud);
+  if (native)
+    NT_FOREACH_KIND(nt, NK_LoadNode, id)
+      if (nt_int(nt, id, "target_file", -1) <= 0 && is_load_how_native(nt_str(nt, id, "how")) && prog_load_sets_flag(c, id))
+        native(ud, id);
   free(seen); free(live);
+}
+
+/* Do features a and b name one library (an `.rb` either may carry aside)? */
+static int prog_same_feature(const char *a, const char *b) {
+  size_t al = a ? strlen(a) : 0, bl = b ? strlen(b) : 0;
+  if (al > 3 && !strcmp(a + al - 3, ".rb")) al -= 3;
+  if (bl > 3 && !strcmp(b + bl - 3, ".rb")) bl -= 3;
+  return a && b && al == bl && !memcmp(a, b, al);
+}
+
+/* Does load `id` set the loaded flag of what it loads where its value is
+   read by nothing, since another load reads that flag? Its file has a flag
+   (prog_file_tops' has[]: a load of it is a value, or a computed require
+   may name it), or its native library's is read by a load of the library
+   that is a value or by a computed require that may name any feature. A
+   later load would otherwise answer true, as if it ran the file first.
+   Settled once, the first time codegen asks, over the loads as they are
+   then (c->load_sets_flag, the program module's memo). */
+int prog_load_sets_flag(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (!c->load_sets_flag) {
+    int n = nt_nroots(nt), open = 0, nfeat = 0, capfeat = 0;
+    unsigned char *flags = calloc((size_t)nt->count + 1, 1), *has = calloc((size_t)n + 1, 1),
+                  *seen = calloc((size_t)nt->count + 1, 1), *live = calloc((size_t)n + 1, 1);
+    if (!flags || !has || !seen || !live) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    prog_reach(nt, seen, live);
+    prog_tops_scan(c, has, seen, live, NULL, NULL);
+    /* the native features a load that is a value reads the flag of, each
+       once (there are as many as the native libraries at most) */
+    const char **feat = NULL;
+    const int *parent = comp_parent_map(c);
+    NT_FOREACH_KIND(nt, NK_LoadNode, v) {
+      if (!seen[v]) continue;
+      open |= prog_load_open(nt, v);
+      int st = parent[v] >= 0 && nt_kind(nt, parent[v]) == NK_StatementsNode;
+      const char *path = nt_str(nt, v, "path");
+      if (!is_load_how_native(nt_str(nt, v, "how")) || (st && an_node_dropped(c, v))) continue;
+      int k = 0;
+      while (k < nfeat && !prog_same_feature(feat[k], path)) k++;
+      if (k < nfeat) continue;
+      if (nfeat == capfeat) {
+        capfeat = capfeat ? capfeat * 2 : 8;
+        feat = realloc(feat, sizeof *feat * (size_t)capfeat);
+        if (!feat) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      feat[nfeat++] = path;
+    }
+    NT_FOREACH_KIND(nt, NK_LoadNode, v) {
+      int f = (int)nt_int(nt, v, "target_file", -1);
+      const char *path = nt_str(nt, v, "path");
+      if (!seen[v]) continue;
+      if (f > 0 && f < n) flags[v] = has[f];
+      else if (is_load_how_native(nt_str(nt, v, "how")) && !is_native_lib_at_boot(path)) {
+        int read = open;
+        for (int k = 0; k < nfeat && !read; k++) read = prog_same_feature(feat[k], path);
+        flags[v] = (unsigned char)read;
+      }
+    }
+    free(feat); free(has); free(seen); free(live);
+    c->load_sets_flag = flags;
+  }
+  return id >= 0 && id < nt->count && c->load_sets_flag[id];
 }
 
 /* What --load-model=graph does not load yet, refused by name (#9898), asked
