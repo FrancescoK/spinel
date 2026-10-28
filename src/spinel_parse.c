@@ -3726,15 +3726,23 @@ static char *sp_file_real_dir(const char *file) {
   return real;
 }
 
-/* Is `dir` a root already? */
-static int sp_feature_root_has(const char *dir) {
-  int have = 0;
+/* Real directory `dir` put on the load path the way the program's write
+   puts it: at the front (`first`: unshift, prepend), where the search finds
+   it first even if it was on the path already, as CRuby's does through the
+   new entry; or at the end, where one already on the path changes nothing. */
+static void sp_feature_root_put(const char *dir, int first) {
   for (int i = 0; i < sp_feature_roots_n; i++) {
     char *r = realpath(sp_feature_roots[i], NULL);
-    have |= r && strcmp(r, dir) == 0;
+    int same = r && strcmp(r, dir) == 0;
     free(r);
+    if (!same) continue;
+    if (!first) return;
+    free(sp_feature_roots[i]);
+    memmove(sp_feature_roots + i, sp_feature_roots + i + 1, sizeof *sp_feature_roots * (size_t)(sp_feature_roots_n - i - 1));
+    sp_feature_roots_n--;
+    break;
   }
-  return have;
+  sp_feature_root_at(dir, first);
 }
 
 /* ---- a require that runs later than the program start ----
@@ -4914,7 +4922,7 @@ typedef struct {
   int *boot; int nboot, bootcap;            /* the edges of the libraries loaded at the
                                                program's start (sp_graph_boot) */
   int *entered;                             /* [file] where it runs in load order (--dump-load-graph) */
-  int root_base;                            /* the roots from -I: the others are the program's */
+  char **iroots; int niroots;               /* the roots from -I, which the load path starts with */
 } SpLoadGraph;
 
 /* The file `path`'s id, added the first time it is named. */
@@ -5129,6 +5137,8 @@ static void sp_load_graph_free(SpLoadGraph *g) {
     free(r);
   }
   free(g->gf); free(g->boot); free(g->entered);
+  for (int i = 0; i < g->niroots; i++) free(g->iroots[i]);
+  free(g->iroots);
   for (int i = 0; i < g->nfile; i++) free(g->file[i]);
   for (int i = 0; i < g->nedge; i++) {
     free(g->edge[i].name);
@@ -7423,9 +7433,9 @@ static char *sp_bare_features(SpLoadGraph *g, int f) {
 static char *sp_seed_dirs(const SpLoadGraph *g) {
   char *list = NULL;
   size_t ll = 0;
-  for (int i = 0; i < g->root_base; i++) {
+  for (int i = 0; i < g->niroots; i++) {
     char cwd[1024], full[2048];
-    const char *r = sp_feature_roots[i];
+    const char *r = g->iroots[i];
     if (r[0] != '/' && getcwd(cwd, sizeof cwd)) snprintf(full, sizeof full, "%s/%s", cwd, r);
     else snprintf(full, sizeof full, "%s", r);
     sp_normalize_dots(full);
@@ -7532,24 +7542,27 @@ static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
 }
 
 /* The load path as the program has made it by the statement the walk is at:
-   the roots from -I, then the directories its statements have written
-   (`dirs`), which a file loaded from there starts with. */
+   all of it, in order (`dirs`: the roots from -I with the directories its
+   statements have put before and after them), which a file loaded from there
+   starts with; NULL for the roots from -I alone. */
 static void sp_roots_set(const SpLoadGraph *g, char *const *dirs, int n) {
-  for (int i = g->root_base; i < sp_feature_roots_n; i++) free(sp_feature_roots[i]);
-  sp_feature_roots_n = g->root_base;
+  for (int i = 0; i < sp_feature_roots_n; i++) free(sp_feature_roots[i]);
+  sp_feature_roots_n = 0;
+  if (!dirs) { dirs = g->iroots; n = g->niroots; }
   for (int i = 0; i < n; i++) sp_feature_root_at(dirs[i], 0);
 }
 /* File `f`, named just now by a require of the file being read: it starts
    with the load path as that file has it. */
 static void sp_graph_inherit(SpLoadGraph *g, int f) {
   SpGraphFile *r = sp_graph_rec(g, f);
-  int n = sp_feature_roots_n - g->root_base;
+  int n = sp_feature_roots_n;
   r->dirs = n > 0 ? malloc(sizeof *r->dirs * (size_t)n) : NULL;
+  if (n > 0 && !r->dirs) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   for (int i = 0; i < n; i++) {
-    r->dirs[i] = strdup(sp_feature_roots[g->root_base + i]);
+    r->dirs[i] = strdup(sp_feature_roots[i]);
     if (!r->dirs[i]) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   }
-  r->ndirs = n > 0 ? n : 0;
+  r->ndirs = n;
 }
 /* --load-model=graph: file `f` of graph `g` read and parsed, before any
    file is flattened: its requires resolved (each target file a file of the
@@ -7594,9 +7607,9 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
     w.stmt = (int)i; w.top = st->body.nodes[i];
     pm_visit_node(st->body.nodes[i], sp_graph_site_visit, &w);
     /* a directory the statement puts on the load path is one for the statements after it */
-    int first;   /* (a directory goes after the roots from -I, in the order written) */
+    int first;
     char *real = dir && !builtin ? sp_load_dir_stmt(&r->src.parser, st->body.nodes[i], dir, &first) : NULL;
-    if (real && !sp_feature_root_has(real)) sp_feature_root_at(real, 0);   /* a root from here on */
+    if (real) sp_feature_root_put(real, first);   /* a root from here on */
     free(real);
   }
   free(dir);
@@ -8059,7 +8072,11 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   out_nt = nt_new_table();
   node_counter = 0;
   sp_load_file(&g, source_file);
-  g.root_base = sp_feature_roots_n;
+  g.niroots = sp_feature_roots_n;
+  g.iroots = malloc(sizeof *g.iroots * (size_t)(g.niroots + 1));
+  if (!g.iroots) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  for (int i = 0; i < g.niroots; i++)
+    if (!(g.iroots[i] = strdup(sp_feature_roots[i]))) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   SpNames facts = { NULL, 0, 0, 0 };
   int ok = 1;
   /* every file of the program read first, the libraries CRuby has at boot

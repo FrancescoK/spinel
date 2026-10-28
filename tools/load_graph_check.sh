@@ -244,6 +244,36 @@ order insert1 "\$LOAD_PATH.insert(1, $app)" 'inc
 true
 false'
 
+# A literal require searches the load path in the same order, at compile
+# time: a directory the program puts in front (unshift, prepend) comes
+# before the -I directories, also one that is an -I directory already, and
+# the last one put in front first; one it appends comes after them. The
+# computed require after it names the file the literal one loaded.
+mkdir "$tmp/order/app2"
+printf 'puts "app2"\n' > "$tmp/order/app2/dup.rb"
+lorder() {   # NAME -I-DIRS STATEMENTS EXPECTED-FIRST-LINE
+  mkdir "$tmp/order/$1"
+  printf '%s\nrequire "dup"\ndef load_it(n) = require(n)\np load_it("dup")\n' "$3" > "$tmp/order/$1/main.rb"
+  inc_args=
+  for d in $2; do inc_args="$inc_args -I $tmp/order/$d"; done
+  # shellcheck disable=SC2086
+  if "$SPINEL" --load-model=graph $inc_args "$tmp/order/$1/main.rb" -o "$tmp/order/$1/bin" >"$tmp/order/$1/cc" 2>&1; then
+    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1 || fail "order $1 exits $?"
+    printf '%s\nfalse\n' "$4" | cmp -s - "$tmp/order/$1/out" || { fail "order $1: a literal require did not search as CRuby's does"; cat "$tmp/order/$1/out"; }
+  else
+    fail "order $1 did not compile"; sed -n 1,3p "$tmp/order/$1/cc"
+  fi
+}
+app2='File.join(__dir__, "..", "app2")'
+lorder lit_unshift inc "\$LOAD_PATH.unshift $app" app
+lorder lit_prepend inc "\$LOAD_PATH.prepend $app" app
+lorder lit_append inc "\$LOAD_PATH << $app" inc
+lorder lit_unshift_inc "inc app" "\$LOAD_PATH.unshift $app" app
+lorder lit_append_unshift inc "\$LOAD_PATH << $app2
+\$LOAD_PATH.unshift $app" app
+lorder lit_unshift_twice inc "\$LOAD_PATH.unshift $app
+\$LOAD_PATH.unshift $app2" app2
+
 # A symlinked -I directory is in $LOAD_PATH as written (File.expand_path
 # does not resolve it) and still names the program's file; the feature root
 # after the -I directories is a directory that exists.
