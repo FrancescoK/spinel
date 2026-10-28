@@ -120,3 +120,18 @@ g = Again.new(2) { |i| i + 1 }
 p g.a
 g.reset(3)
 p g.a
+
+# a chain of ten such methods, each defined before the one it calls
+def chain0(n) = block_given? ? chain1(n) { |i| yield i } : chain1(n)
+def chain1(n) = block_given? ? chain2(n) { |i| yield i } : chain2(n)
+def chain2(n) = block_given? ? chain3(n) { |i| yield i } : chain3(n)
+def chain3(n) = block_given? ? chain4(n) { |i| yield i } : chain4(n)
+def chain4(n) = block_given? ? chain5(n) { |i| yield i } : chain5(n)
+def chain5(n) = block_given? ? chain6(n) { |i| yield i } : chain6(n)
+def chain6(n) = block_given? ? chain7(n) { |i| yield i } : chain7(n)
+def chain7(n) = block_given? ? chain8(n) { |i| yield i } : chain8(n)
+def chain8(n) = block_given? ? chain9(n) { |i| yield i } : chain9(n)
+def chain9(n) = block_given? ? [yield(n)] : [n]
+p chain0(2)
+p chain0(2).size
+p chain0(2) { |i| i * 5 }
