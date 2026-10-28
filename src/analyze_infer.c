@@ -3707,7 +3707,12 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
           continue;
         }
         int rdcls = pcs[pi].rdcls;
-        if (rdcls >= 0) {
+        /* A reader takes no argument: the dispatch builds it no arm for a
+           call that passes one, so its ivar is no answer to `md.end(1)`.
+           Unified in, an `attr_reader :end` holding a Time typed a boxed
+           MatchData's end(1) as a Time wherever the builtin answer below
+           was not asked (under a face pin), and the call raised. */
+        if (rdcls >= 0 && argc == 0) {
           /* resolve alias so `alias_method :required?, :required` reads the
              backing @required, not a bogus @required? */
           const char *rname = comp_resolve_alias(c, k, name);
