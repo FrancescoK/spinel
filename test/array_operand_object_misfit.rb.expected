@@ -20,5 +20,11 @@
 [TypeError, "no implicit conversion of Regexp into Array"]
 [TypeError, "no implicit conversion of S into Array"]
 [1]
+Loud#to_ary
+[TypeError, "no implicit conversion of P into Array"]
+Loud#to_ary
+[TypeError, "no implicit conversion of P into Array"]
+[TypeError, "no implicit conversion of S into Array"]
+[1]
 [1, 5]
 [1, 5]

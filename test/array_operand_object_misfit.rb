@@ -6,6 +6,12 @@ class S < P; end
 class R
   def to_ary = [5]
 end
+class Loud
+  def to_ary
+    puts "Loud#to_ary"
+    [6]
+  end
+end
 
 def pq(f) = f ? P.new : nil
 
@@ -37,6 +43,11 @@ a = [1]
 t { a.concat(P.new) }
 t { a.concat(/x/) }
 t { a.concat([3], S.new) }
+p a
+# an operand ahead of the misfit converts first, at its turn
+t { [1].concat(Loud.new, P.new) }
+t { [1].union(Loud.new, P.new) }
+t { [1].concat(R.new, S.new) }
 p a
 p [1].concat(R.new)
 p [1] + R.new
