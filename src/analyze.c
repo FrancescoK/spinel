@@ -14662,19 +14662,23 @@ static void oa_restore_pin(Compiler *c, OAS *sl) {
   else c->scopes[sl->sidx].ret_oa_pin = back;
 }
 
-/* Whether an instance of class ci can answer a call named `name`: a reader,
-   a method or an alias by the name in its chain or a reopened Object's, or a
-   method_missing. An ivar slot is listed under its reader's name whether or
-   not the class has that reader, so a `.b` on any dynamic receiver, or a
-   Symbol :b (a Struct with a member :b anywhere in the program spells one),
-   killed every class's @b. A class with a subclass, a Struct and the like
-   make no ivar slot at all, so the class's own chain is all a dynamic
-   receiver of it can reach. */
-static int oa_class_may_answer(Compiler *c, int ci, const char *name) {
+int is_descendant(Compiler *c, int k, int anc);
+/* Whether an instance of class ci, or of a subclass of it, can answer a call
+   named `name`: a reader, a method or an alias by the name in its chain or a
+   reopened Object's, or a method_missing. An ivar slot is listed under its
+   reader's name whether or not the class has that reader, so a `.b` on any
+   dynamic receiver, or a Symbol :b (a Struct with a member :b anywhere in the
+   program spells one), killed every class's @b. The slot covers the ivar in
+   every subclass, so a subclass's own `b` reaches it too. */
+static int oa_one_class_may_answer(Compiler *c, int ci, const char *name) {
   if (comp_resolve_member(c, ci, name, 0, NULL, NULL) != SP_MEMBER_NONE) return 1;
   const char *rn = comp_resolve_alias(c, ci, name);
   if (rn && !sp_streq(rn, name) && comp_resolve_member(c, ci, rn, 0, NULL, NULL) != SP_MEMBER_NONE) return 1;
-  if (comp_method_in_chain(c, ci, "method_missing", NULL) >= 0) return 1;
+  return comp_method_in_chain(c, ci, "method_missing", NULL) >= 0;
+}
+static int oa_class_may_answer(Compiler *c, int ci, const char *name) {
+  for (int k = 0; k < c->nclasses; k++)
+    if ((k == ci || is_descendant(c, k, ci)) && oa_one_class_may_answer(c, k, name)) return 1;
   int oc = comp_class_index(c, "Object");
   return oc >= 0 && oc != ci && comp_resolve_member(c, oc, name, 0, NULL, NULL) != SP_MEMBER_NONE;
 }
@@ -15067,18 +15071,17 @@ static int narrow_object_arrays(Compiler *c) {
         attr_reader, so the slot is vetted the way narrow_int_table_ivars vets
         a table: every read is the receiver of a modeled op or an alias edge
         this pass follows, every write a modeled source, from methods of the
-        owning class only. A reader is not an escape by itself -- each of its
-        call sites on a receiver statically of this class is one more read of
-        the slot -- but a dynamic receiver that could dispatch to it, a symbol
-        naming it, a writer, a subclass, an ancestor that already declares the
-        ivar, or a class-level (singleton) read all keep the slot boxed. */
+        owning class or a subclass (whose copy of the ivar is this slot: its
+        struct begins with the same fields, and inherited methods read them
+        through a cast). A reader is not an escape by itself -- each of its
+        call sites on a receiver statically of this class or a subclass is one
+        more read of the slot -- but a dynamic receiver that could dispatch to
+        it, a symbol naming it, a writer, or a class-level (singleton) read
+        all keep the slot boxed. */
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cl = &c->classes[ci];
     if (cl->def_node < 0 || nt_kind(nt, cl->def_node) == NK_ModuleNode) continue;
     if (cl->is_struct || cl->is_data || cl->is_native_class || cl->is_value_type) continue;
-    int has_sub = 0;
-    for (int k = 0; k < c->nclasses && !has_sub; k++) if (k != ci && c->classes[k].parent == ci) has_sub = 1;
-    if (has_sub) continue;
     for (int iv = 0; iv < cl->nivars; iv++) {
       const char *ivn = cl->ivars[iv];
       if (!ivn || ivn[0] != '@') continue;
@@ -15094,7 +15097,9 @@ static int narrow_object_arrays(Compiler *c) {
       int inherited = 0;
       for (int k = cl->parent; k >= 0; k = c->classes[k].parent)
         if (comp_ivar_index(&c->classes[k], ivn) >= 0) { inherited = 1; break; }
-      if (inherited) continue;
+      /* a subclass's copy of an ancestor's ivar is that ancestor's slot: the
+         decision is applied to every copy, and reset with it above */
+      if (inherited) { cl->ivar_oa_type[iv] = TY_UNKNOWN; continue; }
       if (n >= cap) { cap *= 2; sl = (OAS *)realloc(sl, sizeof(OAS) * cap); if (!sl) { fprintf(stderr, "oom\n"); exit(1); } }
       sl[n].sidx = -1; sl[n].lv = NULL; sl[n].cls = -1; sl[n].alive = 1; sl[n].uf = n; sl[n].needs_cmp = 0; sl[n].removes = 0; sl[n].poly_elem = 0; sl[n].row_iter = 0; sl[n].saw_call = 0; sl[n].ici = ci; sl[n].iiv = iv; sl[n].row_cls = -1; sl[n].row_escape = 0; sl[n].odd_elem = 0;
       /* An `Array[Array[Integer]]` / `Array[Array[Float]]` seed is element
@@ -15120,7 +15125,20 @@ static int narrow_object_arrays(Compiler *c) {
     if (!ivslot[sl[i].ici]) ivslot[sl[i].ici] = (int *)calloc((size_t)c->classes[sl[i].ici].nivars, sizeof(int));
     ivslot[sl[i].ici][sl[i].iiv] = i + 1;
   }
-  #define OA_IVSLOT(ci, ivn) ({ int _r = -1; if ((ci) >= 0 && (ci) < c->nclasses && ivslot[ci]) { int _iv = comp_ivar_index(&c->classes[ci], (ivn)); if (_iv >= 0) _r = ivslot[ci][_iv] - 1; } _r; })
+  /* An ivar slot's answer to oa_class_may_answer, asked by its reader's name
+     -- the name both rules below ask it for -- once per pass: -1 until
+     asked. It scans the class table for subclasses, and a slot it answers
+     no for stays alive, so every dynamic call of the name asked again. */
+  signed char *oa_ans = (signed char *)malloc((size_t)n);
+  if (!oa_ans) { fprintf(stderr, "oom\n"); exit(1); }
+  memset(oa_ans, -1, (size_t)n);
+  #define OA_MAY_ANSWER(i) (oa_ans[(i)] < 0 ? (oa_ans[(i)] = (signed char)oa_class_may_answer(c, sl[(i)].ici, \
+    c->classes[sl[(i)].ici].ivars[sl[(i)].iiv] + 1)) : oa_ans[(i)])
+  /* (a subclass's use is a use of the slot its ancestor declares) */
+  #define OA_IVSLOT(ci, ivn) ({ int _r = -1; \
+    for (int _k = (ci); _r < 0 && _k >= 0 && _k < c->nclasses; _k = c->classes[_k].parent) \
+      if (ivslot[_k]) { int _iv = comp_ivar_index(&c->classes[_k], (ivn)); if (_iv >= 0) _r = ivslot[_k][_iv] - 1; } \
+    _r; })
   /* A reference inside an instance_eval/exec block is to the RECEIVER's ivar
      (ie_class_of), not the enclosing method's class's: a use of the slot
      from another class's code, unvetted. Kills the receiver's slot (each
@@ -15232,9 +15250,9 @@ static int narrow_object_arrays(Compiler *c) {
       continue;
     }
     if (ty_k == NK_InstanceVariableReadNode) {
-      /* a candidate class has no subclass and no ancestor declaring the
-         ivar, so the only other reader of this slot is a singleton method
-         of the class itself (a class-level ivar of the same name) */
+      /* the slot's class and its subclasses read it from their instance
+         methods; the only other reader is a singleton method of one of them
+         (a class-level ivar of the same name) */
       const char *nm = nt_str(nt, id, "name");
       Scope *sc = comp_scope_of(c, id);
       if (!nm || !sc || OA_IE_KILL(id, nm)) continue;
@@ -15258,7 +15276,7 @@ static int narrow_object_arrays(Compiler *c) {
       int rci = -1;
       if (recv >= 0) { TyKind rt = infer_type(c, recv); if (ty_is_object(rt)) rci = ty_object_class(rt); }
       else { Scope *sc = comp_scope_of(c, id); if (sc && !sc->is_cmethod) rci = sc->class_id; }
-      if (rci < 0 || !ivslot[rci] || !comp_is_reader(&c->classes[rci], nm)) continue;
+      if (rci < 0 || !comp_reader_in_chain(c, rci, nm, NULL)) continue;
       int i = OA_IVSLOT(rci, ivn);
       /* the synthesized attr_reader only: an explicit `def x; @x; end` is a
          method with a return slot, reached through call_ret in step 4 */
@@ -15389,7 +15407,9 @@ static int narrow_object_arrays(Compiler *c) {
     const char *bare = c->classes[sl[i].ici].ivars[sl[i].iiv] + 1;
     for (int k = 0; k < nwn && sl[i].alive; k++) {
       if (!sp_streq(wn[k], bare)) continue;
-      /* the slot's class is the receiver's or a subclass of it */
+      /* the slot's class is the receiver's, a subclass of it, or (the slot
+         covering its subclasses' copies) an ancestor of it */
+      if (wcls[k] >= 0 && is_descendant(c, wcls[k], sl[i].ici)) { sl[i].alive = 0; break; }
       for (int a = sl[i].ici; a >= 0; a = c->classes[a].parent)
         if (wcls[k] < 0 || a == wcls[k]) { sl[i].alive = 0; break; }
     }
@@ -15542,7 +15562,7 @@ static int narrow_object_arrays(Compiler *c) {
             /* a dynamic receiver may be this class: its reader would hand
                the unboxed array to a caller expecting the boxed one -- when
                the class has a reader, or a method, by the name at all */
-            if (sl[pi].ici >= 0) { if (oa_class_may_answer(c, sl[pi].ici, name)) sl[pi].alive = 0; continue; }
+            if (sl[pi].ici >= 0) { if (OA_MAY_ANSWER(pi)) sl[pi].alive = 0; continue; }
             if (!sl[pi].lv) { sl[pi].alive = 0; continue; }
             Scope *PS = &c->scopes[sl[pi].sidx];
             for (int pk = 0; pk < PS->nparams; pk++)
@@ -15734,7 +15754,7 @@ static int narrow_object_arrays(Compiler *c) {
            Struct member elsewhere reaches no `b` of this class) */
         const char *ivn = c->classes[sl[i].ici].ivars[sl[i].iiv];
         if (anh_has(&spelled, ivn) ||
-            (anh_has(&spelled, ivn + 1) && oa_class_may_answer(c, sl[i].ici, ivn + 1))) sl[i].alive = 0;
+            (anh_has(&spelled, ivn + 1) && OA_MAY_ANSWER(i))) sl[i].alive = 0;
         continue;
       }
       if (!sl[i].lv && c->scopes[sl[i].sidx].name &&
@@ -15918,6 +15938,15 @@ static int narrow_object_arrays(Compiler *c) {
     if (sl[i].ici >= 0) {
       ClassInfo *cl = &c->classes[sl[i].ici];
       ivar_set_type(cl, sl[i].iiv, nty); cl->ivar_oa_type[sl[i].iiv] = nty; cl->ivar_int_table[sl[i].iiv] = 1;
+      /* a subclass's struct begins with its ancestors' fields, and inherited
+         methods read them through a cast: every copy takes the one type */
+      for (int k = 0; k < c->nclasses; k++) {
+        if (k == sl[i].ici || !is_descendant(c, k, sl[i].ici)) continue;
+        ClassInfo *kc = &c->classes[k];
+        int kiv = comp_ivar_index(kc, cl->ivars[sl[i].iiv]);
+        if (kiv < 0) continue;
+        ivar_set_type(kc, kiv, nty); kc->ivar_oa_type[kiv] = nty; kc->ivar_int_table[kiv] = 1;
+      }
     }
     else if (sl[i].lv) {
       lv_set_type(sl[i].lv, nty); sl[i].lv->oa_pin = nty; sl[i].lv->oa_grace = 0;
@@ -15956,6 +15985,8 @@ static int narrow_object_arrays(Compiler *c) {
      round clears and re-stamps, and reporting that would never converge. */
   if (oa_want_dropped(c, cleared, n_cleared)) changed = 1;
   free(cleared);
+  free(oa_ans);
+  #undef OA_MAY_ANSWER
   for (int k = 0; k < c->nclasses; k++) free(ivslot[k]);
   free(ivslot);
   #undef OA_IE_KILL
