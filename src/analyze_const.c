@@ -22,7 +22,8 @@
        earlier than it.
 
    Program order is the order the load phase runs, as the load record has
-   it: a required file's top level runs at its load (cw_key).
+   it: a required file's top level runs at its load. Each read asks the
+   record's constant histories whether a write completes before its point.
 
    An assignment is a statement of a body when it is a plain `K = v`, a
    constant target of a multiple assignment, or `Mod::K = v`. Other
@@ -44,7 +45,6 @@
    counted so. The pass also names, for each flagged bare read, the class or
    module it is written in (`const_cref`), as the error shows it. */
 
-#include <limits.h>
 #include "analyze_internal.h"
 #include "builtin_names.h"
 
@@ -52,16 +52,12 @@ typedef struct {
   Compiler *c;
   const NodeTable *nt;
   char *settled;     /* per node: a ConstantWriteNode no code of the program's precedes */
-  char *direct;      /* per node: a ConstantWriteNode that is a statement of a body */
   char *seen;        /* per constant: a settled assignment has run */
   char *plain;       /* per constant: ... of a value built of literals alone */
   int clean;         /* nothing that has run so far can run the program's code */
   const int *par;    /* the parent map */
   char **crefs;      /* the lexical names of the classes and modules flagged reads are written in, as an error shows them */
   int ncrefs, ccrefs;
-  int *rd;           /* per constant: where it is first read in program order (cw_key) */
-  int listed;        /* where the first `constants` call is in program order */
-  int computed;      /* ... and the first const_get (or kin) of a computed name */
   int hooks;         /* a definition can run a hook of the program's */
   int cmissing;      /* the program defines const_missing, which spinel does not call */
   int reopened;      /* a builtin class is reopened: its operators may be the program's */
@@ -151,7 +147,7 @@ static int cw_value_walk(ConstWalk *w, int id, int depth) {
       int rv = cw_value(w, r, depth + 1);
       if (rv == 0) return 0;
       const char *rn = nt_kind(nt, r) == NK_ConstantReadNode ? nt_str(nt, r, "name") : NULL;
-      /* Struct.new, Data.define, Class.new, Module.new: the body they take runs now */
+      /* Struct.new, Data.define, Class.new, Module.new run the body they take */
       if (rn && is_class_builder(rn, nm) && !w->hooks && !w->reopened) {
         if (blk < 0) return 1;
         if (nt_kind(nt, blk) != NK_BlockNode) return 0;
@@ -199,7 +195,6 @@ static void cw_stmt_walk(ConstWalk *w, int id, int depth) {
       if (!r) w->clean = 0;
       const char *nm = nt_str(nt, id, "name");
       LocalVar *lv = nm ? comp_const(w->c, nm) : NULL;
-      w->direct[id] = 1;
       if (was && (r || bi) && lv) {
         int i = cw_index(w, lv);
         w->settled[id] = 1;
@@ -221,7 +216,6 @@ static void cw_stmt_walk(ConstWalk *w, int id, int depth) {
           if (nt_kind(nt, ts[i]) != NK_ConstantTargetNode) continue;
           const char *nm = nt_str(nt, ts[i], "name");
           LocalVar *lv = nm ? comp_const(w->c, nm) : NULL;
-          w->direct[ts[i]] = 1;
           if (was && (r || bi) && lv) { w->settled[ts[i]] = 1; w->seen[cw_index(w, lv)] = 1; }
         }
       }
@@ -235,7 +229,6 @@ static void cw_stmt_walk(ConstWalk *w, int id, int depth) {
       int tgt = nt_ref(nt, id, "target");
       const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
       LocalVar *lv = nm ? comp_const(w->c, nm) : NULL;
-      w->direct[id] = 1;
       if (was && (r || bi) && lv) { w->settled[id] = 1; w->seen[cw_index(w, lv)] = 1; }
       return;
     }
@@ -276,23 +269,14 @@ static const char *cw_read_name(const NodeTable *nt, int id) {
   }
 }
 
-/* Where node id starts (post 0) or, for an assignment, completes (post 1)
-   in program order, which is the order the load phase runs (the load
-   record), as a key the reads and assignments compare by: a node of a
-   statement starts before the statement completes, and that is after the
-   bodies it runs (a class builder's block in its value). A node in a method
-   body, a lambda or a block run later starts with the statement that
-   defines or makes it. A node of a file no load places (a region of its
-   own) starts at a time the order does not fix: before everything, for a
-   read to be early. 0: a node the program does not run in its load order
-   (under no file, or in one of the compiler's constant tables, whose reads
-   of every constant of a body are not the program's). */
-static int cw_key(ConstWalk *w, int id, int post) {
+/* Whether node id belongs to a placed file and is outside the compiler's
+   constant-table methods. Reads in those tables enumerate the body's
+   constants; they are not reads the program executes. Deferred bodies
+   belong to the point of the statement that defines or makes them. */
+static int cw_placed(ConstWalk *w, int id) {
   for (int a = id; a >= 0; a = w->par[a])
     if (nt_kind(w->nt, a) == NK_DefNode && is_const_table_def_name(nt_str(w->nt, a, "name"))) return 0;
-  LoadPoint p = post ? elab_point_done(w->c, id) : elab_point_from(w->c, id);
-  if (p.region > 0) return post ? 0 : 1;
-  return p.region != 0 ? 0 : 2 * p.seq + 1 + post;
+  return elab_point_from(w->c, id).region >= 0;
 }
 
 /* The class or module a flagged read is written in, as an error names it:
@@ -341,46 +325,20 @@ static int cw_path_target(const ConstWalk *w, int id) {
           k == NK_ConstantPathOperatorWriteNode) && nt_ref(w->nt, p, "target") == id;
 }
 
-/* The constant an assignment node writes, by name, and whether it is the
-   plain kind a body statement can be (ConstantWriteNode, a constant target
-   of a multiple assignment, a path write). NULL for a node that writes none. */
-static const char *cw_write_name(const NodeTable *nt, int id) {
-  switch (nt_kind(nt, id)) {
-    case NK_ConstantWriteNode: case NK_ConstantTargetNode: case NK_ConstantOrWriteNode:
-    case NK_ConstantAndWriteNode: case NK_ConstantOperatorWriteNode: case NK_ConstantPathTargetNode:
-      return nt_str(nt, id, "name");
-    case NK_ConstantPathWriteNode: case NK_ConstantPathOrWriteNode: case NK_ConstantPathAndWriteNode:
-    case NK_ConstantPathOperatorWriteNode: {
-      int tgt = nt_ref(nt, id, "target");
-      return tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
-    }
-    case NK_CallNode: {
-      const char *cn = nt_str(nt, id, "name");
-      return cn && is_const_set_name(cn) ? cw_read_name(nt, id) : NULL;
-    }
-    default:
-      return NULL;
-  }
-}
-
 /* Mark the constants some assignment can follow a read of: LocalVar.const_early
    (see the header comment). */
 void an_const_presence(Compiler *c) {
   const NodeTable *nt = c->nt;
-  ConstWalk w = { .c = c, .nt = nt, .clean = 1, .par = comp_parent_map(c), .listed = INT_MAX, .computed = INT_MAX };
+  ConstWalk w = { .c = c, .nt = nt, .clean = 1, .par = comp_parent_map(c) };
   size_t nn = (size_t)(nt->count > 0 ? nt->count : 1), nc = (size_t)(c->nconsts > 0 ? c->nconsts : 1);
   w.settled = calloc(nn, 1);
-  w.direct = calloc(nn, 1);
   w.seen = calloc(nc, 1);
   w.plain = calloc(nc, 1);
-  w.rd = malloc(nc * sizeof(int));
-  int *first = calloc(nc, sizeof(int));   /* per constant: its earliest plain assignment's node + 1 */
   char *listed_only = calloc(nc, 1);      /* per constant: early only to a `constants` listing */
-  if (!w.settled || !w.direct || !w.seen || !w.plain || !w.rd || !first ||
+  if (!w.settled || !w.seen || !w.plain ||
       !listed_only) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
-  for (size_t i = 0; i < nc; i++) w.rd[i] = INT_MAX;
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_DefNode) {
@@ -395,52 +353,34 @@ void an_const_presence(Compiler *c) {
     }
   }
   prog_top_stmts(c, cw_top_stmt, &w);   /* the files' top levels, in load order */
-  /* the first read of each constant, `constants` call and const_get of a
-     computed name, in program order */
+  char *first_settled = calloc(nc, 1), *early_reads = calloc(nc, 1);
+  if (!first_settled || !early_reads) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < c->nconsts; i++) {
+    int early, first = elab_const_first_write(c, c->consts[i].name, &early);
+    first_settled[i] = first >= 0 && w.settled[first];
+    if (early) c->consts[i].const_early = 1;
+  }
+  /* Every read and listing asks at its statement's point, including the
+     defining statement of a body that may run later. */
   for (int id = 0; id < nt->count; id++) {
     const char *rn = cw_read_name(nt, id), *cn = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
     LocalVar *lv = rn && !cw_path_target(&w, id) ? comp_const(c, rn) : NULL;
     int listed = cn && is_constants_list_name(cn), computed = cn && !rn && is_const_query_name(cn) && nt_ref(nt, id, "arguments") >= 0;
-    if (!lv && !listed && !computed) continue;
-    int key = cw_key(&w, id, 0);
-    if (!key) continue;
-    if (lv && w.rd[cw_index(&w, lv)] > key) w.rd[cw_index(&w, lv)] = key;
-    if (listed && w.listed > key) w.listed = key;
-    if (computed && w.computed > key) w.computed = key;
-  }
-  /* The first plain assignment of each constant, in program order. Any other
-     assignment of it (inside a branch or a method, the forms that read it
-     first, const_set) leaves it early only if it can come before that one. */
-  int *done = malloc(nc * sizeof(int));   /* per constant: where that one completes */
-  if (!done) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int id = 0; id < nt->count; id++) {
-    const char *nm = w.direct[id] ? cw_write_name(nt, id) : NULL;
-    LocalVar *lv = nm ? comp_const(c, nm) : NULL;
-    if (!lv) continue;
-    int i = cw_index(&w, lv), key = cw_key(&w, id, 1);
-    if (!first[i] || key < done[i]) { first[i] = id + 1; done[i] = key; }
-  }
-  for (int id = 0; id < nt->count; id++) {
-    const char *nm = w.direct[id] ? NULL : cw_write_name(nt, id);
-    LocalVar *lv = nm ? comp_const(c, nm) : NULL;
-    if (!lv) continue;
-    int i = cw_index(&w, lv);
-    if (!first[i] || cw_key(&w, id, 0) < done[i]) lv->const_early = 1;
+    if ((!lv && !listed && !computed) || !cw_placed(&w, id)) continue;
+    for (int i = lv ? cw_index(&w, lv) : 0, end = lv ? i + 1 : c->nconsts; i < end; i++)
+      if (!first_settled[i] && elab_const_slot_present_at(c, c->consts[i].name, elab_point_from(c, id)) != ELAB_YES)
+        early_reads[i] |= listed ? 2 : computed ? 4 : 1;
   }
   for (int i = 0; i < c->nconsts; i++) {
-    if (!first[i] || c->consts[i].const_early) continue;
-    int wr = first[i] - 1;
-    if (!w.settled[wr] && (w.rd[i] < done[i] || w.listed < done[i])) {
-      c->consts[i].const_early = 1;
-      /* a const_get of a computed name may read it too */
-      listed_only[i] = w.rd[i] >= done[i] && w.computed >= done[i];
-    }
+    if (c->consts[i].const_early || !early_reads[i]) continue;
+    c->consts[i].const_early = 1;
+    listed_only[i] = early_reads[i] == 2;
   }
   /* A name that is also a class's (an alias `Key = Impl::Key`) is one slot of
      the flat table for the value and the class, and a read of the class must
-     not wait for the value. A program that defines const_missing gets the
-     answers master gave: spinel does not call it, so the NameError a flag
-     raises would be the wrong one. A constant no read can reach before its
+     not wait for the value. A program that defines const_missing keeps
+     these reads unguarded: spinel does not call it, so a flag would raise
+     the wrong NameError. A constant no read can reach before its
      assignment, only a `constants` listing, keeps its flag there: the
      listing leaves it out until it is assigned, as CRuby's does, and no
      read tests it early. */
@@ -455,13 +395,14 @@ void an_const_presence(Compiler *c) {
   if (!cref) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int id = 0; id < nt->count; id++) {
     LocalVar *lv = nt_kind(nt, id) == NK_ConstantReadNode ? comp_const(c, nt_str(nt, id, "name")) : NULL;
-    if (lv && lv->const_early && cw_key(&w, id, 0)) cref[id] = 1 + cw_cref_at(&w, id);
+    if (lv && lv->const_early && cw_placed(&w, id)) cref[id] = 1 + cw_cref_at(&w, id);
   }
   for (int id = 0; id < nt->count; id++)
     if (cref[id]) nt_node_set_str((NodeTable *)nt, id, "const_cref", cref[id] > 1 ? w.crefs[cref[id] - 2] : "");
   free(cref);
   for (int i = 0; i < w.ncrefs; i++) free(w.crefs[i]);
   free(w.crefs);
-  free(w.settled); free(w.direct);
-  free(w.seen); free(w.plain); free(w.rd); free(first); free(done); free(listed_only);
+  free(w.settled);
+  free(w.seen); free(w.plain); free(listed_only);
+  free(first_settled); free(early_reads);
 }

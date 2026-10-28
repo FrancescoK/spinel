@@ -76,6 +76,11 @@ enum { LR_LATE = 1, LR_BODY = 2 };   /* runs later: in a method body, a lambda o
 /* A def of the program's, by its name (LoadRecord.defs) */
 typedef struct { const char *name; int node; } LrSite;
 
+/* Flat constant slots: first plain write, earliest other write, and the
+   earliest sure/possible completions in each load region. */
+typedef struct LrSlot { const char *name; int first, next, points, other; LoadPoint done, from; } LrSlot;
+typedef struct LrSlotPoint { int region, sure, any, next; } LrSlotPoint;
+
 struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
   int *at;                   /* [n] each node's statement; -1 under no file's root */
@@ -116,6 +121,8 @@ struct LoadRecord {
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
   struct { int node; char *name; } *srcw; int nsrcw;   /* the constant writes the source has, before any pass (elab_note_const_writes) */
+  LrSlot *slot; int nslot, cslot, *slot_head, slot_builds;
+  LrSlotPoint *slotp; int nslotp, cslotp; long slot_entries;
   struct LrVers *vers; int nvers, cvers, *vers_head;
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
@@ -1720,6 +1727,7 @@ static void lr_record_drop(LoadRecord *r) {
   if (r->cls) memset(r->cls, 0, sizeof *r->cls * (size_t)r->ncls);
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
   r->nhist = 0; r->frontier = 0; r->nset = 0; r->builders = 0;
+  r->slot_builds = -1;
   r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
   free(r->surf); free(r->surf_at); r->surf = NULL; r->surf_at = NULL;
 }
@@ -2540,6 +2548,116 @@ int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p
     else if (o == PROG_BEFORE && !v->nil) { if (!v->may) return ELAB_YES; unsure = 1; }
   }
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+/* The flat slot written by a history entry, after qualified names have
+   been lowered. Class headers do not assign a value slot. */
+static const char *lr_const_slot_name(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode) return NULL;
+  if (k == NK_CallNode) {
+    int a = nt_ref(nt, node, "arguments"), n = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+    return n ? vis_arg_name(nt, av[0]) : NULL;
+  }
+  int target = nt_ref(nt, node, "target");
+  return nt_str(nt, target >= 0 ? target : node, "name");
+}
+
+/* A plain assignment is a statement directly in a file or class body,
+   including a class builder's body and a multiple assignment's targets. */
+static int lr_const_plain(Compiler *c, int node) {
+  LoadRecord *r = c->lrec;
+  LoadPoint p = elab_point_of(c, node);
+  NodeKind k = nt_kind(c->nt, node);
+  if (p.region < 0 || (k != NK_ConstantWriteNode && k != NK_ConstantPathWriteNode && k != NK_ConstantTargetNode)) return 0;
+  const LrStmt *s = &r->st[p.seq];
+  if (s->may || s->partial || (node != s->node && nt_kind(c->nt, s->node) != NK_MultiWriteNode)) return 0;
+  for (;;) {
+    if (s->depth != (s->frame >= 0 ? r->st[s->frame].depth + 1 : 0)) return 0;
+    if (s->frame < 0) return 1;
+    s = &r->st[s->frame];
+  }
+}
+
+static LrSlot *lr_slot(LoadRecord *r, const char *name, int make) {
+  unsigned b = lr_hash(0, 0, name);
+  for (int k = r->slot_head[b]; k >= 0; k = r->slot[k].next)
+    if (sp_streq(r->slot[k].name, name)) return &r->slot[k];
+  if (!make) return NULL;
+  r->slot = lr_grow(r->slot, &r->cslot, r->nslot, sizeof *r->slot);
+  int k = r->nslot++;
+  r->slot[k] = (LrSlot){ .name = name, .first = -1, .next = r->slot_head[b], .points = -1 };
+  r->slot_head[b] = k;
+  return &r->slot[k];
+}
+
+/* Presence belongs to the flat slot, regardless of the lexical owner.
+   Index the histories once per build, by their current lowered names.
+   Regions are incomparable, so each keeps its own earliest completions. */
+static void lr_slot_index(Compiler *c) {
+  LoadRecord *r = elab_fresh(c);
+  if (r->slot_head && r->slot_builds == r->builds && r->slot_entries == r->nentries) return;
+  if (!r->slot_head && !(r->slot_head = malloc(sizeof(int) * LR_BUCKETS))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < LR_BUCKETS; b++) r->slot_head[b] = -1;
+  r->nslot = r->nslotp = 0;
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->a != -2 - (int)ELAB_CONST) continue;
+    for (int j = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      const char *name = lr_const_slot_name(c->nt, v->node);
+      if (!name) continue;
+      LrSlot *s = lr_slot(r, name, 1);
+      LoadPoint p = elab_point_done(c, v->node), q = elab_point_from(c, v->node);
+      int k = s->points;
+      while (k >= 0 && r->slotp[k].region != p.region) k = r->slotp[k].next;
+      if (k < 0) {
+        r->slotp = lr_grow(r->slotp, &r->cslotp, r->nslotp, sizeof *r->slotp);
+        k = r->nslotp++;
+        r->slotp[k] = (LrSlotPoint){ p.region, INT_MAX, INT_MAX, s->points };
+        s->points = k;
+      }
+      LrSlotPoint *t = &r->slotp[k];
+      if (p.seq < t->any) t->any = p.seq;
+      if (!v->may && p.seq < t->sure) t->sure = p.seq;
+      if (lr_const_plain(c, v->node)) {
+        if (s->first < 0 || elab_cmp(p, s->done) == PROG_BEFORE) { s->first = v->node; s->done = p; }
+      }
+      else {
+        if (!s->other || elab_cmp(q, s->from) == PROG_BEFORE) s->from = q;
+        else if (elab_cmp(q, s->from) == PROG_UNKNOWN) s->from = (LoadPoint){ -1, -1 };
+        s->other = 1;
+      }
+    }
+  }
+  r->slot_builds = r->builds; r->slot_entries = r->nentries;
+}
+
+/* Any sure completed write suffices, including nil and before a later
+   conditional update; no possible earlier write answers NO. */
+int elab_const_slot_present_at(Compiler *c, const char *name, LoadPoint p) {
+  if (!lr_ready(c, p)) return ELAB_UNKNOWN;
+  lr_slot_index(c);
+  LoadRecord *r = c->lrec;
+  const LrSlot *s = lr_slot(r, name, 0);
+  int unsure = 0;
+  for (int k = s ? s->points : -1; k >= 0; k = r->slotp[k].next) {
+    const LrSlotPoint *t = &r->slotp[k];
+    if (p.region < 0 || t->region != p.region) unsure = 1;
+    else if (t->sure < p.seq) return ELAB_YES;
+    else if (t->any < p.seq) unsure = 1;
+  }
+  return unsure ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+/* The first plain write, and whether another form may precede it.
+   Settled values are the caller's fact, order is the record's. */
+int elab_const_first_write(Compiler *c, const char *name, int *early) {
+  lr_slot_index(c);
+  const LrSlot *s = lr_slot(c->lrec, name, 0);
+  *early = s && s->other && (s->first < 0 || elab_cmp(s->from, s->done) != PROG_AFTER);
+  return s ? s->first : -1;
 }
 
 /* The constants of cls and its ancestors at p: its own, its mixins' (the
@@ -3482,6 +3600,7 @@ void elab_free(Compiler *c) {
   free(r->names); free(r->defs); free(r->reopens);
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
+  free(r->slot); free(r->slot_head); free(r->slotp);
   free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   for (int i = 0; i < r->nhdr; i++) free(r->hdr[i].leaf);
   free(r->hdr); free(r->hdr_head);

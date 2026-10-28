@@ -315,6 +315,12 @@ int elab_module_named(Compiler *c, const char *nm);
    supplies a binding (such as an unknown builtin module's constants).
    A lowered read name is searched under its original lexical name. */
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out);
+/* Whether a definite write of flat name completes before p: ELAB_YES;
+   no possible earlier write: ELAB_NO; an uncertain one: ELAB_UNKNOWN. */
+int elab_const_slot_present_at(Compiler *c, const char *name, LoadPoint p);
+/* The first plain body assignment of flat name, or -1; *early says a
+   non-plain write may precede its completion. */
+int elab_const_first_write(Compiler *c, const char *name, int *early);
 /* what constant `name` of class owner's own (-1: Object's) was before p,
    as `class X` asks it of its owner: no lexical scope's, no ancestor's;
    *out the write or header found, on ELAB_UNKNOWN the last one that may
