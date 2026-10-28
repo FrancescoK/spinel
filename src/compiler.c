@@ -4718,6 +4718,8 @@ const char *poly_enum_op_for(const char *name) {
     {"transform_keys!","SP_PENUM_TRANSFORM_KEYS_BANG"}, {"transform_values!","SP_PENUM_TRANSFORM_VALUES_BANG"},
     {"select!","SP_PENUM_SELECT_BANG"}, {"filter!","SP_PENUM_FILTER_BANG"},
     {"reject!","SP_PENUM_REJECT_BANG"}, {"keep_if","SP_PENUM_KEEP_IF"}, {"delete_if","SP_PENUM_DELETE_IF"},
+    {"min","SP_PENUM_MIN"}, {"max","SP_PENUM_MAX"},
+    {"min_by","SP_PENUM_MIN_BY"}, {"max_by","SP_PENUM_MAX_BY"},
     {NULL,NULL}
   };
   if (!name) return NULL;

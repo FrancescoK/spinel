@@ -727,7 +727,8 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
 static const char *poly_enum_includer_op(const char *name) {
   static const char *const names[] = {
     "map", "collect", "select", "filter", "find_all", "reject", "find", "detect",
-    "find_index", "sort_by", "count", "sum", "any?", "all?", "none?", "uniq", "to_h", NULL };
+    "find_index", "sort_by", "count", "sum", "any?", "all?", "none?", "uniq", "to_h",
+    "min", "max", "min_by", "max_by", NULL };
   for (int i = 0; names[i]; i++) if (sp_streq(name, names[i])) return poly_enum_op_for(name);
   return NULL;
 }
