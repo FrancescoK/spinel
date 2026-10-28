@@ -4,7 +4,8 @@
 # (send, method). Both used to box every class's table of the name, whether
 # or not the class had such a reader. A Struct member :b, a `.b` on some other
 # class's value: Grid has no `b`, so its @b stays a Float table. Ledger has
-# one, reached through send and a dynamic call, and its table stays boxed.
+# readers, and the tables they hand out stay boxed: @c reached by a dynamic
+# call alone (no Symbol spells :c), @d through send and method as well.
 
 class Grid
   def initialize(n)
@@ -26,8 +27,12 @@ class Grid
 end
 
 class Ledger
-  def initialize(n) = @c = Array.new(n) { |i| Array.new(2) { |j| i * 10 + j } }
-  def c = @c
+  def initialize(n)
+    @c = Array.new(n) { |i| Array.new(2) { |j| i * 10 + j } }
+    @d = Array.new(n) { |i| Array.new(2) { |j| i * 100 + j } }
+  end
+
+  attr_reader :c, :d
 end
 
 Color = Struct.new(:r, :g, :b)
@@ -45,5 +50,6 @@ p g.total, g.diag
 q = [Pt.new(7), Ledger.new(3)][ARGV.size]
 p q.r
 l = [Ledger.new(3), "s"][ARGV.size]
-p l.c.size, l.send(:c)[2], l.method(:c).call[1][1]
+p l.c.size, l.c[2]
+p l.send(:d)[1][1], l.method(:d).call.size
 p Grid.new(2).total
