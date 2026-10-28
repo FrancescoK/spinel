@@ -16518,6 +16518,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       continue;
     }
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    if (!m->reachable) continue;   /* no hash table op reaches it: the key hashes by identity */
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
@@ -16560,6 +16561,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "eql?", &defcls);
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    if (!m->reachable) continue;   /* nothing compares two keys with it */
     LocalVar *pp = scope_local(m, m->pnames[0]);
     TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
     char argbuf[160];
