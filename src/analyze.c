@@ -52081,9 +52081,10 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
        which the widened locals may have changed: `Array.new(n, v)` of a
        widened v is a poly Array, not the Integer one it was. An arm that
        calls another such method reads that method's new answer, so the
-       pass runs again until nothing changes. A poly answer (the widening's
-       own, above) stays. */
-    for (int round = 0, ch = 1; ch && round < 8; round++) {
+       pass runs again until nothing changes (each round settles one more
+       method of a chain, so a stop short of that left a caller behind its
+       callee). A poly answer (the widening's own, above) stays. */
+    for (int round = 0, ch = 1; ch && round <= c->nscopes; round++) {
       ch = 0;
       for (int s = 0; s < c->nscopes; s++) {
         Scope *sc = &c->scopes[s];
