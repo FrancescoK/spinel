@@ -4843,6 +4843,22 @@ void sp_load_path_seed(const char *const *dirs, int n, const char *feature_root)
   sp_load_seed_n = n;
   sp_load_seed_root = feature_root;
 }
+/* The candidate whose path names file `<base>.rb`, or NULL. The candidates'
+   paths are real, and `base` may run through a symlink, as written: a file
+   that is there is named by its real path, as CRuby tells one file loaded
+   under two names. A candidate's path is its file's without the `.rb`, and
+   the whole of it for a file that has another name (a symlink `x.rb` to
+   `x.txt`), so the real path is put the same way. */
+static const sp_LoadCand *sp_require_cand(const char *base, const sp_LoadCand *cands, int n) {
+  char file[4096], real[4096];
+  snprintf(file, sizeof file, "%s.rb", base);
+  size_t rl = realpath(file, real) ? strlen(real) : 0;
+  if (rl > 3 && strcmp(real + rl - 3, ".rb") == 0) real[rl - 3] = 0;
+  if (rl) base = real;
+  for (int i = 0; i < n; i++)
+    if (cands[i].path && strcmp(cands[i].path, base) == 0) return &cands[i];
+  return NULL;
+}
 int sp_require_search(const char *path, const sp_LoadCand *cands, int n, const char *dir, int rel,
                       int (*require)(const char *, int *, void (*)(void))) {
   SP_GC_ROOT_STR(path);   /* (a temporary no frame roots, and the expansion allocates) */
@@ -4852,9 +4868,7 @@ int sp_require_search(const char *path, const sp_LoadCand *cands, int n, const c
   if (pl > 3 && strcmp(p + pl - 3, ".rb") == 0) p[pl -= 3] = 0;
   const sp_LoadCand *c = NULL;
   if (p[0] == '/' || rel || (p[0] == '.' && (p[1] == '/' || (p[1] == '.' && p[2] == '/')))) {
-    const char *abs = sp_file_expand_path(p, p[0] == '/' ? NULL : rel ? dir : NULL);
-    for (int i = 0; i < n && !c; i++)
-      if (cands[i].path && strcmp(cands[i].path, abs) == 0) c = &cands[i];
+    c = sp_require_cand(sp_file_expand_path(p, p[0] == '/' ? NULL : rel ? dir : NULL), cands, n);
   }
   else {
     /* the entries of $LOAD_PATH as the program has left them, in order: each
@@ -4864,13 +4878,7 @@ int sp_require_search(const char *path, const sp_LoadCand *cands, int n, const c
     for (sp_int k = 0; !c && k < sp_StrArray_length(lp); k++) {
       const char *entry = sp_StrArray_get(lp, k);
       if (!entry) continue;
-      /* (the candidates' paths are real: an entry may be a symlink, as written) */
-      const char *hit = sp_file_expand_path(p, entry);
-      char file[4096], real[4096];
-      snprintf(file, sizeof file, "%s.rb", hit);
-      if (realpath(file, real)) { real[strlen(real) - 3] = 0; hit = real; }
-      for (int i = 0; i < n && !c; i++)
-        if (cands[i].path && strcmp(cands[i].path, hit) == 0) c = &cands[i];
+      c = sp_require_cand(sp_file_expand_path(p, entry), cands, n);
       if (!c && sp_load_seed_root && strcmp(entry, sp_load_seed_root) == 0)
         for (int i = 0; i < n && !c; i++)
           if (cands[i].bare && sp_require_has(cands[i].bare, p)) c = &cands[i];

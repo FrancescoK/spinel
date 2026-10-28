@@ -15845,11 +15845,15 @@ void native_load_flag(const NodeTable *nt, int id, char *buf, size_t n) {
 }
 /* ... standing as a statement. A file that only defines things has nothing
    to run, and its load, whose value is unused, is nothing; nor is a require
-   the runtime provides or a core no-op. */
+   the runtime provides or a core no-op. Unless another load reads the flag
+   it sets (prog_load_sets_flag): that one answers false after it, as
+   CRuby's does. */
 static void emit_load_stmt(Compiler *c, int id, Buf *b, int indent) {
   int f = (int)nt_int(c->nt, id, "target_file", -1);
   const char *how = nt_str(c->nt, id, "how");
-  if (!is_load_how_missing(how) && !is_load_how_set(how) && (f < 0 || prog_defines_only(c, f))) return;
+  if (!is_load_how_missing(how) && !is_load_how_set(how) && (f < 0 || prog_defines_only(c, f)) &&
+      !prog_load_sets_flag(c, id))
+    return;
   emit_indent(b, indent);
   buf_puts(b, "(void)");
   emit_load_call(c, id, b);

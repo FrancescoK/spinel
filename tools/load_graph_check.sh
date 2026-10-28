@@ -197,11 +197,58 @@ rescue LoadError => e
 end
 RB
 if "$SPINEL" --load-model=graph -I "$tmp/exact/root" "$tmp/exact/main.rb" -o "$tmp/exact/bin" >"$tmp/exact/cc" 2>&1; then
-  (cd "$tmp/exact" && ./bin > out 2>&1)
+  (cd "$tmp/exact" && ./bin > out 2>&1) || fail "exact exits $?"
   printf 'root dup\ntrue\nbeside dup\ntrue\nfalse\nfalse\nLoadError\n' | cmp -s - "$tmp/exact/out" ||
     { fail "a computed path did not name the file CRuby finds"; cat "$tmp/exact/out"; }
 else
   fail "exact did not compile"; sed -n 1,3p "$tmp/exact/cc"
+fi
+
+# A computed path that runs through a symlink names the file it points to,
+# as CRuby's does: a require_relative of a symlinked file in a symlinked
+# directory runs the file, and one of the symlink or an absolute path
+# through the directory's link answers false once it has run.
+mkdir "$tmp/link" "$tmp/link/sub"
+printf 'puts "lib ran"\n' > "$tmp/link/sub/lib.rb"
+ln -s lib.rb "$tmp/link/sub/alias.rb"
+ln -s sub "$tmp/link/linkdir"
+cat > "$tmp/link/main.rb" <<'RB'
+def pull(path) = require_relative(path)
+p pull("linkdir/alias")
+require_relative "sub/lib"
+p pull("sub/alias")
+p require(File.join(__dir__, "linkdir", "lib"))
+RB
+if "$SPINEL" --load-model=graph "$tmp/link/main.rb" -o "$tmp/link/bin" >"$tmp/link/cc" 2>&1; then
+  "$tmp/link/bin" > "$tmp/link/out" 2>&1 || fail "link exits $?"
+  printf 'lib ran\ntrue\nfalse\nfalse\n' | cmp -s - "$tmp/link/out" ||
+    { fail "a computed path through a symlink did not name the file it points to"; cat "$tmp/link/out"; }
+else
+  fail "link did not compile"; sed -n 1,3p "$tmp/link/cc"
+fi
+
+# ...also where the symlink `alias.rb` points to a file of another name
+# (`impl.txt`): a computed require of the feature runs it, and one through
+# a second symlink to it, an absolute path or a literal require of the
+# feature answers false after, as CRuby's do.
+mkdir "$tmp/link_ext" "$tmp/link_ext/inc"
+printf 'puts "impl ran"\n' > "$tmp/link_ext/inc/impl.txt"
+ln -s impl.txt "$tmp/link_ext/inc/alias.rb"
+ln -s impl.txt "$tmp/link_ext/inc/alias2.rb"
+cat > "$tmp/link_ext/main.rb" <<'RB'
+def pull(path) = require(path)
+def never = require("alias")
+p pull("alias")
+p pull("alias2")
+p pull(File.join(__dir__, "inc", "alias"))
+p require("alias")
+RB
+if "$SPINEL" --load-model=graph -I "$tmp/link_ext/inc" "$tmp/link_ext/main.rb" -o "$tmp/link_ext/bin" >"$tmp/link_ext/cc" 2>&1; then
+  "$tmp/link_ext/bin" > "$tmp/link_ext/out" 2>&1 || fail "link_ext exits $?"
+  printf 'impl ran\ntrue\nfalse\nfalse\nfalse\n' | cmp -s - "$tmp/link_ext/out" ||
+    { fail "a computed path through a symlink to a file of another name did not name it"; cat "$tmp/link_ext/out"; }
+else
+  fail "link_ext did not compile"; sed -n 1,3p "$tmp/link_ext/cc"
 fi
 
 # The run-time $LOAD_PATH starts as CRuby's does: the directories from -I,
@@ -217,7 +264,7 @@ order() {   # NAME STATEMENT EXPECTED-OUTPUT
   printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\n  require_relative "../app/dup"\nend\n%s\ndef load_it(n) = require(n)\np load_it("dup")\np load_it("dup")\n' \
     "$2" > "$tmp/order/$1/main.rb"
   if "$SPINEL" --load-model=graph -I "$tmp/order/inc" "$tmp/order/$1/main.rb" -o "$tmp/order/$1/bin" >"$tmp/order/$1/cc" 2>&1; then
-    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1
+    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1 || fail "order $1 exits $?"
     printf '%s\n' "$3" | cmp -s - "$tmp/order/$1/out" || { fail "order $1: \$LOAD_PATH did not search as CRuby's does"; cat "$tmp/order/$1/out"; }
   else
     fail "order $1 did not compile"; sed -n 1,3p "$tmp/order/$1/cc"
@@ -244,6 +291,36 @@ order insert1 "\$LOAD_PATH.insert(1, $app)" 'inc
 true
 false'
 
+# A literal require searches the load path in the same order, at compile
+# time: a directory the program puts in front (unshift, prepend) comes
+# before the -I directories, also one that is an -I directory already, and
+# the last one put in front first; one it appends comes after them. The
+# computed require after it names the file the literal one loaded.
+mkdir "$tmp/order/app2"
+printf 'puts "app2"\n' > "$tmp/order/app2/dup.rb"
+lorder() {   # NAME STATEMENTS EXPECTED-FIRST-LINE -I-DIR...
+  lo_name=$1 lo_stmts=$2 lo_want=$3; shift 3
+  mkdir "$tmp/order/$lo_name"
+  printf '%s\nrequire "dup"\ndef load_it(n) = require(n)\np load_it("dup")\n' "$lo_stmts" > "$tmp/order/$lo_name/main.rb"
+  for d in "$@"; do set -- "$@" -I "$tmp/order/$d"; shift; done   # (each -I and its directory one word)
+  if "$SPINEL" --load-model=graph "$@" "$tmp/order/$lo_name/main.rb" -o "$tmp/order/$lo_name/bin" >"$tmp/order/$lo_name/cc" 2>&1; then
+    "$tmp/order/$lo_name/bin" > "$tmp/order/$lo_name/out" 2>&1 || fail "order $lo_name exits $?"
+    printf '%s\nfalse\n' "$lo_want" | cmp -s - "$tmp/order/$lo_name/out" ||
+      { fail "order $lo_name: a literal require did not search as CRuby's does"; cat "$tmp/order/$lo_name/out"; }
+  else
+    fail "order $lo_name did not compile"; sed -n 1,3p "$tmp/order/$lo_name/cc"
+  fi
+}
+app2='File.join(__dir__, "..", "app2")'
+lorder lit_unshift "\$LOAD_PATH.unshift $app" app inc
+lorder lit_prepend "\$LOAD_PATH.prepend $app" app inc
+lorder lit_append "\$LOAD_PATH << $app" inc inc
+lorder lit_unshift_inc "\$LOAD_PATH.unshift $app" app inc app
+lorder lit_append_unshift "\$LOAD_PATH << $app2
+\$LOAD_PATH.unshift $app" app inc
+lorder lit_unshift_twice "\$LOAD_PATH.unshift $app
+\$LOAD_PATH.unshift $app2" app2 inc
+
 # A symlinked -I directory is in $LOAD_PATH as written (File.expand_path
 # does not resolve it) and still names the program's file; the feature root
 # after the -I directories is a directory that exists.
@@ -251,11 +328,29 @@ mkdir "$tmp/order/sym"
 ln -s "$tmp/order/inc" "$tmp/order/sym/lnk"
 printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\nend\np $LOAD_PATH[0].end_with?("/sym/lnk")\np File.directory?($LOAD_PATH[1])\ndef load_it(n) = require(n)\np load_it("dup")\n' > "$tmp/order/sym/main.rb"
 if "$SPINEL" --load-model=graph -I "$tmp/order/sym/lnk" "$tmp/order/sym/main.rb" -o "$tmp/order/sym/bin" >"$tmp/order/sym/cc" 2>&1; then
-  "$tmp/order/sym/bin" > "$tmp/order/sym/out" 2>&1
+  "$tmp/order/sym/bin" > "$tmp/order/sym/out" 2>&1 || fail "sym exits $?"
   printf 'true\ntrue\ninc\ntrue\n' | cmp -s - "$tmp/order/sym/out" ||
     { fail "a symlinked -I directory was not on \$LOAD_PATH as written, or did not name its file"; cat "$tmp/order/sym/out"; }
 else
   fail "sym did not compile"; sed -n 1,3p "$tmp/order/sym/cc"
+fi
+
+# A library (--ext-init) runs its top level in its init function, not in
+# main: the init starts $LOAD_PATH as main does, so a computed path there
+# searches the -I directories too. A pure-C host runs the init, as
+# `make ext-test`'s do.
+mkdir "$tmp/ext" "$tmp/ext/inc"
+printf 'puts "xlib"\n' > "$tmp/ext/inc/xlib.rb"
+printf 'def never = require("xlib")\nname = ARGV.empty? ? "xlib" : ARGV.first\np require(name)\n' > "$tmp/ext/main.rb"
+printf 'void spx_lp(void);\nint main(void) { spx_lp(); return 0; }\n' > "$tmp/ext/host.c"
+rt=$(dirname "$SPINEL")/../lib
+if "$SPINEL" --load-model=graph -I "$tmp/ext/inc" -c --no-line-map --ext-init spx_lp "$tmp/ext/main.rb" -o "$tmp/ext/out.c" >"$tmp/ext/cc" 2>&1 &&
+   ${CC:-cc} -O1 -w -I"$rt" "$tmp/ext/host.c" "$tmp/ext/out.c" "$rt/libspinel_rt.a" -lm -o "$tmp/ext/host" >>"$tmp/ext/cc" 2>&1; then
+  "$tmp/ext/host" > "$tmp/ext/out" 2>&1 || fail "ext host exits $?"
+  printf 'xlib\ntrue\n' | cmp -s - "$tmp/ext/out" ||
+    { fail "a library's top level did not find a file on its -I directory"; cat "$tmp/ext/out"; }
+else
+  fail "ext did not build"; sed -n 1,3p "$tmp/ext/cc"
 fi
 
 # A file beside the program is on its load path only where the program puts
@@ -272,7 +367,7 @@ printf '$LOAD_PATH.unshift __dir__ if false\ndef never = require_relative("x")\n
 printf 'def pull(path) = require(path)\ndef never = require_relative("x")\nbegin\n  pull("x")\nrescue LoadError => e\n  p e.class\nend\n$LOAD_PATH.unshift __dir__\np pull("x")\n' > "$tmp/lp_cbefore/main.rb"
 printf '$LOAD_PATH.unshift __dir__ if ARGV.empty?\ndef pull(path) = require(path)\ndef never = require_relative("x")\np pull("x")\n' > "$tmp/lp_ccond/main.rb"
 for d in lp_no lp_yes lp_before lp_cond lp_cbefore lp_ccond; do
-  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then "$tmp/$d/bin" > "$tmp/$d/out" 2>&1
+  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then "$tmp/$d/bin" > "$tmp/$d/out" 2>&1 || fail "$d exits $?"
   else fail "$d did not compile"; sed -n 1,3p "$tmp/$d/cc"; fi
 done
 printf 'LoadError\n' | cmp -s - "$tmp/lp_no/out" || { fail "a bare computed path found a file beside the program, which is not on the load path"; cat "$tmp/lp_no/out"; }

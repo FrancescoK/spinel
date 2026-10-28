@@ -22028,6 +22028,8 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(body, "    SP_GC_SAVE();\n");
     main_frame_ins = body->len;
     if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
+    /* the library's top level searches $LOAD_PATH as the program's would */
+    emit_load_path_seed(c, body);
     if (g_uses_threads || g_uses_thread_current) buf_puts(body, "    sp_sched_init();\n");
     if (g_uses_program_name) buf_puts(body, "    sp_program_name = sp_str_empty;\n");
     if (g_reads_match_regs) buf_puts(body, "    sp_re_track_last = 1;\n");
