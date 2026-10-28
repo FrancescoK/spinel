@@ -96,6 +96,8 @@ struct LoadRecord {
   long nentries, indexed;
   struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
+  unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
+  struct { int node; char *name; } *srcw; int nsrcw;   /* the constant writes the source has, before any pass (elab_note_const_writes) */
   struct LrVers *vers; int nvers, cvers, *vers_head;
 };
 
@@ -1841,6 +1843,210 @@ int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out) {
   return c->lrec && lr_ready(c, elab_point_of(c, node)) ? lr_const_at(c, node, name, out) : ELAB_UNKNOWN;
 }
 
+/* The constant name a node that writes a constant writes: a write of any
+   form, a multiple assignment's target, a class or module header; NULL
+   for any other node */
+static const char *lr_const_written(const NodeTable *nt, int id) {
+  switch (nt_kind(nt, id)) {
+    case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode:
+    case NK_ConstantOperatorWriteNode: case NK_ConstantTargetNode: case NK_ConstantPathTargetNode:
+      return lr_written_name(nt, id);
+    case NK_ConstantPathWriteNode: case NK_ConstantPathOrWriteNode: case NK_ConstantPathAndWriteNode:
+    case NK_ConstantPathOperatorWriteNode: {
+      int t = nt_ref(nt, id, "target");
+      return t >= 0 ? lr_written_name(nt, t) : NULL;
+    }
+    case NK_ClassNode: case NK_ModuleNode: {
+      int cp = nt_ref(nt, id, "constant_path");
+      return cp >= 0 ? lr_written_name(nt, cp) : NULL;
+    }
+    default: return NULL;
+  }
+}
+
+/* The node kinds that write a constant (lr_const_written) */
+static const NodeKind *lr_const_write_kinds(int *n) {
+  static const NodeKind kinds[] = {
+    NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode, NK_ConstantOperatorWriteNode,
+    NK_ConstantTargetNode, NK_ConstantPathTargetNode, NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+    NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode, NK_ClassNode, NK_ModuleNode
+  };
+  *n = (int)(sizeof kinds / sizeof kinds[0]);
+  return kinds;
+}
+
+/* The constant writes the program's source has, by node and name, taken
+   before any pass runs: a pass before the walk may drop one or rewrite it
+   into something else (desugar_constant_path_self_alias drops
+   `A::B::C = remove_const(:C)`), and the record, which sees only the tree
+   the walk reaches, must then not take the name for one nothing writes
+   (lr_const_seen). */
+void elab_note_const_writes(Compiler *c) {
+  LoadRecord *r = lr_get(c);
+  const NodeTable *nt = c->nt;
+  int nk = 0, cap = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k < nk; k++) {
+    int n = 0;
+    const int *v = nt_nodes_of_kind(nt, kinds[k], &n);
+    for (int i = 0; i < n; i++) {
+      const char *nm = lr_const_written(nt, v[i]);
+      if (!nm) continue;
+      if (r->nsrcw == cap) {
+        cap = cap ? cap * 2 : 64;
+        r->srcw = realloc(r->srcw, sizeof *r->srcw * (size_t)cap);
+        if (!r->srcw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      r->srcw[r->nsrcw].node = v[i];
+      r->srcw[r->nsrcw].name = strdup(nm);
+      if (!r->srcw[r->nsrcw].name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      r->nsrcw++;
+    }
+  }
+}
+
+/* Does the record see every write of constant `name` there can be? Not
+   when the program runs code it cannot follow (elab_runs_unseen), loads a
+   C extension, or calls const_set, autoload or an eval of a String (also
+   through a send), or defines const_missing; nor when a write the
+   program's source has is gone or rewritten by a pass before the walk
+   (elab_note_const_writes); nor when a write of the name is one it does
+   not record: a path or operator write, a multiple assignment's target,
+   or a write or header in a method body, a lambda or a block, which may
+   run before any point, or in a file region 0 has not entered (yet, while
+   the walk records: a file a later load enters, or one in a region of its
+   own, whose points the record cannot order). */
+static int lr_const_seen(Compiler *c, const char *name) {
+  LoadRecord *r = c->lrec;
+  const NodeTable *nt = c->nt;
+  if (!r->consts) {
+    int hit = elab_runs_unseen(c) || nt->has_cext_decls, n = 0;
+    const int *v = nt_nodes_of_kind(nt, NK_CallNode, &n);
+    for (int i = 0; !hit && i < n; i++) {
+      const char *m = nt_str(nt, v[i], "name");
+      int a = nt_ref(nt, v[i], "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (m && is_send_family(m)) m = an > 0 ? vis_arg_name(nt, av[0]) : NULL;
+      hit = !m || is_const_set_name(m) || is_autoload_name(m) || (is_code_eval_name(m) && an > 0);
+    }
+    v = nt_nodes_of_kind(nt, NK_DefNode, &n);
+    for (int i = 0; !hit && i < n; i++) hit = is_const_missing_name(nt_str(nt, v[i], "name"));
+    r->consts = hit ? 2 : 1;
+  }
+  if (r->consts == 2) return 0;
+  for (int i = 0; i < r->nsrcw; i++) {
+    const char *now = sp_streq(r->srcw[i].name, name) ? lr_const_written(nt, r->srcw[i].node) : name;
+    if (!now || !sp_streq(now, name)) return 0;
+  }
+  const int *par = comp_parent_map(c);
+  int nk = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k < nk; k++) {
+    int n = 0;
+    const int *v = nt_nodes_of_kind(nt, kinds[k], &n);
+    for (int i = 0; i < n; i++) {
+      if (!sp_streq(lr_const_written(nt, v[i]), name)) continue;
+      if (kinds[k] != NK_ConstantWriteNode && kinds[k] != NK_ConstantOrWriteNode &&
+          kinds[k] != NK_ClassNode && kinds[k] != NK_ModuleNode) return 0;
+      int top = v[i];
+      for (int a = par[v[i]]; a >= 0; top = a, a = par[a]) {
+        NodeKind ak = nt_kind(nt, a);
+        if (ak == NK_DefNode || ak == NK_LambdaNode || ak == NK_BlockNode) return 0;
+      }
+      int e = top < r->n ? r->at[top] : -1;   /* the file's root's statement */
+      if (e < 0 || r->st[e].region != 0) return 0;
+    }
+  }
+  return 1;
+}
+
+/* May the constants of class cls (LR_MAIN: Object's) or of an ancestor
+   include a builtin's own (a builtin class or module that has constants:
+   File's Stat, Process's Status), which the record does not hold? */
+static int lr_builtin_consts(Compiler *c, int cls) {
+  for (int k = cls, g = 0; g < 64; g++) {
+    if (k == LR_MAIN) return 0;
+    if (k < 0 || k >= c->nclasses) return 1;
+    const char *nm = c->classes[k].name;
+    if ((is_builtin_class_name(nm) || is_builtin_module_name(nm) || is_builtin_exception_name(nm) ||
+         is_toplevel_const_name(nm)) && !is_constless_builtin_name(nm)) return 1;
+    /* a superclass the record does not know: a builtin without constants
+       of its own (StandardError) adds none, any other may */
+    LrClass *kc = lr_class(c->lrec, k);
+    if (kc && kc->has_sup && lr_later(c, &kc->sup, kc->sup_ref) < 0) {
+      NodeKind sk = nt_kind(c->nt, kc->sup_ref);
+      return !((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
+               is_constless_builtin_name(lr_written_name(c->nt, kc->sup_ref)));
+    }
+    k = lr_super(c, k);
+    if (k == LR_UNKNOWN_CLASS) return 0;
+  }
+  return 1;
+}
+
+/* What constant reference ref names, read where statement node `site`
+   stands (its point and lexical scopes): ELAB_YES with *cls its class
+   (LR_UNKNOWN_CLASS when it holds none the record knows), ELAB_NO, or
+   ELAB_UNKNOWN; on ELAB_NO, *miss is the name that names nothing (ref's
+   or a parent's) and *owner the class it was looked up in. */
+static int lr_ref_at(Compiler *c, int ref, int site, int *cls, const char **miss, int *owner) {
+  const NodeTable *nt = c->nt;
+  LoadRecord *r = c->lrec;
+  NodeKind k = ref >= 0 ? nt_kind(nt, ref) : NK_NilNode;
+  const char *nm = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? lr_written_name(nt, ref) : NULL;
+  LoadPoint p = elab_point_of(c, site);
+  int e = site >= 0 && site < r->n ? r->at[site] : -1, in = LR_MAIN, o, scoped = 0;
+  const LrDef *d = NULL;
+  *cls = LR_UNKNOWN_CLASS;
+  if (!nm || e < 0) return ELAB_UNKNOWN;
+  if (k == NK_ConstantReadNode && !lr_root_read(nt, ref)) {
+    /* a lexical scope that is a builtin's reopening holds its constants */
+    for (int g = r->st[e].frame; g >= 0; g = r->st[g].frame) {
+      NodeKind gk = nt_kind(nt, r->st[g].node);
+      if (gk != NK_ClassNode && gk != NK_ModuleNode) continue;
+      int ci = lr_class_opened(c, r->st[g].node);
+      if (in == LR_MAIN) in = ci;
+      if (ci < 0 || lr_builtin_consts(c, ci)) return ELAB_UNKNOWN;
+    }
+    o = lr_const_at(c, site, nm, &d);
+  }
+  else {
+    int par = k == NK_ConstantPathNode ? nt_ref(nt, ref, "parent") : -1;
+    if (par >= 0) {
+      o = lr_ref_at(c, par, site, &in, miss, owner);
+      if (o != ELAB_YES) return o;
+      if (in < 0 || lr_builtin_consts(c, in)) return ELAB_UNKNOWN;
+      scoped = 1;
+    }
+    o = lr_const_in(c, in, nm, p, p.region < 0, !scoped, &d, 0);
+  }
+  if (o == ELAB_YES) { *cls = lr_class_of(c, d); return o; }
+  if (o != ELAB_NO) return o;
+  /* a builtin's, or a class made where the record does not see it */
+  int ci = comp_class_index(c, nm);
+  if (is_toplevel_const_name(nm)) {
+    if (scoped) return ELAB_UNKNOWN;
+    *cls = ci >= 0 ? ci : LR_UNKNOWN_CLASS;
+    return ELAB_YES;
+  }
+  const LrClass *kc = ci >= 0 ? lr_class(r, ci) : NULL;
+  if ((ci >= 0 && (!kc || !kc->nopen)) || lr_reopened(r, nm) || !lr_const_seen(c, nm)) return ELAB_UNKNOWN;
+  *miss = nm; *owner = in;
+  return ELAB_NO;
+}
+
+int elab_const_ref_at(Compiler *c, int ref, int site, const char **miss, int *owner) {
+  int cls;
+  return c->lrec && lr_ready(c, elab_point_of(c, site)) ? lr_ref_at(c, ref, site, &cls, miss, owner) : ELAB_UNKNOWN;
+}
+
+/* The superclass the first header of cls naming one names, as the record
+   resolved it there; -1 when it names none or one the record does not know */
+int elab_class_super(Compiler *c, int cls) {
+  const LrClass *k = c->lrec && c->lrec->recorded ? lr_class(c->lrec, cls) : NULL;
+  return k && k->has_sup && k->sup >= 0 ? k->sup : -1;
+}
+
 int elab_body_visibility_at(Compiler *c, int node) {
   LoadRecord *r = c->lrec;
   if (!r || !lr_ready(c, elab_point_of(c, node))) return 0;
@@ -2157,6 +2363,8 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
   free(r->names); free(r->reopens);
+  for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
+  free(r->srcw);
   free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head); free(r->set);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;

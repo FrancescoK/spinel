@@ -163,6 +163,7 @@ void elab_check_order(Compiler *c, const char *reader, int a, int b, int now);
 void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const int *node_of);
 void elab_dump(Compiler *c, FILE *out);
 void elab_free(Compiler *c);
+void elab_note_const_writes(Compiler *c);   /* the source's constant writes, before any pass */
 extern int g_dump_load_record;   /* --dump-load-record */
 /* The load record's histories (analyze_elab.c), recorded by elab_program,
    which takes the scope walk's place: a method's versions by (class,
@@ -261,6 +262,15 @@ int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singlet
    own constants, innermost first, then the innermost one's ancestors and
    Object's; *out the write or class definition found */
 int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out);
+/* what constant reference ref (a ConstantReadNode or ConstantPathNode)
+   names, read where statement `site` stands: ELAB_NO when it names no
+   constant there and the record sees every write of the name there can
+   be, *miss then the name that names nothing (ref's or a parent's) and
+   *owner the class it was looked up in (-1: Object's, the top level) */
+int elab_const_ref_at(Compiler *c, int ref, int site, const char **miss, int *owner);
+/* the superclass the first header of cls naming one names, as the record
+   resolved it there; -1 when it names none or one the record does not know */
+int elab_class_super(Compiler *c, int cls);
 /* the visibility a `def` at node would take from its body: the last bare
    `public` / `private` / `protected` / `module_function` before it in the
    same body (BVIS_*), a class body's public and a file's top level's

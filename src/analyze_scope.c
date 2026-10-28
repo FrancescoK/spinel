@@ -561,6 +561,27 @@ typedef struct {
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w);
 
+/* Make call node rc `raise NameError, msg`, its nodes at line ln of file fl
+   (0: none given); 0 when a node could not be made */
+static int name_error_raise(NodeTable *nt, int rc, const char *msg, long long ln, long long fl) {
+  int ra = nt_new_node(nt, "ArgumentsNode");
+  int ne = nt_new_node(nt, "ConstantReadNode"), sn = nt_new_node(nt, "StringNode");
+  if (ra < 0 || ne < 0 || sn < 0) return 0;
+  nt_node_set_str(nt, ne, "name", "NameError");
+  nt_node_set_str(nt, sn, "content", msg);
+  nt_node_set_str(nt, sn, "unescaped", msg);
+  int av[2] = { ne, sn };
+  nt_node_set_arr(nt, ra, "arguments", av, 2);
+  nt_node_set_str(nt, rc, "name", "raise");
+  nt_node_set_ref(nt, rc, "arguments", ra);
+  int all[4] = { rc, ra, ne, sn };
+  for (int k = 0; k < 4; k++) {
+    if (ln) nt_node_set_int(nt, all[k], "node_line", ln);
+    if (fl) nt_node_set_int(nt, all[k], "node_file", fl);
+  }
+  return 1;
+}
+
 /* A child the walk enters at w.pos: a statement of the load phase when
    that makes it one, which the record places as the walk reaches it */
 static void walk_child(Compiler *c, int ch, WalkCtx w) {
@@ -1451,6 +1472,33 @@ static int sg_def_receiver(const NodeTable *nt, int recv) {
   return nt_paren_single(nt, recv);
 }
 
+/* `class C < S` where the constant S names nothing where the header
+   stands (elab_const_ref_at): CRuby raises NameError there, before the
+   class exists or its body runs. The header becomes that raise, and its
+   parts become nil nodes, as a replaced subtree does. */
+static int class_superclass_missing(Compiler *c, int id) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int sc = nt_ref(nt, id, "superclass"), owner = -1;
+  NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NilNode;
+  const char *miss = NULL;
+  if ((sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) ||
+      elab_const_ref_at(c, sc, id, &miss, &owner) != ELAB_NO) return 0;
+  char msg[600];
+  const char *in = owner >= 0 ? class_ruby_name(c, owner) : NULL;
+  if (in) snprintf(msg, sizeof msg, "uninitialized constant %s::%s", in, miss);
+  else snprintf(msg, sizeof msg, "uninitialized constant %s", miss);
+  long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0),
+            col = nt_int(nt, id, "node_col", 0);
+  nt_subtree_blank(nt, nt_ref(nt, id, "constant_path"));
+  nt_subtree_blank(nt, sc);
+  nt_subtree_blank(nt, nt_ref(nt, id, "body"));
+  nt_node_reset(nt, id, "CallNode");
+  if (col) nt_node_set_int(nt, id, "node_col", col);
+  int made = name_error_raise(nt, id, msg, ln, fl);
+  comp_grow_node_arrays(c);
+  return made;
+}
+
 static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   if (id < 0 || id >= c->nt->count) return;
   int scope_idx = w.scope, class_id = w.cls, proc = w.proc, dead = w.dead;
@@ -1521,6 +1569,10 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     /* Unsupported receiver: fall through to the generic walk below. */
   }
 
+  if (ty_k == NK_ClassNode && class_superclass_missing(c, id)) {
+    walk_scope_in(c, id, w);   /* the raise the header became */
+    return;
+  }
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
     int cp = nt_ref(c->nt, id, "constant_path");
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
@@ -6797,12 +6849,14 @@ void resolve_parents(Compiler *c) {
     }
     if (sc < 0) continue;
     NodeKind sk = nt_kind(nt, sc);
-    /* A module-qualified superclass (`class Child < M::Handler`) is a
-       ConstantPathNode whose `name` is the last segment ("Handler").
-       Classes are registered under that bare last name, so resolve it the
-       same way as an unqualified ConstantReadNode superclass. */
+    /* A superclass constant (`class Child < Handler`, `class Child <
+       M::Handler`) is the class the load record resolved it to where the
+       header stands. Where the record does not know, it is the class
+       registered under the constant's last name ("Handler"), as classes
+       are registered under their bare last name. */
     if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) {
-      int p = comp_class_index(c, nt_str(nt, sc, "name"));
+      int p = elab_class_super(c, i);
+      if (p < 0) p = comp_class_index(c, nt_str(nt, sc, "name"));
       /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
          is that class; one whose class only the run time picks is refused,
          where the parent was left unset with no word */
@@ -11787,68 +11841,11 @@ static char *bc_join(const char *p, const char *leaf) {
   return s;
 }
 
-/* The standard library's top-level names: a program that requires one
-   reaches it from anywhere */
-static const char *const bc_stdlib_names[] = {
-  "Abbrev", "Addrinfo", "Base64", "BasicSocket", "Benchmark", "BigDecimal", "CGI", "CSV", "Coverage",
-  "DRb", "Date", "DateTime", "DelegateClass", "Delegator", "Digest", "ERB", "English", "Etc", "FFI",
-  "Fcntl", "Fiddle", "FileUtils", "Find", "Forwardable", "Gem", "GetoptLong", "IPAddr", "IPSocket",
-  "JSON", "Logger", "Matrix", "Minitest", "Monitor", "MonitorMixin", "Net", "Observable", "Open3",
-  "OpenSSL", "OpenStruct", "OptionParser", "PP", "PStore", "Prime", "Psych", "RbConfig", "Readline",
-  "Resolv", "Ripper", "SecureRandom", "Shellwords", "SimpleDelegator", "SingleForwardable", "Singleton",
-  "Socket", "StringIO", "StringScanner", "TCPServer", "TCPSocket", "TSort", "Tempfile", "Test", "Timeout",
-  "UDPSocket", "UNIXServer", "UNIXSocket", "URI", "Vector", "WeakRef", "YAML", "Zlib",
-  NULL
-};
-static int bc_stdlib_name(const char *n) {
-  for (int i = 0; bc_stdlib_names[i]; i++) if (sp_streq(bc_stdlib_names[i], n)) return 1;
-  return 0;
-}
 /* A standard library name no class or module of the runtime has: where
    the program defines it, it does so from Ruby source (a package's). */
 int stdlib_name_from_source(const char *n) {
-  return n && bc_stdlib_name(n) && !builtin_class_id(n) && !is_builtin_class_name(n) &&
+  return n && is_stdlib_const_name(n) && !builtin_class_id(n) && !is_builtin_class_name(n) &&
          !is_builtin_module_name(n) && !is_builtin_exception_name(n);
-}
-
-/* A name CRuby (or a library spinel provides) answers at the top level. */
-static int bc_toplevel_known(const char *n) {
-  static const char *const names[] = {
-    "ARGF", "ARGV", "ArgumentError", "Array", "BasicObject", "Binding", "Class", "ClosedQueueError",
-    "Comparable", "Complex", "ConditionVariable", "Data", "Dir", "ENV", "EOFError", "Encoding",
-    "EncodingError", "Enumerable", "Enumerator", "Errno", "Exception", "FalseClass", "Fiber", "FiberError",
-    "File", "FileTest", "Float", "FloatDomainError", "FrozenError", "GC", "Hash", "IO",
-    "IOError", "IndexError", "Integer", "Interrupt", "Kernel", "KeyError", "LoadError", "LocalJumpError",
-    "Marshal", "MatchData", "Math", "Method", "Module", "Mutex", "NameError", "NilClass",
-    "NoMatchingPatternError", "NoMatchingPatternKeyError", "NoMemoryError", "NoMethodError", "NotImplementedError", "Numeric", "Object", "ObjectSpace",
-    "Pathname", "Proc", "Process", "Queue", "RUBY_COPYRIGHT", "RUBY_DESCRIPTION", "RUBY_ENGINE", "RUBY_ENGINE_VERSION",
-    "RUBY_PATCHLEVEL", "RUBY_PLATFORM", "RUBY_RELEASE_DATE", "RUBY_REVISION", "RUBY_VERSION", "Ractor", "Random", "Range",
-    "RangeError", "Rational", "Refinement", "Regexp", "RegexpError", "Ruby", "RubyVM", "RuntimeError",
-    "STDERR", "STDIN", "STDOUT", "ScriptError", "SecurityError", "Set", "Signal", "SignalException",
-    "SizedQueue", "StandardError", "StopIteration", "String", "Struct", "Symbol", "SyntaxError", "SystemCallError",
-    "SystemExit", "SystemStackError", "TOPLEVEL_BINDING", "Thread", "ThreadError", "ThreadGroup", "Time", "TracePoint",
-    "TrueClass", "TypeError", "UnboundMethod", "UncaughtThrowError", "UnicodeNormalize", "Warning", "ZeroDivisionError",
-    NULL
-  };
-  if (!n) return 1;
-  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
-  if (bc_stdlib_name(n)) return 1;
-  return builtin_class_id(n) != 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
-         is_builtin_exception_name(n);
-}
-
-/* A builtin ancestor with no constants of its own (CRuby 4.0's
-   `K.constants - Object.constants` is empty): the user's reopenings are all
-   it can contribute. Any other builtin ancestor may answer the name itself. */
-static int bc_builtin_constless(const char *n) {
-  static const char *const names[] = {
-    "Object", "BasicObject", "Kernel", "Comparable", "Enumerable", "Array", "Hash", "String",
-    "Integer", "Numeric", "Struct", "Data", "Symbol", "Proc", "Range", "Module", "Class", "Time",
-    "Rational", "Dir", "Fiber", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "MatchData",
-    "Method", "UnboundMethod", "NilClass", "TrueClass", "FalseClass", "Signal", "Warning", NULL
-  };
-  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
-  return is_builtin_exception_name(n) && !strchr(n, ':');
 }
 
 /* mods by name: an open-addressed index of b->mods positions */
@@ -11929,8 +11926,8 @@ static int bc_anc(Bc *b, const char *k, const char *n, BcSet *seen, char **hit, 
   if (k[0] == '#') return BC_UNSURE;            /* a singleton class as an ancestor */
   int r = bc_own_table(b, k, n, hit);
   BcMod *m = bc_mod(b, k, 0);
-  int builtin = !strchr(k, ':') ? bc_toplevel_known(k) : is_builtin_exception_name(k);
-  if (builtin && !bc_builtin_constless(k)) r = bc_merge(r, BC_UNSURE);
+  int builtin = !strchr(k, ':') ? is_toplevel_const_name(k) : is_builtin_exception_name(k);
+  if (builtin && !is_constless_builtin_name(k)) r = bc_merge(r, BC_UNSURE);
   if (!m && !builtin) return bc_merge(r, BC_UNSURE);   /* not a namespace the program defines */
   int is_module = m ? m->is_module == 1 : is_builtin_module_const_name(k);
   if (m) {
@@ -12048,7 +12045,7 @@ static void bc_define(Bc *b, const char *full) {
   if (first == leaf - 1) {
     char head[256];
     snprintf(head, sizeof head, "%.*s", (int)(first - full), full);
-    if (bc_toplevel_known(head)) bc_add(&b->builtin_held, leaf + 1);
+    if (is_toplevel_const_name(head)) bc_add(&b->builtin_held, leaf + 1);
   }
 }
 
@@ -12163,7 +12160,7 @@ static int bc_const_missing_reaches(Bc *b, const char *top) {
 static void bc_check(Bc *b, int id, int in_defined) {
   const NodeTable *nt = b->nt;
   const char *n = nt_str(nt, id, "name");
-  if (!n || !bc_has(&b->nested, n) || bc_has(&b->defs, n) || bc_toplevel_known(n)) return;
+  if (!n || !bc_has(&b->nested, n) || bc_has(&b->defs, n) || is_toplevel_const_name(n)) return;
   char *hit = NULL;
   int r = bc_lookup(b, n, &hit);
   free(hit);
@@ -12185,21 +12182,14 @@ static void bc_check(Bc *b, int id, int in_defined) {
     if (*top) snprintf(nmsg, sizeof nmsg, "uninitialized constant %s::%s", top, n);
     else snprintf(nmsg, sizeof nmsg, "uninitialized constant %s", n);
     long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0);
-    int rc = nt_new_node(wnt, "CallNode"), ra = nt_new_node(wnt, "ArgumentsNode");
-    int ne = nt_new_node(wnt, "ConstantReadNode"), sn = nt_new_node(wnt, "StringNode");
+    int rc = nt_new_node(wnt, "CallNode");
+    if (rc < 0 || !name_error_raise(wnt, rc, nmsg, ln, fl)) return;
     int nl = nt_new_node(wnt, "NilNode"), st = nt_new_node(wnt, "StatementsNode");
-    if (rc < 0 || ra < 0 || ne < 0 || sn < 0 || nl < 0 || st < 0) return;
-    nt_node_set_str(wnt, ne, "name", "NameError");
-    nt_node_set_str(wnt, sn, "content", nmsg);
-    nt_node_set_str(wnt, sn, "unescaped", nmsg);
-    int av[2] = { ne, sn };
-    nt_node_set_arr(wnt, ra, "arguments", av, 2);
-    nt_node_set_str(wnt, rc, "name", "raise");
-    nt_node_set_ref(wnt, rc, "arguments", ra);
+    if (nl < 0 || st < 0) return;
     int body[2] = { rc, nl };
     nt_node_set_arr(wnt, st, "body", body, 2);
-    int all[6] = { rc, ra, ne, sn, nl, st };
-    for (int k = 0; k < 6; k++) {
+    int all[2] = { nl, st };
+    for (int k = 0; k < 2; k++) {
       if (ln) nt_node_set_int(wnt, all[k], "node_line", ln);
       if (fl) nt_node_set_int(wnt, all[k], "node_file", fl);
     }
@@ -12304,11 +12294,13 @@ static void bc_walk(Bc *b, int id, const char *self, int mode) {
         bc_define(b, full);
         BcMod *m = bc_mod(b, full, 1);
         m->is_module = is_mod;
-        if (!strchr(full, ':') && bc_toplevel_known(full)) m->builtin_reopen = 1;
+        if (!strchr(full, ':') && is_toplevel_const_name(full)) m->builtin_reopen = 1;
       }
       int sc = is_mod ? -1 : nt_ref(nt, id, "superclass");
       if (sc >= 0) {
-        bc_walk(b, sc, self, mode);
+        /* a superclass constant is resolved where the header runs, by the
+           load record (class_superclass_missing), not checked here */
+        if (mode != 2 || !bc_is_const_node(nt, sc)) bc_walk(b, sc, self, mode);
         if (mode == 1 && *full) {
           BcMod *m = bc_mod(b, full, 1);
           char *s = NULL;

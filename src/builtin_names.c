@@ -2022,3 +2022,61 @@ int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||
                sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));
 }
+
+/* The standard library's top-level names: a program that requires one
+   reaches it from anywhere */
+int is_stdlib_const_name(const char *n) {
+  static const char *const names[] = {
+    "Abbrev", "Addrinfo", "Base64", "BasicSocket", "Benchmark", "BigDecimal", "CGI", "CSV", "Coverage",
+    "DRb", "Date", "DateTime", "DelegateClass", "Delegator", "Digest", "ERB", "English", "Etc", "FFI",
+    "Fcntl", "Fiddle", "FileUtils", "Find", "Forwardable", "Gem", "GetoptLong", "IPAddr", "IPSocket",
+    "JSON", "Logger", "Matrix", "Minitest", "Monitor", "MonitorMixin", "Net", "Observable", "Open3",
+    "OpenSSL", "OpenStruct", "OptionParser", "PP", "PStore", "Prime", "Psych", "RbConfig", "Readline",
+    "Resolv", "Ripper", "SecureRandom", "Shellwords", "SimpleDelegator", "SingleForwardable", "Singleton",
+    "Socket", "StringIO", "StringScanner", "TCPServer", "TCPSocket", "TSort", "Tempfile", "Test", "Timeout",
+    "UDPSocket", "UNIXServer", "UNIXSocket", "URI", "Vector", "WeakRef", "YAML", "Zlib",
+    NULL
+  };
+  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  return 0;
+}
+
+/* A name CRuby (or a library spinel provides) answers at the top level. */
+int is_toplevel_const_name(const char *n) {
+  static const char *const names[] = {
+    "ARGF", "ARGV", "ArgumentError", "Array", "BasicObject", "Binding", "Class", "ClosedQueueError",
+    "Comparable", "Complex", "ConditionVariable", "Data", "Dir", "ENV", "EOFError", "Encoding",
+    "EncodingError", "Enumerable", "Enumerator", "Errno", "Exception", "FalseClass", "Fiber", "FiberError",
+    "File", "FileTest", "Float", "FloatDomainError", "FrozenError", "GC", "Hash", "IO",
+    "IOError", "IndexError", "Integer", "Interrupt", "Kernel", "KeyError", "LoadError", "LocalJumpError",
+    "Marshal", "MatchData", "Math", "Method", "Module", "Mutex", "NameError", "NilClass",
+    "NoMatchingPatternError", "NoMatchingPatternKeyError", "NoMemoryError", "NoMethodError", "NotImplementedError", "Numeric", "Object", "ObjectSpace",
+    "Pathname", "Proc", "Process", "Queue", "RUBY_COPYRIGHT", "RUBY_DESCRIPTION", "RUBY_ENGINE", "RUBY_ENGINE_VERSION",
+    "RUBY_PATCHLEVEL", "RUBY_PLATFORM", "RUBY_RELEASE_DATE", "RUBY_REVISION", "RUBY_VERSION", "Ractor", "Random", "Range",
+    "RangeError", "Rational", "Refinement", "Regexp", "RegexpError", "Ruby", "RubyVM", "RuntimeError",
+    "STDERR", "STDIN", "STDOUT", "ScriptError", "SecurityError", "Set", "Signal", "SignalException",
+    "SizedQueue", "StandardError", "StopIteration", "String", "Struct", "Symbol", "SyntaxError", "SystemCallError",
+    "SystemExit", "SystemStackError", "TOPLEVEL_BINDING", "Thread", "ThreadError", "ThreadGroup", "Time", "TracePoint",
+    "TrueClass", "TypeError", "UnboundMethod", "UncaughtThrowError", "UnicodeNormalize", "Warning", "ZeroDivisionError",
+    NULL
+  };
+  if (!n) return 1;
+  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  if (is_stdlib_const_name(n)) return 1;
+  return builtin_class_id(n) != 0 || is_builtin_class_name(n) || is_builtin_module_name(n) ||
+         is_builtin_exception_name(n);
+}
+
+/* A builtin ancestor with no constants of its own (CRuby 4.0's
+   `K.constants - Object.constants` is empty): the user's reopenings are all
+   it can contribute. Any other builtin ancestor may answer the name itself. */
+int is_constless_builtin_name(const char *n) {
+  static const char *const names[] = {
+    "Object", "BasicObject", "Kernel", "Comparable", "Enumerable", "Array", "Hash", "String",
+    "Integer", "Numeric", "Struct", "Data", "Symbol", "Proc", "Range", "Module", "Class", "Time",
+    "Rational", "Dir", "Fiber", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "MatchData",
+    "Method", "UnboundMethod", "NilClass", "TrueClass", "FalseClass", "Signal", "Warning", NULL
+  };
+  for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;
+  return is_builtin_exception_name(n) && !strchr(n, ':');
+}
