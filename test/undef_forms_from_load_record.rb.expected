@@ -1,0 +1,10 @@
+a false
+b false
+c true
+d false
+e false
+undefined method 'a' for an instance of Q
+undefined method 'e' for an instance of Q
+3
+[]
+false

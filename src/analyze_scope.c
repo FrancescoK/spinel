@@ -4238,177 +4238,36 @@ void settle_mixin_aliases(Compiler *c) {
   }
 }
 
-/* Does a statement after stmts[k] declare the accessor `nw` -- a reader
-   (attr_reader / attr_accessor / attr), or for `x=` a writer
-   (attr_writer / attr_accessor)? It then replaces the alias of that name,
-   as the later definition does in CRuby. */
-static int alias_accessor_declared_after(const NodeTable *nt, const int *stmts, int n, int k, const char *nw) {
-  size_t nl = strlen(nw);
-  int wr = name_is_plain_setter(nw);
-  for (int j = k + 1; j < n; j++) {
-    int s = stmts[j];
-    const char *cn = nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0 ? nt_str(nt, s, "name") : NULL;
-    if (!cn) continue;
-    int acc = sp_streq(cn, "attr_accessor");
-    if (wr ? !acc && !sp_streq(cn, "attr_writer")
-           : !acc && !sp_streq(cn, "attr_reader") && !sp_streq(cn, "attr")) continue;
-    int a = nt_ref(nt, s, "arguments"), an = 0;
-    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
-    for (int i = 0; i < an; i++) {
-      const char *v = nt_str(nt, av[i], "value");
-      if (v && strlen(v) == (wr ? nl - 1 : nl) && strncmp(v, nw, wr ? nl - 1 : nl) == 0) return 1;
-    }
-  }
-  return 0;
-}
-
-void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
-  const NodeTable *nt = c->nt;
-  int singleton = nt_int(nt, body, "singleton_body", 0);
-  int n = 0;
-  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    const char *sty = nt_type(nt, s);
-    NodeKind sk = nt_kind(nt, s);
-    if (!sty) continue;
-    if (sk == NK_AliasMethodNode) {
-      int nn = nt_ref(nt, s, "new_name");
-      int on = nt_ref(nt, s, "old_name");
-      const char *nw = nn >= 0 ? nt_str(nt, nn, "value") : NULL;
-      const char *od = on >= 0 ? nt_str(nt, on, "value") : NULL;
-      if (!singleton && nw && alias_accessor_declared_after(nt, stmts, n, k, nw)) continue;
-      alias_register(c, cls, nw, od, s, singleton);
-    }
-    else if (sk == NK_CallNode) {
-      const char *nm = nt_str(nt, s, "name");
-      /* `private alias_method :a, :b` defines the alias it wraps */
-      if (nm && nt_ref(nt, s, "receiver") < 0 &&
-          visibility_of_name(nm) > BVIS_MODULE_FUNCTION) {
-        int pa = nt_ref(nt, s, "arguments");
-        int pn = 0;
-        const int *pv = pa >= 0 ? nt_arr(nt, pa, "arguments", &pn) : NULL;
-        if (pn == 1 && nt_kind(nt, pv[0]) == NK_CallNode && nt_ref(nt, pv[0], "receiver") < 0) {
-          s = pv[0];
-          nm = nt_str(nt, s, "name");
-        }
-      }
-      if (!nm || !sp_streq(nm, "alias_method")) continue;
-      int args = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an >= 2 && nt_kind(nt, argv[0]) == NK_SymbolNode &&
-          nt_kind(nt, argv[1]) == NK_SymbolNode)
-      { const char *anw = nt_str(nt, argv[0], "value"), *aod = nt_str(nt, argv[1], "value");
-        if (!singleton && anw && alias_accessor_declared_after(nt, stmts, n, k, anw)) continue;
-        alias_register(c, cls, anw, aod, s, singleton); }
-    }
-    else if (sk == NK_SingletonClassNode) {
-      /* `class << self; alias_method :a, :b; end` names a CLASS method; the
-         alias table is consulted by the class-method lookup too, so register
-         it the same way rather than leaving the name undefined (#3776) */
-      register_aliases_body(c, cls, nt_ref(nt, s, "body"));
-    }
-    else if (sk == NK_IfNode || sk == NK_UnlessNode) {
-      /* A statement modifier (`alias a b if cond`) wraps the alias in an IfNode;
-         a full if/elsif/else chains through `subsequent`. An alias resolves at
-         compile time, so register only the branch the conditions statically
-         select, following the chain. A non-constant guard selects nothing: the
-         alias cannot be created conditionally with static method tables, so the
-         name is left unresolved and rejects loudly if used. */
-      int curr = s;
-      while (curr >= 0) {
-        const char *cty = nt_type(nt, curr);
-        NodeKind ck = nt_kind(nt, curr);
-        if (!cty) break;
-        if (ck == NK_ElseNode) {
-          int branch_body = nt_ref(nt, curr, "statements");
-          nt_node_set_int((NodeTable *)nt, branch_body, "singleton_body", singleton);
-          register_aliases_body(c, cls, branch_body);
-          break;
-        }
-        if (ck != NK_IfNode && ck != NK_UnlessNode) break;
-        int is_unless = ck == NK_UnlessNode;
-        int pc = nt_pred_const(nt, nt_ref(nt, curr, "predicate"));
-        int then_runs = is_unless ? (pc == 0) : (pc == 1);
-        int else_runs = is_unless ? (pc == 1) : (pc == 0);
-        if (then_runs) {
-          int branch_body = nt_ref(nt, curr, "statements");
-          nt_node_set_int((NodeTable *)nt, branch_body, "singleton_body", singleton);
-          register_aliases_body(c, cls, branch_body);
-          break;
-        }
-        if (else_runs) curr = nt_ref(nt, curr, is_unless ? "else_clause" : "subsequent");
-        else break;  /* non-constant: select nothing */
-      }
-    }
-  }
-}
-
+/* Each class side's aliases and the top level's (on the Toplevel
+   pseudo-class, made only when there is one), found through the load
+   record (elab_entries): `alias`, `alias_method` also wrapped in a
+   visibility word, in `class << self` and `class << Const` bodies and in
+   the arm a constant condition takes. An attr that declares the alias's
+   name later on that class side replaces it, as the later definition does
+   in CRuby. Binding the alias is alias_register's. */
 void register_aliases(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  int nb = 0;
-  ElabBody *bo = elab_all_bodies(c, &nb);
-  for (int b = 0; b < nb; b++) register_aliases_body(c, &c->classes[bo[b].cls], bo[b].body);
-  free(bo);
-  /* A constant singleton body need not have an enclosing class reopening. */
-  for (int n = comp_kind_first(c, NK_SingletonClassNode); n >= 0; n = comp_kind_next(c, n)) {
-    int recv = nt_ref(nt, n, "expression");
-    if (nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) continue;
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
-    if (ci >= 0) register_aliases_body(c, &c->classes[ci], nt_ref(nt, n, "body"));
-  }
-  /* Pass 3: the top level, whose methods live on the Toplevel pseudo-class.
-     It is not a ClassNode, so neither pass above saw it and a top-level
-     `alias b a` left b undefined (#3730). */
-  {
-    /* only when there IS one: creating the pseudo-class for every program
-       shifts every class index and is not free */
-    int have_tl_alias = 0;
-    for (int pid = 0; pid < nt->count && !have_tl_alias; pid++) {
-      NodeKind pk = nt_kind(nt, pid);
-      if (pk != NK_ProgramNode) continue;
-      int sb = nt_ref(nt, pid, "statements");
-      int sn = 0; const int *ss = sb >= 0 ? nt_arr(nt, sb, "body", &sn) : NULL;
-      for (int k = 0; k < sn; k++) {
-        NodeKind sty2_k = nt_kind(nt, ss[k]);
-        if (sty2_k == NK_AliasMethodNode) { have_tl_alias = 1; break; }
-      }
+  int n = 0, tl = -1;
+  ElabEntry *a = elab_entries(c, 1u << LR_ALIAS | 1u << LR_READER | 1u << LR_WRITER, &n);
+  for (int top = 0; top < 2; top++)
+    for (int i = 0; i < n; i++) {
+      if (a[i].kind != LR_ALIAS || !a[i].target || (a[i].cls < 0) != top) continue;
+      int later = 0;
+      for (int j = i + 1; !a[i].sg && j < n && a[j].cls == a[i].cls && a[j].sg == a[i].sg && !later; j++)
+        later = a[j].kind != LR_ALIAS && sp_streq(a[j].name, a[i].name);
+      if (later) continue;
+      if (top && tl < 0 && (tl = comp_class_index(c, "Toplevel")) < 0) { comp_class_new(c, "Toplevel", -1); tl = c->nclasses - 1; }
+      alias_register(c, &c->classes[top ? tl : a[i].cls], a[i].name, a[i].target, a[i].node, a[i].sg);
     }
-    if (have_tl_alias) {
-      int tl = comp_class_index(c, "Toplevel");
-      if (tl < 0) { comp_class_new(c, "Toplevel", -1); tl = c->nclasses - 1; }
-      for (int pid = 0; pid < nt->count; pid++) {
-        NodeKind pk = nt_kind(nt, pid);
-        if (pk != NK_ProgramNode) continue;
-        register_aliases_body(c, &c->classes[tl], nt_ref(nt, pid, "statements"));
-      }
-    }
-  }
+  free(a);
 }
 
-void register_undefs_body(Compiler *c, ClassInfo *cls, int body) {
-  const NodeTable *nt = c->nt;
-  int n = 0;
-  const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    NodeKind sk = nt_kind(nt, s);
-    if (sk != NK_UndefNode) continue;
-    int names_n = 0;
-    const int *names = nt_arr(nt, s, "names", &names_n);
-    for (int j = 0; j < names_n; j++) {
-      const char *mname = nt_str(nt, names[j], "value");
-      if (mname) comp_add_undef(cls, mname);
-    }
-  }
-}
-
+/* Each class's undefs, from the load record (elab_entries) */
 void register_undefs(Compiler *c) {
-  int nb = 0;
-  ElabBody *bo = elab_all_bodies(c, &nb);
-  for (int b = 0; b < nb; b++) register_undefs_body(c, &c->classes[bo[b].cls], bo[b].body);
-  free(bo);
+  int n = 0;
+  ElabEntry *a = elab_entries(c, 1u << LR_UNDEF, &n);
+  for (int i = 0; i < n; i++)
+    if (a[i].cls >= 0 && !a[i].sg) comp_add_undef(&c->classes[a[i].cls], a[i].name);
+  free(a);
 }
 
 int is_c_ident(const char *s) {
