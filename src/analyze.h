@@ -163,6 +163,7 @@ void elab_check_order(Compiler *c, const char *reader, int a, int b, int now);
 void elab_check_sort(Compiler *c, const int *now, const int *rec, int n, const int *node_of);
 void elab_dump(Compiler *c, FILE *out);
 void elab_free(Compiler *c);
+void elab_note_const_writes(Compiler *c);   /* the source's constant writes, before any pass */
 extern int g_dump_load_record;   /* --dump-load-record */
 /* The load record's histories (analyze_elab.c), recorded by elab_program,
    which takes the scope walk's place: a method's versions by (class,

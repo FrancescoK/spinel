@@ -54143,6 +54143,7 @@ void analyze_program(Compiler *c) {
   double tm_an = sp_timing_now();
   g_an_src_nodes = c->nt->count;
   an_note_written_names(c);
+  elab_note_const_writes(c);   /* before any pass drops or rewrites one (lr_const_seen) */
   AN_PHASE("desugar_register", an_phase_desugar_register(c));
   AN_PHASE("class_structure", an_phase_class_structure(c));
   if (c->n_cext_extensions) { AN_STEP_V("register_cext_layouts", register_cext_layouts(c)); inherit_cext_layouts(c); }

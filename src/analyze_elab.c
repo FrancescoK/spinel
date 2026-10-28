@@ -97,6 +97,7 @@ struct LoadRecord {
   struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
+  struct { int node; char *name; } *srcw; int nsrcw;   /* the constant writes the source has, before any pass (elab_note_const_writes) */
   struct LrVers *vers; int nvers, cvers, *vers_head;
 };
 
@@ -1863,15 +1864,58 @@ static const char *lr_const_written(const NodeTable *nt, int id) {
   }
 }
 
+/* The node kinds that write a constant (lr_const_written) */
+static const NodeKind *lr_const_write_kinds(int *n) {
+  static const NodeKind kinds[] = {
+    NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode, NK_ConstantOperatorWriteNode,
+    NK_ConstantTargetNode, NK_ConstantPathTargetNode, NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+    NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode, NK_ClassNode, NK_ModuleNode
+  };
+  *n = (int)(sizeof kinds / sizeof kinds[0]);
+  return kinds;
+}
+
+/* The constant writes the program's source has, by node and name, taken
+   before any pass runs: a pass before the walk may drop one or rewrite it
+   into something else (desugar_constant_path_self_alias drops
+   `A::B::C = remove_const(:C)`), and the record, which sees only the tree
+   the walk reaches, must then not take the name for one nothing writes
+   (lr_const_seen). */
+void elab_note_const_writes(Compiler *c) {
+  LoadRecord *r = lr_get(c);
+  const NodeTable *nt = c->nt;
+  int nk = 0, cap = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k < nk; k++) {
+    int n = 0;
+    const int *v = nt_nodes_of_kind(nt, kinds[k], &n);
+    for (int i = 0; i < n; i++) {
+      const char *nm = lr_const_written(nt, v[i]);
+      if (!nm) continue;
+      if (r->nsrcw == cap) {
+        cap = cap ? cap * 2 : 64;
+        r->srcw = realloc(r->srcw, sizeof *r->srcw * (size_t)cap);
+        if (!r->srcw) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      r->srcw[r->nsrcw].node = v[i];
+      r->srcw[r->nsrcw].name = strdup(nm);
+      if (!r->srcw[r->nsrcw].name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      r->nsrcw++;
+    }
+  }
+}
+
 /* Does the record see every write of constant `name` there can be? Not
    when the program runs code it cannot follow (elab_runs_unseen), loads a
    C extension, or calls const_set, autoload or an eval of a String (also
-   through a send), or defines const_missing; nor when a write of the name
-   is one it does not record: a path or operator write, a multiple
-   assignment's target, or a write or header in a method body, a lambda or
-   a block, which may run before any point, or in a file region 0 has not
-   entered (yet, while the walk records: a file a later load enters, or
-   one in a region of its own, whose points the record cannot order). */
+   through a send), or defines const_missing; nor when a write the
+   program's source has is gone or rewritten by a pass before the walk
+   (elab_note_const_writes); nor when a write of the name is one it does
+   not record: a path or operator write, a multiple assignment's target,
+   or a write or header in a method body, a lambda or a block, which may
+   run before any point, or in a file region 0 has not entered (yet, while
+   the walk records: a file a later load enters, or one in a region of its
+   own, whose points the record cannot order). */
 static int lr_const_seen(Compiler *c, const char *name) {
   LoadRecord *r = c->lrec;
   const NodeTable *nt = c->nt;
@@ -1890,13 +1934,14 @@ static int lr_const_seen(Compiler *c, const char *name) {
     r->consts = hit ? 2 : 1;
   }
   if (r->consts == 2) return 0;
+  for (int i = 0; i < r->nsrcw; i++) {
+    const char *now = sp_streq(r->srcw[i].name, name) ? lr_const_written(nt, r->srcw[i].node) : name;
+    if (!now || !sp_streq(now, name)) return 0;
+  }
   const int *par = comp_parent_map(c);
-  static const NodeKind kinds[] = {
-    NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode, NK_ConstantOperatorWriteNode,
-    NK_ConstantTargetNode, NK_ConstantPathTargetNode, NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
-    NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode, NK_ClassNode, NK_ModuleNode
-  };
-  for (size_t k = 0; k < sizeof kinds / sizeof kinds[0]; k++) {
+  int nk = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k < nk; k++) {
     int n = 0;
     const int *v = nt_nodes_of_kind(nt, kinds[k], &n);
     for (int i = 0; i < n; i++) {
@@ -2318,6 +2363,8 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
   free(r->names); free(r->reopens);
+  for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
+  free(r->srcw);
   free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head); free(r->set);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
