@@ -15867,6 +15867,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     }
     if (bcase && defcls != k) continue;
     Scope *m = &c->scopes[mi];
+    if (!m->reachable) continue;   /* nothing calls it: reachability keeps a `<=>` that a sort, a max or a Comparable operator can reach */
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
     /* a `<=>` that answers no number (always nil) still runs: Comparable's
        == and the sorts call it and read its answer as not-comparable */
