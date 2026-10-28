@@ -45929,14 +45929,17 @@ static void an_phase_desugar_register(Compiler *c) {
   prog_refuse_loads(c);
   for (int r = 0; r < nt_nroots(c->nt); r++) reject_retry_in_ensure(c, nt_root(c->nt, r), 0, 0);
   if (g_exc_abort) reject_exc_abort_constructs(c);
+  LowerCtx lc;
+  lower_begin(c, &lc);
+  HostStep hs;
   /* class_eval "<text known now>" -> that code, grafted into the body. First,
      so every pass below reads the grafted code as it reads the program's */
-  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c));
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c, &hs));
+  host_end(c, &hs);
   /* a class body's loop over a constant table that defines constants and
      classes, run now: its classes are written ones for every pass below */
   AN_STEP_V("desugar_table_loops", desugar_table_loops(c));
-  LowerCtx lc;
-  lower_begin(c, &lc);
   /* `m(&nil)` is the blockless call */
   lower_run(c, &lc, LW_NIL_BLOCK_ARG);
   lower_run(c, &lc, LW_THREAD_START);               /* Thread.start / .fork -> Thread.new */
@@ -46001,7 +46004,9 @@ static void an_phase_desugar_register(Compiler *c) {
   /* a hook body spliced into its includer can carry a class_eval "<text>"
      of its own (`base.class_eval do class_eval "..." end`): graft it as the
      first pass did the includer's own */
-  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c));
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c, &hs));
+  host_end(c, &hs);
   AN_STEP_V("desugar_class_body_object_acts", desugar_class_body_object_acts(c));     /* class B; tap { } -> self.tap { } */
   lower_run(c, &lc, LW_NIL_BLOCK_ARG);
   AN_STEP_V("desugar_literal_const_get", desugar_literal_const_get(c));          /* Object.const_get("A::B") -> A::B */

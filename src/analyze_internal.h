@@ -707,7 +707,6 @@ int desugar_handle_ivars(Compiler *c);
 int desugar_fiber_prepended_init(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
-int desugar_static_class_eval(Compiler *c);
 int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 
 /* ---- the lowering table (analyze_lower.c, #9898) ----
@@ -785,6 +784,25 @@ int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, fo
 int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts, const int *scopes, int n);   /* the rows that ran, on spliced statements */
 void lower_settle(Compiler *c, LowerCtx *lc);   /* the rows spans left to the program, once per step */
 
+/* ---- the host (analyze_elab.c, #9898) ----
+   A step that splices code into a body after the load stage began hands it
+   to the host, which makes it what the program's own code is at that point:
+   the static class_eval text in it is grafted (analyze_desugar.c's sce),
+   and its statements are lowered by the rows that have run (lower_span), at
+   host_end, once the step has spliced everything. What the text graft asks
+   of the whole program is asked once per step. */
+typedef struct HostStep {
+  LowerCtx *lc;
+  struct SceFacts *sce;    /* the graft's answers about the whole program, made at its first ask in the step */
+  int *spans;              /* (owner, body, statement, its splice's first statement) of each statement the step spliced */
+  int nspans, cspans;
+} HostStep;
+void host_begin(HostStep *h, LowerCtx *lc);
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* the n statements at body[at]: the count they become */
+void host_end(Compiler *c, HostStep *h);
+int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* ... over spliced statements */
+void sce_facts_free(struct SceFacts *f);
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
 /* the rows' functions, in the files that own the rewrites */

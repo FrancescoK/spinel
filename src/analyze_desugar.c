@@ -24534,69 +24534,118 @@ int desugar_nil_block_arg_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-int desugar_static_class_eval(Compiler *c) {
+/* What the graft asks of the whole program, once per step (HostStep): a
+   program that hooks or reopens what a graft would bypass grafts nothing,
+   asked at the step's first candidate (sce_program_reflects_scoped), and
+   the classes whose own hooks see their definitions. */
+struct SceFacts {
+  int gate;          /* -1 until asked */
+  SceScoped scoped;
+};
+static struct SceFacts *sce_facts(HostStep *h) {
+  if (!h->sce) {
+    h->sce = calloc(1, sizeof *h->sce);
+    if (!h->sce) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    h->sce->gate = -1;
+  }
+  return h->sce;
+}
+void sce_facts_free(struct SceFacts *f) {
+  if (!f) return;
+  free(f->scoped.names);
+  free(f);
+}
+
+/* The statements body[at..at + n) of a class or module body (owner's): a
+   class_eval of text known now becomes the text's statements, in place. A
+   bare `private` before them, in the body, keeps every graft out. The count
+   the n statements become; *changed when the body changed. */
+static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, int *changed) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  struct SceFacts *f = sce_facts(h);
+  int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
+  if (at < 0 || n <= 0 || at + n > bn) return n;
+  int *bb = (int *)malloc(sizeof(int) * (size_t)bn);
+  if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(bb, bb0, sizeof(int) * (size_t)bn);
+  int *nb = NULL, nbn = 0, any = 0, vis = 0;
+  for (int i = 0; i < at; i++) { vis |= sce_bare_visibility(nt, bb[i]); xc_push(&nb, &nbn, bb[i]); }
+  for (int i = at; i < at + n; i++) {
+    int st = bb[i];
+    int *ins = NULL, nins = 0, ok = 0;
+    vis |= sce_bare_visibility(nt, st);
+    int str = vis ? -1 : sce_eval_string(nt, st);
+    int each = !vis && str < 0 && nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") &&
+               is_each_name(nt_str(nt, st, "name")) && nt_ref(nt, st, "arguments") < 0;
+    if ((str >= 0 || each) && f->gate < 0) f->gate = sce_program_reflects_scoped(nt, &f->scoped);
+    if (f->gate > 0 || ((str >= 0 || each) && f->scoped.n > 0 && sce_scoped_reaches(nt, &f->scoped, owner, 0))) { str = -1; each = 0; }
+    if (str >= 0) {
+      char *text = sce_text(nt, str, NULL, NULL);
+      if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
+    }
+    else if (each) {
+      /* CONST.each do |v| class_eval "..." end, or %w(a b).each */
+      int recv = nt_ref(nt, st, "receiver"), blk = nt_ref(nt, st, "block");
+      const char *cname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
+      int bbody = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
+      int pn = blk >= 0 ? nt_ref(nt, blk, "parameters") : -1;
+      int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
+      int rn = 0; const int *reqs = inner >= 0 ? nt_arr(nt, inner, "requireds", &rn) : NULL;
+      const char *var = rn == 1 && reqs ? nt_str(nt, reqs[0], "name") : NULL;
+      int sn = 0; const int *ss = bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode ? nt_arr(nt, bbody, "body", &sn) : NULL;
+      int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
+      /* CONST.each, or the same over a literal list (`%w(a b).each`) */
+      const char **elems = NULL;
+      int ne = cname ? sce_const_elems(nt, body, i, cname, &elems)
+             : recv >= 0 ? sce_array_elems(nt, recv, &elems) : -1;
+      if (var && estr >= 0 && ne >= 0) {
+        ok = 1;
+        for (int e = 0; e < ne && ok; e++) {
+          char *text = sce_text(nt, estr, var, elems[e]);
+          if (!text || sce_graft(c, text, ss[0], &ins, &nins) < 0) ok = 0;
+          free(text);
+        }
+      }
+      free(elems);
+    }
+    if (ok) { for (int j = 0; j < nins; j++) xc_push(&nb, &nbn, ins[j]); any = 1; }
+    else xc_push(&nb, &nbn, st);
+    free(ins);
+  }
+  int done = nbn;
+  for (int i = at + n; i < bn; i++) xc_push(&nb, &nbn, bb[i]);
+  if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); *changed = 1; n = done - at; }
+  free(nb); free(bb);
+  return n;
+}
+
+int desugar_static_class_eval(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
-  int gate = -1;   /* sce_program_reflects_scoped, asked once a candidate is seen */
-  SceScoped scoped = {0};
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_ModuleNode && k != NK_ClassNode) continue;
     int body = nt_ref(nt, id, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
-    int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
-    int *bb = (int *)malloc(sizeof(int) * (size_t)(bn > 0 ? bn : 1));
-    if (!bb) continue;
-    if (bn > 0) memcpy(bb, bb0, sizeof(int) * (size_t)bn);
-    int *nb = NULL, nbn = 0, any = 0, vis = 0;
-    for (int i = 0; i < bn; i++) {
-      int st = bb[i];
-      int *ins = NULL, nins = 0, ok = 0;
-      vis |= sce_bare_visibility(nt, st);
-      int str = vis ? -1 : sce_eval_string(nt, st);
-      int each = !vis && str < 0 && nt_kind(nt, st) == NK_CallNode && nt_str(nt, st, "name") &&
-                 sp_streq(nt_str(nt, st, "name"), "each") && nt_ref(nt, st, "arguments") < 0;
-      if ((str >= 0 || each) && gate < 0) gate = sce_program_reflects_scoped(nt, &scoped);
-      if (gate > 0 || ((str >= 0 || each) && scoped.n > 0 && sce_scoped_reaches(nt, &scoped, id, 0))) { str = -1; each = 0; }
-      if (str >= 0) {
-        char *text = sce_text(nt, str, NULL, NULL);
-        if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
-      }
-      else if (each) {
-        /* CONST.each do |v| class_eval "..." end, or %w(a b).each */
-        int recv = nt_ref(nt, st, "receiver"), blk = nt_ref(nt, st, "block");
-        const char *cname = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
-        int bbody = blk >= 0 && nt_kind(nt, blk) == NK_BlockNode ? nt_ref(nt, blk, "body") : -1;
-        int pn = blk >= 0 ? nt_ref(nt, blk, "parameters") : -1;
-        int inner = pn >= 0 ? nt_ref(nt, pn, "parameters") : -1;
-        int rn = 0; const int *reqs = inner >= 0 ? nt_arr(nt, inner, "requireds", &rn) : NULL;
-        const char *var = rn == 1 && reqs ? nt_str(nt, reqs[0], "name") : NULL;
-        int sn = 0; const int *ss = bbody >= 0 && nt_kind(nt, bbody) == NK_StatementsNode ? nt_arr(nt, bbody, "body", &sn) : NULL;
-        int estr = sn == 1 ? sce_eval_string(nt, ss[0]) : -1;
-        /* CONST.each, or the same over a literal list (`%w(a b).each`) */
-        const char **elems = NULL;
-        int ne = cname ? sce_const_elems(nt, body, i, cname, &elems)
-               : recv >= 0 ? sce_array_elems(nt, recv, &elems) : -1;
-        if (var && estr >= 0 && ne >= 0) {
-          ok = 1;
-          for (int e = 0; e < ne && ok; e++) {
-            char *text = sce_text(nt, estr, var, elems[e]);
-            if (!text || sce_graft(c, text, ss[0], &ins, &nins) < 0) ok = 0;
-            free(text);
-          }
-        }
-        free(elems);
-      }
-      if (ok) { for (int j = 0; j < nins; j++) xc_push(&nb, &nbn, ins[j]); any = 1; }
-      else xc_push(&nb, &nbn, st);
-      free(ins);
-    }
-    if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); changed = 1; }
-    free(nb); free(bb);
+    int bn = 0; nt_arr(nt, body, "body", &bn);
+    sce_body(c, h, id, body, 0, bn, &changed);
   }
-  free(scoped.names);
   if (changed) comp_grow_node_arrays(c);
   return changed;
+}
+
+/* The graft on reach of a splice: the statements body[at..at + n), which a step
+   put into owner's body. The count the n statements become. A class or
+   module body among them was grafted with the program's: a hook's body,
+   a method's, defines none, and a class_eval block the splice unwraps was
+   the program's. */
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0;
+  NodeKind ok = nt_kind(nt, owner);
+  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, &changed);
+  if (changed) comp_grow_node_arrays(c);
+  return n;
 }
 
 /* ---- a class body's calls of its own class methods ----
