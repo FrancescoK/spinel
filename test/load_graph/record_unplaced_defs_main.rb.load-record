@@ -1,0 +1,15 @@
+load record: 4 points, 1 regions
+r0 #0 f0 ProgramNode line 6
+r0 #1 f0 ModuleNode M line 6
+  r0 #2 f0 DefNode hi line 6
+r0 #3 f0 CallNode p line 7
+class M: body#1
+class G: body#3 include M#3
+entity M: owner main leaf M
+entity G: owner main leaf G
+const M: write#1
+M#hi: def#2 end=yes
+G#z: reader#3 unplaced end=no
+G#y: def#3 unplaced vis#3 unplaced private end=no
+G#w: alias#3 unplaced (y: none) private end=no
+G#hi: undef#3 unplaced end=yes

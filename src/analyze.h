@@ -187,6 +187,9 @@ typedef struct {
   int owner;            /* a write's: the class whose constant it is (LR_MAIN:
                            Object's), below LR_MAIN when not known or not a
                            constant's; unused in other versions */
+  unsigned char unplaced; /* in a body the walk does not place (a builder's
+                             block, lr_body_defs): no version, and no query
+                             at a point sees it */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
@@ -346,7 +349,7 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
    its class body stands before it (one around the body is the body's) and
    it is in no iterator's block; the visibility is the last one given,
    under a condition too (SP_VIS_*, -1 for none). An entry with no load
-   point (L3) is not one. */
+   point (L3) is not one, unless its body is one the walk does not place. */
 typedef struct {
   const char *name, *alias;   /* alias: the last alias's original name */
   int node;                   /* the name's last entry */
