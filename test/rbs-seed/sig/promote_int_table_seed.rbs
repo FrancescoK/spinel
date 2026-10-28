@@ -1,0 +1,5 @@
+class PromoteTableSeed
+  @rows: Array[Array[Integer]]
+  def add: (Integer a, Integer b) -> PromoteTableSeed
+  def rows: () -> Array[Array[Integer]]
+end
