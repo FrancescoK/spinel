@@ -11412,9 +11412,23 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
     int hac = 0;
     if (ha >= 0) nt_arr(nt, ha, "arguments", &hac);
     /* (not where a Hash reopen defines its own store) */
+    TyKind hrt = hrc >= 0 ? infer_type(c, hrc) : TY_UNKNOWN;
+    /* ...and on a Hash subclass instance whose class chain has no store of
+       its own: Hash's []=, even where the class defines its own []=, which
+       Hash#store does not call. Not where the class undefines store or
+       makes it private (NoMethodError on a receiver other than self), nor
+       where a Hash reopen defines its own []=. */
+    int scid = ty_is_object(hrt) ? ty_object_class(hrt) : -1;
+    int sub = hrc >= 0 && scid >= 0 && comp_ary_is_hash(c, scid) &&
+              (nt_int(nt, id, "builtin_only", 0) ||
+               (comp_arysub_name_is_array(c, scid, nm) && !comp_is_undeffed_in_chain(c, scid, nm) &&
+                (comp_method_vis_in_chain(c, scid, nm) == SP_VIS_PUBLIC ||
+                 nt_kind(nt, hrc) == NK_SelfNode))) &&
+              comp_builtin_kind_reopen_mi(c, TY_POLY_POLY_HASH, "[]=") < 0;
     if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
-        ty_is_hash(infer_type(c, hrc)) && an_reopen_owner(c, id, "Hash") < 0) {
+        (ty_is_hash(hrt) || sub) && an_reopen_owner(c, id, "Hash") < 0) {
       nt_node_set_str(nt, id, "name", "[]=");
+      if (sub) nt_node_set_int(nt, id, "builtin_only", 1);
       *changed = 1;
     }
     return 1;

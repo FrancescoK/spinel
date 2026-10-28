@@ -296,11 +296,8 @@ int desugar_ie_bare_object_calls(Compiler *c) {
     /* on an Array, Hash or String subclass instance, a method its builtin
        answers (`a.instance_eval { size }`) asks the receiver too. The
        receiver's class comes from inferred types, so the pass runs each
-       round. A top-level def of the name is left alone, and so is a
-       Hash subclass's store, which has no arm on self there (it stays
-       refused). */
-    int builtin = !hit && call_target(c, id, -1, nm, CT_TOP, NULL) < 0 && comp_arysub_name_is_array(c, cls, nm) &&
-                  !(ty_is_hash(comp_ary_kind(c, cls)) && is_store_alias(nm));
+       round. A top-level def of the name is left alone. */
+    int builtin = !hit && call_target(c, id, -1, nm, CT_TOP, NULL) < 0 && comp_arysub_name_is_array(c, cls, nm);
     if (!builtin && (!hit || call_target(c, id, cls, nm, 0, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
