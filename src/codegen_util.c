@@ -5793,6 +5793,17 @@ int call_never_returns(Compiler *c, int id) {
   }
   return mi >= 0 && c->scopes[mi].ret == TY_VOID;
 }
+/* The general Array a fresh typed Array becomes for a push or concat of
+   another kind (an_push_widens_fresh), as an sp_PolyArray * expression: a
+   copy of its elements that keeps its frozen flag (`s.split.freeze << 1`
+   raises FrozenError, as CRuby does). */
+void emit_fresh_lift_recv(Compiler *c, int recv, Buf *b) {
+  int tv = ++g_tmp, tp = ++g_tmp;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+  emit_boxed(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d);"
+                " if (sp_poly_frozen(_t%d)) _t%d->frozen = 1; _t%d; })", tv, tp, tv, tv, tp, tp);
+}
 /* The runtime conversion of a typed array to the poly array; NULL for a kind
    that has none. */
 const char *array_to_poly_fn(TyKind t) {

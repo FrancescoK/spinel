@@ -8554,6 +8554,15 @@ int an_push_widens_fresh(Compiler *c, int id) {
   if (rt != TY_STR_ARRAY && rt != TY_INT_ARRAY && rt != TY_FLOAT_ARRAY) return 0;
   /* a program's own Array#push (or <<) answers what it answers */
   if (!nt_int(nt, id, "builtin_only", 0) && array_hash_reopen_owner(c, id, rt, nm) >= 0) return 0;
+  /* a fresh Array frozen in the same chain (`str.split.freeze << 1`) is
+     still held by nothing else: the general Array it becomes keeps the
+     frozen flag, so the push raises CRuby's FrozenError */
+  int fr = nt_paren_single(nt, recv);
+  int fa = nt_ref(nt, fr, "arguments");
+  if (nt_str(nt, fr, "name") && sp_streq(nt_str(nt, fr, "name"), "freeze") &&
+      nt_ref(nt, fr, "receiver") >= 0 && fa < 0 && nt_ref(nt, fr, "block") < 0 &&
+      !nt_safe_nav(nt, fr) && cplan_user_fresh(c, fr)->mi < 0)
+    recv = nt_ref(nt, fr, "receiver");
   if (!is_fresh_array(c, recv)) return 0;
   TyKind elem = ty_array_elem(rt);
   int a = nt_ref(nt, id, "arguments"), ac = 0;

@@ -2490,7 +2490,7 @@ else {
     if ((!same && all_poly && k) || fresh) {
       int ta = ++g_tmp;
       Buf ra; memset(&ra, 0, sizeof ra);
-      if (fresh) { buf_puts(&ra, "sp_poly_to_poly_array("); emit_boxed(c, recv, &ra); buf_puts(&ra, ")"); k = "Poly"; }
+      if (fresh) { emit_fresh_lift_recv(c, recv, &ra); k = "Poly"; }
       else ra = expr_buf(c, recv);
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
@@ -2515,7 +2515,9 @@ else {
         buf_printf(&ck, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
       }
       /* a frozen receiver raises even when every argument is empty */
-      buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", ta, ta, ta, array_frozen_cls(rt));
+      /* (the fresh Array's general copy is read as the general Array) */
+      buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", ta, ta, ta,
+                 fresh ? "SP_BUILTIN_POLY_ARRAY" : array_frozen_cls(rt));
       if (ck.p) buf_puts(b, ck.p);
       free(ck.p);
       for (int j = 0; j < argc; j++) {
