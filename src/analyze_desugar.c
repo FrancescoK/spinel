@@ -18501,7 +18501,23 @@ static void incl_names_build(const NodeTable *nt, int n0, int **parent_out, char
   *parent_out = parent; *qn_out = qn;
 }
 
-int desugar_included_hooks(Compiler *c) {
+/* What a hook splices into a body: the statements out[at[i]..at[i] + n[i])
+   that were not the body's before (one call of a hook, one class_eval
+   block the splice unwraps), handed to the host once the body is set. Each
+   is a scope of its own, so two that meet stay two splices. */
+typedef struct { int *at, *n, len, cap; } InclRanges;
+static void incl_range_add(InclRanges *r, int from, int to) {
+  if (to <= from) return;
+  if (r->len == r->cap) {
+    r->cap = r->cap ? r->cap * 2 : 8;
+    r->at = realloc(r->at, sizeof(int) * (size_t)r->cap);
+    r->n = realloc(r->n, sizeof(int) * (size_t)r->cap);
+    if (!r->at || !r->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  r->at[r->len] = from;
+  r->n[r->len++] = to - from;
+}
+int desugar_included_hooks(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
@@ -18543,9 +18559,11 @@ int desugar_included_hooks(Compiler *c) {
     if ((!cls && ck != NK_LocalVariableWriteNode) || body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int n = 0; const int *st = nt_arr(nt, body, "body", &n);
     int *out = NULL; int no = 0, cap = 0, spliced = 0;
+    InclRanges rg = {0};
     for (int k = 0; k < n; k++) {
-      int s = st[k];
+      int s = st[k], was = no;
       incl_emit_stmt(nt, s, &out, &no, &cap);   /* the statement itself */
+      if (no != was + 1 || out[was] != s) incl_range_add(&rg, was, no);   /* a class_eval block, unwrapped */
       /* incl_emit_stmt only unwraps receiverless class_eval; a plain
          statement passes through, so this is the statement as written */
       if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
@@ -18567,10 +18585,12 @@ int desugar_included_hooks(Compiler *c) {
         if (hook < 0) continue;
         int hb = nt_ref(nt, hook, "body");
         if (hb < 0) continue;
+        int was = no;
         if (incl_hook_returns(nt, hb)) {
           int call = incl_hook_call(nt, s, av[j], is_ext ? "extended" : "included");
           if (call < 0) continue;
           incl_emit_stmt(nt, call, &out, &no, &cap);
+          incl_range_add(&rg, was, no);
           spliced = 1;
           continue;
         }
@@ -18579,19 +18599,24 @@ int desugar_included_hooks(Compiler *c) {
         InclSubst is = { param, cls, av[j], hook_mod };
         incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
-        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); spliced = 1; continue; }
+        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); incl_range_add(&rg, was, no); spliced = 1; continue; }
         int *hcp = hn > 0 ? malloc(sizeof(int) * (size_t)hn) : NULL;
         if (hn > 0 && !hcp) continue;
         if (hn > 0) memcpy(hcp, hs, sizeof(int) * (size_t)hn);
         for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap);
         free(hcp);
+        incl_range_add(&rg, was, no);
         spliced = 1;
       }
     }
     if (spliced) {
       nt_node_set_arr(nt, body, "body", out, no);
       changed = 1;
+      /* each range as the host leaves it: a graft can change its count */
+      for (int i = 0, grew = 0; i < rg.len; i++)
+        grew += host_splice(c, h, cn, body, rg.at[i] + grew, rg.n[i]) - rg.n[i];
     }
+    free(rg.at); free(rg.n);
     free(out);
   }
   if (qn) for (int m = 0; m < n0; m++) free(qn[m]);

@@ -45998,15 +45998,13 @@ static void an_phase_desugar_register(Compiler *c) {
   AN_STEP_V("desugar_class_new_blocks", desugar_class_new_blocks(c));           /* X = Class.new(B) do..end -> class X < B; ..; end */
   desugar_struct_block_anonymous(c);    /* Point = Struct.new do p self end: anonymous until written */
   AN_STEP_V("desugar_singleton_body_self", desugar_singleton_body_self(c));       /* class << X; p self; end -> refused */
-  AN_STEP_V("desugar_included_hooks", desugar_included_hooks(c));             /* include M / extend M -> M.included/extended(base)'s body */
+  /* include M / extend M -> M.included/extended(base)'s body, a splice the
+     host grafts (its class_eval "<text>") and lowers with the rows run so far */
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_included_hooks", desugar_included_hooks(c, &hs));
+  host_end(c, &hs);
   AN_STEP_V("desugar_eval_method_block", desugar_eval_method_block(c));          /* k.class_eval(&o.method(:m)) -> o.m(k) */
   AN_STEP_V("desugar_inherited_hooks", desugar_inherited_hooks(c));            /* class A < B -> B.inherited(A) first in A's body */
-  /* a hook body spliced into its includer can carry a class_eval "<text>"
-     of its own (`base.class_eval do class_eval "..." end`): graft it as the
-     first pass did the includer's own */
-  host_begin(&hs, &lc);
-  AN_STEP_V("desugar_static_class_eval", desugar_static_class_eval(c, &hs));
-  host_end(c, &hs);
   AN_STEP_V("desugar_class_body_object_acts", desugar_class_body_object_acts(c));     /* class B; tap { } -> self.tap { } */
   lower_run(c, &lc, LW_NIL_BLOCK_ARG);
   AN_STEP_V("desugar_literal_const_get", desugar_literal_const_get(c));          /* Object.const_get("A::B") -> A::B */
