@@ -10731,6 +10731,25 @@ int emit_time_civil_ctor(Compiler *c, int id, int is_utc, int is_new, Buf *b) {
     buf_puts(b, ")");
     return 1;
   }
+  /* a splat leaves the count, and so the form, to run time */
+  if (!is_new && nt_argv_has_splat(nt, argv, argc) && !nt_argv_has_keywords(nt, argv, argc)) {
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
+    for (int i = 0; i < argc; i++) {
+      if (nt_kind(nt, argv[i]) == NK_SplatNode) {
+        int so = nt_ref(nt, argv[i], "expression");
+        buf_printf(b, " sp_PolyArray_append_all(_t%d, ", ta);
+        emit_splat_operand_array(c, so >= 0 ? so : argv[i], b);
+      }
+      else {
+        buf_printf(b, " sp_PolyArray_push(_t%d, ", ta);
+        emit_boxed(c, argv[i], b);
+      }
+      buf_puts(b, ");");
+    }
+    buf_printf(b, " sp_time_civil_list(_t%d, %d); })", ta, is_utc ? 1 : 0);
+    return 1;
+  }
   /* the 10-argument reversed form (sec, min, hour, day, mon, year, wday,
      yday, isdst, tz) accepted by the named class methods */
   if (!is_new && argc == 10) {
