@@ -1103,6 +1103,25 @@ static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
    a constant's by name and the class whose body (lexical scope) writes it,
    as lr_const_owner numbers it (0: not known) */
 static int lr_const_owner(int cls) { return cls >= LR_MAIN ? cls + 2 : 0; }
+static int lr_sg_const_owner(int cls) { return cls >= LR_MAIN ? -cls - 2 : 0; }
+
+/* A known class's singleton has its own constant history, disjoint from
+   the class's. A singleton of an arbitrary object remains unknown. */
+static int lr_singleton_owner(Compiler *c, int f) {
+  int ex = nt_ref(c->nt, c->lrec->st[f].node, "expression");
+  int cls = nt_kind(c->nt, ex) == NK_SelfNode ? lr_cref(c, f) : elab_class_ref_at(c, ex);
+  return lr_sg_const_owner(cls);
+}
+
+static int lr_const_scope_owner(Compiler *c, int e) {
+  const LoadRecord *r = c->lrec;
+  for (int f = e >= 0 ? r->st[e].frame : -1; f >= 0; f = r->st[f].frame) {
+    NodeKind k = nt_kind(c->nt, r->st[f].node);
+    if (k == NK_SingletonClassNode) return lr_singleton_owner(c, f);
+    if (k == NK_ClassNode || k == NK_ModuleNode) break;
+  }
+  return lr_const_owner(lr_cref(c, e));
+}
 /* Is a written value nil: none, a nil, or the nil a chain of writes ends
    in (`$a = @b = nil`)? */
 static int lr_nil_value(const NodeTable *nt, int v) {
@@ -1115,26 +1134,31 @@ static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, i
     const LrHist *h = lr_hist(r, -2 - (int)kind, owner, name, 0);
     for (int i = 0; h && i < h->n; i++) if (h->v[i].node == node) return;
   }
-  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner - 2 });
+  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner < 0 ? -owner - 2 : owner - 2 });
 }
 
 /* Every constant assignment joins its owner's history at its point. A
    multiple assignment's targets share its completion point; a conditional
    assignment may leave the previous value in place. */
-static void lr_const_write(Compiler *c, int node, int e, int fc, int may) {
+static void lr_const_write(Compiler *c, int node, int e, int fc, int fs, int may) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, node);
-  int owner = lr_cref(c, e), target = -1, v = nt_ref(nt, node, "value");
+  int owner = lr_const_scope_owner(c, e), target = -1, v = nt_ref(nt, node, "value");
   const char *name;
   if (node < c->lrec->n && (c->lrec->bits[node] & LR_LATE)) {
     const int *par = comp_parent_map(c);
-    owner = LR_MAIN;
+    owner = lr_const_owner(LR_MAIN);
     for (int a = par[node]; a >= 0; a = par[a]) {
       NodeKind ak = nt_kind(nt, a);
-      if (ak == NK_SingletonClassNode) { owner = LR_UNKNOWN_CLASS; break; }
-      if (ak == NK_ClassNode || ak == NK_ModuleNode) { owner = elab_header_class(c, a, NULL, NULL); break; }
+      if (ak == NK_SingletonClassNode) {
+        int f = a < c->lrec->n ? c->lrec->at[a] : -1;
+        owner = f >= 0 && c->lrec->st[f].node == a ? lr_singleton_owner(c, f) : 0;
+        break;
+      }
+      if (ak == NK_ClassNode || ak == NK_ModuleNode) { owner = lr_const_owner(elab_header_class(c, a, NULL, NULL)); break; }
     }
-    fc = owner;
+    fc = owner < 0 ? -owner - 2 : owner - 2;
+    fs = owner < 0 ? LR_FS_SCLASS : LR_FS_NONE;
   }
   switch (k) {
     case NK_ConstantWriteNode: case NK_ConstantTargetNode:
@@ -1151,8 +1175,9 @@ static void lr_const_write(Compiler *c, int node, int e, int fc, int may) {
       const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
       if (!nm || !is_const_set_name(nm) || an < 2 || !(name = vis_arg_name(nt, av[0]))) return;
       int rv = nt_ref(nt, node, "receiver");
-      owner = rv < 0 || nt_kind(nt, rv) == NK_SelfNode ? fc : elab_class_ref_at(c, rv);
-      lr_write(c->lrec, ELAB_CONST, lr_const_owner(owner), name, node, lr_nil_value(nt, av[1]), may);
+      owner = rv < 0 || nt_kind(nt, rv) == NK_SelfNode ?
+        (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, rv));
+      lr_write(c->lrec, ELAB_CONST, owner, name, node, lr_nil_value(nt, av[1]), may);
       return;
     }
     default: return;
@@ -1160,11 +1185,12 @@ static void lr_const_write(Compiler *c, int node, int e, int fc, int may) {
   if (!(name = lr_const_written(nt, node))) return;
   if (target >= 0) {
     int par = nt_ref(nt, target, "parent");
-    owner = par < 0 ? LR_MAIN : nt_kind(nt, par) == NK_SelfNode ? fc : elab_class_ref_at(c, par);
+    owner = par < 0 ? lr_const_owner(LR_MAIN) : nt_kind(nt, par) == NK_SelfNode ?
+      (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, par));
   }
   may |= k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
          k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode;
-  lr_write(c->lrec, ELAB_CONST, lr_const_owner(owner), name, node, v >= 0 && lr_nil_value(nt, v), may);
+  lr_write(c->lrec, ELAB_CONST, owner, name, node, v >= 0 && lr_nil_value(nt, v), may);
 }
 
 static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may);
@@ -1549,7 +1575,7 @@ static int lr_nested_part(void *ud, int ch, ElabPos *q) {
   if (q->kind == EP_LIST || q->kind == EP_NEW || (q->bits & LR_LATE) || q->defer) return 0;
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode ||
       k == NK_LambdaNode || k == NK_DefinedNode) return 0;
-  lr_const_write(n->x->c, ch, q->e, n->fc, q->may || q->partial);
+  lr_const_write(n->x->c, ch, q->e, n->fc, n->fs, q->may || q->partial);
   if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, q->may); return 0; }
   if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, q->may, 1); return 0; }
   return 1;
@@ -1613,8 +1639,9 @@ static void lr_record_stmt(ElabRec *x, int e) {
     if (kc && !kc->nopen && cp >= 0 && !lr_header_builtin(r, node)) {
       int owner;
       elab_header_class(x->c, node, &owner, NULL);
-      if (owner < LR_MAIN) owner = nt_kind(nt, cp) == NK_ConstantReadNode ? lr_cref(x->c, e) : x->c->classes[x->fc[e]].enclosing_class;
-      lr_write(r, ELAB_CONST, lr_const_owner(owner), lr_written_name(nt, cp), node, 0, may);
+      owner = owner >= LR_MAIN ? lr_const_owner(owner) : nt_kind(nt, cp) == NK_ConstantReadNode ?
+        lr_const_scope_owner(x->c, e) : lr_const_owner(x->c->classes[x->fc[e]].enclosing_class);
+      lr_write(r, ELAB_CONST, owner, lr_written_name(nt, cp), node, 0, may);
     }
     int sc = k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
     if (kc && sc >= 0 && !kc->has_sup) { kc->sup = elab_class_ref_at(x->c, sc); kc->sup_ref = sc; kc->has_sup = 1; }
@@ -1630,7 +1657,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may, 0); break;
     default: lr_value_write(x->c, e); break;
   }
-  lr_const_write(x->c, node, e, fc, wmay);   /* in its lexical scope, or its explicit owner's */
+  lr_const_write(x->c, node, e, fc, fs, wmay);   /* in its lexical scope, or its explicit owner's */
   /* ...and the definition forms in its parts (a form records its own; a
      file's root holds its statements, each one of its own) */
   int own = k == NK_ProgramNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
@@ -1748,7 +1775,7 @@ static void lr_record_unplaced(Compiler *c) {
     NT_FOREACH_KIND(nt, kind, id) {
       if (id >= r->n || !(r->bits[id] & LR_LATE)) continue;
       if (kind == NK_CallNode && !is_const_set_name(nt_str(nt, id, "name"))) continue;
-      lr_const_write(c, id, r->at[id], LR_UNKNOWN_CLASS, 1);
+      lr_const_write(c, id, r->at[id], LR_UNKNOWN_CLASS, LR_FS_NONE, 1);
     }
   }
   for (int q = 0; q < 2; q++)
@@ -2541,9 +2568,9 @@ static int lr_cref(Compiler *c, int e) {
   return LR_MAIN;
 }
 
-/* A singleton class has no constant table in the record. A source write
-   in such a body can hide an enclosing constant; after lexical lookup,
-   any source write can belong to an ancestor the record did not search. */
+/* An unknown singleton owner has no constant table the record can search.
+   A source write in such a body can hide an enclosing constant; after
+   lexical lookup, a source write can belong to an unsearched ancestor. */
 static int lr_singleton_const_written(Compiler *c, const char *name, int own) {
   const LoadRecord *r = c->lrec;
   const int *par = NULL;
@@ -2566,13 +2593,16 @@ static int lr_singleton_const_written(Compiler *c, const char *name, int own) {
 static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   LoadRecord *r = elab_fresh(c);
   int e = node >= 0 && node < r->n ? r->at[node] : -1, late = p.region < 0, first = LR_MAIN;
-  int singleton = 0;
+  int singleton = 0, sgowner = 0;
   if (e < 0 || !name) return ELAB_UNKNOWN;
   for (int g = r->st[e].frame; g >= 0; g = r->st[g].frame) {   /* the class and module bodies around it */
     NodeKind k = nt_kind(c->nt, r->st[g].node);
     if (k == NK_SingletonClassNode) {
-      if (lr_singleton_const_written(c, name, 1)) return ELAB_UNKNOWN;
-      if (first == LR_MAIN) singleton = 1;
+      int owner = lr_singleton_owner(c, g);
+      if (!owner && lr_singleton_const_written(c, name, 1)) return ELAB_UNKNOWN;
+      if (first == LR_MAIN && !singleton) { singleton = 1; sgowner = owner; }
+      int o = owner ? lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, owner, name, 0), p, late, 0, out) : ELAB_NO;
+      if (o != ELAB_NO) return o;
       continue;
     }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
@@ -2584,6 +2614,11 @@ static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, con
   }
   /* then the innermost scope's ancestors, and Object's for a module too:
      a lexical read falls back to Object */
+  for (int cls = sgowner ? lr_super(c, -sgowner - 2) : LR_UNKNOWN_CLASS, depth = 0;
+       singleton && cls >= 0 && depth < 64; cls = lr_super(c, cls), depth++) {
+    int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_sg_const_owner(cls), name, 0), p, late, 0, out);
+    if (o != ELAB_NO) return o;
+  }
   int o = lr_const_in(c, first, name, p, late, 1, out, 0);
   if (o == ELAB_NO && first != LR_MAIN && lr_super(c, first) == LR_UNKNOWN_CLASS) o = lr_const_in(c, LR_MAIN, name, p, late, 1, out, 0);
   if (o == ELAB_NO && singleton && lr_singleton_const_written(c, name, 0)) o = ELAB_UNKNOWN;
@@ -3232,6 +3267,8 @@ void elab_dump(Compiler *c, FILE *out) {
         fprintf(out, "form #%d runs code%s\n", elab_point_of(c, h->b).seq, h->v[h->n - 1].vis == ELAB_YES && !h->v[h->n - 1].may ? "" : " (maybe)");
       continue;
     }
+    else if (h->a == -2 - (int)ELAB_CONST && h->b < 0)
+      fprintf(out, "const #<Class:%s>::%s:", lr_class_name(c, -h->b - 2), h->name);
     else if (h->a < LR_MAIN) fprintf(out, "%s%s%s%s:", vars[-2 - h->a], h->b >= 2 ? c->classes[h->b - 2].name : "",
                                 h->b >= 2 ? "::" : h->b == 0 && h->a == -2 - (int)ELAB_CONST ? "?::" : "", h->name);
     else fprintf(out, "%s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);

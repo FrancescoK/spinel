@@ -186,7 +186,8 @@ typedef struct {
   const char *target;   /* an alias's or a copy's original name */
   int owner;            /* a write's: the class whose constant it is (LR_MAIN:
                            Object's), below LR_MAIN when not known or not a
-                           constant's; unused in other versions */
+                           constant's; for a singleton's constant, the class it
+                           is the singleton of; unused in other versions */
   unsigned char unplaced; /* in a body the walk does not place (a builder's
                              block, lr_body_defs): no version, and no query
                              at a point sees it */
