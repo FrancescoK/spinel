@@ -449,9 +449,31 @@ static int yield_site_listed(const char *name, TyKind recv) {
   /* String#-@ is the deduplicated frozen String, so a String site belongs
      here too; a String has no abs or magnitude. */
   if (!strcmp(name, "-@")) return num || recv == TY_STRING;
-  if (!strcmp(name, "itself") || !strcmp(name, "dup") || !strcmp(name, "clone") ||
-      !strcmp(name, "freeze"))
+  /* itself alone also takes a Hash site (K-033) -- dup/clone already have
+     a concrete Hash row too, but widening them here is untested outside a
+     direct call and out of this fix's verified scope; freeze's Hash row is
+     a mutation (sp_gc_freeze), not a pure answer, and was never part of
+     K-033's finding either, so neither joins ty_is_hash(recv) here. */
+  if (!strcmp(name, "itself"))
+    return num || recv == TY_STRING || recv == TY_SYMBOL || ty_recv_is_plain_array(recv) ||
+           ty_is_hash(recv);
+  if (!strcmp(name, "dup") || !strcmp(name, "clone") || !strcmp(name, "freeze"))
     return num || recv == TY_STRING || recv == TY_SYMBOL || ty_recv_is_plain_array(recv);
+  /* capitalize/downcase/upcase/swapcase: String and Symbol both have a
+     concrete own-kind row (K-033). Before this entry, neither site was
+     ever answered here, so the whole yield stayed unwidened and the
+     second site's value got forced through the first site's own concrete
+     representation (SP_STR_B on a freshly re-interned Symbol, reading as
+     NULL) -- a silently wrong value, not a compile failure, because
+     String's and Symbol's C representations both happen to coexist inside
+     the same narrow (non-poly) slot without the compiler ever noticing
+     the clash. Listing both here lets yield_recv_builtin_every_site see
+     every site answered and widen properly, the same fix shape as itself
+     above, this time for two kinds that were never touched by this table
+     at all rather than one kind (Hash) missing from an existing list. */
+  if (!strcmp(name, "capitalize") || !strcmp(name, "downcase") ||
+      !strcmp(name, "upcase") || !strcmp(name, "swapcase"))
+    return recv == TY_STRING || recv == TY_SYMBOL;
   if (!strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "uniq") ||
       !strcmp(name, "compact") || !strcmp(name, "to_a") || !strcmp(name, "first") ||
       !strcmp(name, "last") || !strcmp(name, "min") || !strcmp(name, "max") ||

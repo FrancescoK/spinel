@@ -2177,6 +2177,11 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_HASH, "except",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "dup",              0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
   { BOP_ANY_HASH, "clone",            0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE, NULL, 0, 0, BOPF_COPY_CLASS },
+  /* itself's own emission is the universal BOP_ANY_RECV/BSH_RECV path
+     ("answers its receiver"), the same as every other kind -- this row
+     exists only so the yield-site table (K-033) has a concrete answer to
+     find, since it had none for Hash at all before. */
+  { BOP_ANY_HASH, "itself",           0, 127, BF_ANY,      BOPR_SELF,      BOPE_NONE },
   { BOP_ANY_HASH, "[]",               0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
   { BOP_ANY_HASH, "delete",           0, 127, BF_ANY,      BOPR_HASH_VAL,  BOPE_NONE },
   { BOP_ANY_HASH, "default",          0,   1, BF_ANY,      TY_POLY,        BOPE_HASH_DEFAULT },  /* default(key) too (#2409) */
