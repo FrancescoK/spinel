@@ -43515,6 +43515,31 @@ static int mixin_runs_between(const int *run, int n, int lo, int hi) {
     if (run[i] > lo && run[i] < hi) return 1;
   return 0;
 }
+/* Where a file of another region can start to run, from the requires that
+   name it: blk, the least rank of a top-level statement holding one outside
+   a method body (in a block kept for later), and def, of one holding a
+   method whose body requires it; INT_MAX for none. any: a require that
+   stands in no ranked statement (in another region's file), or a file no
+   require names (a computed path), which may run at any time. */
+typedef struct { int blk, def, any; } MixinFileFrom;
+static MixinFileFrom *mixin_files_from(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int nf = nt_nroots(nt);
+  MixinFileFrom *ff = malloc(sizeof *ff * (size_t)(nf > 0 ? nf : 1));
+  if (!ff) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int f = 0; f < nf; f++) ff[f] = (MixinFileFrom){ INT_MAX, INT_MAX, 1 };
+  NT_FOREACH_KIND(nt, NK_LoadNode, id) {
+    int t = (int)nt_int(nt, id, "target_file", -1), sf, sr;
+    if (t <= 0 || t >= nf) continue;
+    if (ff[t].any == 1) ff[t].any = 0;   /* a require names it */
+    elab_top_place(c, id, &sf, &sr);
+    Scope *ss = comp_scope_of(c, id);
+    if (sr < 0) ff[t].any = 2;
+    else if (ss && ss->def_node >= 0) { if (sr < ff[t].def) ff[t].def = sr; }
+    else if (sr < ff[t].blk) ff[t].blk = sr;
+  }
+  return ff;
+}
 static void refuse_mixin_after_calls(Compiler *c) {
   const NodeTable *nt = c->nt;
   /* the classes' includes and prepends, as the load record has them, in the
@@ -43558,6 +43583,7 @@ static void refuse_mixin_after_calls(Compiler *c) {
     if (r >= 0) run[nrun++] = r;
   }
   free(st);
+  MixinFileFrom *ff = nev ? mixin_files_from(c) : NULL;
   for (int e = 0; e < nev; e++) {
     int cid = ev[e].cls, mod = ev[e].mod, jf, jrank;
     elab_top_place(c, ev[e].node, &jf, &jrank);
@@ -43574,11 +43600,15 @@ static void refuse_mixin_after_calls(Compiler *c) {
       /* a call in a top-level statement that ran ahead of the mixin's, in a
          method body too (the statement defining it); one in a file of
          another region, whose points the record does not order against
-         the mixin's, may run ahead of it */
+         the mixin's, may run ahead of it once a require of the file may:
+         one in a statement ahead of the mixin's, or in a method body that
+         may run there, as a call in it may */
       int f, rank;
       elab_top_place(c, id, &f, &rank);
       int other = f >= 0 && rank < 0;
       if (!other && (rank < 0 || rank >= jrank)) continue;
+      if (other && !ff[f].any && ff[f].blk >= jrank &&
+          (ff[f].def == INT_MAX || !mixin_runs_between(run, nrun, ff[f].def > orank ? ff[f].def : orank, jrank))) continue;
       const char *name = nt_str(nt, id, "name");
       if (!name) continue;
       /* an arm of a lowered `send` is no statement of the program: which
@@ -43627,11 +43657,11 @@ static void refuse_mixin_after_calls(Compiler *c) {
                "the call would reach the module's method before the module is there. Include or prepend "
                "the module where the class is defined, ahead of the call.",
                c->classes[mod].name, c->classes[cid].name);
-      free(ev); free(run);
+      free(ev); free(run); free(ff);
       unsupported_feature(c, id, msg);
     }
   }
-  free(ev); free(run);
+  free(ev); free(run); free(ff);
 }
 
 /* Can evaluating `e` do anything observable? A read of a local, an ivar or a
