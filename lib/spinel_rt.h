@@ -21333,7 +21333,10 @@ enum {
   /* the in-place filters of a Hash or an Array: select!/filter! and reject!
      answer nil when nothing went, keep_if and delete_if the receiver */
   SP_PENUM_SELECT_BANG, SP_PENUM_REJECT_BANG, SP_PENUM_KEEP_IF, SP_PENUM_DELETE_IF,
-  SP_PENUM_FILTER_BANG   /* select! by its other name, for the error */
+  SP_PENUM_FILTER_BANG,  /* select! by its other name, for the error */
+  /* min/max with a comparing block (two elements in), min_by/max_by with a
+     key block: the first winner is kept, as CRuby keeps it */
+  SP_PENUM_MIN, SP_PENUM_MAX, SP_PENUM_MIN_BY, SP_PENUM_MAX_BY
 };
 /* Call `blk` with one element. Both channels are filled, as every other
    proc-driving site does: a poly parameter reads the boxed side-channel, a
@@ -21763,6 +21766,32 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
         sp_PolyArray_insert(out, pos, e);
       }
       return sp_box_poly_array(out);
+    }
+    case SP_PENUM_MIN: case SP_PENUM_MAX: {
+      /* the block is asked (element, best so far), as Array#max and
+         Enumerable#max ask it; a nil answer raises as rb_cmpint does */
+      sp_RbVal best = sp_box_nil(); SP_GC_ROOT_RBVAL(best);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        if (i == 0) { best = e; continue; }
+        sp_oint c = sp_sort_cmpint(sp_penum_call2(blk, e, best));
+        if (c.nil) sp_poly_cmp_fail(e, best);
+        if (op == SP_PENUM_MAX ? c.v > 0 : c.v < 0) best = e;
+      }
+      return best;
+    }
+    case SP_PENUM_MIN_BY: case SP_PENUM_MAX_BY: {
+      sp_RbVal best = sp_box_nil(); SP_GC_ROOT_RBVAL(best);
+      sp_RbVal bestk = sp_box_nil(); SP_GC_ROOT_RBVAL(bestk);
+      for (sp_int i = 0; i < SP_PENUM_LEN; i++) {
+        sp_RbVal e = SP_PENUM_AT(i); SP_GC_ROOT_RBVAL(e);
+        sp_RbVal k = sp_penum_call1(blk, e); SP_GC_ROOT_RBVAL(k);
+        if (i == 0) { best = e; bestk = k; continue; }
+        sp_oint c = sp_sort_key_cmp(k, bestk);
+        if (c.nil) sp_poly_cmp_fail(k, bestk);
+        if (op == SP_PENUM_MAX_BY ? c.v > 0 : c.v < 0) { best = e; bestk = k; }
+      }
+      return best;
     }
   }
 #undef SP_PENUM_LEN
