@@ -45195,8 +45195,11 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
 
 /* Node `n` (reset in place) as the call a `super` at `at` makes into Array:
    Array's method `mname` on self, marked builtin_only so the class's own
-   override does not take it, or in initialize `self.clear` for no arguments
-   and no block, else `self.replace(Array.new(args) { blk })`. */
+   override does not take it, or in initialize (init 1) `self.clear` for no
+   arguments and no block, else `self.replace(Array.new(args) { blk })`. In
+   the class's own `def self.new` (init 2) it is Class#new with no
+   initialize of the program to run: `self.allocate`, else
+   `self.allocate.replace(Array.new(args) { blk })`. */
 static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
   Scope *s = comp_scope_of(c, at);
   const char *bn = s ? comp_arysub_builtin(c, s->class_id) : "Array";
@@ -45205,6 +45208,8 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   int self = arysub_node(c, "SelfNode", at);
   if (self < 0) return;
   char *mn = strdup(mname);
+  if (init == 2 && an == 0 && blk < 0) { arysub_set_call(c, n, self, "allocate", -1, -1); free(mn); return; }
+  if (init == 2 && (self = arysub_new_call(c, at, self, "allocate", -1, -1)) < 0) { free(mn); return; }
   if (!init) {
     arysub_set_call(c, n, self, mn, args, blk);
     nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
@@ -45213,6 +45218,7 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
   else {
     int an_call = arysub_builtin_call(c, at, bn, "new", an ? args : -1, blk);
     if (an_call >= 0) arysub_set_call(c, n, self, "replace", arysub_args(c, at, &an_call, 1), -1);
+    if (an_call >= 0 && init == 2) nt_node_set_int((NodeTable *)c->nt, n, "builtin_only", 1);
   }
   nt_set_ignore_visibility((NodeTable *)c->nt, n, 1);
   free(mn);
@@ -45225,15 +45231,98 @@ static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int
    method of the same name on self, marked builtin_only so the class's own
    override does not take it. A Hash subclass's is the same with Hash:
    Hash#replace takes the default and the default proc along, so
-   `self.replace(Hash.new(default) { blk })` is Hash#initialize's. */
+   `self.replace(Hash.new(default) { blk })` is Hash#initialize's.
+   In the class's own `def self.new` it is Class#new, which calls Array.new's
+   construction on a new instance when no initialize of the program can
+   run: none in the class's chain, nor in a descendant's, which self may be,
+   and no allocate of the program, which Class#new does not call. (Those
+   are left to Class#new's own splice.) */
+static int arysub_cnew_kept(Compiler *c, int k) {
+  int nd = 0;
+  comp_descendants(c, k, &nd);
+  return nd > 0 || comp_method_in_chain(c, k, "initialize", NULL) >= 0 ||
+         comp_cmethod_in_chain(c, k, "allocate", NULL) >= 0;
+}
+/* Whether a call with a block may reach class k's `new` (or a
+   descendant's): a super with no block of its own passes that block on.
+   Only a `new` on a constant naming another class, a builtin's, or a bare
+   `new` in another class's class method is known not to. */
+/* Whether argument list args passes a `**` splat. */
+static int arysub_args_kwsplat(const NodeTable *nt, int args) {
+  int an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  for (int i = 0; i < an; i++) {
+    if (nt_kind(nt, av[i]) == NK_AssocSplatNode) return 1;
+    if (nt_kind(nt, av[i]) != NK_KeywordHashNode) continue;
+    int en = 0;
+    const int *ev = nt_arr(nt, av[i], "elements", &en);
+    for (int j = 0; j < en; j++) if (nt_kind(nt, ev[j]) == NK_AssocSplatNode) return 1;
+  }
+  return 0;
+}
+static int arysub_new_gets_block(Compiler *c, int k) {
+  static const char *const other[] = { "Array", "Hash", "String", "Struct", "Class", "Module",
+    "Thread", "Proc", "Enumerator", "Fiber", "Data", "Set", "Mutex", "Queue", "Ractor", NULL };
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    /* (`T.method(:new)` hands the Method on, and its call may take a block) */
+    if ((sp_streq(nm, "method") || sp_streq(nm, "public_method")) && nt_ref(nt, id, "arguments") >= 0) {
+      int an = 0;
+      const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+      if (an > 0 && (nt_kind(nt, av[0]) != NK_SymbolNode ||
+                     (nt_str(nt, av[0], "value") && sp_streq(nt_str(nt, av[0], "value"), "new")))) return 1;
+    }
+    if (nt_ref(nt, id, "block") < 0) continue;
+    if (sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__")) {
+      int args = nt_ref(nt, id, "arguments"), an = 0;
+      const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+      if (an > 0 && nt_kind(nt, av[0]) != NK_SymbolNode) return 1;
+      if (an > 0 && nt_str(nt, av[0], "value") && sp_streq(nt_str(nt, av[0], "value"), "new")) return 1;
+      continue;
+    }
+    if (!sp_streq(nm, "new")) continue;
+    int recv = nt_ref(nt, id, "receiver"), kc = -1;
+    if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+      const char *cn = nt_str(nt, recv, "name");
+      kc = cn ? comp_class_index(c, cn) : -1;
+      if (kc < 0) {
+        int builtin = 0;
+        for (int i = 0; cn && other[i]; i++) builtin |= sp_streq(cn, other[i]);
+        if (builtin) continue;
+        return 1;
+      }
+    }
+    else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
+      Scope *cs = comp_scope_of(c, id);
+      if (!cs || !cs->is_cmethod || cs->class_id < 0) return 1;
+      kc = cs->class_id;
+    }
+    else return 1;
+    if (kc == k || is_descendant(c, kc, k)) return 1;
+  }
+  return 0;
+}
 static void rewrite_array_subclass_super(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   Scope *s = comp_scope_of(c, id);
-  if (!s || !s->name || s->is_cmethod || comp_ary_root(c, s->class_id) < 0 || comp_super_shadow(c, s)) return;
+  if (!s || !s->name || comp_ary_root(c, s->class_id) < 0) return;
+  int init;
   const char *mname = comp_prep_user_name(s->name);
-  int p = c->classes[s->class_id].parent;
-  if (p >= 0 && comp_method_in_chain(c, p, mname, NULL) >= 0) return;
-  int init = sp_streq(mname, "initialize");
+  if (s->is_cmethod) {
+    /* (only the class's own: not a copy a module's extend, include or
+       prepend in its singleton made) */
+    if (s->is_extend_copy || !sp_streq(s->name, "new") || s->def_node < 0 || c->node_cbody[s->def_node] != s->class_id ||
+        !comp_super_is_class_new(c, id) || arysub_cnew_kept(c, s->class_id)) return;
+    init = 2;
+  }
+  else {
+    if (comp_super_shadow(c, s)) return;
+    int p = c->classes[s->class_id].parent;
+    if (p >= 0 && comp_method_in_chain(c, p, mname, NULL) >= 0) return;
+    init = sp_streq(mname, "initialize");
+  }
   /* Array#initialize_copy is a replace, which the copy dup and clone make
      of an Array subclass instance has done already: super into it is the
      receiver */
@@ -45246,6 +45335,7 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
   int args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
   if (nt_kind(nt, id) == NK_ForwardingSuperNode) {
     args = arysub_zsuper_args(c, id, s);
+    if (args < 0 && init == 2) return;
     if (args < 0) {
       char msg[256];
       snprintf(msg, sizeof msg, "a bare `super` into %s from a method with keyword, "
@@ -45255,6 +45345,11 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
       return;
     }
   }
+  /* (a `**` splat among the arguments is left to Class#new) */
+  if (init == 2 && arysub_args_kwsplat(nt, args)) return;
+  /* (a block of its own in a self.new that a block may reach as well is
+     left to Class#new) */
+  if (init == 2 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && arysub_new_gets_block(c, s->class_id)) return;
   /* `super(&nil)` passes no block */
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode && nt_ref(nt, blk, "expression") >= 0 &&
       nt_kind(nt, nt_ref(nt, blk, "expression")) == NK_NilNode) {
@@ -45262,6 +45357,13 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
     return;
   }
   if (blk >= 0) { arysub_super_into(c, id, id, mname, init, args, blk); return; }
+  /* In self.new, a split on block_given? would make the method a yielding
+     one, which a call through a class value cannot reach: with no block
+     to pass on it passes none, and else it is left to Class#new. */
+  if (init == 2) {
+    if (!arysub_new_gets_block(c, s->class_id)) arysub_super_into(c, id, id, mname, init, args, -1);
+    return;
+  }
   /* A super with no block of its own passes the method's: `&blk` names it,
      and an anonymous `&` (or none, in a method that yields) is the block
      the method was given (resolve_forwarded_block). Forwarded, an
