@@ -1125,12 +1125,13 @@ static const char *sp_str_frozen_name(const char *s) {
   static SP_TLS const char **src = NULL, **frz = NULL;
   static SP_TLS int n = 0, cap = 0;
   if (!s || sp_str_is_frozen_val(s)) return s;
-  /* A heap copy (an exception's class, named by sp_exc_class_name) is no
-     key: once it is swept another name can take its address, and the cache
-     answered the old name for it. Only a static name is kept; the interning
-     copy roots the heap one across its allocation (sp_str_dedup). */
-  if (((const unsigned char *)s)[-1] == 0xfe || ((const unsigned char *)s)[-1] == 0xfc)
-    return sp_str_uminus_val(s);
+  /* A heap copy (an exception's class, named by sp_exc_class_name, or a
+     handle's bytes, 0xfd) is no key: once it is swept another name can take
+     its address, and the cache answered the old name for it. Only a static
+     name is kept; the interning copy roots the heap one across its
+     allocation (sp_str_dedup). */
+  { unsigned char m = ((const unsigned char *)s)[-1];
+    if (m == 0xfe || m == 0xfc || m == 0xfd) return sp_str_uminus_val(s); }
   for (int i = 0; i < n; i++) if (src[i] == s) return frz[i];
   if (n == cap) {
     int nc = cap ? cap * 2 : 16;
