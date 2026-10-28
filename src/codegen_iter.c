@@ -6780,6 +6780,14 @@ static int iter_enum_poly_walk_arms(Compiler *c, int id, Buf *b, int indent, con
       LocalVar *bp0 = orig_p0_name ? scope_local(blk_s, orig_p0_name) : NULL;
       TyKind bp0_type = bp0 ? bp0->type : TY_UNKNOWN;
       int np = 0; while (block_param_name(c, block, np)) np++;
+      /* a table of Integer or Float rows: each param its element of the row */
+      if (np >= 2) {
+        Buf row; memset(&row, 0, sizeof row);
+        buf_printf(&row, "sp_PtrArray_get(%s, _t%d)", rb.p ? rb.p : "NULL", t);
+        int bound = emit_table_row_params(c, block, rt, row.p, b, indent + 1);
+        free(row.p);
+        if (bound) goto each_body;
+      }
       if (np >= 2 && sp_streq(k, "Poly") && bp0_type != TY_POLY && bp0_type != TY_UNKNOWN) {
         /* Get the inner array kind from the first param's element type */
         const char *inner_k = array_kind(ty_array_of(bp0_type));

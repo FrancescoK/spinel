@@ -435,9 +435,8 @@ TyKind infer_sum_block_ty(Compiler *c, int block) {
   return nx == TY_UNKNOWN ? et : et == TY_UNKNOWN ? nx : ty_unify(et, nx);
 }
 
-/* The array a map-shaped call `id` answers: the tail value of its `block`
-   is the element type. */
-TyKind infer_map_block_ty(Compiler *c, int id, int block) {
+/* The element a map-shaped call collects from its `block`: the tail value. */
+TyKind infer_map_block_elem_ty(Compiler *c, int block) {
   const NodeTable *nt = c->nt;
   int body = nt_ref(nt, block, "body");
   int bn = 0;
@@ -448,6 +447,13 @@ TyKind infer_map_block_ty(Compiler *c, int id, int block) {
      collected value is boxed rather than assigned to a typed temp. */
   TyKind bnt = ie_block_break_next_ty(c, body);
   if (bnt != TY_UNKNOWN) bt = (bt == TY_UNKNOWN) ? bnt : ty_unify(bt, bnt);
+  return bt;
+}
+
+/* The array a map-shaped call `id` answers: the tail value of its `block`
+   is the element type. */
+TyKind infer_map_block_ty(Compiler *c, int id, int block) {
+  TyKind bt = infer_map_block_elem_ty(c, block);
   /* A table of rows: ty_array_of has no kind for "array of int/float
      array" -- those exist only once narrow_object_arrays has decided a
      slot carries one -- so that pass records its decision here and this

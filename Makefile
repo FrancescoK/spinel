@@ -4789,6 +4789,13 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  [ -n "$$body" ] || { echo "infer-test: FAIL (array_literal_minmax_float: no $$f)"; ok=0; }; \
 	  ! echo "$$body" | grep -q -e 'Array_new' -e 'sp_ofloat' -e 'sp_oint' || { echo "infer-test: FAIL (array_literal_minmax_float: $$f builds an array or a nilable Float or Integer)"; ok=0; }; \
 	done; \
+	$(SPINEL) test/array_tuple_destructure.rb -c --no-line-map -o "$$tmp/atd.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (array_tuple_destructure: -c)"; ok=0; }; \
+	for f in sp_map_range sp_map_array sp_from_literal sp_from_map sp_from_push sp_each_literal sp_each_map sp_each_push sp_map_pairs sp_rb_float_pairs sp_strike_cell; do \
+	  body=$$(awk "/^static.* $$f\\(.*\\{\$$/,/^}/" "$$tmp/atd.c"); \
+	  [ -n "$$body" ] || { echo "infer-test: FAIL (array_tuple_destructure: no $$f)"; ok=0; }; \
+	  ! echo "$$body" | grep -q -e 'sp_RbVal' -e 'sp_box' || { echo "infer-test: FAIL (array_tuple_destructure: $$f boxes an element of a pair)"; ok=0; }; \
+	done; \
+	! grep -q "^static.* sp_PolyArray \\* sp_targets(" "$$tmp/atd.c" || { echo "infer-test: FAIL (array_tuple_destructure: targets returns a boxed Array of pairs)"; ok=0; }; \
 	$(SPINEL) test/infer/struct_cmethod_bare_new.rb -c --no-line-map -o "$$tmp/sn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (struct_cmethod_bare_new: -c)"; ok=0; }; \
 	for m in 'sp_sym iv_op;' 'sp_int iv_n;' 'sp_int iv_a;' '$(STR_SLOT_C) iv_b;' 'sp_int iv_v;'; do \
 	  grep -q "$$m" "$$tmp/sn.c" || { echo "infer-test: FAIL (struct_cmethod_bare_new: member not typed: $$m)"; ok=0; }; \

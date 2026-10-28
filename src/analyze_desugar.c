@@ -13035,30 +13035,40 @@ static unsigned char *find_calls_in_param_defaults(const NodeTable *nt, int n0) 
   return mark;
 }
 
-/* each / each_with_index / zip / map / reduce whose block receives the row
-   (and, for each_with_index, the index). A destructure of the row, a splat,
-   or a block argument stays on the poly path: the pointer-array emitters
-   bind one row pointer, not the row's elements. */
+/* What a walk's block does with each row of a table. ROW_WALK_BINDS: each,
+   each_with_index, zip, map and reduce whose block receives the row (and,
+   for each_with_index, the index), which the pointer-array emitters bind as
+   one row pointer. ROW_WALK_SPLITS: each and map whose block takes the row
+   apart (`cells.each { |x, y| }`), two or more plain parameters and no
+   other kind, which bind the row's elements; only a table of Integer or
+   Float rows has that emitter, and the row itself goes nowhere.
+   ROW_WALK_NONE for anything else: a destructuring parameter, a splat or a
+   block argument stays on the poly path. */
 int nested_row_iter_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  if (nt_kind(nt, id) != NK_CallNode) return 0;
+  if (nt_kind(nt, id) != NK_CallNode) return ROW_WALK_NONE;
   const char *nm = nt_str(nt, id, "name");
-  if (!nm) return 0;
+  if (!nm) return ROW_WALK_NONE;
   int block = nt_ref(nt, id, "block");
-  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return 0;
-  if (block_rest_name(c, block) || block_param_is_multi(c, block, 0)) return 0;
+  if (block < 0 || nt_kind(nt, block) != NK_BlockNode) return ROW_WALK_NONE;
+  if (block_rest_name(c, block) || block_param_is_multi(c, block, 0)) return ROW_WALK_NONE;
   int args = nt_ref(nt, id, "arguments");
   int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
   int np = 0;
   while (block_param_name(c, block, np)) np++;
   if (is_each_walk(nm) &&
-      argc == 0 && np <= 1) return 1;
-  if (sp_streq(nm, "each_with_index") && argc == 0 && np <= 2) return 1;
-  if ((is_map_alias(nm)) && argc == 0 && np <= 1) return 1;
-  if ((is_reduce_alias(nm)) && argc <= 1 && np == 2) return 1;
-  if (sp_streq(nm, "zip") && argc == 1 && (np == 1 || np == 2)) return 1;
-  return 0;
+      argc == 0 && np <= 1) return ROW_WALK_BINDS;
+  if (sp_streq(nm, "each_with_index") && argc == 0 && np <= 2) return ROW_WALK_BINDS;
+  if ((is_map_alias(nm)) && argc == 0 && np <= 1) return ROW_WALK_BINDS;
+  if ((is_reduce_alias(nm)) && argc <= 1 && np == 2) return ROW_WALK_BINDS;
+  if (sp_streq(nm, "zip") && argc == 1 && (np == 1 || np == 2)) return ROW_WALK_BINDS;
+  if ((!sp_streq(nm, "each") && !is_map_alias(nm)) || args >= 0 || np < 2) return ROW_WALK_NONE;
+  if (nt_int(nt, block, "bs_lowered", 0) || block_rest_marker(c, block) || block_opt_name(c, block, 0) ||
+      block_post_name(c, block, 0) || block_keyword_name(c, block, 0)) return ROW_WALK_NONE;
+  for (int j = 1; j < np; j++)
+    if (block_param_is_multi(c, block, j)) return ROW_WALK_NONE;
+  return ROW_WALK_SPLITS;
 }
 
 /* Does `node` hold a `break` that leaves the block it sits in, rather than a

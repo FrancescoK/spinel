@@ -1249,6 +1249,8 @@ typedef struct {
                         rather than from its own contents: an empty `[]`
                         literal, or a `map` that narrow_object_arrays decided
                         builds a table of rows */
+  int *oa_walked_node; TyKind *oa_walked_kind; int oa_walked_n; /* the tables that
+                        oa_stamp_walked_tables stamped last round, and their kinds */
   TyKind *lw_joined; /* [node_cap] for a local write: the type its value had when
                         the slot was last joined with it (infer_write_types,
                         rejoin_local_writes). A write whose value reads

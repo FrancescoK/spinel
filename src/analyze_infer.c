@@ -5010,15 +5010,7 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
        codegen: select/reject/filter (fused loop). */
     if ((ty_iter_shape(name) == TY_ITER_SELECT || ty_iter_shape(name) == TY_ITER_REJECT) &&
         block >= 0) { *out = TY_INT_ARRAY; return 1; }
-    if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) {
-      int body = nt_ref(nt, block, "body");
-      int bn = 0;
-      const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-      TyKind et = bn > 0 ? yield_aware_elem_ty(c, bb[bn - 1]) : TY_UNKNOWN;
-      TyKind bnt = ie_block_break_next_ty(c, body);
-      if (bnt != TY_UNKNOWN) et = (et == TY_UNKNOWN) ? bnt : ty_unify(et, bnt);
-      { *out = ty_array_of(et); return 1; }
-    }
+    if (block >= 0 && (ty_iter_shape(name) == TY_ITER_MAP)) { *out = infer_map_block_ty(c, id, block); return 1; }
   }
 
   /* A lazy chain answers Enumerator::Lazy for #class. The chain itself has no
@@ -10757,8 +10749,10 @@ static TyKind infer_array_literal(Compiler *c, int id) {
       return infer_empty_array_kind(c, id);
     }
     /* A callee stores elements of another kind into the literal it is
-       passed (widen_arg_array). */
-    if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY))
+       passed (widen_arg_array); a table of Integer or Float rows is built as
+       one where a pass decided it (block_elem_ty, oa_stamp_walked_tables). */
+    if (c->arr_want && id < c->node_cap && (c->arr_want[id] == TY_POLY_ARRAY || c->arr_want[id] == TY_INT_ARRAY_ARRAY ||
+                                            c->arr_want[id] == TY_FLOAT_ARRAY_ARRAY))
       return c->arr_want[id];
     TyKind e = TY_UNKNOWN;
     /* --share-strings: whether every element is a String and one is a
