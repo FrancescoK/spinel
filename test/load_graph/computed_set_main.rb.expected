@@ -1,0 +1,15 @@
+computed_set_c loaded
+computed_set_a loaded
+[true, true]
+"a"
+"c"
+false
+computed_set_b loaded
+true
+"b"
+false
+[LoadError, true]
+computed_set_e loaded
+nil
+"constant"
+done

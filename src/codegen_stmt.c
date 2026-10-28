@@ -15728,6 +15728,81 @@ void emit_synth_line_marker(Buf *b) {
   g_lm_last_depth = 0;
 }
 
+/* The candidate a program file is at run time (sp_LoadCand): its path
+   without the ".rb", and the bare features that name it (the parse found
+   them by the compile-time rule for a literal require), or NULL for none. */
+void emit_file_feature(const NodeTable *nt, int f, Buf *b) {
+  const char *path = nt_str(nt, nt_root(nt, f), "file_path"), *bare = nt_str(nt, nt_root(nt, f), "bare_features");
+  size_t len = strlen(path);
+  if (len > 3 && !strcmp(path + len - 3, ".rb")) len -= 3;
+  char *copy = strndup(path, len);
+  if (!copy) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  emit_str_literal(b, copy);
+  free(copy);
+  buf_puts(b, ", ");
+  if (bare) emit_str_literal(b, bare);
+  else buf_puts(b, "NULL");
+}
+
+/* A require whose path is computed when it runs: it names one of a set of
+   files (the node's candidates, prog_load_cand), or any file of the program,
+   a native library or a feature loaded already (the table the program
+   declares, emit_required_table), as CRuby finds a file: by its absolute
+   path, relative to the current directory or (require_relative) to the
+   requiring file's, or as a feature of the load path. The runtime loads the
+   file the path names through the program's Kernel#require or
+   Kernel#require_relative, as a literal require of it does, and answers as
+   it does; a native library answers true once, a feature loaded already
+   false, and any other path raises LoadError (sp_require_search). */
+static void emit_load_set(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  int arg = nt_ref(nt, id, "argument"), nc = prog_load_ncand(nt, id), open = prog_load_open(nt, id);
+  Repr ar = repr_of(c, arg);
+  buf_puts(b, "sp_require_search(sp_str_or_empty(SP_STR_B(");
+  if (ar.as_ty == TY_STRING) emit_expr(c, arg, b);
+  else { buf_puts(b, "sp_poly_to_s("); emit_boxed(c, arg, b); buf_puts(b, ")"); }
+  buf_puts(b, "))");
+  if (open) buf_puts(b, ", sp_load_candidates, sp_nload_candidates");
+  else if (nc) buf_puts(b, ", (const sp_LoadCand[]){");
+  else buf_puts(b, ", NULL, 0");
+  for (int k = 0; !open && k < nc; k++) {
+    int f = prog_load_cand(nt, id, k);
+    buf_puts(b, k ? ", {" : "{");
+    emit_file_feature(nt, f, b);
+    buf_printf(b, ", &sp_loaded_%d, sp_file_%d_top}", f, f);
+  }
+  if (!open && nc) buf_printf(b, "}, %d", nc);
+  /* the requiring file's directory, for a require_relative */
+  int rel = is_require_relative_name(nt_str(nt, id, "method"));
+  buf_puts(b, ", ");
+  if (rel) emit_str_literal(b, nt_str(nt, id, "dir"));
+  else buf_puts(b, "NULL");
+  buf_printf(b, ", %d, sp_Kernel_%s)", rel, mc(nt_str(nt, id, "method")));
+}
+/* Under --load-model=graph, the run-time $LOAD_PATH as CRuby's starts
+   (sp_load_path_seed): the directories from -I, absolute, then the
+   compiler's feature root, which a bare computed path matches the features
+   of (sp_require_search). Emitted into main where the program needs it
+   (prog_load_path_seeded). */
+void emit_load_path_seed(Compiler *c, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!prog_load_path_seeded(nt)) return;
+  const char *root = nt_str(nt, nt_root(nt, 0), "load_root"), *dirs = nt_str(nt, nt_root(nt, 0), "load_dirs");
+  buf_puts(b, "    { static const char *const _lp[] = {");
+  int n = 0;
+  for (const char *p = dirs; p && *p; ) {
+    const char *e = strchr(p, '\n');
+    char *one = strndup(p, e ? (size_t)(e - p) : strlen(p));
+    if (!one) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    emit_str_literal(b, one);
+    buf_puts(b, ", ");
+    free(one);
+    n++;
+    p = e ? e + 1 : p + strlen(p);
+  }
+  emit_str_literal(b, root);
+  buf_printf(b, "}; sp_load_path_seed(_lp, %d, _lp[%d]); }\n", n + 1, n);
+}
 /* A require under --load-model=graph (#9898), as the runtime's
    Kernel#require or Kernel#require_relative (lib/spinel_rt.h), named for
    the method the call makes so a backtrace shows the load's frame as CRuby
@@ -15750,6 +15825,7 @@ void emit_load_call(Compiler *c, int id, Buf *b) {
     buf_printf(b, "(%s ? 0 : (%s = 1))", fl, fl);
     return;
   }
+  if (is_load_how_set(how)) { emit_load_set(c, id, b); return; }
   buf_printf(b, "sp_Kernel_%s(", mc(nt_str(nt, id, "method")));
   if (is_load_how_missing(how)) {
     emit_str_literal(b, nt_str(nt, id, "feature"));
@@ -15772,7 +15848,8 @@ void native_load_flag(const NodeTable *nt, int id, char *buf, size_t n) {
    the runtime provides or a core no-op. */
 static void emit_load_stmt(Compiler *c, int id, Buf *b, int indent) {
   int f = (int)nt_int(c->nt, id, "target_file", -1);
-  if (!is_load_how_missing(nt_str(c->nt, id, "how")) && (f < 0 || prog_defines_only(c, f))) return;
+  const char *how = nt_str(c->nt, id, "how");
+  if (!is_load_how_missing(how) && !is_load_how_set(how) && (f < 0 || prog_defines_only(c, f))) return;
   emit_indent(b, indent);
   buf_puts(b, "(void)");
   emit_load_call(c, id, b);
@@ -15782,7 +15859,7 @@ static void emit_load_stmt(Compiler *c, int id, Buf *b, int indent) {
 void emit_stmt(Compiler *c, int id, Buf *b, int indent) {
   if (g_repr_check) repr_check_ask(c, id);
   emit_line_directive(c, id, b);
-  if (nt_kind(c->nt, id) == NK_LoadNode) { emit_load_stmt(c, id, b, indent); return; }
+  if (nt_kind(c->nt, id) == NK_LoadNode) { emit_with_prelude(c, id, b, indent, emit_load_stmt); return; }   /* (a computed path's temps) */
   if (emit_const_recv_stmt_wrap(c, id, b, indent, 0)) return;
   /* A constant's visibility is not enforced (constants are resolved at
      compile time), so the class body skips these declarations -- also where

@@ -1877,16 +1877,15 @@ int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p
    load or autoload the parse left in the tree (one it resolved it spliced
    away). A require or a load is Kernel's on no receiver or on Object or
    Kernel (`YAML.load` reads no file); an autoload on any receiver is one
-   (`Mod.autoload(:X, path)`, which the parse leaves). Read from the tree,
-   once. */
+   (`Mod.autoload(:X, path)`, which the parse leaves). The files of a closed
+   set a computed path may name are seen: each is a region of its own.
+   Read from the tree, once. */
 int elab_runs_unseen(Compiler *c) {
   LoadRecord *r = lr_get(c);
   if (!r->unseen) {
     const NodeTable *nt = c->nt;
     int hit = 0, n = 0;
-    const int *v = nt_nodes_of_kind(nt, NK_LoadNode, &n);
-    for (int i = 0; !hit && i < n; i++) hit = is_load_how_computed(nt_str(nt, v[i], "how"));
-    v = nt_nodes_of_kind(nt, NK_CallNode, &n);
+    const int *v = nt_nodes_of_kind(nt, NK_CallNode, &n);
     for (int i = 0; !hit && i < n; i++) {
       int recv = nt_ref(nt, v[i], "receiver");
       const char *nm = nt_str(nt, v[i], "name");

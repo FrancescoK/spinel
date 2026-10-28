@@ -4824,6 +4824,63 @@ void sp_require_computed(const char *path, const char *const *features, int n) {
   }
   sp_raise_load_error(path);
 }
+/* Is `bare` one of the newline-separated features in `list`? */
+static int sp_require_has(const char *list, const char *bare) {
+  size_t bl = strlen(bare);
+  for (const char *p = list; p && *p; ) {
+    const char *e = strchr(p, '\n');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    if (l == bl && memcmp(p, bare, l) == 0) return 1;
+    p = e ? e + 1 : p + l;
+  }
+  return 0;
+}
+static const char *const *sp_load_seed_dirs;
+static int sp_load_seed_n;
+static const char *sp_load_seed_root;
+void sp_load_path_seed(const char *const *dirs, int n, const char *feature_root) {
+  sp_load_seed_dirs = dirs;
+  sp_load_seed_n = n;
+  sp_load_seed_root = feature_root;
+}
+int sp_require_search(const char *path, const sp_LoadCand *cands, int n, const char *dir, int rel,
+                      int (*require)(const char *, int *, void (*)(void))) {
+  SP_GC_ROOT_STR(path);   /* (a temporary no frame roots, and the expansion allocates) */
+  char p[4096];
+  snprintf(p, sizeof p, "%s", path ? path : "");
+  size_t pl = strlen(p);
+  if (pl > 3 && strcmp(p + pl - 3, ".rb") == 0) p[pl -= 3] = 0;
+  const sp_LoadCand *c = NULL;
+  if (p[0] == '/' || rel || (p[0] == '.' && (p[1] == '/' || (p[1] == '.' && p[2] == '/')))) {
+    const char *abs = sp_file_expand_path(p, p[0] == '/' ? NULL : rel ? dir : NULL);
+    for (int i = 0; i < n && !c; i++)
+      if (cands[i].path && strcmp(cands[i].path, abs) == 0) c = &cands[i];
+  }
+  else {
+    /* the entries of $LOAD_PATH as the program has left them, in order: each
+       names a file of the program by its absolute path, and the compiler's
+       feature root also the features the compiler maps to a file */
+    sp_StrArray *lp = sp_get_load_path();
+    for (sp_int k = 0; !c && k < sp_StrArray_length(lp); k++) {
+      const char *entry = sp_StrArray_get(lp, k);
+      if (!entry) continue;
+      /* (the candidates' paths are real: an entry may be a symlink, as written) */
+      const char *hit = sp_file_expand_path(p, entry);
+      char file[4096], real[4096];
+      snprintf(file, sizeof file, "%s.rb", hit);
+      if (realpath(file, real)) { real[strlen(real) - 3] = 0; hit = real; }
+      for (int i = 0; i < n && !c; i++)
+        if (cands[i].path && strcmp(cands[i].path, hit) == 0) c = &cands[i];
+      if (!c && sp_load_seed_root && strcmp(entry, sp_load_seed_root) == 0)
+        for (int i = 0; i < n && !c; i++)
+          if (cands[i].bare && sp_require_has(cands[i].bare, p)) c = &cands[i];
+    }
+  }
+  if (!c) sp_raise_load_error(path);
+  if (c->top) return require(NULL, c->loaded, c->top);
+  if (c->loaded) return *c->loaded ? 0 : (*c->loaded = 1);
+  return 0;
+}
 SP_NORETURN void sp_raise_load_error(const char *feature) {
   /* (a computed require's path is often a temporary no frame roots, and a
      copy longer than sp_sprintf's stack buffer allocates before it reads
@@ -4840,7 +4897,11 @@ sp_StrArray *sp_get_loaded_features(void) {
 }
 sp_StrArray *sp_load_path_cache = NULL;
 sp_StrArray *sp_get_load_path(void) {
-  if (!sp_load_path_cache) sp_load_path_cache = sp_StrArray_new();
+  if (!sp_load_path_cache) {
+    sp_load_path_cache = sp_StrArray_new();   /* (marked from here: the seeds allocate) */
+    for (int i = 0; i < sp_load_seed_n; i++)
+      sp_StrArray_push(sp_load_path_cache, sp_sprintf("%s", sp_load_seed_dirs[i]));
+  }
   return sp_load_path_cache;
 }
 /* Ensure a current readable stream, or return 0 at total end of input.

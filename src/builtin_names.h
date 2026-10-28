@@ -319,6 +319,7 @@ int is_include_name(const char *n);
 int is_prepend_name(const char *n);
 int is_load_name(const char *n);
 int is_require_name(const char *n); /* require, require_relative */
+int is_require_relative_name(const char *n);
 int is_extend_name(const char *n);
 int is_stdlib_const_name(const char *n);       /* a standard library's top-level constant */
 int is_toplevel_const_name(const char *n);     /* a constant CRuby, or a library spinel provides, answers at the top level */
@@ -326,7 +327,7 @@ int is_constless_builtin_name(const char *n);  /* a builtin class or module with
 int is_autoload_name(const char *n);
 int is_file_load_name(const char *n);    /* require require_relative load autoload: a call that runs a file's text */
 int is_load_how_missing(const char *how);
-int is_load_how_computed(const char *how);
+int is_load_how_set(const char *how);
 int is_load_how_core(const char *how);
 int is_load_how_native(const char *how);
 int is_native_lib_at_boot(const char *path);
