@@ -54162,6 +54162,7 @@ void analyze_program(Compiler *c) {
   { c->share_args = NULL; handle_arg_tab_free(&hat); }
   /* the block bodies codegen types per arm, typed here once (#7483) */
   AN_PHASE("arm_facts", an_arm_facts(c));
+  if (elab_check_on(c)) elab_check_visibility(c);
   sp_timing_end(tm_an, "analysis", "");
 }
 

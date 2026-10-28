@@ -3177,10 +3177,12 @@ void elab_dump(Compiler *c, FILE *out) {
 
 /* The record's visibility of each instance method at the end of the load
    phase against the class's own table (comp_method_vis), which the
-   visibility pass fills after the scope walk: asked as the compile ends,
-   while the classes are still there (comp_free) */
-static void elab_check_visibility(Compiler *c) {
+   visibility pass fills after the scope walk: asked at the end of analysis
+   (analyze_program), after every pass that makes or copies scopes, which the
+   mixin lookup reads. */
+void elab_check_visibility(Compiler *c) {
   LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return;
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
     if (h->a < 0 || h->b || h->a >= c->nclasses) continue;
@@ -3307,7 +3309,6 @@ void elab_check_surface(Compiler *c) {
 void elab_free(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r) return;
-  if (r->check && r->recorded) elab_check_visibility(c);
   if (r->builds && sp_timing_on()) {
     char extra[64];
     snprintf(extra, sizeof extra, " builds=%d", r->builds);
