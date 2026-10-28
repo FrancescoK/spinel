@@ -591,6 +591,7 @@ const char *conv_builtin_class_name(TyKind t) {
   if (t == TY_COMPLEX) return "Complex";
   if (t == TY_RATIONAL) return "Rational";
   if (ty_is_hash(t)) return "Hash";
+  if (t == TY_REGEX) return "Regexp";
   return "Object";
 }
 /* True for a builtin type that certainly has no #to_ary, so an Array method
@@ -602,7 +603,58 @@ int conv_to_ary_impossible(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
          t == TY_FLOAT || t == TY_SYMBOL || t == TY_PROC || t == TY_TIME ||
          t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
-         t == TY_COMPLEX || t == TY_RATIONAL || ty_is_hash(t);
+         t == TY_COMPLEX || t == TY_RATIONAL || t == TY_REGEX || ty_is_hash(t);
+}
+/* Whether `name` is written as a Symbol or a String literal anywhere in
+   the program: a reflective definer (define_method, alias_method, send,
+   an included hook) may give some class that method, out of the class
+   table's view. */
+static int name_is_literal(Compiler *c, const char *name) {
+  NT_FOREACH_KIND(c->nt, NK_SymbolNode, id) {
+    const char *v = nt_str(c->nt, id, "value");
+    if (v && sp_streq(v, name)) return 1;
+  }
+  NT_FOREACH_KIND(c->nt, NK_StringNode, id) {
+    const char *v = nt_str(c->nt, id, "content");
+    if (v && sp_streq(v, name)) return 1;
+  }
+  return 0;
+}
+/* Whether a value of class cid can answer `name`: its chain or a subclass
+   defines it (a method or a reader), or every object does (a reopened
+   Object, Kernel or BasicObject, a top-level def or include), or a
+   literal of the name may define it reflectively. */
+static int obj_may_answer(Compiler *c, int cid, const char *name) {
+  if (comp_method_in_chain(c, cid, name, NULL) >= 0 || comp_reader_in_chain(c, cid, name, NULL) ||
+      comp_subclass_answers(c, cid, name) || root_reopen_defines(c, name) ||
+      comp_method_index(c, name) >= 0)
+    return 1;
+  for (int i = 0; i < c->ntoplevel_includes; i++) {
+    int mk = c->toplevel_includes[i];
+    if (mk >= 0 && (comp_method_in_chain(c, mk, name, NULL) >= 0 || comp_reader_in_chain(c, mk, name, NULL)))
+      return 1;
+  }
+  return name_is_literal(c, name);
+}
+/* An object no Array conversion takes: nothing can answer #to_ary for it,
+   nor method_missing or respond_to_missing? in its place. */
+static int obj_to_ary_misfit(Compiler *c, TyKind t) {
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  /* an Array, Hash or String subclass instance keeps the arms of its root */
+  if (comp_ty_ary_root(c, t) >= 0) return 0;
+  static const char *const answers[] = { "to_ary", "method_missing", "respond_to_missing?", NULL };
+  for (int i = 0; answers[i]; i++)
+    if (obj_may_answer(c, cid, answers[i])) return 0;
+  return 1;
+}
+/* An operand to the Array-expecting methods (concat, replace, +, ...) that
+   is CRuby's TypeError "no implicit conversion of X into Array": nil, a
+   boolean, a builtin with no #to_ary, or such an object. Read as an Array,
+   an object or a Regexp stopped the C build. */
+int conv_to_ary_misfit(Compiler *c, TyKind t) {
+  return t == TY_NIL || t == TY_BOOL || conv_to_ary_impossible(t) || obj_to_ary_misfit(c, t);
 }
 
 /* The C type of a shared-mutable shim's result temp. The arm it re-runs
@@ -3255,7 +3307,7 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   int bad = -1;
   for (int ai = 0; ai < argc; ai++) {
     TyKind at = comp_ntype(c, argv[ai]);
-    if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) { bad = ai; break; }
+    if (conv_to_ary_misfit(c, at)) { bad = ai; break; }
   }
   if (bad < 0) return 0;
   TyKind arty = repr_of(c, id).as_ty;
@@ -3281,12 +3333,15 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
     TyKind at = ar.as_ty;
     g_pre = &ap;
     if (ai == bad && at == TY_BOOL) emit_expr(c, argv[ai], &av);
-    else if (ai < bad && ar.kind == RK_BOXED) emit_boxed(c, argv[ai], &av);
+    else if (ai == bad && ty_is_object(at)) emit_boxed(c, argv[ai], &av);
+    else if (ai < bad && (ar.kind == RK_BOXED || ty_is_object(at))) emit_boxed(c, argv[ai], &av);
     else emit_expr(c, argv[ai], &av);
     g_pre = sv_pre;
     if (ap.p) buf_puts(b, ap.p);
     if (ai == bad && at == TY_BOOL) buf_printf(b, "int _t%d = (%s); ", tb, av.p ? av.p : "0");
-    else if (ai < bad && ar.kind == RK_BOXED)
+    /* an object names its class at run time: a subclass instance its own */
+    else if (ai == bad && ty_is_object(at)) buf_printf(b, "sp_RbVal _t%d = %s; ", tb, av.p ? av.p : "sp_box_nil()");
+    else if (ai < bad && (ar.kind == RK_BOXED || ty_is_object(at)))
       buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + ai, av.p ? av.p : "sp_box_nil()", t0 + ai);
     else buf_printf(b, "(void)(%s); ", av.p ? av.p : "0");
     free(ap.p); free(av.p);
@@ -3294,17 +3349,22 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   /* a nil receiver raises before any operand is converted */
   emit_fold_recv_test(c, id, tr, b);
   if (fcls) buf_printf(b, "if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s); ", tf, tf, tf, fcls);
+  /* a boxed operand or an object ahead of the misfit converts at its turn,
+     as CRuby's to_ary: one answering #to_ary is run (its effects seen),
+     any other raises first, naming its own class */
   for (int ai = 0; ai < bad; ai++)
-    if (repr_of(c, argv[ai]).kind == RK_BOXED)
-      buf_printf(b, "if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_t%d.cls_id))"
-                    " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d))); ",
-                 t0 + ai, t0 + ai, t0 + ai);
+    if (repr_of(c, argv[ai]).kind == RK_BOXED || ty_is_object(repr_of(c, argv[ai]).as_ty))
+      buf_printf(b, "{ sp_RbVal _cv = sp_poly_ary_operand(_t%d); if (_cv.tag != SP_TAG_OBJ || !sp_poly_is_array_kind(_cv.cls_id))"
+                    " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d))); } ",
+                 t0 + ai, t0 + ai);
   if (comp_ntype(c, argv[bad]) == TY_NIL)
     buf_puts(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");");
   else if (comp_ntype(c, argv[bad]) == TY_BOOL)
     buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
                   " ? \"no implicit conversion of true into Array\""
                   " : \"no implicit conversion of false into Array\");", tb);
+  else if (ty_is_object(comp_ntype(c, argv[bad])))
+    buf_printf(b, "sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d)));", tb);
   else
     buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Array\");",
                conv_builtin_class_name(comp_ntype(c, argv[bad])));

@@ -24840,7 +24840,7 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
        own kind gave C that does not build (`a = [1]; a.concat(1)`) */
     for (int a = 0; a < argc; a++) {
       TyKind at = comp_ntype(c, argv[a]);
-      if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) return 0;
+      if (conv_to_ary_misfit(c, at)) return 0;
     }
     /* Every argument is evaluated, and its length taken, before anything is
        appended, as CRuby concatenates the arguments as they were: with one
