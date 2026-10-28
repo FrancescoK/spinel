@@ -9718,7 +9718,10 @@ int bind_coerce_operator_params(Compiler *c) {
      anything: typed from the one call site the compiler could resolve, the
      dispatch arm was guarded on that argument's class and a call with any
      other argument fell through to NoMethodError on a method the class
-     defines (#3511). */
+     defines (#3511). Only the operators of classes the receiver can hold,
+     as the dispatch's own arms are (cls_fact_excludes, #8530): `q + 1` on a
+     value that is only ever an Integer or a String boxed every program
+     class's `+` parameter, and each `v + w` on a Vector went boxed with it. */
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !is_arith_op(nm) || nt_ref(nt, id, "block") >= 0) continue;
@@ -9728,6 +9731,7 @@ int bind_coerce_operator_params(Compiler *c) {
     int argc = 0; if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
     if (argc != 1) continue;
     for (int k = 0; k < c->nclasses; k++) {
+      if (cls_fact_excludes(c, recv, k)) continue;
       int mi = call_target(c, id, k, nm, 0, NULL);
       if (mi < 0) continue;
       Scope *m = &c->scopes[mi];
