@@ -3704,7 +3704,16 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
            first: a value with lines of its own (a proc's call) puts them in
            g_pre before the store begins. */
         Buf sv; memset(&sv, 0, sizeof sv);
-        if (fsfx[0]) emit_elem_store_value(c, fk, fbb[fbn - 1], &sv);
+        TyKind fet = sp_streq(fk, "Float") ? TY_FLOAT : TY_INT;
+        /* a framed body (a `next` with a value) left its value in the
+           step's slot: read there, the tail not run a second time */
+        if (fsfx[0] && st.slot) {
+          if (!emit_iter_step_tail_o(c, &st, fet, &sv)) {
+            if (st.slot_ty == TY_POLY) buf_printf(&sv, "sp_poly_elem_%s(_t%d)", fet == TY_FLOAT ? "f" : "i", st.slot);
+            else buf_printf(&sv, "%s(_t%d)", oint_of(fet), st.slot);
+          }
+        }
+        else if (fsfx[0]) emit_elem_store_value(c, fk, fbb[fbn - 1], &sv);
         else emit_typed_sink_text(c, fbb[fbn - 1], sp_streq(fk, "Int") ? TY_INT : sp_streq(fk, "Float") ? TY_FLOAT : TY_UNKNOWN, vb.p ? vb.p : "", &sv);
         buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, %s);\n", fk, fsfx, trecv, ti, sv.p ? sv.p : "");
         free(sv.p);

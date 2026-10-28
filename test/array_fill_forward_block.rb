@@ -50,3 +50,15 @@ p fp3([:a, :b]) { |i| i }
 # a block value whose kind is decided at run time
 xs = [1, "a", nil]
 p [7, 8, 9].fill { |i| i == 1 ? 5 : xs[i == 0 ? 0 : 2] }
+
+# a block whose value comes from `next` on some indexes, read once
+$calls = 0
+def side(i) = ($calls += 1; i.even? ? i : nil)
+p [1, 2, 3, 4].fill { |i| next 7 if i == 1; side(i) }
+p $calls
+p a4([1, 2, 3, 4]) { |i| next 7 if i == 1; side(i) }
+p $calls
+
+# a Proc argument that may be nil fills with the value when it is nil
+def fv(a, pr) = a.fill(0, &pr)
+p fv([1, 2], nil)
