@@ -909,17 +909,20 @@ static int empty_array_poly_view(Compiler *c, int arg) {
    that many elements */
 /* Whether the program defines no method a Hash argument of zip could reach
    in place of the builtin's: an each on Hash's chain (its reopen, a module
-   it prepends or includes), or a to_ary of any class (Object's, Kernel's, a
-   top-level def's reach a Hash too). The Hash arm of emit_zip_args calls
-   neither. */
+   it prepends or includes), or a to_ary or a method_missing (which answers
+   to_ary) of any class (Object's, Kernel's, a top-level def's reach a Hash
+   too). The Hash arm of emit_zip_args calls none of them. */
 static int zip_hash_arm_builtin(Compiler *c) {
-  int hc = comp_class_index(c, "Hash"), n = 0;
+  static const char *const conv[] = { "to_ary", "method_missing" };
+  int hc = comp_class_index(c, "Hash");
   if (hc >= 0 && comp_method_in_chain(c, hc, "each", NULL) >= 0) return 0;
-  if (call_target(c, -1, -1, "to_ary", CT_TOP, NULL) >= 0) return 0;
-  const int *r = comp_name_responders(c, "to_ary", 0, &n);
-  if (r) return n == 0;
-  for (int k = 0; k < c->nclasses; k++)
-    if (comp_method_in_chain(c, k, "to_ary", NULL) >= 0) return 0;
+  for (size_t q = 0; q < sizeof(conv) / sizeof(conv[0]); q++) {
+    int n = 0;
+    if (call_target(c, -1, -1, conv[q], CT_TOP, NULL) >= 0) return 0;
+    if (comp_name_responders(c, conv[q], 0, &n)) { if (n > 0) return 0; continue; }
+    for (int k = 0; k < c->nclasses; k++)
+      if (comp_method_in_chain(c, k, conv[q], NULL) >= 0) return 0;
+  }
   return 1;
 }
 
