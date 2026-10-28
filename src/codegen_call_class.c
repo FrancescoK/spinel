@@ -2709,8 +2709,8 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      then cast to the struct pointer (#3992). */
   if (recv >= 0 && sp_streq(name, "new") && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
-      nt_kind(nt, recv) != NK_ConstantReadNode &&
-      nt_kind(nt, recv) != NK_ConstantPathNode &&
+      ((nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode) ||
+       class_recv_is_dynamic(c, recv)) &&
       class_var_static_ci(c, recv) < 0 && self_class_static_ci(c, recv) < 0 &&
       argc == 0) {
     int kt = ++g_tmp, rt2 = ++g_tmp;

@@ -5786,8 +5786,8 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically. */
   if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
-      nt_type(nt, recv) && nt_kind(nt, recv) != NK_ConstantReadNode &&
-      nt_kind(nt, recv) != NK_ConstantPathNode) {
+      nt_type(nt, recv) && ((nt_kind(nt, recv) != NK_ConstantReadNode &&
+      nt_kind(nt, recv) != NK_ConstantPathNode) || class_recv_is_dynamic(c, recv))) {
     int _is_self_class = self_class_static_ci(c, recv) >= 0;
     /* a local statically holding one STRUCT class (k = Struct.new(..) /
        k = StructKlass) falls through to the static-class .new arms below --

@@ -4809,11 +4809,13 @@ int allocate_on_own_class(Compiler *c, int id) {
 }
 
 /* A Class-valued receiver that carries its class only at run time: a variable,
-   or a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
-   `set`). Excludes a constant receiver and an accessor call, which resolve
-   statically through their own dispatch. A method returning a class value was
-   left with nowhere to dispatch, so the chained call was rejected outright
-   even though the value at run time was right (#3415). */
+   a call whose result is a class (`Job.set(1).run(2)` -- ActiveJob's chained
+   `set`), or a constant assigned a class value (`K = make`,
+   const_class_value_only). Excludes a constant naming a class and an accessor
+   call, which resolve statically through their own dispatch. A method
+   returning a class value was left with nowhere to dispatch, so the chained
+   call was rejected outright even though the value at run time was right
+   (#3415). */
 int class_recv_is_dynamic(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   const char *rty = recv >= 0 ? nt_type(nt, recv) : NULL;
@@ -4828,6 +4830,8 @@ int class_recv_is_dynamic(Compiler *c, int recv) {
       rk == NK_IfNode || rk == NK_UnlessNode || rk == NK_CaseNode ||
       rk == NK_AndNode || rk == NK_OrNode)
     return 1;
+  /* A constant assigned a class value (`K = make`) names no class it knows */
+  if (rk == NK_ConstantReadNode) return const_class_value_only(c, recv);
   if (rk != NK_CallNode) return 0;
   /* `self.class` in a class with no subclass resolves to that class
      statically and has its own arms on both sides; treating it as dynamic
