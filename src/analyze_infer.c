@@ -5859,9 +5859,14 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     if (argc == 0 && sp_streq(name, "ancestors")) { *out = TY_POLY_ARRAY; return 1; }
     if (argc == 0 && sp_streq(name, "subclasses")) { *out = TY_POLY_ARRAY; return 1; }
     if (argc == 1 && is_kind_query(name)) { *out = TY_BOOL; return 1; }
-    if (argc == 1 && sp_streq(name, "include?")) {
+    /* the Class rows (Module#include?), unless the class answers with a
+       class method of its own */
+    if (bop_find(TY_CLASS, name, argc, nt_ref(nt, id, "block") >= 0)) {
       int oci = class_recv_static_ci(c, recv);
-      if (oci < 0 || call_target(c, id, oci, name, CT_CMETHOD, NULL) < 0) { *out = TY_BOOL; return 1; }
+      if (oci < 0 || call_target(c, id, oci, name, CT_CMETHOD, NULL) < 0) {
+        *out = an_bop_find_arg(c, id, TY_CLASS, name, argc, argv, nt_ref(nt, id, "block") >= 0)->result;
+        return 1;
+      }
     }
     if (argc == 1 && sp_streq(name, "class_variable_defined?")) { *out = TY_BOOL; return 1; }
     if (sp_streq(name, "class_variable_get") || sp_streq(name, "class_variable_set")) { *out = TY_POLY; return 1; }

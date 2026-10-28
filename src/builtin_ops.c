@@ -1641,6 +1641,14 @@ static const BuiltinOp bop_rows[] = {
   { TY_PROC, "eql?",            1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(sp_proc_root($r) == sp_proc_root($e0))", BOP_K(TY_PROC) },
   { TY_PROC, "==",              1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "(sp_proc_root($r) == sp_proc_root($e0))", BOP_K(TY_PROC) },
 
+  /* Module (sp_Class). include?(mod): mod must be a Module, a Class is a
+     TypeError; true when mod is a proper ancestor of the receiver (#2674).
+     $T is the receiver's temp, taken by the family (or the boxed dispatch)
+     before its arms. Any other argument is answered elsewhere, still a
+     bool. */
+  { TY_CLASS, "include?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_TEMPLATE, "({ sp_Class _cl$T = $r; sp_Class _cl$t = $e0; if (!sp_class_is_module_val(_cl$t)) sp_raise_cls(\"TypeError\", \"wrong argument type Class (expected Module)\"); _cl$T.cls_id != _cl$t.cls_id && sp_class_le(_cl$T, _cl$t); })", BOP_K(TY_CLASS) },
+  { TY_CLASS, "include?",        1,   1, BF_ANY,      TY_BOOL,       BOPE_NONE },
+
   /* Integer and Float: the result kinds read off the name, arity and block
      form. pow, clamp, coerce, Float#fdiv(Complex), Float <=> Rational,
      Float#floor/ceil/round/truncate and the promote-mode widening read the

@@ -2436,9 +2436,10 @@ int emit_builtin_op_unguarded(Compiler *c, int id, int recv, TyKind rt, const ch
 int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                          const char *rtext, Buf *b);
 /* the same, for a row rendered as one arm of a boxed dispatch, which the
-   node's --plan-check comparison leaves to the arm's own record */
+   node's --plan-check comparison leaves to the arm's own record; t0 the
+   dispatch's temp for the row's $T, or 0 */
 int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
-                             const char *rtext, Buf *b);
+                             const char *rtext, int t0, Buf *b);
 /* the same, with the temp t0 the family took before its arms ($T) */
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b);
