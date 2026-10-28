@@ -378,6 +378,56 @@ static int const_path_write_reaches(Compiler *c, int t, int k) {
     if (comp_module_includes(c, a, qi, 0)) return 1;
   return 0;
 }
+/* const_path_misses_toplevel's walks, indexed by the name written for the
+   tree as it is: per name, the constant writes (list 0) and the targets of
+   the path writes (list 1), chained through next. */
+static struct {
+  const NodeTable *nt; unsigned ver; int count;
+  ANameHash names;
+  int *head[2], cap, *next;
+} g_cw;
+static void cw_add(int list, const char *nm, int node) {
+  if (!nm || g_cw.next[node] != -2) return;
+  int k = anh_find(&g_cw.names, nm);
+  if (k < 0) {
+    anh_add(&g_cw.names, nm); k = g_cw.names.n - 1;
+    if (k >= g_cw.cap) {
+      g_cw.cap = g_cw.cap ? g_cw.cap * 2 : 64;
+      for (int l = 0; l < 2; l++) {
+        g_cw.head[l] = realloc(g_cw.head[l], sizeof(int) * (size_t)g_cw.cap);
+        if (!g_cw.head[l]) { fprintf(stderr, "out of memory\n"); exit(1); }
+      }
+    }
+    g_cw.head[0][k] = g_cw.head[1][k] = -1;
+  }
+  g_cw.next[node] = g_cw.head[list][k];
+  g_cw.head[list][k] = node;
+}
+/* The name's index in g_cw, rebuilt when the tree changed, or -1 for a
+   name the program never writes */
+static int cw_name(const NodeTable *nt, const char *nm) {
+  if (g_cw.nt != nt || g_cw.ver != nt->version || g_cw.count != nt->count) {
+    anh_free(&g_cw.names); memset(&g_cw.names, 0, sizeof g_cw.names);
+    free(g_cw.next);
+    g_cw.next = malloc(sizeof(int) * (size_t)(nt->count > 0 ? nt->count : 1));
+    if (!g_cw.next) { fprintf(stderr, "out of memory\n"); exit(1); }
+    for (int n = 0; n < nt->count; n++) g_cw.next[n] = -2;   /* not listed */
+    g_cw.nt = nt; g_cw.ver = nt->version; g_cw.count = nt->count;
+    static const NodeKind writes[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
+                                       NK_ConstantOperatorWriteNode, NK_ConstantTargetNode };
+    for (int i = 0; i < 5; i++)
+      NT_FOREACH_KIND(nt, writes[i], w) cw_add(0, nt_str(nt, w, "name"), w);
+    static const NodeKind paths[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
+                                      NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
+    for (int i = 0; i < 4; i++)
+      NT_FOREACH_KIND(nt, paths[i], w) {
+        int t = nt_ref(nt, w, "target");
+        if (t >= 0) cw_add(1, nt_str(nt, t, "name"), t);
+      }
+    NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t) cw_add(1, nt_str(nt, t, "name"), t);
+  }
+  return anh_find(&g_cw.names, nm);
+}
 /* `P::NAME` where P is a class or module of the program (not Object) and
    NAME is a constant the program writes only at the top level: Object's
    constant, which a path through another class or module does not reach
@@ -392,25 +442,18 @@ int const_path_misses_toplevel(Compiler *c, int id) {
   if (pk != NK_ConstantReadNode && pk != NK_ConstantPathNode) return 0;
   const char *pn = nt_str(nt, par, "name"), *nm = nt_str(nt, id, "name");
   if (!pn || !nm || sp_streq(pn, "Object") || comp_class_index(c, pn) < 0 || comp_const(c, pn)) return 0;
-  static const NodeKind writes[] = { NK_ConstantWriteNode, NK_ConstantOrWriteNode, NK_ConstantAndWriteNode,
-                                     NK_ConstantOperatorWriteNode, NK_ConstantTargetNode };
+  /* the writes of NAME alone: walking every write of the program for each
+     path was a tenth of a large program's analysis */
+  int ni = cw_name(nt, nm);
+  if (ni < 0) return 0;
   int top = 0;
-  for (int i = 0; i < 5; i++)
-    NT_FOREACH_KIND(nt, writes[i], w) {
-      if (!sp_streq(nt_str(nt, w, "name"), nm)) continue;
-      if (w >= c->node_cap || c->node_cbody[w] >= 0) return 0;
-      top = 1;
-    }
-  static const NodeKind paths[] = { NK_ConstantPathWriteNode, NK_ConstantPathOrWriteNode,
-                                    NK_ConstantPathAndWriteNode, NK_ConstantPathOperatorWriteNode };
+  for (int w = g_cw.head[0][ni]; w >= 0; w = g_cw.next[w]) {
+    if (w >= c->node_cap || c->node_cbody[w] >= 0) return 0;
+    top = 1;
+  }
   int k = comp_class_index(c, pn);
-  for (int i = 0; i < 4; i++)
-    NT_FOREACH_KIND(nt, paths[i], w) {
-      int t = nt_ref(nt, w, "target");
-      if (t >= 0 && sp_streq(nt_str(nt, t, "name"), nm) && const_path_write_reaches(c, t, k)) return 0;
-    }
-  NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t)
-    if (sp_streq(nt_str(nt, t, "name"), nm) && const_path_write_reaches(c, t, k)) return 0;
+  for (int t = g_cw.head[1][ni]; t >= 0; t = g_cw.next[t])
+    if (const_path_write_reaches(c, t, k)) return 0;
   return top;
 }
 /* The SystemCallError family, by builtin name: SystemCallError, the Errno
