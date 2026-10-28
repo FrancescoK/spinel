@@ -23,6 +23,10 @@ class A: body#1
 class A__Inner: body#2 body#11
 class B: body#4
 class B__Inner: body#5
+entity A: owner main leaf A
+entity A__Inner: owner A leaf Inner
+entity B: owner main leaf B
+entity B__Inner: owner B leaf Inner
 const A: write#1
 const A::Inner: write#2
 A__Inner#who: def#3 end=yes

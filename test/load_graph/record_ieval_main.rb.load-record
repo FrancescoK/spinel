@@ -24,6 +24,10 @@ class M: body#1
 class P: body#3
 class N: body#5
 class C: body#7 body#15 include M#10 prepend P#11 extend N#16
+entity M: owner main leaf M
+entity P: owner main leaf P
+entity N: owner main leaf N
+entity C: owner main leaf C
 const M: write#1
 M#hi: def#2 end=yes
 const P: write#3

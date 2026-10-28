@@ -291,6 +291,21 @@ int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singlet
    own constants, innermost first, then the innermost one's ancestors and
    Object's; *out the write or class definition found */
 int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out);
+/* what constant `name` of class owner's own (-1: Object's) was before p,
+   as `class X` asks it of its owner: no lexical scope's, no ancestor's;
+   *out the write or header found, on ELAB_UNKNOWN the last one that may
+   have run before p */
+int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, const LrDef **out);
+/* the class constant reference node (a ConstantReadNode or
+   ConstantPathNode) names where it stands, as the record resolves it
+   there; -1 for Object (main's), below -1 for one it does not know */
+int elab_class_ref_at(Compiler *c, int node);
+/* the node -> class map: the class class or module header `node` opens,
+   as registration decided it there (below -1: none); *owner and *leaf,
+   when asked, its entity: the class whose constants hold its name (-1:
+   Object's; below -1 not known) and the name (NULL outside the load
+   phase's walk) */
+int elab_header_class(Compiler *c, int node, int *owner, const char **leaf);
 /* what constant reference ref (a ConstantReadNode or ConstantPathNode)
    names, read where statement `site` stands: ELAB_NO when it names no
    constant there and the record sees every write of the name there can

@@ -394,6 +394,8 @@ int elab_walk_enter(Compiler *c, int ch, ElabPos *pos);
 void elab_walk_leave(Compiler *c, int e);
 void elab_walk_rest(Compiler *c, int id, ElabPos pos);
 void elab_walk_site(Compiler *c, int id, const ElabPos *pos);
+void elab_header_entity(Compiler *c, int node, const ElabPos *pos);
+void elab_header_opened(Compiler *c, int node, int cls, int made);
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud);
 void walk_scope_stmt(Compiler *c, int stmt, int scope_idx, ElabPos pos);
 int scope_own_defaults(Compiler *c, int di);

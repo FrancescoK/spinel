@@ -1585,8 +1585,9 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     return;
   }
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
-    int cp = nt_ref(c->nt, id, "constant_path");
+    int cp = nt_ref(c->nt, id, "constant_path"), made = 0;
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    elab_header_entity(c, id, &w.pos);
     int cls_toplevel = class_id < 0 && cp >= 0 &&
                        nt_kind(c->nt, cp) == NK_ConstantReadNode;
     /* An earlier pass mangles a nested name to `Outer__Inner`: test the leaf. */
@@ -1650,6 +1651,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     if (cname && comp_class_index(c, cname) < 0) {
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
+      made = 1;
       c->classes[child_class].enclosing_class = class_id;
       /* a name qualify_colliding_classes gave carries the Ruby path it
          resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
@@ -1679,6 +1681,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
         { c->classes[child_class].def_node = id; comp_touch_class(c->classes[child_class].idx); }
       }
     }
+    elab_header_opened(c, id, cname ? child_class : -1, made);
   }
   else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");

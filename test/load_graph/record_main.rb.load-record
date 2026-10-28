@@ -24,6 +24,7 @@ r0 #20 f0 CallNode helper line 21
 r0 #22 f0 CallNode puts line 22
 r0 #23 f0 CallNode puts line 23
 class Shape: body#6 body#9
+entity Shape: owner main leaf Shape
 const Shape: write#6
 Shape#initialize: def#7 private end=yes
 Shape#w: reader#10 end=yes
