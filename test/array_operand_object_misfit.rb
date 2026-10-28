@@ -13,6 +13,13 @@ class Loud
   end
 end
 
+class AS < Array
+  def initialize(*a)
+    @x = 1
+    super
+  end
+end
+
 def pq(f) = f ? P.new : nil
 
 def t
@@ -49,5 +56,9 @@ t { [1].concat(Loud.new, P.new) }
 t { [1].union(Loud.new, P.new) }
 t { [1].concat(R.new, S.new) }
 p a
+# an Array subclass instance is an Array
+p [1].concat(AS.new([4]))
+p [1] + AS.new([4])
+p [1].union(AS.new([4]))
 p [1].concat(R.new)
 p [1] + R.new

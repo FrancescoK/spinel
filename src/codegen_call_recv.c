@@ -642,6 +642,8 @@ static int obj_to_ary_misfit(Compiler *c, TyKind t) {
   if (!ty_is_object(t)) return 0;
   int cid = ty_object_class(t);
   if (cid < 0 || cid >= c->nclasses) return 0;
+  /* an Array, Hash or String subclass instance keeps the arms of its root */
+  if (comp_ty_ary_root(c, t) >= 0) return 0;
   static const char *const answers[] = { "to_ary", "method_missing", "respond_to_missing?", NULL };
   for (int i = 0; answers[i]; i++)
     if (obj_may_answer(c, cid, answers[i])) return 0;
