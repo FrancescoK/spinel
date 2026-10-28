@@ -24595,12 +24595,17 @@ struct SceFacts {
   int gate;          /* -1 until asked */
   SceScoped scoped;
   SceConsts consts;
+  /* the body whose statements below vis_upto were last read for a bare
+     visibility call, and whether one was: the splices of a step into one
+     body come in order, so each reads on from the last */
+  int vis_body, vis_upto, vis;
 };
 static struct SceFacts *sce_facts(HostStep *h) {
   if (!h->sce) {
     h->sce = calloc(1, sizeof *h->sce);
     if (!h->sce) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     h->sce->gate = -1;
+    h->sce->vis_body = -1;
   }
   return h->sce;
 }
@@ -24613,20 +24618,23 @@ void sce_facts_free(struct SceFacts *f) {
 
 /* The statements body[at..at + n) of a class or module body (owner's): a
    class_eval of text known now becomes the text's statements, in place. A
-   bare `private` before them, in the body, keeps every graft out. The count
-   the n statements become; *changed when the body changed. */
+   bare `private` before them, in the body as written (not one a graft
+   brought in), keeps every graft out. The count the n statements become;
+   *changed when the body changed. */
 static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, int *changed) {
   NodeTable *nt = (NodeTable *)c->nt;
   struct SceFacts *f = sce_facts(h);
   int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
   if (at < 0 || n <= 0 || at + n > bn) return n;
-  int *bb = (int *)malloc(sizeof(int) * (size_t)bn);
+  int vis = 0, from = 0;
+  if (f->vis_body == body && f->vis_upto <= at) { vis = f->vis; from = f->vis_upto; }
+  for (int i = from; i < at; i++) vis |= sce_bare_visibility(nt, bb0[i]);
+  int *bb = (int *)malloc(sizeof(int) * (size_t)n);   /* a graft may move the body's array */
   if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memcpy(bb, bb0, sizeof(int) * (size_t)bn);
-  int *nb = NULL, nbn = 0, any = 0, vis = 0;
-  for (int i = 0; i < at; i++) { vis |= sce_bare_visibility(nt, bb[i]); xc_push(&nb, &nbn, bb[i]); }
+  memcpy(bb, bb0 + at, sizeof(int) * (size_t)n);
+  int *nb = NULL, nbn = 0, any = 0;
   for (int i = at; i < at + n; i++) {
-    int st = bb[i];
+    int st = bb[i - at];
     int *ins = NULL, nins = 0, ok = 0;
     vis |= sce_bare_visibility(nt, st);
     int str = vis ? -1 : sce_eval_string(nt, st);
@@ -24667,9 +24675,22 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
     else xc_push(&nb, &nbn, st);
     free(ins);
   }
-  int done = nbn;
-  for (int i = at + n; i < bn; i++) xc_push(&nb, &nbn, bb[i]);
-  if (any && nb) { nt_node_set_arr(nt, body, "body", nb, nbn); *changed = 1; n = done - at; }
+  if (any && nb) {
+    /* the body with the range's statements in place of the n it had */
+    int on = 0; const int *ob = nt_arr(nt, body, "body", &on);
+    int *all = (int *)malloc(sizeof(int) * (size_t)(on - n + nbn));
+    if (!all) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memcpy(all, ob, sizeof(int) * (size_t)at);
+    memcpy(all + at, nb, sizeof(int) * (size_t)nbn);
+    memcpy(all + at + nbn, ob + at + n, sizeof(int) * (size_t)(on - at - n));
+    nt_node_set_arr(nt, body, "body", all, on - n + nbn);
+    free(all);
+    *changed = 1;
+    n = nbn;
+  }
+  f->vis_body = body;
+  f->vis_upto = at + n;
+  f->vis = vis;
   free(nb); free(bb);
   return n;
 }
