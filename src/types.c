@@ -465,6 +465,41 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
   if (!name) return 0;
   if (row) *row = NULL;
   if (argc == 0) {
+    /* min/max/uniq on a Hash site: the normal (non-yield) call path already
+       answers these correctly (hash_enum_redispatch, analyze_infer.c) by
+       treating the Hash's materialized [key, value] pairs as a Poly Array
+       -- min/max answer one pair (poly), uniq answers an array of pairs
+       (poly array). This table is only ever consulted for a BLOCKLESS call
+       (yield_builtin_method_site_type's own guard), so the blockless-
+       always-redispatches condition hash_enum_redispatch checks for these
+       names is unconditionally true here; it is reproduced inline rather
+       than called (it also takes a node id for the block-form names, which
+       do not reach this table). The row is looked up in TY_POLY_ARRAY's own
+       family, and `recv` passed to bop_result is TY_POLY_ARRAY too (not the
+       real Hash kind) -- BOPR_ELEM/BOPR_SELF read it as "the poly array's
+       own element/self", exactly the answer a materialized pair array would
+       give; min/max/uniq's own BOP_ANY_HASH row stays a TY_UNKNOWN
+       placeholder on purpose; it isn't reached here at all, so no row's
+       result is misread (K-033).
+
+       minmax deliberately excluded (confirmed empirically, not assumed from
+       the pattern the other three follow): a Hash site beside an Array site
+       compiles and matches CRuby for min/max/uniq, each verified with their
+       own inlined-per-call-site RED/GREEN test, but minmax hits a separate,
+       pre-existing boxing gap in the method's own (non-inlined) compiled
+       body -- "incompatible pointer types assigning to 'sp_PolyArray *'
+       from 'sp_IntArray *'" at the method's own `yield.minmax` line, not at
+       either call site. Left as a documented limitation rather than papered
+       over; the root cause is in the per-site boxing emitter this fix does
+       not touch, not in this table. */
+    if (ty_is_hash(recv) &&
+        (!strcmp(name, "min") || !strcmp(name, "max") || !strcmp(name, "uniq"))) {
+      const BuiltinOp *op = bop_find(bop_family_of(TY_POLY_ARRAY), name, 0, 0);
+      TyKind r = op ? bop_result(op, TY_POLY_ARRAY) : TY_UNKNOWN;
+      if (r == TY_UNKNOWN) return 0;
+      *out = r; if (row) *row = op;
+      return 1;
+    }
     /* A listed name answers from its row: the receiver's own kind for the
        copies, the identities and the reorderings, the element for the
        element readers. */
@@ -542,6 +577,27 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
     TyKind et = ty_array_elem(recv);
     *out = (arg1 == TY_UNKNOWN || arg1 == et) ? et : TY_POLY;
     return 1;
+  }
+  /* fetch(key, default) on a Hash: the same rule as the Array arm above,
+     against the Hash's own value kind (ty_hash_val) rather than an
+     element kind -- the row for this exact shape (argc==2) is still a
+     TY_UNKNOWN placeholder in bop_rows (K-033), so it is answered here by
+     hand instead, mirroring analyze_infer_recv.c's own Hash#fetch arm. */
+  if (!strcmp(name, "fetch") && argc == 2 && ty_is_hash(recv)) {
+    TyKind vt = ty_hash_val(recv);
+    *out = (arg1 == TY_UNKNOWN || arg1 == vt) ? vt : TY_POLY;
+    return 1;
+  }
+  /* dig(key) on a Hash, one key only: the same answer as `[]` (BOPR_HASH_VAL,
+     the value kind, nilable on a miss) -- confirmed against CRuby, which
+     raises TypeError for a second key unless the first key's value itself
+     supports dig, something this per-receiver-kind table has no way to
+     check, so a Hash dig with 2+ keys is deliberately left unanswered here
+     (falls through, same as before this arm existed). */
+  if (!strcmp(name, "dig") && argc == 1 && ty_is_hash(recv)) {
+    const BuiltinOp *op = bop_find(bop_family_of(recv), "[]", 1, 0);
+    TyKind r = op ? bop_result(op, recv) : TY_UNKNOWN;
+    if (r != TY_UNKNOWN) { *out = r; if (row) *row = op; return 1; }
   }
   if (!strcmp(name, "dig") && argc >= 1 && ty_recv_is_plain_array(recv)) {
     /* one index is the element, two or more are poly: the Array rows state
