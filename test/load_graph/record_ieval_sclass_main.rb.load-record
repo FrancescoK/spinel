@@ -17,7 +17,7 @@ r0 #14 f0 CallNode p line 33
 r0 #15 f0 CallNode p line 34
 class M: body#1
 class N: body#3
-class C: body#5 extend ?#8 extend ?#11
+class C: body#5 extend M#8 extend N#11
 entity M: owner main leaf M
 entity N: owner main leaf N
 entity C: owner main leaf C
@@ -26,9 +26,7 @@ M#hi: def#2 end=yes
 const N: write#3
 N#ho: def#4 end=yes
 const C: write#5
-opaque C: opaque#8 opaque#11 opaque#13
-form #9 runs code (maybe)
 C.x: reader#9 end=yes
 C.x=: writer#9 end=yes
-form #11 runs code (maybe)
 C.made: def#12 end=yes
+opaque C: opaque#13

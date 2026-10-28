@@ -2541,20 +2541,44 @@ static int lr_cref(Compiler *c, int e) {
   return LR_MAIN;
 }
 
+/* A singleton class has no constant table in the record. A source write
+   in such a body can hide an enclosing constant; after lexical lookup,
+   any source write can belong to an ancestor the record did not search. */
+static int lr_singleton_const_written(Compiler *c, const char *name, int own) {
+  const LoadRecord *r = c->lrec;
+  const int *par = NULL;
+  for (int i = 0; i < r->nsrcw; i++) {
+    if (!sp_streq(r->srcw[i].name, name)) continue;
+    if (!own) return 1;
+    if (!par) par = comp_parent_map(c);
+    for (int a = par[r->srcw[i].node]; a >= 0; a = par[a]) {
+      NodeKind k = nt_kind(c->nt, a);
+      if (k == NK_SingletonClassNode) return 1;
+      if (k == NK_ClassNode || k == NK_ModuleNode) break;
+    }
+  }
+  return 0;
+}
+
 /* What constant `name` read in node's lexical scopes resolves to at p, as
    CRuby resolves it there: each lexical scope's own constants, innermost
    first, then the ancestors of the innermost (Object's last) */
 static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   LoadRecord *r = elab_fresh(c);
   int e = node >= 0 && node < r->n ? r->at[node] : -1, late = p.region < 0, first = LR_MAIN;
+  int singleton = 0;
   if (e < 0 || !name) return ELAB_UNKNOWN;
   for (int g = r->st[e].frame; g >= 0; g = r->st[g].frame) {   /* the class and module bodies around it */
     NodeKind k = nt_kind(c->nt, r->st[g].node);
-    if (k == NK_SingletonClassNode) return ELAB_UNKNOWN;
+    if (k == NK_SingletonClassNode) {
+      if (lr_singleton_const_written(c, name, 1)) return ELAB_UNKNOWN;
+      if (first == LR_MAIN) singleton = 1;
+      continue;
+    }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int ci = elab_header_class(c, r->st[g].node, NULL, NULL);
     if (ci < 0) return ELAB_UNKNOWN;
-    if (first == LR_MAIN) first = ci;
+    if (first == LR_MAIN && !singleton) first = ci;
     int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(ci), name, 0), p, late, 0, out);
     if (o != ELAB_NO) return o;
   }
@@ -2562,6 +2586,7 @@ static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, con
      a lexical read falls back to Object */
   int o = lr_const_in(c, first, name, p, late, 1, out, 0);
   if (o == ELAB_NO && first != LR_MAIN && lr_super(c, first) == LR_UNKNOWN_CLASS) o = lr_const_in(c, LR_MAIN, name, p, late, 1, out, 0);
+  if (o == ELAB_NO && singleton && lr_singleton_const_written(c, name, 0)) o = ELAB_UNKNOWN;
   return o;
 }
 
