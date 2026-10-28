@@ -7235,10 +7235,14 @@ else {
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ts);
         buf_printf(b, " sp_int _t%d = sp_poly_arr_len_ex(_t%d);", ti, ts);
         char rtxt[32]; snprintf(rtxt, sizeof rtxt, "_t%d", tr);
-        buf_printf(b, " for (sp_int _i8 = 0; _i8 < _t%d; _i8++)"
-                      " sp_poly_hash_merge_into(", ti);
+        /* an element that is no Hash converts as CRuby converts it, or
+           raises its TypeError (sp_merge_arg_conv) */
+        int te = ++g_tmp;
+        buf_printf(b, " for (sp_int _i8 = 0; _i8 < _t%d; _i8++) {"
+                      " sp_RbVal _t%d = sp_merge_arg_conv(sp_poly_each_elem(_t%d, _i8)); SP_GC_ROOT_RBVAL(_t%d);"
+                      " sp_poly_hash_merge_into(", ti, te, ts, te);
         emit_boxed_text(c, rt, rtxt, b);
-        buf_printf(b, ", sp_poly_each_elem(_t%d, _i8));", ts);
+        buf_printf(b, ", _t%d); }", te);
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
@@ -7552,7 +7556,7 @@ else {
         buf_printf(b, "); SP_GC_ROOT(_t%d);", tls);
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < sp_PolyArray_length(_t%d); _t%d++)"
                       " _t%d = sp_poly_hash_merge(sp_box_nullable_obj((void *)_t%d, SP_BUILTIN_POLY_POLY_HASH),"
-                      " sp_PolyArray_get(_t%d, _t%d));",
+                      " sp_merge_arg_conv(sp_PolyArray_get(_t%d, _t%d)));",
                    tmi, tmi, tls, tmi, tacc, tacc, tls, tmi);
         buf_printf(b, " _t%d; })", tacc);
         return 1;
