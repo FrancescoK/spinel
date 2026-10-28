@@ -99,6 +99,20 @@ enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4 };
    last version. */
 int call_node_names(const NodeTable *nt, int id, const char *out[2]);
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class);
+/* the classes a call of a versioned name (ct_version_named) may run on,
+   each handed to fn with the flags call_target is asked with */
+int ct_version_named(Compiler *c, const char *nm);
+int ct_version_marked(Compiler *c, const char *nm);
+typedef void (*CtClassFn)(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg);
+void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void *arg);
+/* the version entries a call whose version is known only at run time
+   reaches, and the run-time cells they read (#9898) */
+void ver_entries_build(Compiler *c);
+void ver_cells_write(Compiler *c);
+/* the methods entry scope e's arms call, its else arm's last: at most
+   VER_MAX_ARMS + 1 */
+enum { VER_MAX_ARMS = 64 };
+int ver_entry_targets(const Compiler *c, int e, int *out);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
@@ -386,6 +400,7 @@ void cplan_poly_free(PolyPlan *p);
    dispatch. */
 /* The name index bounds a query for a native Ruby literal-block target. */
 int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n);
+int cplan_cand_target(Compiler *c, int id, const char *name, const PolyCand *pc, unsigned flags);
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method

@@ -314,10 +314,29 @@ int elab_call_window(Compiler *c, int id, ElabWindow *w);
    one live over each stretch of w between changes of the name on cls's
    chain where a statement may run code of the program's (for an instance
    method once an instance can exist), the one at an open w's end, and the
-   only one when nothing changes. How many; -1 when the record cannot tell
-   (a version that may not run or runs elsewhere, a mixin of a module that
-   may have the name or code the record cannot follow, inside w). */
+   only one when nothing changes. How many; ELAB_SPAN_ANY when any version
+   on cls's chain may be the one (a version inside w that may not run, runs
+   elsewhere or the record cannot order, the changes of more than one
+   history in a body that runs again, a stretch whose version the record
+   cannot tell); -1 when cls's chain moves inside w (a mixin of a module
+   that has or may have the name, code the record cannot follow). */
+enum { ELAB_SPAN_ANY = -2 };
 int elab_method_span(Compiler *c, int cls, const char *name, int sg, const ElabWindow *w, const LrDef **out, int cap);
+/* does cls's chain (its singleton's when sg) hold still for `name` from p
+   to the load's end: each mixin of a module that has or may have the name
+   into a class on it ran before p for certain, and no code the record
+   cannot follow runs on one of them? Then the chain the record holds at
+   the load's end (elab_chain_versions) is the one a call after p meets. */
+int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint p);
+/* the versions of cls's method `name` (singleton when sg) in the histories
+   of cls's chain as the record holds it at the load's end, nearest history
+   first (prepends, own, includes, then the superclass's), into
+   out[0..cap): each with its history (hist, the run-time cell its
+   statement writes, call_plan.c's version entries) and its number there,
+   1-based. How many; -1 when a class on the chain is one the record does
+   not hold, a mixin's module is not known, or past cap. */
+typedef struct { const LrDef *v; int hist, n; } ElabVersion;
+int elab_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap);
 /* can the program run code the record has not seen: a load whose target
    it could not resolve (a computed path, a load the parse left)? */
 int elab_runs_unseen(Compiler *c);
@@ -397,6 +416,7 @@ int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, con
    ConstantPathNode) names where it stands, as the record resolves it
    there; -1 for Object (main's), below -1 for one it does not know */
 int elab_class_ref_at(Compiler *c, int node);
+int elab_class_candidates(Compiler *c, int node, int **out);   /* the classes a constant read the record cannot settle may name, in a buffer *out the caller frees; -1 for no bounded answer */
 /* the node -> class map: the class class or module header `node` opens,
    as registration decided it there (below -1: none); *owner and *leaf,
    when asked, its entity: the class whose constants hold its name (-1:

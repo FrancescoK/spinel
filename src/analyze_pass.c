@@ -11398,17 +11398,21 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
         /* a receiver of no known class: a Range among the arguments makes
            no candidate's parameter range_held */
         c->range_unheld = cls_fact_unbounded(c, recv);
-        for (int pi = 0; pi < npc; pi++)
-          if (pcs[pi].mi < 0 || method_takes_call_args(c, &c->scopes[pcs[pi].mi], id)) {
-            if (pcs[pi].mi >= 0) c->scopes[pcs[pi].mi].cand_bound = 1;
-            changed |= bind_call_params(c, id, pcs[pi].mi);
+        for (int pi = 0; pi < npc; pi++) {
+          int pm = cplan_cand_target(c, id, name, &pcs[pi], 0);
+          if (pm < 0 || method_takes_call_args(c, &c->scopes[pm], id)) {
+            if (pm >= 0) c->scopes[pm].cand_bound = 1;
+            changed |= bind_call_params(c, id, pm);
           }
+        }
         pcs = comp_cmethod_candidates(c, name, &npc);
-        for (int pi = 0; pi < npc; pi++)
-          if (method_takes_call_args(c, &c->scopes[pcs[pi].mi], id)) {
-            c->scopes[pcs[pi].mi].cand_bound = 1;
-            changed |= bind_call_params(c, id, pcs[pi].mi);
+        for (int pi = 0; pi < npc; pi++) {
+          int pm = cplan_cand_target(c, id, name, &pcs[pi], CT_CMETHOD);
+          if (method_takes_call_args(c, &c->scopes[pm], id)) {
+            c->scopes[pm].cand_bound = 1;
+            changed |= bind_call_params(c, id, pm);
           }
+        }
         c->range_unheld = 0;
       }
     }
@@ -15660,12 +15664,18 @@ static int block_bind_plan(Compiler *c, int id, int block, int mi, int ym, int y
   *absent = calloc((size_t)np + 1, 1);
   if (!*pos || !*absent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   /* a yielding method with no site in its own scope binds no values:
-     every parameter nil or its default */
-  for (int k = 0; k < ns || (yields && k == 0); k++) {
-    int ya = k < ns ? block_site_args(c, ym, sites[k], mi == ym ? id : -1) : -1;
-    int yc = 0;
-    const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
-    block_site_types(c, s, yv, yc, *pos, *absent, *pos + np);
+     every parameter nil or its default. A version entry's block is bound
+     where the methods its arms call bind it. */
+  int ys[VER_MAX_ARMS + 1], ny = c->scopes[ym].entry ? ver_entry_targets(c, ym, ys) : (ys[0] = ym, 1);
+  for (int j = 0; j < ny; j++) {
+    int y = ys[j];
+    ns = y != ym ? block_sites(c, y, &sites) : ns;
+    for (int k = 0; k < ns || (yields && k == 0); k++) {
+      int ya = k < ns ? block_site_args(c, y, sites[k], mi == y ? id : -1) : -1;
+      int yc = 0;
+      const int *yv = ya >= 0 ? nt_arr(nt, ya, "arguments", &yc) : NULL;
+      block_site_types(c, s, yv, yc, *pos, *absent, *pos + np);
+    }
   }
   /* the method may also hand the block on, or keep it: those bind it
      too, and a kept one can be called with anything (block_reach) */
@@ -19255,61 +19265,25 @@ static int cr_literal_local(Compiler *c, const NodeTable *nt, int r) {
 }
 
 /* A replaced method version is reached only by the calls call_target binds
-   to it (Scope.replaced), as is one an alias's capture renamed. For call
-   node id of a name with replaced versions or an alias, the "\x01<scope>"
-   marks of the versions it binds to, asked for every class the call may
-   run on: main and self's class (a method's, or the class body's) and its
-   descendants (either side) for a receiverless or `self.` call, and in an
-   instance_eval or instance_exec block the class or classes self is
-   rebound to and their descendants (the plan's UC_IE target), a class's
-   side for a constant receiver, an object's class and its descendants;
-   for any other receiver, main and each class the load record holds a
-   history of the name for (elab_method_holder), on that side (a class
-   that holds none answers as its nearest ancestor that does). */
-static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned flags, char ***out, int *n, int *cap) {
+   to it (Scope.replaced), as is one an alias's capture renamed, and a
+   version entry only by the calls it binds to one. For call node id of a
+   name that binds one of those (ct_version_marked), the
+   "\x01<scope>" marks of the methods it binds to, asked for every class
+   the call may run on (ct_version_classes). */
+typedef struct { char ***out; int *n, *cap; } CrMarks;
+static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
+  CrMarks *m = arg;
   int mi = call_target(c, id, k, nm, flags, NULL);
   char mark[24];
   if (mi < 0) return;
   snprintf(mark, sizeof mark, "\x01%d", mi);
-  cr_add_name(out, n, cap, mark);
-}
-static void cr_mark_class_versions(Compiler *c, int id, const char *nm, int k, unsigned flags, char ***out, int *n, int *cap) {
-  int nd = 0;
-  const int *ds = k >= 0 ? comp_descendants(c, k, &nd) : NULL;
-  for (int i = -1; i < nd; i++) cr_mark_version(c, id, nm, i < 0 ? k : ds[i], flags, out, n, cap);
+  cr_add_name(m->out, m->n, m->cap, mark);
 }
 static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
   const char *names[2];
-  int nn = call_node_names(nt, id, names);
-  for (int i = 0; i < nn; i++) {
-    const char *nm = names[i];
-    if (!nm || !elab_method_replaced(c, nm)) continue;
-    int r = nt_ref(nt, id, "receiver");
-    NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
-    const char *cn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(nt, r, "name") : NULL;
-    TyKind rt = r >= 0 && rk != NK_SelfNode && !cn ? comp_ntype(c, r) : TY_UNKNOWN;
-    if (r < 0 || rk == NK_SelfNode) {
-      Scope *sc = comp_scope_of(c, id);
-      int self_cls = sc && sc->class_id >= 0 ? sc->class_id : c->node_cbody[id];
-      cr_mark_class_versions(c, id, nm, -1, CT_TOP, out, n, cap);
-      if (self_cls >= 0) {
-        cr_mark_class_versions(c, id, nm, self_cls, 0, out, n, cap);
-        cr_mark_class_versions(c, id, nm, self_cls, CT_CMETHOD, out, n, cap);
-      }
-      int iec = ie_class_of(c, id), pk[64], npk = ie_poly_classes_at(c, id, pk, 64);
-      if (iec >= 0) cr_mark_class_versions(c, id, nm, iec, 0, out, n, cap);
-      for (int j = 0; j < npk; j++) cr_mark_class_versions(c, id, nm, pk[j], 0, out, n, cap);
-    }
-    else if (cn && comp_class_index(c, cn) >= 0)
-      cr_mark_class_versions(c, id, nm, comp_class_index(c, cn), CT_CMETHOD, out, n, cap);
-    else if (ty_is_object(rt))
-      cr_mark_class_versions(c, id, nm, ty_object_class(rt), 0, out, n, cap);
-    else {
-      cr_mark_version(c, id, nm, -1, CT_TOP, out, n, cap);
-      for (int h = -1, k, sg; (h = elab_method_holder(c, nm, h, &k, &sg)) >= 0;)
-        if (k >= 0) cr_mark_version(c, id, nm, k, sg ? CT_CMETHOD : 0, out, n, cap);
-    }
-  }
+  CrMarks m = { out, n, cap };
+  for (int i = 0, nn = call_node_names(nt, id, names); i < nn; i++)
+    if (ct_version_marked(c, names[i])) ct_version_classes(c, id, names[i], cr_mark_version, &m);
 }
 
 /* What a node makes CRuby call that the program does not name (implicit_calls.h):

@@ -918,6 +918,7 @@ typedef struct { const char *sel; int val; const char *callee; } DispArm;
 int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
                    const DispArm *arm, int narm, int els);
 int disp_raise_no_method(NodeTable *nt, const char *msg);
+int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);

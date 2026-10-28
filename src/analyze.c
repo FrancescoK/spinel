@@ -636,8 +636,10 @@ void compute_reachable(Compiler *c, int typed) {
     /* The roots: the top level, a def with no name, initialize, and an
        --ext-entry. A method CRuby calls back is no root of its own: a node
        that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
-       of the program the message of an exception class. */
-    int is_root = (s == 0 || !sc->name || (!sc->replaced && is_initialize_name(sc->name)) || sc->is_ext_entry);
+       of the program the message of an exception class. (A replaced version,
+       or a version entry, is reached only by the calls bound to it.) */
+    int bound = sc->replaced || sc->entry;
+    int is_root = (s == 0 || !sc->name || (!bound && is_initialize_name(sc->name)) || sc->is_ext_entry);
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
@@ -653,7 +655,7 @@ void compute_reachable(Compiler *c, int typed) {
   for (int t = 0; t < c->nscopes; t++) {
     sn_link[t] = -1;
     const char *tn = c->scopes[t].name;
-    if (!tn) continue;
+    if (!tn || c->scopes[t].entry) continue;   /* (no name reaches an entry) */
     int k = -1;
     if (sn_set.nb)
       for (int i = sn_set.head[sp_strhash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
@@ -912,7 +914,7 @@ void compute_reachable(Compiler *c, int typed) {
       const char *proto = NULL;
       const Scope *st = &c->scopes[t];
       int live = 0;
-      if (st->reachable || !st->name || st->replaced) continue;
+      if (st->reachable || st->entry || !st->name || st->replaced) continue;
       for (int i = 0; !live && synth_stands_for(st->name, i, &proto); i++) live = cn_live(&cn_set, proto);
       if (!live) continue;
       MARK_NAME(st->name);
@@ -47384,11 +47386,13 @@ static int ur_name_excluded(const char *nm) {
 }
 /* a plain String method, emitted as a function of its own under the name
    its def gives it (not a prepend's shadow, which a `super` reaches). An
-   --ext-entry is no candidate: the host reads its value. */
+   --ext-entry is no candidate: the host reads its value. Neither is a
+   version entry: the calls it answers carry the method's own name, not
+   the entry's. */
 static int ur_candidate(Compiler *c, const Scope *s) {
   return s->ret == TY_STRING && s->name && s->def_node >= 0 && nt_kind(c->nt, s->def_node) == NK_DefNode &&
          nt_str(c->nt, s->def_node, "name") && sp_streq(nt_str(c->nt, s->def_node, "name"), s->name) &&
-         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !s->is_ext_entry &&
+         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !s->is_ext_entry && !s->entry &&
          !ur_name_excluded(s->name);
 }
 /* the builtin iterators that drop their block's value */
@@ -47948,6 +47952,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      grows. This is where comp_method_in_class / comp_cmethod_in_class are
      hottest (called per node, every fixpoint iteration). */
   elab_mark_versions(c);
+  ver_entries_build(c);
   comp_scope_index_set_frozen(1);
 
   /* The classes that can exist, before any type is derived from them (see
@@ -47955,6 +47960,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
   AN_STEP_V("compute_reachable", compute_reachable(c, 0));
+  ver_cells_write(c);
   compute_instantiated(c, 1);
 }
 

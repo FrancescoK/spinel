@@ -1,0 +1,27 @@
+k1 k 1
+k2 k 2
+wrong number of arguments (given 0, expected 1)
+wrong number of arguments (given 2, expected 1)
+k
+#<Method: Object#k
+1
+k2 k 3
+c1 k 1
+c2 k 2
+[:k, :w]
+[:k, :w]
+true
+true
+:k
+#<UnboundMethod: C#k
+c2 k 3
+c2 k 4
+C
+1
+:taken
+2
+:taken
+1
+:taken
+2
+:taken

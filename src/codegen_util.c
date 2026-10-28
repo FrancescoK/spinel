@@ -6786,16 +6786,19 @@ static int mc_name_fixed(const char *nm) {
    the method, never from a name: two methods of one name are two
    functions. A replaced version (Scope.version_n) is spelled from its
    name and its number: `f__redef<n>` at the top level, `m#redef<n>` in a
-   class (mc_number_versions). The answer stays valid for the next seven
-   spellings. */
+   class (mc_number_versions); a version entry (Scope.entry) as
+   `f__entry`, `m#entry`, or with the number mc_number_versions gives it,
+   `f__entry1`. The answer stays valid for the next seven spellings. */
 /* The name method s is spelled from: its own, or a replaced version's with
    its number, in a buffer of its size the caller frees */
 static char *mc_version_name(const Scope *s) {
-  const char *fmt = s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
-  int n = s->version_n ? snprintf(NULL, 0, fmt, s->name, s->version_n) : (int)strlen(s->name);
+  const char *fmt = s->entry && !s->version_n ? (s->class_id < 0 ? "%s__entry" : "%s#entry")
+                  : s->entry ? (s->class_id < 0 ? "%s__entry%d" : "%s#entry%d")
+                  : s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
+  int n = s->version_n || s->entry ? snprintf(NULL, 0, fmt, s->name, s->version_n) : (int)strlen(s->name);
   char *v = n >= 0 ? malloc((size_t)n + 1) : NULL;
   if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  if (s->version_n) snprintf(v, (size_t)n + 1, fmt, s->name, s->version_n);
+  if (s->version_n || s->entry) snprintf(v, (size_t)n + 1, fmt, s->name, s->version_n);
   else memcpy(v, s->name, (size_t)n + 1);
   return v;
 }
@@ -6835,19 +6838,27 @@ const char *mc_ring_setf(Compiler *c, const char *fmt, ...) {
    (mc_method). Top-level ones: those the main file's statements define, in
    statement order whether emitted or not, then the other emitted ones,
    each number skipping a `f__redef<n>` the program defines itself. A
-   class's: the emitted ones, in scope order. */
+   class's: the emitted ones, in scope order. A top-level version entry,
+   `f__entry`, is numbered only past a `f__entry` the program defines,
+   `f__entry1` on. */
+static int mc_def_named(Compiler *c, const char *to) {
+  NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
+    const char *dn = nt_str(c->nt, d, "name");
+    if (dn && sp_streq(dn, to)) return 1;
+  }
+  return 0;
+}
 static void mc_number_top_version(Compiler *c, Scope *s, int *serial) {
   char to[300];
-  for (;;) {
-    int taken = 0;
-    snprintf(to, sizeof to, "%s__redef%d", s->name, ++*serial);
-    NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
-      const char *dn = nt_str(c->nt, d, "name");
-      if (dn && sp_streq(dn, to)) { taken = 1; break; }
-    }
-    if (!taken) break;
-  }
+  do snprintf(to, sizeof to, "%s__redef%d", s->name, ++*serial);
+  while (mc_def_named(c, to));
   s->version_n = *serial;
+}
+static void mc_number_top_entry(Compiler *c, Scope *s) {
+  char to[300];
+  s->version_n = 0;
+  snprintf(to, sizeof to, "%s__entry", s->name);
+  while (mc_def_named(c, to)) snprintf(to, sizeof to, "%s__entry%d", s->name, ++s->version_n);
 }
 void mc_number_versions(Compiler *c) {
   const NodeTable *nt = c->nt;
@@ -6860,13 +6871,14 @@ void mc_number_versions(Compiler *c) {
   }
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
+    if (sc->entry && sc->reachable && sc->class_id < 0) mc_number_top_entry(c, sc);
     if (!sc->replaced || !sc->reachable || sc->version_n) continue;
     if (sc->class_id < 0) mc_number_top_version(c, sc, &top);
     else sc->version_n = ++cls;
   }
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
-  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
+  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && a->entry == b->entry && sp_streq(a->name, b->name);
 }
 static const char *const mc_class_helpers[] = { "_alloc", "_dup", "_gc_scan", NULL };
 /* A method whose name another has, as *first and *later; *first is -1 when
@@ -7054,7 +7066,7 @@ static void shadow_tab_build(Compiler *c, int raw) {
   if (!g_shadow_tab || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = n - 1; k >= 0; k--) {
     Scope *sc = &c->scopes[k];
-    if (!sc->name) continue;
+    if (!sc->name || sc->entry) continue;   /* (an entry shadows no method of its name) */
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
@@ -7080,9 +7092,9 @@ static void shadow_tab_build(Compiler *c, int raw) {
 }
 int scope_is_shadowed(Compiler *c, int s) {
   if (c->scopes[s].c_name) return 0;
-  /* a replaced method version is a function of its own while a call bound
-     to it reaches it (compute_reachable) */
-  if (c->scopes[s].replaced) return !c->scopes[s].reachable;
+  /* a replaced method version, and a version entry, is a function of its
+     own while a call bound to it reaches it (compute_reachable) */
+  if (c->scopes[s].replaced || c->scopes[s].entry) return !c->scopes[s].reachable;
   /* Before the scopes settle, the scan's answer holds while the scope
      index is frozen (the inference fixpoint among others): a scope is then
      only appended, and the indexed ones keep their names and classes
@@ -7107,7 +7119,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
     if (sc->def_node < 0 || nt_kind(c->nt, sc->def_node) != NK_DefNode) return 0;
     for (int k = s + 1; k < c->nscopes; k++) {
       Scope *o = &c->scopes[k];
-      if (o->class_id < 0 && o->is_cmethod == sc->is_cmethod && o->name &&
+      if (o->class_id < 0 && o->is_cmethod == sc->is_cmethod && o->name && !o->entry &&
           sp_streq(o->name, sc->name) && o->def_node >= 0 && o->def_node != sc->def_node &&
           nt_kind(c->nt, o->def_node) == NK_DefNode) return 1;
     }
@@ -7116,7 +7128,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
   for (int k = s + 1; k < c->nscopes; k++) {
     Scope *o = &c->scopes[k];
     if (o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
-        o->name && sp_streq(o->name, sc->name)) return 1;
+        o->name && !o->entry && sp_streq(o->name, sc->name)) return 1;
   }
   return 0;
 }

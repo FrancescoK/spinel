@@ -461,8 +461,13 @@ typedef struct {
      class), so call_target binds a call of it to the version it runs;
      replaced, a later version replaces this one in its class's history, so
      only the calls bound to it reach it; version_n, codegen's number for a
-     replaced version in its C name (mc_method), 0 for none */
-  unsigned char versioned, replaced;
+     replaced version in its C name (mc_method), 0 for none; entry, the
+     method a call whose version is known only at run time reaches
+     (call_plan.c's version entries): it calls the version the run-time
+     cells name. It has the method's name, as a replaced version does; no
+     lookup of the method by name answers it (sm_owns), only the calls
+     call_target binds to it reach it */
+  unsigned char versioned, replaced, entry;
   int version_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
@@ -1619,6 +1624,20 @@ typedef struct {
   /* the flags of the later prepends that guard their copies
      (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
   int n_mixin_flags;
+  /* the version entries (call_plan.c, ver_entries_build): one method per
+     (class, side, name) for the calls whose version is known only at run
+     time, and each of its arms' calls pinned to the version it runs */
+  struct VerEntry { const char *name; int cls, sg, scope; } *ver_entries;
+  int nver_entries;
+  struct VerPin { int node, scope; } *ver_pins;
+  int nver_pins;
+  /* the entries are made (ver_entries_build) */
+  int ver_built;
+  /* the version each call asked on a class runs, once the entries are
+     made (call_plan.c, ct_version): open addressing, name NULL for a free
+     slot; dc the class it answers, -2 for the table's */
+  struct VerMemo { const char *name; int id, cls; unsigned flags; int vi, dc; } *ver_memo;
+  int ver_memo_cap, ver_memo_n;
   /* the operand-local reads splat_dispatch_on_length marked splat_view,
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
   int *splat_views;

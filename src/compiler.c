@@ -521,6 +521,8 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
+  free(c->ver_entries); c->ver_entries = NULL; c->nver_entries = 0;
+  free(c->ver_pins); c->ver_pins = NULL; c->nver_pins = 0;
   for (int i = 0; i < c->nrbp_slots; i++) free(c->rbp_slot_names[i]);
   free(c->rbp_slot_names); free(c->rbp_slot_lens); c->rbp_slot_names = NULL; c->rbp_slot_lens = NULL; c->nrbp_slots = 0;
   if (c->bp_name) for (unsigned i = 0; i <= c->bp_mask; i++) free(c->bp_name[i]);
@@ -1238,14 +1240,15 @@ static int sm_moved(int s) {
   return 0;
 }
 /* scope `s` is a method of (class_id, is_cm) a lookup may answer: not while
-   it is moved */
+   it is moved, and not a version entry, which only the calls call_target
+   binds to it reach */
 static int sm_owns(const Compiler *c, int s, int class_id, int is_cm) {
   return c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
-         (!mv_n || !sm_moved(s));
+         !c->scopes[s].entry && (!mv_n || !sm_moved(s));
 }
 /* the same for a top-level method */
 static int sm_toplevel(const Compiler *c, int s) {
-  return c->scopes[s].class_id < 0 && (!mv_n || !sm_moved(s));
+  return c->scopes[s].class_id < 0 && !c->scopes[s].entry && (!mv_n || !sm_moved(s));
 }
 
 /* (class_id, name, is_cmethod) -> scope index, cached per scope count. Both
@@ -1534,6 +1537,9 @@ int comp_method_version(Compiler *c, int class_id, const char *name, int is_cm, 
     else for (; dc >= 0; dc = c->classes[dc].parent)
       if ((mi = sm_version_renamed(c, dc, is_cm, def_node)) >= 0) break;
   }
+  /* an instance chain ends at Object, whose methods the top level defines */
+  if (mi < 0 && class_id >= 0 && !is_cm && (mi = sm_version(c, -1, name, 0, def_node)) < 0)
+    mi = sm_version_renamed(c, -1, 0, def_node);
   if (mi >= 0) { IMEMO_DEP_SCOPE(mi); if (def_class) *def_class = dc; }
   return mi;
 }
