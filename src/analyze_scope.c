@@ -1487,6 +1487,17 @@ static int class_superclass_missing(Compiler *c, int id) {
   const char *in = owner >= 0 ? class_ruby_name(c, owner) : NULL;
   if (in) snprintf(msg, sizeof msg, "uninitialized constant %s::%s", in, miss);
   else snprintf(msg, sizeof msg, "uninitialized constant %s", miss);
+  /* said at build time too, as a read of a constant defined nowhere is */
+  {
+    const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
+    long long wl = nt_int(nt, id, "node_line", 0);
+    if (wl <= 0) wl = nt_int(nt, sc, "node_line", 0);
+    char at[600];
+    if (wl > 0) snprintf(at, sizeof at, "%s:%lld: ", fp && *fp ? fp : "source.rb", wl);
+    else at[0] = 0;
+    fprintf(stderr, "spinel: %swarning: the superclass %s names no constant where the class header stands "
+                    "(raises NameError when reached)\n", at, msg + strlen("uninitialized constant "));
+  }
   long long ln = nt_int(nt, id, "node_line", 0), fl = nt_int(nt, id, "node_file", 0),
             col = nt_int(nt, id, "node_col", 0);
   nt_subtree_blank(nt, nt_ref(nt, id, "constant_path"));
