@@ -8355,6 +8355,12 @@ static int pd_region_temps(const char *r, size_t rn, int line_ok, int **tnum_out
   int cap = 64, nt = 0;
   int *tnum = malloc(sizeof(int) * (size_t)cap);
   char *tdecl = malloc((size_t)cap);
+  /* (the temps seen so far, by number: a dispatch over many classes names
+     a temp or more per arm, and a scan of the list per name made the
+     region's walk the square of its arms) */
+  int hcap = 128, *hix = malloc(sizeof(int) * (size_t)hcap);
+  if (!tnum || !tdecl || !hix) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < hcap; k++) hix[k] = -1;
   int ok = 1;
   for (size_t i = 0; i < rn && ok; ) {
     char ch = r[i];
@@ -8390,7 +8396,9 @@ static int pd_region_temps(const char *r, size_t rn, int line_ok, int **tnum_out
     }
     int num = atoi(w + 2);
     int seen = -1;
-    for (int k = 0; k < nt; k++) if (tnum[k] == num) { seen = k; break; }
+    unsigned h = (unsigned)num * 2654435761u & (unsigned)(hcap - 1);
+    for (; hix[h] >= 0; h = (h + 1) & (unsigned)(hcap - 1))
+      if (tnum[hix[h]] == num) { seen = hix[h]; break; }
     /* a declaration: a type word (or `*`) before it, `=` or `;` after it */
     int decl = 0;
     if (seen < 0) {
@@ -8408,10 +8416,23 @@ static int pd_region_temps(const char *r, size_t rn, int line_ok, int **tnum_out
         if (!kw && q < rn && ((r[q] == '=' && (q + 1 >= rn || r[q + 1] != '=')) || r[q] == ';')) decl = 1;
       }
       if (nt == cap) { cap *= 2; tnum = realloc(tnum, sizeof(int) * (size_t)cap); tdecl = realloc(tdecl, (size_t)cap); }
-      tnum[nt] = num; tdecl[nt] = (char)decl; nt++;
+      tnum[nt] = num; tdecl[nt] = (char)decl;
+      hix[h] = nt++;
+      if (nt * 2 >= hcap) {
+        hcap *= 2;
+        hix = realloc(hix, sizeof(int) * (size_t)hcap);
+        if (!hix) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        for (int k = 0; k < hcap; k++) hix[k] = -1;
+        for (int k = 0; k < nt; k++) {
+          unsigned g = (unsigned)tnum[k] * 2654435761u & (unsigned)(hcap - 1);
+          while (hix[g] >= 0) g = (g + 1) & (unsigned)(hcap - 1);
+          hix[g] = k;
+        }
+      }
     }
 #undef PD_IS
   }
+  free(hix);
   *tnum_out = tnum; *tdecl_out = tdecl; *nt_out = nt;
   return ok;
 }
