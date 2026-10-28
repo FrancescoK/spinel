@@ -1,0 +1,66 @@
+# A method that hands its own block to Array.new (`Array.new(n, &b)`) and is
+# called with no block builds [nil] * n, as Array.new(n) does; it raised
+# LocalJumpError. The same holds for an initialize run from `new` and for
+# `super(n, &b)` in an Array subclass's initialize.
+def build(n, &b) = Array.new(n, &b)
+p build(2)
+p build(3) { |i| i * 3 }
+pr = proc { |i| i + 1 }
+p build(2, &pr)
+p build(2, &nil)
+
+def anon(n, &) = Array.new(n, &)
+p anon(2)
+p anon(2) { |i| "s#{i}" }
+
+def with_value(n, v, &b) = Array.new(n, v, &b)
+p with_value(2, 5)
+
+def sized(n, &b)
+  a = Array.new(n, &b)
+  a.size
+end
+p sized(1)
+p sized(4) { 0 }
+
+class Maker
+  def make(n, &b) = Array.new(n, &b)
+  def self.make(n, &b) = Array.new(n, &b)
+end
+m = Maker.new
+p m.make(2)
+p m.make(2) { |i| i * i }
+p Maker.make(1)
+p Maker.make(2) { :z }
+p m.send(:make, 2)
+p [1, 2].map { |n| build(n) }
+p [1, 2].map { |n| build(n) { |i| i - 1 } }
+
+def nested(n, &b) = [n].map { Array.new(n, &b) }
+p nested(2)
+p nested(2) { 1 }
+
+class Holder
+  attr_reader :a
+  def initialize(n, &b) = (@a = Array.new(n, &b))
+end
+p Holder.new(2).a
+p Holder.new(2) { |i| i + 1 }.a
+
+class Row < Array
+  def initialize(n, &b) = super(n, &b)
+end
+p Row.new(2)
+p Row.new(2) { |i| i + 5 }
+
+class AnonRow < Array
+  def initialize(n, &) = super(n, &)
+end
+p AnonRow.new(1)
+p AnonRow.new(2) { |i| i * 2 }
+
+class Table < Hash
+  def initialize(&b) = super(&b)
+end
+p Table.new[:x]
+p Table.new { |_, k| k.to_s }[:y]

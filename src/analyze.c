@@ -45356,6 +45356,12 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
     arysub_super_into(c, id, id, mname, init, args, -1);
     return;
   }
+  /* `super(n, &blk)` with the method's own block, named or anonymous, is
+     the forward below: a `new` with no block gives none */
+  int bx = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -2;
+  if (bx == -1 || (bx >= 0 && nt_kind(nt, bx) == NK_LocalVariableReadNode && s->blk_param &&
+                   nt_str(nt, bx, "name") && sp_streq(nt_str(nt, bx, "name"), s->blk_param)))
+    blk = -1;
   if (blk >= 0) { arysub_super_into(c, id, id, mname, init, args, blk); return; }
   /* In self.new, a split on block_given? would make the method a yielding
      one, which a call through a class value cannot reach: with no block
