@@ -10,12 +10,16 @@ esc = "a\"b\\c\nd\te\rf\bg\fh\u0001i\u001fj\u007fk/l"
 puts JSON.generate({"s" => esc, esc => 1})
 puts JSON.generate(["", "\"", "\\", "\n\n", "x" * 3, "é ü 日本"])
 
-# documents on both sides of 512 bytes, the escapes falling across it
+# documents on both sides of 512 bytes, the escapes falling across it: a long
+# plain run, then escapes; escapes only; and plain bytes between escapes, each
+# compared whole with the document written out by hand
 [480, 505, 506, 507, 508, 509, 510, 511, 512, 520, 1500].each do |n|
   s = JSON.generate({"k" => "x" * n + "\n\"" + "y" * 3})
-  puts "#{n} #{s.size} #{s[0, 8]} #{s[-12, 12]}"
   t = JSON.generate(["\t" * (n / 2)])
-  puts "#{n} #{t.size} #{t[-6, 6]}"
+  u = JSON.generate(["a\"" * (n / 3)])
+  puts "#{n} #{s.size} #{s == "{\"k\":\"" + "x" * n + "\\n\\\"yyy\"}"} " \
+       "#{t.size} #{t == "[\"" + "\\t" * (n / 2) + "\"]"} " \
+       "#{u.size} #{u == "[\"" + "a\\\"" * (n / 3) + "\"]"}"
 end
 
 # every kind of key and leaf
