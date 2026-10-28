@@ -2442,6 +2442,9 @@ else {
      widened the receiver to poly in inference. */
   if (sp_streq(name, "concat") && argc >= 1) {
     int same = 1, all_poly = 1;
+    /* the last operand that is boxed: its #to_ary (and an earlier one's)
+       can change an operand before it, which CRuby has already copied */
+    int last_boxed = -1;
     for (int j = 0; j < argc; j++) {
       /* Ask the SLOT, not the node: a block parameter's node type can
          read as the element kind while its declaration is boxed, and
@@ -2455,6 +2458,7 @@ else {
            node, viewed as the instance's Array, is what is read) */
         if (alv && alv->type != TY_UNKNOWN && comp_ty_ary_root(c, alv->type) < 0) ar = repr_of_slot(c, alv);
       }
+      if (ar.kind == RK_BOXED) last_boxed = j;
       if (ar.elem != ty_array_elem(rt)) same = 0;
       if (ar.kind != RK_BOXED && ar.elem != TY_POLY && ar.elem != ty_array_elem(rt)) all_poly = 0;
     }
@@ -2478,16 +2482,29 @@ else {
       buf_printf(b, "({ sp_%sArray *_t%d = %s; SP_GC_ROOT(_t%d);", k, ta, ra.p ? ra.p : "NULL", ta);
       free(ra.p);
       int vbase = g_tmp + 1; g_tmp += 2 * argc;   /* each value, then its length */
+      Buf ck = {0, 0, 0};
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1;
         buf_printf(b, " sp_RbVal _t%d = ", tv); emit_boxed(c, argv[j], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tv);
         /* (an Array, or what #to_ary answers: anything else is CRuby's
-           TypeError, where its length read as 0 appended nothing) */
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv, tv);
-        buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
+           TypeError, where its length read as 0 appended nothing; it
+           converts after the frozen test, as CRuby converts it) */
+        buf_printf(&ck, " _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv);
+        /* copied at its turn when a boxed operand follows (a typed
+           Array's general view is already a new array; a general Array's
+           view is the array itself) */
+        if (j < last_boxed) {
+          int tc = ++g_tmp;
+          buf_printf(&ck, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d); if (_t%d == (sp_PolyArray *)_t%d.v.p) _t%d = sp_PolyArray_dup(_t%d); _t%d = sp_box_poly_array(_t%d); }",
+                     tc, tv, tc, tv, tc, tc, tv, tc);
+        }
+        buf_printf(&ck, " sp_int _t%d = sp_poly_length(_t%d);", tn, tv);
       }
       /* a frozen receiver raises even when every argument is empty */
       buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", ta, ta, ta, array_frozen_cls(rt));
+      if (ck.p) buf_puts(b, ck.p);
+      free(ck.p);
       for (int j = 0; j < argc; j++) {
         int tv = vbase + 2 * j, tn = tv + 1, ti = ++g_tmp;
         buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++)", ti, ti, tn, ti);
@@ -3248,7 +3265,7 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   int tf = 0, tr;
   if (fcls) {
     tf = ++g_tmp;
-    emit_ctype(c, rrt, b); buf_printf(b, " _t%d = (", tf); emit_expr(c, recv, b); buf_puts(b, "); ");
+    emit_ctype(c, rrt, b); buf_printf(b, " _t%d = (", tf); emit_expr(c, recv, b); buf_printf(b, "); SP_GC_ROOT(_t%d); ", tf);
     tr = emit_fold_recv_tested(c, id, recv) ? tf : 0;
   }
   else tr = emit_fold_recv_hold(c, id, recv, b);

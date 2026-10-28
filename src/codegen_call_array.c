@@ -1796,6 +1796,14 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
     int base = g_tmp + 1; g_tmp += argc;
     int vb = g_tmp + 1; g_tmp += argc;
     Buf cv = {0, 0, 0};
+    /* the last boxed operand: its #to_ary (and an earlier one's) can change
+       an operand before it, which CRuby has already copied */
+    int last_boxed = -1;
+    for (int ai = 0; ai < argc; ai++) {
+      Repr ar = repr_of(c, argv[ai]);
+      if (ar.elem != TY_INT && ar.elem != TY_STRING && ar.elem != TY_FLOAT &&
+          (ar.kind == RK_BOXED || ar.untyped)) last_boxed = ai;
+    }
     for (int ai = 0; ai < argc; ai++) {
       Repr ar = repr_of(c, argv[ai]);
       const char *from = ar.elem == TY_INT   ? "sp_PolyArray_from_int_array"
@@ -1810,17 +1818,28 @@ int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
         buf_printf(b, " sp_RbVal _t%d = ", vb + ai); emit_boxed(c, argv[ai], b);
         buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", vb + ai);
         buf_printf(&cv, " sp_PolyArray *_t%d = sp_poly_set_operand(_t%d); SP_GC_ROOT(_t%d);", base + ai, vb + ai, base + ai);
+        if (ai < last_boxed) buf_printf(&cv, " _t%d = sp_PolyArray_dup(_t%d);", base + ai, base + ai);
+        continue;
+      }
+      if (from) {
+        /* a typed operand is read into the working array in order with the
+           boxed ones' conversions: an earlier operand's #to_ary can change it */
+        emit_ctype(c, comp_ntype(c, argv[ai]), b); buf_printf(b, " _t%d = ", vb + ai); emit_expr(c, argv[ai], b);
+        buf_printf(b, "; SP_GC_ROOT(_t%d);", vb + ai);
+        buf_printf(&cv, " sp_PolyArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);", base + ai, from, vb + ai, base + ai);
         continue;
       }
       buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
-      if (from) { buf_printf(b, "%s(", from); emit_expr(c, argv[ai], b); buf_puts(b, ")"); }
-      else if (comp_ntype(c, argv[ai]) == TY_VOID) {
+      if (comp_ntype(c, argv[ai]) == TY_VOID) {
         /* an argument that never returns (a method that only raises):
            run it for its raise; the empty array after it is never read */
         buf_puts(b, "((void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), sp_PolyArray_new())");
       }
       else emit_expr(c, argv[ai], b);   /* already a poly array */
       buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
+      /* copied at its turn, as CRuby copies it: a later operand's #to_ary
+         can change it */
+      if (ai < last_boxed) buf_printf(&cv, " _t%d = sp_PolyArray_dup(_t%d);", base + ai, base + ai);
     }
     /* ... and its length too: one aliasing the receiver is appended as it
        was, not as an earlier append grew it (CRuby) */

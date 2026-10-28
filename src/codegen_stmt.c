@@ -24297,6 +24297,19 @@ static int str_mutate_sn_var_guard(Compiler *c, int id, int recv, Buf *b, int in
   return r ? 1 : -1;
 }
 
+/* A concat operand's type. Ask the SLOT, not the node: a block parameter's
+   node type can read as an array kind while its declaration is boxed, and
+   reading the boxed local as a typed pointer does not compile (#3850). */
+static TyKind concat_operand_type(Compiler *c, int node) {
+  TyKind at = comp_ntype(c, node);
+  if (nt_kind(c->nt, node) == NK_LocalVariableReadNode) {
+    Scope *asc = comp_scope_of(c, node);
+    LocalVar *alv = asc ? scope_local(asc, nt_str(c->nt, node, "name")) : NULL;
+    if (alv && alv->type != TY_UNKNOWN) at = alv->type;
+  }
+  return at;
+}
+
 static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -24839,20 +24852,16 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     /* rooted across the arguments, which can allocate */
     buf_printf(b, "{ sp_%sArray *_t%d = ", k, tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);\n", tr);
     Buf hd, ck, lp; memset(&hd, 0, sizeof hd); memset(&ck, 0, sizeof ck); memset(&lp, 0, sizeof lp);
+    /* the last boxed operand: its #to_ary (and an earlier one's) can change
+       a typed operand before it, which CRuby has already copied */
+    int last_boxed = -1;
+    for (int a = 0; a < argc; a++) if (concat_operand_type(c, argv[a]) == TY_POLY) last_boxed = a;
     for (int a = 0; a < argc; a++) {
       int tn = ++g_tmp, ti = ++g_tmp;
       /* the source array may be a different kind than the receiver (e.g.
          IntArray#concat(PolyArray)); read with the source's kind and coerce
          each element into the receiver's element representation. */
-      TyKind at = comp_ntype(c, argv[a]);
-      /* Ask the SLOT, not the node: a block parameter's node type can read as
-         an array kind while its declaration is boxed, and reading the boxed
-         local as a typed pointer does not compile (#3850). */
-      if (nt_kind(nt, argv[a]) == NK_LocalVariableReadNode) {
-        Scope *asc = comp_scope_of(c, argv[a]);
-        LocalVar *alv = asc ? scope_local(asc, nt_str(nt, argv[a], "name")) : NULL;
-        if (alv && alv->type != TY_UNKNOWN) at = alv->type;
-      }
+      TyKind at = concat_operand_type(c, argv[a]);
       const char *ak = (at == TY_POLY_ARRAY) ? "Poly" : array_kind(at);
       if (at == TY_POLY) {
         /* boxed source: walk it through the boxed surface */
@@ -24888,8 +24897,12 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
       emit_indent(&hd, indent + 1);
       buf_printf(&hd, "{ sp_%sArray *_t%d = ", ak, ts); emit_expr(c, argv[a], &hd);
       buf_printf(&hd, "; SP_GC_ROOT(_t%d);\n", ts);
-      emit_indent(&hd, indent + 1);
-      buf_printf(&hd, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
+      /* (read in order with the boxed operands' conversions: a later
+         operand's #to_ary can change this one, so it is copied at its turn,
+         as CRuby copies it; an earlier one's can change its length) */
+      emit_indent(&ck, indent + 1);
+      if (a < last_boxed) buf_printf(&ck, "_t%d = sp_%sArray_dup(_t%d); ", ts, ak, ts);
+      buf_printf(&ck, "sp_int _t%d = sp_%sArray_length(_t%d);\n", tn, ak, ts);
       emit_indent(&lp, indent + 1);
       /* the same number kind copies each element with its nil */
       int same_o = *nilable && sp_streq(ak, k) && (sp_streq(k, "Int") || sp_streq(k, "Float"));
