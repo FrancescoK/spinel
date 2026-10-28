@@ -2764,6 +2764,25 @@ const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n) {
   return k ? k->mix : NULL;
 }
 
+/* See analyze.h. A builtin module's name is asked before the alias chain,
+   which reads every constant write: a class's includes of Comparable or
+   Enumerable are asked for on every ancestor walk. */
+int elab_module_named(Compiler *c, const char *nm) {
+  int id = nm ? comp_class_index(c, nm) : -1;
+  if (id >= 0 || !nm) return id;
+  if (builtin_mixin_module_id(nm)) return builtin_mixin_module_id(nm);
+  const char *al = resolve_class_alias_chain(c, nm);
+  if (!al) return -1;
+  id = comp_class_index(c, al);
+  return id >= 0 ? id : builtin_mixin_module_id(al) ? builtin_mixin_module_id(al) : -1;
+}
+
+int elab_mixin_module(Compiler *c, const LrMixin *m) {
+  if (m->mod >= 0) return m->mod;
+  NodeKind k = m->ref >= 0 ? nt_kind(c->nt, m->ref) : NK_NilNode;
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode ? elab_module_named(c, nt_str(c->nt, m->ref, "name")) : -1;
+}
+
 /* ---- SPINEL_ELAB_CHECK ---- */
 int elab_check_on(Compiler *c) { return lr_get(c)->check; }
 

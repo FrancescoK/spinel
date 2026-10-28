@@ -6949,7 +6949,7 @@ int static_isa_cond(Compiler *c, int pred) {
   if (!builtin_mod && is_descendant(c, rcls, target)) return nilable ? -1 : 1;
   int is_mod = builtin_mod || comp_class_is_module(c, &c->classes[target]);
   /* a module the class (or a superclass) includes */
-  if (is_mod && class_includes_module_named(c, rcls, target_name)) return nilable ? -1 : 1;
+  if (is_mod && class_includes_module(c, rcls, builtin_mod ? elab_module_named(c, target_name) : target)) return nilable ? -1 : 1;
   /* a subclass can add any other module (with include, prepend, a module
      that includes it, or an `extend` on one object), so is_a? of a module
      is answered at run time when the class has a subclass */
@@ -7340,7 +7340,7 @@ int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
       buf_printf(b, "(%s.tag == SP_TAG_OBJ && (", tmp);
       int first = 1;
       for (int k = 0; k < c->nclasses; k++) {
-        if (class_isa_user(c, k, cid, cn)) {
+        if (class_isa_user(c, k, cid)) {
           /* an Array subclass instance is boxed as its Array (#7449) */
           if (c->classes[k].ary_root > 0)
             buf_printf(b, "%ssp_bsub_cls_of(%s) == %d", first ? "" : " || ", tmp, k);
@@ -7923,7 +7923,7 @@ static int emit_obj_class_when(Compiler *c, TyKind pt, const char *cn, int t, Bu
   int tcid = comp_class_index(c, cn);
   int is_mod = tcid >= 0 ? comp_class_is_module(c, &c->classes[tcid]) : is_builtin_module_name(cn);
   if ((tcid >= 0 && (cid == tcid || is_descendant(c, cid, tcid))) ||
-      (is_mod && class_includes_module_named(c, cid, cn))) {
+      (is_mod && class_includes_module(c, cid, tcid >= 0 ? tcid : elab_module_named(c, cn)))) {
     emit_obj_live(c, pt, t, b);
     return 1;
   }

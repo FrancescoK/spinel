@@ -294,6 +294,14 @@ ElabBody *elab_all_bodies(Compiler *c, int *n);
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
 int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
+/* the module mixin m names: the one the record resolved where the call
+   stands, else the one its constant names (elab_module_named); -1 for none */
+int elab_mixin_module(Compiler *c, const LrMixin *m);
+/* the module a constant named nm names, for a mixin the record did not
+   resolve: the class of the name, a builtin module's (negative) id
+   (builtin_mixin_module_id), or what an alias of either names (`Loud =
+   Shout`, `E = Enumerable`); -1 for none */
+int elab_module_named(Compiler *c, const char *nm);
 /* what constant `name`, read in node's lexical scopes, resolves to at p
    (node's own point when p has none): its lexical scopes' own constants,
    innermost first, then the innermost one's ancestors and Object's; *out

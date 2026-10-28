@@ -19281,22 +19281,6 @@ static void emit_builtin_reopen_mod_arms(Compiler *c, int **mods, const int *nmo
 }
 
 /* The class machinery a program with classes or class values needs: class tables, names, is_a and the class-value runtime (codegen_program's steps, in their order) */
-/* The class a mixin's argument names where the load record does not know
-   it: the class of its name, or of the module a constant aliases (`Loud =
-   Shout`, `E = Enumerable`), or a builtin module's (negative) id
-   (builtin_mixin_module_id); -1 for none */
-static int mixin_ref_class_id(Compiler *c, int ref) {
-  NodeKind k = ref >= 0 ? nt_kind(c->nt, ref) : NK_NilNode;
-  const char *nm = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(c->nt, ref, "name") : NULL;
-  int id = nm ? comp_class_index(c, nm) : -1;
-  if (id < 0 && nm) {
-    const char *al = resolve_class_alias_chain(c, nm);
-    if (al) { id = comp_class_index(c, al); nm = al; }
-  }
-  if (id < 0 && nm && builtin_mixin_module_id(nm)) id = builtin_mixin_module_id(nm);
-  return id;
-}
-
 static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char **isa_ext, size_t *isa_ext_at) {
   if (g_needs_class_machinery) {
   /* sp_cls_is_module[i]: 1 if user class i was defined as a module, 0 if class */
@@ -19555,7 +19539,7 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
         int  *tgt_n    = prep ? cls_npreps : cls_nincs;
         for (int x = g; x < ge; x++) {
           const LrMixin *m = &mx[x];
-          int mid2 = m->mod >= 0 ? m->mod : mixin_ref_class_id(c, m->ref);
+          int mid2 = elab_mixin_module(c, m);
           if (mid2 == -1) continue;
           int found2 = 0;
           for (int q = 0; q < tgt_n[ci] && !found2; q++) found2 = tgt_mods[ci][q] == mid2;

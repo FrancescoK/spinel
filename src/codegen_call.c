@@ -17751,17 +17751,17 @@ int any_class_defines(Compiler *c, const char *qm) {
       return 1;
   return 0;
 }
-/* Does the class, an ancestor, or a module one of them includes carry a
-   literal `include <mod>`? class_includes_module_named reads the class
-   bodies along the parent chain; the user modules a class includes are
-   followed through the table, since a bare `include Enumerable` inside a
-   module is recorded nowhere else. */
-int class_mixes_in(Compiler *c, int cid, const char *mod, int depth) {
+/* Does the class, an ancestor, or a module one of them includes include
+   module mod? class_includes_module reads the load record's includes along
+   the parent chain; the user modules a class includes are followed through
+   the table, since a bare `include Enumerable` inside a module is recorded
+   on the module alone. */
+int class_mixes_in(Compiler *c, int cid, int mod, int depth) {
   /* every level of the include chain is a distinct class, so the class count
      bounds a chain without a cycle, and cuts one that has one; a fixed depth
      of eight missed a module reached through a ninth (from the #5090 review) */
   if (cid < 0 || depth > c->nclasses) return 0;
-  if (class_includes_module_named(c, cid, mod)) return 1;
+  if (class_includes_module(c, cid, mod)) return 1;
   for (int cur = cid; cur >= 0; cur = c->classes[cur].parent) {
     for (int m = 0; m < c->classes[cur].nincluded_mods; m++)
       if (class_mixes_in(c, c->classes[cur].included_mods[m], mod, depth + 1)) return 1;
@@ -17811,7 +17811,7 @@ const char *const struct_names[] = {
 int class_implicit_responds(Compiler *c, int cid, const char *qm) {
   if (comp_method_in_chain(c, cid, "__enum_to_a", NULL) >= 0 &&
       name_is_enumerable_module_method(qm) &&
-      (class_struct_kind(c, cid) == 1 || class_mixes_in(c, cid, "Enumerable", 0))) return 1;
+      (class_struct_kind(c, cid) == 1 || class_mixes_in(c, cid, elab_module_named(c, "Enumerable"), 0))) return 1;
   if (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 &&
       name_is_comparable_module_method(qm) &&
       class_is_comparable(c, cid)) return 1;
@@ -17990,7 +17990,7 @@ static void refl_object_methods(Compiler *c, int cid, int pub, int prot, int sin
   int sk = class_struct_kind(c, cid);
   const char *const *core[4] = {
     sk == 1 ? structm : sk == 2 ? datam : NULL,
-    sk == 1 || class_mixes_in(c, cid, "Enumerable", 0) ? enumm : NULL,
+    sk == 1 || class_mixes_in(c, cid, elab_module_named(c, "Enumerable"), 0) ? enumm : NULL,
     class_is_comparable(c, cid) ? cmpm : NULL,
     objm };
   for (int t = 0; t < 4; t++)
@@ -18810,68 +18810,27 @@ void emit_math_arg(Compiler *c, int node, Buf *out) {
   buf_puts(out, "sp_num_to_f("); emit_boxed(c, node, out); buf_puts(out, ")");
 }
 
-/* Does class `cid` (or any ancestor) have a literal `include <mod_name>` in a
-   class/module body? Compile-time mirror of the ancestors-table include scan,
-   for answering is_a?(Comparable) / is_a?(Enumerable) on a statically-typed
-   user instance (#2363). static_isa_cond (the folded `is_a?` of an `if`,
-   `unless` or ternary) and emit_obj_class_when (the typed class arm of a
-   `when` or `in`) read it too, so a module the class includes matches
+/* Does class `cid` (or any ancestor) include module `mod` (a class index,
+   or a builtin module's id): an include the load record holds on the class
+   -- in a class or module body, a Struct.new or Data.define block wherever
+   it stands, `K.include(M)` -- of the module the record resolved where it
+   stands (elab_mixin_module), so `include ::Helper` is not the Helper of
+   the module around it? One a condition stands between and the body
+   holding it (LrMixin.cond), which may not run, is left out, as the
+   ancestor tables leave it out. Each ask reads the record's mixins of the
+   classes on the chain, no more. Answers is_a?(Comparable) / is_a?(Enumerable) on
+   a statically-typed user instance (#2363); the runtime class tests of a
+   boxed value (class_isa_user), static_isa_cond (the folded `is_a?` of an
+   `if`, `unless` or ternary) and emit_obj_class_when (the typed class arm
+   of a `when` or `in`) read it too, so a module the class includes matches
    there as well. */
-/* The names each class's bodies include by a literal `include`, by class:
-   one pass over the node table, kept until the table or the class table
-   moves. Each ask read every node of the program for each class on the
-   chain, and class_mixes_in asks per included module on the way: on a
-   Rails program late in its fixpoint (2.3M nodes) the scan was 9% of a
-   sampled window, under class_is_comparable. */
-static const NodeTable *inc_nt; static unsigned inc_ver; static int inc_count, inc_ncls = -1;
-static int *inc_head, *inc_next, inc_n, inc_cap; static const char **inc_name;
-static void inc_index_build(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  free(inc_head); free(inc_next); free(inc_name);
-  inc_head = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
-  inc_next = NULL; inc_name = NULL; inc_n = 0; inc_cap = 0;
-  if (!inc_head) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = 0; k < c->nclasses; k++) inc_head[k] = -1;
-  for (int id = 0; id < nt->count; id++) {
-    NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    int cls = cn ? comp_class_index(c, cn) : -1;
-    if (cls < 0 || cls >= c->nclasses) continue;
-    int body = nt_ref(nt, id, "body");
-    int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
-    for (int k = 0; k < bn; k++) {
-      NodeKind sk = nt_kind(nt, stmts[k]);
-      if (sk != NK_CallNode) continue;
-      const char *nm = nt_str(nt, stmts[k], "name");
-      if (!nm || !sp_streq(nm, "include") || nt_ref(nt, stmts[k], "receiver") >= 0) continue;
-      int an = 0; const int *aa;
-      int anode = nt_ref(nt, stmts[k], "arguments");
-      aa = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      for (int j = 0; j < an; j++) {
-        const char *anm = (nt_kind(nt, aa[j]) == NK_ConstantReadNode ||
-                           nt_kind(nt, aa[j]) == NK_ConstantPathNode)
-                          ? nt_str(nt, aa[j], "name") : NULL;
-        if (!anm) continue;
-        if (inc_n == inc_cap) {
-          inc_cap = inc_cap ? inc_cap * 2 : 256;
-          inc_next = realloc(inc_next, sizeof(int) * (size_t)inc_cap);
-          inc_name = realloc(inc_name, sizeof(char *) * (size_t)inc_cap);
-          if (!inc_next || !inc_name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-        }
-        inc_name[inc_n] = anm; inc_next[inc_n] = inc_head[cls]; inc_head[cls] = inc_n; inc_n++;
-      }
-    }
-  }
-  inc_nt = nt; inc_ver = nt->version; inc_count = nt->count; inc_ncls = c->nclasses;
-}
-int class_includes_module_named(Compiler *c, int cid, const char *mod_name) {
-  const NodeTable *nt = c->nt;
-  if (inc_nt != nt || inc_ver != nt->version || inc_count != nt->count || inc_ncls != c->nclasses) inc_index_build(c);
+int class_includes_module(Compiler *c, int cid, int mod) {
+  if (mod == -1) return 0;
   for (int cur = cid; cur >= 0 && cur < c->nclasses; cur = c->classes[cur].parent) {
-    for (int e = inc_head[cur]; e >= 0; e = inc_next[e])
-      if (sp_streq(inc_name[e], mod_name)) return 1;
+    int n = 0;
+    const LrMixin *mx = elab_class_mixins(c, cur, &n);
+    for (int i = 0; i < n; i++)
+      if (mx[i].kind == LR_INCLUDE && !mx[i].cond && elab_mixin_module(c, &mx[i]) == mod) return 1;
     if (c->classes[cur].parent == cur) break;
   }
   return 0;
@@ -22772,14 +22731,14 @@ static int class_is_module_def(Compiler *c, int k) {
   return dk == NK_ModuleNode;
 }
 
-/* Whether an instance of user class k is_a? user class or module `cid`
-   (named `cn`): cid is k, a superclass of it, or a module k or a
+/* Whether an instance of user class k is_a? user class or module `cid`:
+   cid is k, a superclass of it, or a module k or a
    superclass includes. The runtime class tests of a boxed value list the
    classes this answers yes for. */
-int class_isa_user(Compiler *c, int k, int cid, const char *cn) {
+int class_isa_user(Compiler *c, int k, int cid) {
   if (k == cid || is_descendant(c, k, cid)) return 1;
   return class_is_module_def(c, cid) && !class_is_module_def(c, k) &&
-         class_includes_module_named(c, k, cn);
+         class_includes_module(c, k, cid);
 }
 
 /* The runtime test for `<poly value v> is_a? <class named cn>` (exact: the
@@ -22842,7 +22801,7 @@ int emit_poly_isa_test(Compiler *c, const char *cn, const char *v, int exact, Bu
          `A.new` read out of a mixed array answers is_a?(Greet) as the typed
          receiver does */
       for (int k = 0; k < c->nclasses; k++)
-        if (k == cid || (!exact && class_isa_user(c, k, cid, cn))) {
+        if (k == cid || (!exact && class_isa_user(c, k, cid))) {
           /* an Array subclass instance is boxed as its Array (#7449) */
           if (c->classes[k].ary_root > 0)
             buf_printf(b, "%ssp_bsub_cls_of(%s) == %d", first ? "" : " || ", v, k);
@@ -30330,7 +30289,7 @@ int bind_owner_mismatch(Compiler *c, int target, TyKind ot) {
   Scope *tm = &c->scopes[target];
   int cid = tm->class_id;
   if (cid < 0 || tm->is_cmethod || class_is_module_def(c, cid)) return 0;
-  return !class_isa_user(c, ty_object_class(ot), cid, c->classes[cid].name);
+  return !class_isa_user(c, ty_object_class(ot), cid);
 }
 
 /* `um.bind_call(obj, args...)` on an UnboundMethod whose target is a known
@@ -30402,7 +30361,7 @@ static void emit_bind_call_arm(Compiler *c, int id, int target, const int *argv,
   const char *cn = c->classes[cid].name;
   buf_printf(b, "if (!(_t%d.tag == SP_TAG_OBJ && (0", to);
   for (int k = 0; k < c->nclasses; k++)
-    if (class_isa_user(c, k, cid, cn)) buf_printf(b, " || _t%d.cls_id == %d", to, k);
+    if (class_isa_user(c, k, cid)) buf_printf(b, " || _t%d.cls_id == %d", to, k);
   buf_printf(b, "))) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", cn);
   char selfp[96];
   snprintf(selfp, sizeof selfp, "((sp_%s *)_t%d.v.p)", c->classes[cid].c_name, to);
