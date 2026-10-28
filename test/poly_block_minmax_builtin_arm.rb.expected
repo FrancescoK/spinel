@@ -23,3 +23,8 @@ nil
 ["k", 10]
 ["kkk", 2]
 comparison of Integer with 3 failed
+5
+[5, 3, 1]
+cannot get the maximum of endless range
+cannot get the maximum of beginless range with custom comparison method
+cannot get the minimum of beginless range

@@ -63,3 +63,25 @@ begin
 rescue ArgumentError => e
   puts e.message
 end
+
+# a generator-backed Enumerator is walked to its end, and Range#max / #min
+# refuse an endless or beginless Range before asking the block
+class Gen
+  attr_reader :max, :min, :sort_by
+end
+g1 = Enumerator.new { |y| y << 1; y << 5; y << 3 }
+p [Gen.new, g1][1].max { |a, b| a <=> b }
+g2 = Enumerator.new { |y| y << 1; y << 5; y << 3 }
+p [Gen.new, g2][1].sort_by { |x| -x }
+[(1..), (..5)].each do |r|
+  begin
+    p [Gen.new, r][1].max { |a, b| a <=> b }
+  rescue RangeError => ex
+    puts ex.message
+  end
+end
+begin
+  p [Gen.new, (..5)][1].min { |a, b| a <=> b }
+rescue RangeError => ex
+  puts ex.message
+end

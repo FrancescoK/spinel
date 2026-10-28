@@ -21491,6 +21491,16 @@ static sp_RbVal sp_poly_to_h_val(sp_RbVal v);
 static sp_RbVal sp_poly_hash_replace(sp_RbVal recv, sp_RbVal src, int keep_default);
 static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key);
 static sp_RbVal sp_poly_delete_at(sp_RbVal v, sp_int i);
+/* Range#min / #max with a block refuse what they cannot walk before asking
+   the block, as CRuby's do: a beginless Range, and an endless one for max */
+static void sp_penum_minmax_range_ck(sp_RbVal recv, int is_max) {
+  if (!(recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_RANGE && recv.v.p)) return;
+  sp_Range *r = (sp_Range *)recv.v.p;
+  if (r->nobeg)
+    sp_raise_cls("RangeError", is_max ? "cannot get the maximum of beginless range with custom comparison method"
+                                      : "cannot get the minimum of beginless range");
+  if (is_max && r->noend) sp_raise_cls("RangeError", "cannot get the maximum of endless range");
+}
 static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   if (op >= SP_PENUM_SELECT_BANG && op <= SP_PENUM_FILTER_BANG) {
     const char *opname = op == SP_PENUM_SELECT_BANG ? "select!" : op == SP_PENUM_FILTER_BANG ? "filter!" :
@@ -21632,9 +21642,17 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
      from it. A Hash's entries, a Range's members and an Enumerator's items
      are walked from a copy taken before the block runs. */
   int live = recv.tag == SP_TAG_OBJ && sp_poly_is_array_kind(recv.cls_id);
+  if (op == SP_PENUM_MIN || op == SP_PENUM_MAX) sp_penum_minmax_range_ck(recv, op == SP_PENUM_MAX);
   sp_int n = live ? 0 : sp_poly_arr_len_ex(walk);
   sp_PolyArray *src = sp_PolyArray_new(); SP_GC_ROOT(src);
-  for (sp_int i = 0; i < n; i++) sp_PolyArray_push(src, sp_poly_each_elem(walk, i));
+  /* a walker's length is only what it has pulled so far, so it is read
+     again at each step until the source runs out */
+  if (!live && sp_enum_is_walker(walk)) {
+    for (sp_int i = 0; i < sp_poly_arr_len_ex(walk); i++) sp_PolyArray_push(src, sp_poly_each_elem(walk, i));
+    n = src->len;
+  }
+  else
+    for (sp_int i = 0; i < n; i++) sp_PolyArray_push(src, sp_poly_each_elem(walk, i));
   if (first_of_pair)
     for (sp_int i = 0; i < n; i++) { sp_gc_wb((void *)src); src->data[i] = sp_yielded_first(pair, src->data[i]); }
   /* the element being handed to the block, rooted: walked live, the array
