@@ -2083,12 +2083,12 @@ int is_port_gvar_name(const char *n) {
   return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
 }
 
-int synth_stands_for(const char *name, const char **proto) {
+int synth_stands_for(const char *name, int i, const char **proto) {
   const char *stands = NULL;
-  if (!name) return 0;
-  if (sp_streq(name, "__noarg to_s")) stands = "to_s";
-  else if (sp_streq(name, "__noarg inspect")) stands = "inspect";
-  else if (sp_streq(name, "__enum_to_a")) stands = "each";
+  if (!name || i < 0) return 0;
+  if (sp_streq(name, "__noarg to_s")) stands = i == 0 ? "to_s" : NULL;
+  else if (sp_streq(name, "__noarg inspect")) stands = i == 0 ? "inspect" : NULL;
+  else if (sp_streq(name, "__enum_to_a")) stands = i == 0 ? "each" : i == 1 ? "to_a" : i == 2 ? "deconstruct" : NULL;
   if (stands && proto) *proto = stands;
   return stands != NULL;
 }
