@@ -554,8 +554,10 @@ int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an o
 
 /* A name the compiler synthesizes for a protocol method (the no-argument
    display wrappers `__noarg to_s` and `__noarg inspect`, the Enumerable
-   materializer `__enum_to_a`): 1, and in *proto the protocol name it answers
-   for (to_s, inspect, each), else 0. */
-int synth_stands_for(const char *name, const char **proto);
+   materializer `__enum_to_a`): 1, and in *proto the i-th protocol name it
+   answers for, else 0. The materializer is what Enumerable#to_a runs (it
+   calls each), what a Struct's to_a and deconstruct read (its members; CRuby
+   calls nothing), so it answers for each, to_a and deconstruct. */
+int synth_stands_for(const char *name, int i, const char **proto);
 int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif
