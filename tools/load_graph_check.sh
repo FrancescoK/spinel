@@ -298,28 +298,28 @@ false'
 # computed require after it names the file the literal one loaded.
 mkdir "$tmp/order/app2"
 printf 'puts "app2"\n' > "$tmp/order/app2/dup.rb"
-lorder() {   # NAME -I-DIRS STATEMENTS EXPECTED-FIRST-LINE
-  mkdir "$tmp/order/$1"
-  printf '%s\nrequire "dup"\ndef load_it(n) = require(n)\np load_it("dup")\n' "$3" > "$tmp/order/$1/main.rb"
-  inc_args=
-  for d in $2; do inc_args="$inc_args -I $tmp/order/$d"; done
-  # shellcheck disable=SC2086
-  if "$SPINEL" --load-model=graph $inc_args "$tmp/order/$1/main.rb" -o "$tmp/order/$1/bin" >"$tmp/order/$1/cc" 2>&1; then
-    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1 || fail "order $1 exits $?"
-    printf '%s\nfalse\n' "$4" | cmp -s - "$tmp/order/$1/out" || { fail "order $1: a literal require did not search as CRuby's does"; cat "$tmp/order/$1/out"; }
+lorder() {   # NAME STATEMENTS EXPECTED-FIRST-LINE -I-DIR...
+  lo_name=$1 lo_stmts=$2 lo_want=$3; shift 3
+  mkdir "$tmp/order/$lo_name"
+  printf '%s\nrequire "dup"\ndef load_it(n) = require(n)\np load_it("dup")\n' "$lo_stmts" > "$tmp/order/$lo_name/main.rb"
+  for d in "$@"; do set -- "$@" -I "$tmp/order/$d"; shift; done   # (each -I and its directory one word)
+  if "$SPINEL" --load-model=graph "$@" "$tmp/order/$lo_name/main.rb" -o "$tmp/order/$lo_name/bin" >"$tmp/order/$lo_name/cc" 2>&1; then
+    "$tmp/order/$lo_name/bin" > "$tmp/order/$lo_name/out" 2>&1 || fail "order $lo_name exits $?"
+    printf '%s\nfalse\n' "$lo_want" | cmp -s - "$tmp/order/$lo_name/out" ||
+      { fail "order $lo_name: a literal require did not search as CRuby's does"; cat "$tmp/order/$lo_name/out"; }
   else
-    fail "order $1 did not compile"; sed -n 1,3p "$tmp/order/$1/cc"
+    fail "order $lo_name did not compile"; sed -n 1,3p "$tmp/order/$lo_name/cc"
   fi
 }
 app2='File.join(__dir__, "..", "app2")'
-lorder lit_unshift inc "\$LOAD_PATH.unshift $app" app
-lorder lit_prepend inc "\$LOAD_PATH.prepend $app" app
-lorder lit_append inc "\$LOAD_PATH << $app" inc
-lorder lit_unshift_inc "inc app" "\$LOAD_PATH.unshift $app" app
-lorder lit_append_unshift inc "\$LOAD_PATH << $app2
-\$LOAD_PATH.unshift $app" app
-lorder lit_unshift_twice inc "\$LOAD_PATH.unshift $app
-\$LOAD_PATH.unshift $app2" app2
+lorder lit_unshift "\$LOAD_PATH.unshift $app" app inc
+lorder lit_prepend "\$LOAD_PATH.prepend $app" app inc
+lorder lit_append "\$LOAD_PATH << $app" inc inc
+lorder lit_unshift_inc "\$LOAD_PATH.unshift $app" app inc app
+lorder lit_append_unshift "\$LOAD_PATH << $app2
+\$LOAD_PATH.unshift $app" app inc
+lorder lit_unshift_twice "\$LOAD_PATH.unshift $app
+\$LOAD_PATH.unshift $app2" app2 inc
 
 # A symlinked -I directory is in $LOAD_PATH as written (File.expand_path
 # does not resolve it) and still names the program's file; the feature root
