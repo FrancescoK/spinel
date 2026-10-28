@@ -18330,6 +18330,10 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
   for (int i = 0; i < en && !store_alloc; i++) {
     Repr vr = repr_of(c, els[i]);
     store_alloc = (vr.kind == RK_STRUCT || vr.kind == RK_VOBJ) && masgn_slot_boxes(c, id, lefts, ln, i, vr.as_ty);
+    /* a box into a general Array ivar is converted at its store, and a box
+       holding a typed Array converts to a new one */
+    if (!store_alloc && i < ln && vr.kind == RK_BOXED && nt_kind(nt, lefts[i]) == NK_InstanceVariableTargetNode)
+      store_alloc = masgn_slot_type(c, id, lefts[i]) == TY_POLY_ARRAY;
   }
   /* evaluate all RHS values into temps first (so `a, b = b, a` swaps).
      Save each temp index separately: emit_expr may consume extra g_tmp
@@ -18673,7 +18677,23 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       /* a boxed element into a String ivar: a box holding a handle is that
          handle, a boxed nil the slot's NULL, as a local target's is */
       else if (ivt == TY_STRBUF && valt == TY_POLY) buf_printf(b, "sp_poly_as_strbuf(_t%d)", tmps[i]);
-      else if (ivt == TY_STRING && valt == TY_POLY) masgn_conv(c, lefts[i], ivt, valt, ivex, b);
+      /* a boxed element into any other typed ivar: unboxed, behind the
+         --rbs seed's assertion where a seed pins the slot, as the single
+         write's store is (a general Array slot converts the box, nil kept:
+         a cast would read a typed Array's elements as boxed values) */
+      else if (valt == TY_POLY && ivt != TY_POLY && ivt != TY_UNKNOWN) {
+        Buf ck; memset(&ck, 0, sizeof ck);
+        if (iv_cid >= 0 && class_ivar_pinned(&c->classes[iv_cid], ivnm))
+          emit_rbs_checked_text(c, ivt, ivnm, ivex, &ck);
+        else buf_puts(&ck, ivex);
+        if (ivt == TY_POLY_ARRAY) {
+          int tv = ++g_tmp;
+          buf_printf(b, "({ sp_RbVal _t%d = %s; _t%d.tag == SP_TAG_NIL ? NULL : sp_poly_to_poly_array(_t%d); })",
+                     tv, ck.p, tv, tv);
+        }
+        else masgn_conv(c, lefts[i], ivt, valt, ck.p, b);
+        free(ck.p);
+      }
       else buf_printf(b, "_t%d", tmps[i]);
       splice_store_close(c, lefts[i], sk, b);
       buf_puts(b, ";\n");
