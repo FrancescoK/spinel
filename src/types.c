@@ -433,7 +433,18 @@ static int bop_result_fallback_allowed(const char *name) {
          !strcmp(name, "rotate") || !strcmp(name, "shuffle") ||
          !strcmp(name, "first") || !strcmp(name, "last") ||
          !strcmp(name, "take") || !strcmp(name, "drop") ||
-         !strcmp(name, "fetch") || !strcmp(name, "sample");
+         !strcmp(name, "fetch") || !strcmp(name, "sample") ||
+         /* K-033: each verified with its own RED/GREEN test, same as above.
+            dig and fetch(1,2) stay OFF this list on purpose -- Hash's own
+            bop_rows row for either is a placeholder TY_UNKNOWN, not yet a
+            real answer, so adding them here would change nothing (bop_result
+            below declines a TY_UNKNOWN row) and falsely suggest they were
+            verified. */
+         !strcmp(name, "[]") || !strcmp(name, "slice") ||
+         !strcmp(name, "delete") || !strcmp(name, "delete_at") ||
+         !strcmp(name, "assoc") || !strcmp(name, "rassoc") ||
+         !strcmp(name, "values_at") || !strcmp(name, "pop") ||
+         !strcmp(name, "shift");
 }
 /* Whether a yield site answers `name` on a receiver of kind recv from the
    builtin-op rows rather than from a rule of its own: 1 for a listed pair,
@@ -453,10 +464,20 @@ static int yield_site_listed(const char *name, TyKind recv) {
       !strcmp(name, "freeze"))
     return num || recv == TY_STRING || recv == TY_SYMBOL || ty_recv_is_plain_array(recv);
   if (!strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "uniq") ||
-      !strcmp(name, "compact") || !strcmp(name, "to_a") || !strcmp(name, "first") ||
-      !strcmp(name, "last") || !strcmp(name, "min") || !strcmp(name, "max") ||
-      !strcmp(name, "pop") || !strcmp(name, "shift"))
+      !strcmp(name, "compact") || !strcmp(name, "to_a") || !strcmp(name, "last") ||
+      !strcmp(name, "min") || !strcmp(name, "max") || !strcmp(name, "pop"))
     return ty_recv_is_plain_array(recv);
+  /* first/shift's own row states a Hash kind too (the [key, value] pair --
+     K-033/kilau), unlike min/max/uniq/minmax above, whose Hash row is a
+     placeholder TY_UNKNOWN (bop_result below declines it, so listing Hash
+     here for those would still answer nothing -- only a name whose row is
+     concrete for Hash belongs on this side of the list). */
+  if (!strcmp(name, "first") || !strcmp(name, "shift"))
+    return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
+  /* clear/flatten: BOPR_SELF and TY_POLY_ARRAY respectively, concrete for
+     both a plain Array and a Hash receiver (K-033). */
+  if (!strcmp(name, "clear") || !strcmp(name, "flatten"))
+    return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
   return -1;
 }
 int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
