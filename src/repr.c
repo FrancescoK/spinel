@@ -628,6 +628,25 @@ static int repr_class_facts(const Compiler *c, TyKind t, int *exc) {
   if (c->classes[cid].is_value_type || *exc) return 0;
   /* an Array subclass instance is boxed as its Array (arysub_box_id) */
   if (c->classes[cid].ary_root > 0) return 0;
+  /* (once the analysis is done, from a table of the classes some class
+     inherits from: asked of every stored value, the scan of every class
+     grew with the square of the program) */
+  if (g_scopes_settled) {
+    static unsigned char *inherited = NULL;
+    static int inh_n = -1;
+    static unsigned inh_shape;
+    if (inh_n != c->nclasses || inh_shape != comp_class_shape_gen()) {
+      free(inherited);
+      inh_n = c->nclasses; inh_shape = comp_class_shape_gen();
+      inherited = calloc((size_t)(inh_n > 0 ? inh_n : 1), 1);
+      if (!inherited) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      for (int k = 0; k < inh_n; k++) {
+        int p = c->classes[k].parent;
+        if (p >= 0 && p < inh_n && p != k) inherited[p] = 1;
+      }
+    }
+    return inherited[cid];
+  }
   for (int k = 0; k < c->nclasses; k++)
     if (k != cid && c->classes[k].parent == cid) return 1;
   return 0;
