@@ -1872,8 +1872,8 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "Numeric",                      -113,  BC_CLASS },
   { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
   { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
-  { "Object",                       -116,  BC_CLASS },
-  { "BasicObject",                  -117,  BC_CLASS },
+  { "Object",                       -116,  BC_CLASS | BC_PLAIN },
+  { "BasicObject",                  -117,  BC_CLASS | BC_PLAIN },
   { "Proc",                         -118,  BC_CLASS },
   { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
   { "IO",                           -120,  BC_CLASS },
@@ -1902,7 +1902,7 @@ static const BuiltinClass BUILTIN_CLASSES[] = {
   { "Regexp",                       -143,  BC_CLASS },
   { "Enumerator",                   -144,  BC_CLASS },
   { "Struct",                       -145,  BC_CLASS },
-  { "Data",                         -146,  BC_CLASS },
+  { "Data",                         -146,  BC_CLASS | BC_PLAIN },
   { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
   { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
   { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
@@ -1996,6 +1996,15 @@ const BuiltinClass *builtin_class_at(int i) {
 int is_native_class_name(const char *n) {
   if (!n) return 0;
   for (int i = 0; i < BUILTIN_CLASS_N; i++) if (sp_streq(n, BUILTIN_CLASSES[i].name)) return 1;
+  return 0;
+}
+/* Is the builtin class of cls_id `id` (class_builtin_superclass's answer) one
+   whose subclass in a program has no method of an Enumerable walk from it:
+   Object, BasicObject, Data, or an exception? Such a class answers the walk
+   only through its own chain. */
+int is_plain_builtin_superclass(int id) {
+  for (int i = 0; id != 0 && i < BUILTIN_CLASS_N; i++)
+    if (BUILTIN_CLASSES[i].id == id) return (BUILTIN_CLASSES[i].flags & (BC_PLAIN | BC_EXCEPTION)) != 0;
   return 0;
 }
 

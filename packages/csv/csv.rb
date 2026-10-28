@@ -16,6 +16,8 @@
 # parsing, per-instance encodings, and the by_col/by_row Table access modes.
 
 class CSV
+  include Enumerable
+
   # Raised for input the grammar cannot accept (an unterminated quoted field).
   class MalformedCSVError < RuntimeError
   end
@@ -23,6 +25,8 @@ class CSV
   # One parsed row when headers are in play: the fields, addressable by header
   # name as well as by index.
   class Row
+    include Enumerable
+
     attr_reader :headers
 
     def initialize(headers, fields)

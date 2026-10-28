@@ -5713,6 +5713,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     if (fbn >= 1) {
       int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
       Buf rb = expr_buf(c, recv);
+      emit_poly_iter_recv_reject(c, id, name, &rb, g_pre, g_indent);   /* before the conversion through to_a */
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                  trecv, rb.p ? rb.p : "sp_box_nil()", name, trecv);
@@ -5822,6 +5823,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       (argc <= 1 || red_sym) && g_n_argov < MAX_ARG_OVERRIDE) {
     int ta = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_poly_iter_recv_reject(c, id, name, &rb, g_pre, g_indent);   /* before the conversion through to_a */
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
@@ -5862,6 +5864,8 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                  tbox, rb.p ? rb.p : "sp_box_nil()", tbox);
       free(rb.p);
+      emit_indent(g_pre, g_indent);
+      emit_poly_iter_obj_reject(c, id, tbox, name, g_pre);   /* before the conversion through to_a */
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
                  trecv, tbox, name, trecv);
@@ -15032,8 +15036,12 @@ static TyKind emit_face_arm(Compiler *c, int id, unsigned kind, unsigned flags, 
       break;
     case PF_ENUM:
       /* a hash gives its [key, value] pairs; a receiver that is no collection
-         raises the NoMethodError the call raised before */
-      buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_enum_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n", t, rs, name, t);
+         raises the NoMethodError the call raised before; an object of a
+         class with no Enumerable raises it first, naming its own class */
+      { Buf eb; memset(&eb, 0, sizeof eb); buf_puts(&eb, rs);
+        emit_poly_iter_recv_reject(c, id, name, &eb, g_pre, g_indent);
+        buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_enum_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n", t, eb.p, name, t);
+        free(eb.p); }
       break;
     case PF_HASH:
       buf_printf(g_pre, "sp_PolyPolyHash *_t%d = sp_poly_hash_recv(%s, \"%s\", %d); SP_GC_ROOT(_t%d);\n",

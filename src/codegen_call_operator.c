@@ -617,8 +617,8 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", ta, tp); emit_boxed(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", tp);
     }
-    buf_puts(b, "; "); emit_poly_iter_obj_normalize(c, ta, b);
-    emit_poly_iter_obj_reject(c, id, ta, name, b);
+    buf_puts(b, "; "); emit_poly_iter_obj_reject(c, id, ta, name, b);
+    emit_poly_iter_obj_normalize(c, ta, b);
     /* the same receiver check the each emitter makes: nil is no collection,
        and a zero-length loop answered `nil.any?` false and `nil.all?` true
        (#4485) */

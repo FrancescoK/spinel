@@ -1,0 +1,50 @@
+-- 0
+true
+true
+[2, 6]
+5
+[5]
+[1]
+6
+[[5], [1]]
+{1 => 1, 5 => 1}
+-- 1
+NoMethodError: undefined method 'any?' for an instance of Rows
+NoMethodError: undefined method 'all?' for an instance of Rows
+NoMethodError: undefined method 'map' for an instance of Rows
+NoMethodError: undefined method 'find' for an instance of Rows
+NoMethodError: private method 'select' called for an instance of Rows
+NoMethodError: undefined method 'reject' for an instance of Rows
+NoMethodError: undefined method 'inject' for an instance of Rows
+NoMethodError: undefined method 'partition' for an instance of Rows
+NoMethodError: undefined method 'tally' for an instance of Rows
+-- 2
+NoMethodError: undefined method 'any?' for an instance of Eacher
+NoMethodError: undefined method 'all?' for an instance of Eacher
+NoMethodError: undefined method 'map' for an instance of Eacher
+NoMethodError: undefined method 'find' for an instance of Eacher
+NoMethodError: private method 'select' called for an instance of Eacher
+NoMethodError: undefined method 'reject' for an instance of Eacher
+NoMethodError: undefined method 'inject' for an instance of Eacher
+NoMethodError: undefined method 'partition' for an instance of Eacher
+NoMethodError: undefined method 'tally' for an instance of Eacher
+-- 3
+true
+true
+[5, 9]
+4
+[4, 8]
+[]
+12
+[[4, 8], []]
+{4 => 1, 8 => 1}
+-- 4
+"x"
+NoMethodError: undefined method 'all?' for an instance of Own
+:own_map
+NoMethodError: undefined method 'find' for an instance of Own
+NoMethodError: private method 'select' called for an instance of Own
+NoMethodError: undefined method 'reject' for an instance of Own
+NoMethodError: undefined method 'inject' for an instance of Own
+NoMethodError: undefined method 'partition' for an instance of Own
+NoMethodError: undefined method 'tally' for an instance of Own

@@ -22051,16 +22051,17 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         if (fp_ok) {
           int fpt = ++g_tmp;
           Buf fpr; memset(&fpr, 0, sizeof fpr); emit_boxed(c, recv, &fpr);
-          char fcall[600];
-          snprintf(fcall, sizeof fcall,
-                   "({ sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); sp_poly_enum_proc(%s, %s, _t%d); })",
-                   fpt, fpp.p ? fpp.p : "NULL", fpt,
-                   fpr.p ? fpr.p : "sp_box_nil()", fpop, fpt);
+          /* a class with no Enumerable raises before the proc is handed on */
+          Buf fcall; memset(&fcall, 0, sizeof fcall);
+          buf_printf(&fcall, "({ sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); ", fpt, fpp.p ? fpp.p : "NULL", fpt);
+          emit_poly_iter_recv_reject(c, id, fpn, &fpr, &fcall, 0);
+          buf_printf(&fcall, "sp_poly_enum_proc(%s, %s, _t%d); })", fpr.p ? fpr.p : "sp_box_nil()", fpop, fpt);
           free(fpr.p); free(fpp.p);
           Repr fretr = repr_of(c, id);
           TyKind fret = fretr.as_ty;
-          if (fretr.kind == RK_BOXED || fret == TY_UNKNOWN) buf_puts(b, fcall);
-          else emit_unbox_text(c, fret, fcall, b);
+          if (fretr.kind == RK_BOXED || fret == TY_UNKNOWN) buf_puts(b, fcall.p);
+          else emit_unbox_text(c, fret, fcall.p, b);
+          free(fcall.p);
           return 1;
         }
         free(fpp.p);

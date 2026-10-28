@@ -1,0 +1,5 @@
+66
+NoMethodError: undefined method 'tally' for an instance of E0
+NoMethodError: undefined method 'tally' for an instance of E63
+:own_tally
+{1 => 2, 2 => 1}

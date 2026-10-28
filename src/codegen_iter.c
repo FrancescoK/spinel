@@ -7161,11 +7161,11 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     /* Root the boxed receiver so a GC fired by the loop body doesn't free a
        freshly-built collection held only by this temp. */
     emit_indent(b, indent); buf_printf(b, "SP_GC_ROOT_RBVAL(_t%d);\n", ta);
-    emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
     /* inside an Enumerable definition the walk of its own receiver reports
        the method called (enum_walk_name) */
     const char *wn = enum_walk_name(c, id, recv, name);
     emit_indent(b, indent); emit_poly_iter_obj_reject_as(c, id, ta, name, wn, b);
+    emit_indent(b, indent); emit_poly_iter_obj_normalize(c, ta, b);
     emit_walk_arity_raise(c, id, recv, name, ta, indent, b);
     /* a boxed Dir walks its entries under `each` (sp_poly_block_iter_check);
        only a program that names Dir can hold one, so any other keeps the
@@ -7816,9 +7816,12 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
         emit_indent(b, indent);
         buf_printf(b, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", tp0, pb0.p ? pb0.p : "NULL", tp0);
         free(pb0.p);
+        Buf rb0; memset(&rb0, 0, sizeof rb0); emit_boxed(c, irecv, &rb0);
+        /* a class with no Enumerable raises before the proc is handed on */
+        emit_poly_iter_recv_reject(c, id, inm, &rb0, b, indent);
         emit_indent(b, indent);
-        buf_puts(b, "(void)sp_poly_enum_proc("); emit_boxed(c, irecv, b);
-        buf_printf(b, ", %s, _t%d);\n", pen, tp0);
+        buf_printf(b, "(void)sp_poly_enum_proc(%s, %s, _t%d);\n", rb0.p ? rb0.p : "sp_box_nil()", pen, tp0);
+        free(rb0.p);
         return 1;
       }
       return 0;
