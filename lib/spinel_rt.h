@@ -4927,6 +4927,39 @@ static SP_UNUSED int64_t sp_poly_time_sec_split(sp_RbVal v, int32_t *nsec) {
   *nsec = 0;
   return sp_poly_time_field(v, 5);
 }
+/* Time.local / Time.utc (mktime / gm) with their arguments gathered at run
+   time, a splat's among them. Ten are Time#to_a's order (sec, min, hour, day,
+   month, year, wday, yday, isdst, zone), the last four ignored; one to seven
+   are year, month, day, hour, min, sec, usec, and with eight the last two are
+   ignored. A String field reads as Integer(str, 10) does. */
+static sp_RbVal sp_kernel_Integer_val(sp_RbVal v, sp_int base, int raise);
+static SP_UNUSED int64_t sp_time_list_field(sp_RbVal v, int i, int32_t *nsec) {
+  v = sp_poly_strbuf_deref(v);
+  if (v.tag == SP_TAG_STR)
+    return i == 1 ? sp_time_month_arg(v.v.s) : sp_poly_arg_int_chk(sp_kernel_Integer_val(v, 10, 1));
+  if (v.tag == SP_TAG_NIL) return sp_poly_time_field(v, i);
+  if (i == 5) return sp_poly_time_sec_split(v, nsec);
+  return sp_poly_arg_int_chk(v);
+}
+static SP_UNUSED sp_Time *sp_time_civil_list(sp_PolyArray *a, int is_utc) {
+  SP_GC_ROOT(a);
+  sp_int n = a->len;
+  if (n != 10) sp_arity_check(n, 1, 8, NULL);
+  int64_t f[6] = {0, 1, 1, 0, 0, 0};
+  int32_t ns = 0;
+  for (int i = 0; i < 6; i++) {
+    sp_int k = n == 10 ? 5 - i : i;
+    if (k < n) f[i] = sp_time_list_field(a->data[k], i, &ns);
+  }
+  sp_Time *t = is_utc ? sp_time_new_utc(f[0], f[1], f[2], f[3], f[4], f[5])
+                      : sp_time_new(f[0], f[1], f[2], f[3], f[4], f[5]);
+  SP_GC_ROOT(t);
+  t->tv_nsec = ns;
+  /* with eight, the seventh is ignored along with the eighth */
+  if (n == 7 && a->data[6].tag != SP_TAG_NIL)
+    t = sp_time_with_usec_f(t, sp_poly_to_f_with_rational(a->data[6]));
+  return t;
+}
 static SP_UNUSED sp_int sp_ffi_int_of(sp_RbVal v) { return sp_poly_arg_int_chk(v); }
 static SP_UNUSED sp_int sp_ffi_int_of_i(sp_oint v) { if (SP_UNLIKELY(v.nil)) sp_ffi_nil_int_raise(); return v.v; }
 static SP_UNUSED sp_float sp_ffi_dbl_of(sp_RbVal v) {
