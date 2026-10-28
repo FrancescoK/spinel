@@ -1,0 +1,10 @@
+true
+false
+true
+true
+true
+false
+[:initialize, :initialize_clone, :initialize_copy, :initialize_dup, :respond_to_missing?]
+[:n]
+2
+2

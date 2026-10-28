@@ -1106,15 +1106,16 @@ static int lr_def_scope(const LoadRecord *r, int node) {
 static int lr_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p);
 
 /* ...: a definition of initialize and its kin is private wherever it
-   stands, and an alias takes its original's visibility */
+   stands, and an alias, or an alias's forwarder (lr_def), takes its
+   original's visibility */
 static void lr_method(ElabRec *x, int cls, int sg, const char *name, int node, LrKind kind, int bvis, int may, const char *target) {
   if (cls < LR_MAIN || !name) return;
-  int vis = lr_vis(bvis), ov = kind == LR_ALIAS && target ? lr_vis_at(x->c, cls, target, sg, elab_point_of(x->c, node)) : -1;
-  const LrHist *th = x->unplaced && kind == LR_ALIAS ? lr_hist(x->r, cls, sg, target, 0) : NULL;
+  int vis = lr_vis(bvis), ov = target ? lr_vis_at(x->c, cls, target, sg, elab_point_of(x->c, node)) : -1;
+  const LrHist *th = x->unplaced && target ? lr_hist(x->r, cls, sg, target, 0) : NULL;
   for (int i = th ? th->n - 1 : -1; i >= 0; i--)   /* an unplaced body's own original, which no query at a point sees */
     if (th->v[i].unplaced && th->v[i].kind <= LR_VIS) { ov = th->v[i].vis; break; }
   if (!sg && (kind == LR_DEF || kind == LR_DEFINE_METHOD) && is_implicitly_private_name(name)) vis = SP_VIS_PRIVATE;
-  if (kind == LR_ALIAS && target && !x->unplaced) lr_settle_add(x->r, SET_ALIAS, node, cls, sg, may, vis, name);
+  if (target && !x->unplaced) lr_settle_add(x->r, SET_ALIAS, node, cls, sg, may, vis, name);
   if (ov >= 0) vis = ov;
   int sc = kind == LR_DEF || kind == LR_DEFINE_METHOD ? lr_def_scope(x->r, node) : 0;
   lr_version(x->r, cls, sg, name, (LrDef){ node, (unsigned char)kind, (unsigned char)vis, (unsigned char)may, 0, target, .unplaced = x->unplaced, .scope = sc });
@@ -1129,10 +1130,18 @@ static int lr_definee(int fc, int fs, int *sg) {
   return fs == LR_FS_IEVAL_SCLASS ? LR_UNKNOWN_CLASS : fc;
 }
 
+/* A def's version. The forwarder desugar_inherited_aliases makes of an
+   alias of an inherited method (`def nw(*a, &b) = nw#inherited(*a, &b)`)
+   is that alias: it takes the visibility of the method it names, not its
+   section's, so it names it as an alias does. */
 static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
-  int recv = nt_ref(x->c->nt, def, "receiver"), sg, cls = lr_definee(fc, fs, &sg);
-  if (recv >= 0) { cls = lr_receiver(x, nt_def_receiver(x->c->nt, recv), fc, LR_FS_SCLASS, &sg); sg = 1; bvis = BVIS_PUBLIC; }
-  lr_method(x, cls, sg, nt_str(x->c->nt, def, "name"), def, LR_DEF, bvis, may, NULL);
+  const NodeTable *nt = x->c->nt;
+  int recv = nt_ref(nt, def, "receiver"), sg, cls = lr_definee(fc, fs, &sg);
+  if (recv >= 0) { cls = lr_receiver(x, nt_def_receiver(nt, recv), fc, LR_FS_SCLASS, &sg); sg = 1; bvis = BVIS_PUBLIC; }
+  int body = nt_int(nt, def, "alias_forwarder", 0) ? nt_ref(nt, def, "body") : -1, n = 0;
+  const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  const char *fwd = n == 1 && nt_kind(nt, st[0]) == NK_CallNode ? nt_str(nt, st[0], "name") : NULL;
+  lr_method(x, cls, sg, nt_str(nt, def, "name"), def, LR_DEF, bvis, may, fwd);
 }
 
 /* A write of a variable: a global's or main's instance variable's by name,
@@ -2029,7 +2038,7 @@ static void lr_settle_regions(Compiler *c) {
       h = lr_hist(r, t->cls, t->sg, t->name, 0);
       const char *tg = NULL;
       for (int j = 0; h && j < h->n; j++)
-        if (h->v[j].node == t->node && h->v[j].kind == LR_ALIAS) {
+        if (h->v[j].node == t->node && (h->v[j].kind == LR_ALIAS || h->v[j].kind == LR_DEF) && h->v[j].target) {
           tg = h->v[j].target;
           int ov = tg ? lr_vis_at(c, t->cls, tg, t->sg, elab_point_of(c, t->node)) : -1;
           h->v[j].vis = (unsigned char)(ov >= 0 ? ov : t->vis0);
@@ -3024,13 +3033,16 @@ static int lr_applied(Compiler *c, const LrDef *v) {
 
 /* A history's end-of-load entries (ElabSurface); 0 when it has none */
 static int lr_surface_of(Compiler *c, const LrHist *h, ElabSurface *s) {
-  *s = (ElabSurface){ h->name, NULL, -1, -1, 0, 0, 0, 0 };
+  *s = (ElabSurface){ h->name, NULL, -1, -1, -1, 0, 0, 0, 0 };
   for (int j = 0; j < h->n; j++) {
     const LrDef *v = &h->v[j];
     int ap = v->kind > LR_VIS ? 0 : lr_applied(c, v);
     if (!ap) continue;
     s->node = v->node;
-    if (v->kind != LR_UNDEF && v->kind != LR_REMOVE) s->vis = (signed char)v->vis;
+    if (v->kind != LR_UNDEF && v->kind != LR_REMOVE) {
+      s->vis = (signed char)v->vis;
+      if (s->first < 0) s->first = v->node;
+    }
     if (ap == 2) continue;
     s->reader |= v->kind == LR_READER; s->writer |= v->kind == LR_WRITER;
     s->undef |= v->kind == LR_UNDEF; s->copy |= v->kind == LR_COPY;

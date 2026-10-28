@@ -183,7 +183,8 @@ typedef struct {
   unsigned char vis;    /* SP_VIS_*, for a method version; BVIS_*, for a bare visibility word */
   unsigned char may;    /* recorded under a condition: may not have run */
   unsigned char nil;    /* a write of nil */
-  const char *target;   /* an alias's or a copy's original name */
+  const char *target;   /* an alias's or a copy's original name, an alias
+                           forwarder def's (lr_def) */
   int owner;            /* a write's: the class whose constant it is (LR_MAIN:
                            Object's), below LR_MAIN when not known or not a
                            constant's; unused in other versions */
@@ -365,6 +366,7 @@ int elab_method_vis_at(Compiler *c, int cls, const char *name, int sg, LoadPoint
 typedef struct {
   const char *name, *alias;   /* alias: the last alias's original name */
   int node;                   /* the name's last entry */
+  int first;                  /* its first entry that gives it a visibility, -1 for none */
   signed char vis;
   unsigned char reader, writer, undef, copy;
 } ElabSurface;
