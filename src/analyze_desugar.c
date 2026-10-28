@@ -13110,6 +13110,17 @@ static int enum_is_a_named(Compiler *c, const char *rn, const char *cls) {
   nt_node_set_ref(nt, ia, "arguments", iaa);
   return ia;
 }
+/* An instantiated class of the program with an #each or a #to_a but no
+   Enumerable behind it (comp_enum_behind) and no method_missing: the walk
+   would read the object through them, where it answers none of the
+   Enumerable methods. */
+static int class_lacks_enumerable(Compiler *c, int k) {
+  if (!(c->classes[k].instantiated || c->classes[k].ctor_reachable) || comp_class_is_module(c, &c->classes[k])) return 0;
+  if (comp_method_in_chain(c, k, "method_missing", NULL) >= 0) return 0;
+  if (comp_method_in_chain(c, k, "each", NULL) < 0 && comp_method_in_chain(c, k, "to_a", NULL) < 0) return 0;
+  return !comp_enum_behind(c, k);
+}
+
 static int enum_is_a_chain(Compiler *c, const char *rn, const int *defcls, int ndef) {
   NodeTable *nt = (NodeTable *)c->nt;
   int pred = -1;
@@ -13648,12 +13659,19 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* the name the call was written with, where the pre-pass renamed it
        (detect to find): the one a class's own method or reader answers */
     const char *qn = nt_str(nt, id, "orig_name") ? nt_str(nt, id, "orig_name") : name;
+    /* inside a builtin's own definition (__enum_m) the receiver is the one
+       the call outside was already sent to the copy for */
+    int in_copy = nt_int(nt, id, "enum_in_copy", -1) >= 0;
     if (rt == TY_POLY) {
       for (int k = 0; k < c->nclasses && ndef < 64; k++)
         /* Enumerable itself answers through the copy: it holds a program's
-           own method of the name (index_by), and an Array is_a? it too */
+           own method of the name (index_by), and an Array is_a? it too. A
+           class that has no Enumerable gets the arm too: its call of a name
+           it does not define is the NoMethodError CRuby raises, where the
+           copy would walk its #each or convert its #to_a */
         if (!c->classes[k].is_native_class && !sp_streq(c->classes[k].name, "Enumerable") &&
-            (comp_poly_arm_defines_n(c, k, qn, an) || (an == 0 && comp_reader_in_chain(c, k, qn, NULL))))
+            (comp_poly_arm_defines_n(c, k, qn, an) || (an == 0 && comp_reader_in_chain(c, k, qn, NULL)) ||
+             (!in_copy && class_lacks_enumerable(c, k))))
           defcls[ndef++] = k;
     }
     /* `v&.m { }`: the receiver is bound once and a nil answers nil, the

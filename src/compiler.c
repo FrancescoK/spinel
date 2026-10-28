@@ -3061,6 +3061,19 @@ int comp_comparable_answers_first(Compiler *c, int cid, const char *name) {
 int comp_enum_reaches(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 0, 0);
 }
+/* Enumerable's methods are behind class `cid`: Enumerable is among its
+   ancestors (itself or a superclass includes or prepends it), or an ancestor
+   is an Array, a Struct (a Data is not one) or a native class, which answer
+   them on their own. */
+int comp_enum_behind(Compiler *c, int cid) {
+  int n = 0;
+  for (int k = cid; k >= 0 && k < c->nclasses && n < 256; k = c->classes[k].parent, n++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_native_class || (ci->is_struct && !ci->is_data) || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0 || comp_enum_reaches(c, k)) return 1;
+    if (k == ci->parent) break;
+  }
+  return 0;
+}
 int comp_comparable_reaches(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1, 0);
 }

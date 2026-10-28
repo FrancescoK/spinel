@@ -5437,6 +5437,26 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
 }
 
 /* emit_array_call past its prefix arms, under the empty-receiver views */
+/* A boxed receiver `rb` that the builtin iteration `name` of call `id` reads
+   through its to_a: the NoMethodError for a class with no Enumerable is raised
+   first, on the receiver held in a temp. A program with no such class keeps
+   the receiver expression as it was, with no temp. */
+static void emit_recv_reject(Compiler *c, int id, const char *name, Buf *rb) {
+  int tbox = g_tmp + 1;
+  Buf rj; memset(&rj, 0, sizeof rj);
+  emit_poly_iter_obj_reject(c, id, tbox, name, &rj);
+  if (rj.p && rj.p[0]) {
+    g_tmp++;
+    emit_indent(g_pre, g_indent);
+    buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", tbox, rb->p ? rb->p : "sp_box_nil()", tbox);
+    emit_indent(g_pre, g_indent);
+    buf_puts(g_pre, rj.p);
+    free(rb->p); memset(rb, 0, sizeof *rb);
+    buf_printf(rb, "_t%d", tbox);
+  }
+  free(rj.p);
+}
+
 static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -5625,6 +5645,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     if (fbn >= 1) {
       int trecv = ++g_tmp, ti = ++g_tmp, tres = ++g_tmp;
       Buf rb = expr_buf(c, recv);
+      emit_recv_reject(c, id, name, &rb);   /* before the conversion through to_a */
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                  trecv, rb.p ? rb.p : "sp_box_nil()", name, trecv);
@@ -5734,6 +5755,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       (argc <= 1 || red_sym) && g_n_argov < MAX_ARG_OVERRIDE) {
     int ta = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
+    emit_recv_reject(c, id, name, &rb);   /* before the conversion through to_a */
     emit_indent(g_pre, g_indent);
     buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(%s, \"%s\"); SP_GC_ROOT(_t%d);\n",
                ta, rb.p ? rb.p : "sp_box_nil()", name, ta);
@@ -5774,6 +5796,8 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
       buf_printf(g_pre, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n",
                  tbox, rb.p ? rb.p : "sp_box_nil()", tbox);
       free(rb.p);
+      emit_indent(g_pre, g_indent);
+      emit_poly_iter_obj_reject(c, id, tbox, name, g_pre);   /* before the conversion through to_a */
       emit_indent(g_pre, g_indent);
       buf_printf(g_pre, "sp_PolyArray *_t%d = sp_poly_arr_recv(_t%d, \"%s\"); SP_GC_ROOT(_t%d);\n",
                  trecv, tbox, name, trecv);

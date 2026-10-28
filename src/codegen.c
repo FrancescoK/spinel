@@ -4177,9 +4177,12 @@ static void emit_iter_recv(Compiler *c, int k, int mi, int tv, Buf *b) {
 }
 
 /* A boxed user object reaching call `call`'s builtin iteration of `name`
-   (each, map, any?, ...) whose class answers neither #each nor #to_a nor
-   the name itself: CRuby raises NoMethodError, where the walk read it as an
-   empty container and the block never ran. */
+   (each, map, any?, ...) whose class neither defines the name, nor includes
+   Enumerable, nor has a method_missing: CRuby raises NoMethodError. An #each
+   or a #to_a alone gives a class none of the Enumerable methods; the walk read
+   it as an empty container, or converted it through its to_a, and the block
+   ran or never ran. Asked before the normalization, which would turn such an
+   object into the array the walk reads. */
 void emit_poly_iter_obj_reject(Compiler *c, int call, int tv, const char *name, Buf *b) {
   emit_poly_iter_obj_reject_as(c, call, tv, name, name, b);
 }
@@ -4192,9 +4195,7 @@ void emit_poly_iter_obj_reject_as(Compiler *c, int call, int tv, const char *nam
     if (!ci->instantiated || ci->is_native_class || is_builtin_reopen(ci->name)) continue;
     int bp = class_builtin_superclass(c, k);
     if (bp != -116 && bp != -117 && bp != -146) continue;
-    if (comp_method_in_chain(c, k, "each", NULL) >= 0 ||
-        comp_method_in_chain(c, k, "to_a", NULL) >= 0 ||
-        call_target(c, call, k, name, 0, NULL) >= 0 ||
+    if (comp_enum_behind(c, k) || call_target(c, call, k, name, 0, NULL) >= 0 ||
         comp_method_in_chain(c, k, "method_missing", NULL) >= 0) continue;
     buf_printf(&arms, " case %d:", k);
   }
