@@ -315,6 +315,7 @@ int is_string_read_only_method(const char *name);
 int str_mutator_str_args(const char *n, int argc, int *int_ok); /* the arguments a String mutator takes as Strings */
 
 int builtin_module_owns(const char *cls, const char *name); /* included ahead of Object */
+int builtin_mixin_module_id(const char *n);   /* Comparable Enumerable Kernel Math: its builtin id */
 int is_include_name(const char *n);
 int is_prepend_name(const char *n);
 int is_load_name(const char *n);

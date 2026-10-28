@@ -19281,6 +19281,22 @@ static void emit_builtin_reopen_mod_arms(Compiler *c, int **mods, const int *nmo
 }
 
 /* The class machinery a program with classes or class values needs: class tables, names, is_a and the class-value runtime (codegen_program's steps, in their order) */
+/* The class a mixin's argument names where the load record does not know
+   it: the class of its name, or of the module a constant aliases (`Loud =
+   Shout`, `E = Enumerable`), or a builtin module's (negative) id
+   (builtin_mixin_module_id); -1 for none */
+static int mixin_ref_class_id(Compiler *c, int ref) {
+  NodeKind k = ref >= 0 ? nt_kind(c->nt, ref) : NK_NilNode;
+  const char *nm = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? nt_str(c->nt, ref, "name") : NULL;
+  int id = nm ? comp_class_index(c, nm) : -1;
+  if (id < 0 && nm) {
+    const char *al = resolve_class_alias_chain(c, nm);
+    if (al) { id = comp_class_index(c, al); nm = al; }
+  }
+  if (id < 0 && nm && builtin_mixin_module_id(nm)) id = builtin_mixin_module_id(nm);
+  return id;
+}
+
 static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char **isa_ext, size_t *isa_ext_at) {
   if (g_needs_class_machinery) {
   /* sp_cls_is_module[i]: 1 if user class i was defined as a module, 0 if class */
@@ -19523,59 +19539,30 @@ static void emit_class_machinery(const NodeTable *nt, Compiler *c, Buf *b, char 
        separately from the includes that follow the class (#2702). */
     int **cls_preps = calloc((size_t)c->nclasses, sizeof(int *));
     int  *cls_npreps = calloc((size_t)c->nclasses, sizeof(int));
-    /* Each class's bodies (a Struct.new block included), in the order they
-       run (the load record's), so each class sees its includes in the
-       order they run. */
+    /* Each class's includes and prepends as the load record has them, in
+       the order they run (a Struct.new block's too). One call's modules
+       are recorded last first, as `include A, B` includes B first, and
+       `prepend A, B` is listed as written; one under a condition in its
+       body (LrMixin.cond), which may not run, is left out. */
     for (int ci = 0; ci < c->nclasses; ci++) {
-      int nbodies = 0;
-      const LrOpen *bodies = elab_class_bodies(c, ci, &nbodies);
-      for (int bx = 0; bx < nbodies; bx++) {
-        int body2 = bodies[bx].body;
-        int bn2 = 0;
-        const int *stmts2 = body2 >= 0 ? nt_arr(c->nt, body2, "body", &bn2) : NULL;
-        for (int k2 = 0; k2 < bn2; k2++) {
-          NodeKind sty2_k = nt_kind(c->nt, stmts2[k2]);
-          if (sty2_k != NK_CallNode) continue;
-          const char *nm2 = nt_str(c->nt, stmts2[k2], "name");
-          if (!nm2 || (!sp_streq(nm2, "include") && !sp_streq(nm2, "prepend"))) continue;
-          int is_prep2 = sp_streq(nm2, "prepend");
-          int **tgt_mods = is_prep2 ? cls_preps : cls_incs;
-          int  *tgt_n    = is_prep2 ? cls_npreps : cls_nincs;
-          if (nt_ref(c->nt, stmts2[k2], "receiver") >= 0) continue;
-          int anode2 = nt_ref(c->nt, stmts2[k2], "arguments");
-          int an2 = 0;
-          const int *aargs = anode2 >= 0 ? nt_arr(c->nt, anode2, "arguments", &an2) : NULL;
-          for (int jj = 0; jj < an2; jj++) {
-            /* `include A, B` includes B first, so A is listed in front */
-            int j2 = is_prep2 ? jj : an2 - 1 - jj;
-            NodeKind aty2_k = nt_kind(c->nt, aargs[j2]);
-            const char *mname2 = (aty2_k == NK_ConstantReadNode) ? nt_str(c->nt, aargs[j2], "name") : NULL;
-            if (!mname2 && aty2_k == NK_ConstantPathNode) mname2 = nt_str(c->nt, aargs[j2], "name");
-            int mid2 = mname2 ? comp_class_index(c, mname2) : -1;
-            /* a constant aliasing a module (`Loud = Shout`, `E = Enumerable`)
-               names it */
-            if (mid2 < 0 && mname2) {
-              const char *al = resolve_class_alias_chain(c, mname2);
-              if (al) { mid2 = comp_class_index(c, al); mname2 = al; }
-            }
-            int is_builtin_mod = 0;
-            /* a builtin module (Enumerable/Comparable/Kernel/Math) has no user
-               class index; record its (negative) builtin id so ancestors
-               reflects it -- the generic `mid2 < 0` skip must not drop it. */
-            if (mid2 < 0 && mname2) {
-              if (sp_streq(mname2, "Enumerable")) { mid2 = -115; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Comparable")) { mid2 = -114; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Kernel")) { mid2 = -119; is_builtin_mod = 1; }
-              else if (sp_streq(mname2, "Math")) { mid2 = -130; is_builtin_mod = 1; }
-            }
-            if (mid2 < 0 && !is_builtin_mod) continue;
-            /* deduplicate */
-            int found2 = 0;
-            for (int q = 0; q < tgt_n[ci]; q++) if (tgt_mods[ci][q] == mid2) { found2 = 1; break; }
-            if (found2) continue;
-            tgt_mods[ci] = realloc(tgt_mods[ci], sizeof(int) * (size_t)(tgt_n[ci] + 1));
-            tgt_mods[ci][tgt_n[ci]++] = mid2;
-          }
+      int nmx = 0;
+      const LrMixin *mx = elab_class_mixins(c, ci, &nmx);
+      for (int g = 0, ge; g < nmx; g = ge) {
+        for (ge = g + 1; ge < nmx && mx[ge].node == mx[g].node; ge++) {}
+        int prep = mx[g].kind == LR_PREPEND;
+        if ((!prep && mx[g].kind != LR_INCLUDE) || mx[g].cond) continue;
+        int **tgt_mods = prep ? cls_preps : cls_incs;
+        int  *tgt_n    = prep ? cls_npreps : cls_nincs;
+        for (int x = g; x < ge; x++) {
+          const LrMixin *m = &mx[prep ? ge - 1 - (x - g) : x];
+          int mid2 = m->mod >= 0 ? m->mod : mixin_ref_class_id(c, m->ref);
+          if (mid2 == -1) continue;
+          int found2 = 0;
+          for (int q = 0; q < tgt_n[ci] && !found2; q++) found2 = tgt_mods[ci][q] == mid2;
+          if (found2) continue;
+          tgt_mods[ci] = realloc(tgt_mods[ci], sizeof(int) * (size_t)(tgt_n[ci] + 1));
+          if (!tgt_mods[ci]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          tgt_mods[ci][tgt_n[ci]++] = mid2;
         }
       }
     }

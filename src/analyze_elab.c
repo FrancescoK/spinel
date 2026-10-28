@@ -65,7 +65,7 @@ int g_dump_load_record = 0;
    sure. rep: the nearest statement around it whose body may run more than
    once (a loop, an iterator's block, a begin body a rescue may retry), -1
    for none: a statement after it in that body may also run before it. */
-typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial; } LrStmt;
+typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -167,7 +167,7 @@ static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial, pos->fmay };
   r->at[node] = k;
   pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
@@ -236,7 +236,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   int spine = pp->kind == EP_SPINE;
   switch (k) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
-      if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; return elab_body_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; q.fmay = 0; return elab_body_pos(nt, ch, q); }
       break;
     case NK_PreExecutionNode: case NK_EnsureNode:
       if (spine && ch == nt_ref(nt, p, "statements")) return elab_body_pos(nt, ch, q);
@@ -247,7 +247,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
     case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhenNode: case NK_InNode: case NK_RescueNode:
     case NK_WhileNode: case NK_UntilNode: case NK_ForNode:
       if (spine && ch == nt_ref(nt, p, "statements")) {
-        q.may = 1;
+        q.may = q.fmay = 1;
         if (k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode) q.rep = pp->e;
         return elab_body_pos(nt, ch, q);
       }
@@ -271,17 +271,17 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (spine && ch == nt_ref(nt, p, "value")) return elab_value_pos(nt, ch, q);
       break;
     case NK_AndNode: case NK_OrNode:   /* the right side runs only if the left decides so: a lone expression, which may not run */
-      if (spine && ch == nt_ref(nt, p, "right")) { q.may = 1; return elab_body_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "right")) { q.may = q.fmay = 1; return elab_body_pos(nt, ch, q); }
       break;
     case NK_ConstantOrWriteNode: case NK_ConstantPathOrWriteNode: case NK_LocalVariableOrWriteNode:
     case NK_InstanceVariableOrWriteNode: case NK_GlobalVariableOrWriteNode: case NK_ClassVariableOrWriteNode:
     case NK_ConstantAndWriteNode: case NK_ConstantPathAndWriteNode: case NK_LocalVariableAndWriteNode:
     case NK_InstanceVariableAndWriteNode: case NK_GlobalVariableAndWriteNode: case NK_ClassVariableAndWriteNode:
-      if (spine && ch == nt_ref(nt, p, "value")) { q.may = 1; return elab_value_pos(nt, ch, q); }
+      if (spine && ch == nt_ref(nt, p, "value")) { q.may = q.fmay = 1; return elab_value_pos(nt, ch, q); }
       break;
     case NK_RescueModifierNode:
       if (!spine) break;
-      if (ch == nt_ref(nt, p, "rescue_expression")) q.may = 1;
+      if (ch == nt_ref(nt, p, "rescue_expression")) q.may = q.fmay = 1;
       return elab_value_pos(nt, ch, q);
     case NK_CallNode: {
       if (ch != nt_ref(nt, p, "block") || nt_kind(nt, ch) != NK_BlockNode) break;
@@ -289,8 +289,8 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (runs < 0) { q.defer = 1; break; }
       if (!spine) break;
       q.kind = EP_SPINE;
-      if (runs == 0) q.may = 1;
-      if (elab_opens_frame(nt, p)) q.frame = pp->e;
+      if (runs == 0) q.may = q.fmay = 1;
+      if (elab_opens_frame(nt, p)) { q.frame = pp->e; q.fmay = 0; }
       else { q.partial = 1; q.rep = pp->e; }   /* an iterator's: zero times, or several */
       break;
     }
@@ -442,7 +442,7 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
   ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW }, rp = at;
-  if (site) { at.may = rp.may = site->may; at.partial = rp.partial = site->partial; }
+  if (site) { at.may = rp.may = at.fmay = rp.fmay = site->may; at.partial = rp.partial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
   w->r->st[e].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
@@ -1348,7 +1348,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       opaque |= mod < 0 && mod != LR_LATER;
       if (!k) continue;
       k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
-      k->mix[k->nmix++] = (LrMixin){ node, lr_mix_kind(nt, node, nm, sg), mod, av[i] };
+      k->mix[k->nmix++] = (LrMixin){ node, lr_mix_kind(nt, node, nm, sg), mod, av[i], .cond = x->r->at[node] >= 0 && x->r->st[x->r->at[node]].fmay };
     }
     else if (is_undef_method_name(nm) || is_remove_method_name(nm))
       lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
@@ -1504,6 +1504,31 @@ static char *lr_dump_text(Compiler *c);
 static void lr_check_walked(Compiler *c, const char *walked);
 static void lr_later_settle(Compiler *c);
 
+/* The includes, prepends and extends of a body of class k that the record
+   holds with no point (a builder's block, a class body in a lambda or a
+   block kept to run later), which no walk of the load phase records
+   (lr_call records a placed body's): its own statements', after the placed
+   ones, the arguments of one call last first as lr_call has them. No
+   condition stands between them and the body (LrMixin.cond); one inside a
+   branch of the body is no statement of it, and is not recorded. */
+static void lr_body_mixins(Compiler *c, LrClass *k, int body) {
+  const NodeTable *nt = c->nt;
+  int n = 0;
+  const int *st = nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : &body;
+  if (nt_kind(nt, body) != NK_StatementsNode) n = 1;
+  for (int i = 0; i < n; i++) {
+    const char *nm = nt_kind(nt, st[i]) == NK_CallNode ? nt_str(nt, st[i], "name") : NULL;
+    int recv = nm ? nt_ref(nt, st[i], "receiver") : -1;
+    if (!nm || !is_mixin_call(nm) || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
+    int an = nt_ref(nt, st[i], "arguments"), ac = 0;
+    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+    for (int j = ac - 1; j >= 0; j--) {
+      k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
+      k->mix[k->nmix++] = (LrMixin){ st[i], lr_mix_kind(nt, st[i], nm, 0), elab_class_ref_at(c, av[j]), av[j] };
+    }
+  }
+}
+
 /* A class or module body that is no statement of the load phase: one in
    a lambda or in a block kept to run later (`l = -> { class G; private
    :foo; end }`), or in an expression. It runs when the program runs that
@@ -1534,6 +1559,7 @@ static void lr_record_unplaced(Compiler *c) {
       memmove(kc->open + at + 1, kc->open + at, sizeof *kc->open * (size_t)(kc->nopen - at));
       kc->open[at] = (LrOpen){ id, nt_ref(nt, id, "body") };
       kc->nopen++;
+      if (nt_ref(nt, id, "body") >= 0) lr_body_mixins(c, kc, nt_ref(nt, id, "body"));
     }
 }
 
@@ -1613,28 +1639,6 @@ static int lr_builder_body(Compiler *c, int ci) {
   return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? body : -1;
 }
 
-/* The includes, prepends and extends of a builder's block that no walk of
-   the load phase recorded (lr_call records a placed one's): its own
-   statements', with no point, after the placed ones, the arguments of one
-   call last first as lr_call has them */
-static void lr_builder_mixins(Compiler *c, LrClass *k, int body) {
-  const NodeTable *nt = c->nt;
-  int n = 0;
-  const int *st = nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", &n) : &body;
-  if (nt_kind(nt, body) != NK_StatementsNode) n = 1;
-  for (int i = 0; i < n; i++) {
-    const char *nm = nt_kind(nt, st[i]) == NK_CallNode ? nt_str(nt, st[i], "name") : NULL;
-    int recv = nm ? nt_ref(nt, st[i], "receiver") : -1;
-    if (!nm || !is_mixin_call(nm) || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
-    int an = nt_ref(nt, st[i], "arguments"), ac = 0;
-    const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    for (int j = ac - 1; j >= 0; j--) {
-      k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
-      k->mix[k->nmix++] = (LrMixin){ st[i], lr_mix_kind(nt, st[i], nm, 0), elab_class_ref_at(c, av[j]), av[j] };
-    }
-  }
-}
-
 /* The class builders' blocks (`X = Struct.new(:a) do ... end`) are bodies
    of classes that registration makes after the walk (register_structs):
    once it has, a record that holds such a block with no class is made
@@ -1669,7 +1673,7 @@ void elab_record_builders(Compiler *c) {
     if (have) continue;
     kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
     kc->open[kc->nopen++] = (LrOpen){ d, body };
-    lr_builder_mixins(c, kc, body);
+    lr_body_mixins(c, kc, body);
   }
 }
 
