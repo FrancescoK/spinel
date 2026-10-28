@@ -840,6 +840,17 @@ static void emit_poly_push_elem(Buf *b, int tpair, TyKind ty, int t, int ti, con
 }
 
 
+/* An empty `[]` argument has no element type of its own and would emit
+   as the int-array default, which an arm that reads it as a poly array
+   then stores into an sp_PolyArray slot (#3975 sweep): a view, for that
+   arm's emission. Answers the view to pop, or -1. */
+static int empty_array_poly_view(Compiler *c, int arg) {
+  if (nt_kind(c->nt, arg) != NK_ArrayNode) return -1;
+  int aen = 0; nt_arr(c->nt, arg, "elements", &aen);
+  if (aen != 0 || !(repr_of(c, arg).untyped || ty_is_array(comp_ntype(c, arg)))) return -1;
+  return view_push(c, arg, TY_POLY_ARRAY);
+}
+
 /* Materialize each zip argument into a rooted array temp _t<tb[j]>, and
    rewrite at[j] to the array type the slot ended up holding. */
 /* `rlen`: the receiver's length, as C; a Range argument materializes only
@@ -937,7 +948,9 @@ static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb
       continue;
     }
     const char *kj = (at[j] == TY_POLY_ARRAY) ? "Poly" : (array_kind(at[j]) ? array_kind(at[j]) : "Poly");
+    int pv = kj[0] == 'P' ? empty_array_poly_view(c, argv[j]) : -1;
     buf_printf(b, " sp_%sArray *_t%d = ", kj, tb[j]); emit_expr(c, argv[j], b); buf_puts(b, ";");
+    if (pv >= 0) view_pop(c, pv);
     buf_printf(b, " SP_GC_ROOT(_t%d);", tb[j]);
   }
 }
@@ -2725,16 +2738,7 @@ else {
      the receiver (CRuby returns self) */
   if (sp_streq(name, "product") && argc == 1 && nt_ref(nt, id, "block") >= 0) {
     int blk = nt_ref(nt, id, "block");
-    /* an empty `[]` argument has no element type of its own and would emit
-       as the int-array default, which this arm then reads as the poly array
-       it dispatches on (#3975 sweep): a view, for this arm's emission */
-    int pv = -1;
-    if (nt_kind(nt, argv[0]) == NK_ArrayNode) {
-      int aen = 0; nt_arr(nt, argv[0], "elements", &aen);
-      if (aen == 0 && (repr_of(c, argv[0]).untyped ||
-                       ty_is_array(comp_ntype(c, argv[0]))))
-        pv = view_push(c, argv[0], TY_POLY_ARRAY);
-    }
+    int pv = empty_array_poly_view(c, argv[0]);
     TyKind at = comp_ntype(c, argv[0]);
     Buf ra; memset(&ra, 0, sizeof ra);
     emit_expr(c, recv, &ra);  /* the receiver's prelude first, as Ruby evaluates */
