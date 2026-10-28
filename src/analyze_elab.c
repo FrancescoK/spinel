@@ -780,21 +780,24 @@ static int lr_class_ref(Compiler *c, int node) {
   const NodeTable *nt = c->nt;
   const LrDef *d = NULL;
   NodeKind k = node >= 0 ? nt_kind(nt, node) : NK_NilNode;
-  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) {
-    const char *nm = lr_written_name(nt, node);
-    int o = lr_const_at(c, node, nm, &d), ci;
-    if (o == ELAB_YES) return lr_class_of(c, d);
-    if (o == ELAB_NO && (is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) {
-      if ((ci = comp_class_index(c, nm)) >= 0) return ci;
-      if (lr_reopened(c->lrec, nm)) return LR_LATER;
-    }
-    return LR_UNKNOWN_CLASS;
-  }
   if (k != NK_ConstantPathNode && k != NK_ConstantReadNode) return LR_UNKNOWN_CLASS;
-  int par = k == NK_ConstantPathNode ? nt_ref(nt, node, "parent") : -1, pc = par < 0 ? LR_MAIN : lr_class_ref(c, par);
-  LoadPoint p = elab_point_of(c, node);
-  if (pc < LR_MAIN || lr_const_in(c, pc, lr_written_name(nt, node), p, p.region < 0, pc == LR_MAIN, &d, 0) != ELAB_YES) return LR_UNKNOWN_CLASS;
-  return lr_class_of(c, d);
+  const char *nm = lr_written_name(nt, node);
+  int o, ci, pc = LR_MAIN;
+  if (k == NK_ConstantReadNode && !lr_root_read(nt, node)) o = lr_const_at(c, node, nm, &d);
+  else {
+    int par = k == NK_ConstantPathNode ? nt_ref(nt, node, "parent") : -1;
+    LoadPoint p = elab_point_of(c, node);
+    if (par >= 0) pc = lr_class_ref(c, par);
+    if (pc < LR_MAIN) return LR_UNKNOWN_CLASS;
+    o = lr_const_in(c, pc, nm, p, p.region < 0, pc == LR_MAIN, &d, 0);
+  }
+  if (o == ELAB_YES) return lr_class_of(c, d);
+  /* a name Object does not hold from the program: a core class's or module's */
+  if (o == ELAB_NO && pc == LR_MAIN && (is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) {
+    if ((ci = comp_class_index(c, nm)) >= 0) return ci;
+    if (lr_reopened(c->lrec, nm)) return LR_LATER;
+  }
+  return LR_UNKNOWN_CLASS;
 }
 
 /* The class a call's receiver names: none or self, the frame's (its
