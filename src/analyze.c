@@ -52043,13 +52043,19 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
       if (c->gvars[i].type == TY_INT) lv_set_type(&c->gvars[i], TY_POLY);
     /* the blockless answer of an `if block_given?` tail is its else arm's,
        which the widened locals may have changed: `Array.new(n, v)` of a
-       widened v is a poly Array, not the Integer one it was */
-    for (int s = 0; s < c->nscopes; s++) {
-      Scope *sc = &c->scopes[s];
-      if (sc->ret_noblock == TY_UNKNOWN) continue;
-      int el = scope_block_given_else_last(c, sc);
-      TyKind et = el >= 0 ? infer_type(c, el) : TY_UNKNOWN;
-      if (et != TY_UNKNOWN && et != sc->ret_noblock) scope_set_ret_noblock(sc, et);
+       widened v is a poly Array, not the Integer one it was. An arm that
+       calls another such method reads that method's new answer, so the
+       pass runs again until nothing changes. A poly answer (the widening's
+       own, above) stays. */
+    for (int round = 0, ch = 1; ch && round < 8; round++) {
+      ch = 0;
+      for (int s = 0; s < c->nscopes; s++) {
+        Scope *sc = &c->scopes[s];
+        if (sc->ret_noblock == TY_UNKNOWN || sc->ret_noblock == TY_POLY) continue;
+        int el = scope_block_given_else_last(c, sc);
+        TyKind et = el >= 0 ? infer_type(c, el) : TY_UNKNOWN;
+        if (et != TY_UNKNOWN && et != sc->ret_noblock) { scope_set_ret_noblock(sc, et); ch = 1; }
+      }
     }
   }
 

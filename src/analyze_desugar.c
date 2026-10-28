@@ -9228,7 +9228,7 @@ static int fwd_arity_pick(Compiler *c, NodeTable *nt, int ex, int id, int pair, 
    (or a subclass), or one not typed yet. An initialize runs from a `new`
    and from a subclass's super, which hands on the block its own caller gave:
    any `new` with no block of its own counts, and any super in an
-   initialize. */
+   initialize, beside a call of initialize itself. */
 static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   const NodeTable *nt = c->nt;
   if (!ms || !ms->name) return 0;
@@ -9241,10 +9241,11 @@ static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *un = nt_str(nt, u, "name");
-    if (!un || !sp_streq(un, init ? "new" : ms->name)) continue;
+    int unew = init && un && sp_streq(un, "new");
+    if (!un || (!unew && !sp_streq(un, ms->name))) continue;
     int ub = nt_ref(nt, u, "block");
     if (ub >= 0 && nt_kind(nt, ub) == NK_BlockNode) continue;
-    if (init) return 1;
+    if (unew) return 1;
     /* a respond_to? probe is analysis-only and never runs: counted as a
        blockless call, it put the blockless form beside the forward, which a
        File or IO loop does not have, and the clone a poly dispatch arm runs

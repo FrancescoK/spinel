@@ -89,3 +89,34 @@ class Grid < Array
 end
 p Grid.new(2) { |i| i * 3 }
 p Grid.new(2)
+
+# an else arm that calls a block_given? method defined after it
+def outer(n, v)
+  if block_given?
+    inner(n, v) { |i| yield i }
+  else
+    inner(n, v)
+  end
+end
+def inner(n, v)
+  if block_given?
+    Array.new(n, v) { |i| yield i }
+  else
+    Array.new(n, v)
+  end
+end
+p outer(2, 5)
+p outer(2, 5) { |i| i * 3 }
+
+# initialize called again, with no block
+class Again
+  def initialize(n, &b)
+    @a = Array.new(n, &b)
+  end
+  def reset(n) = initialize(n)
+  attr_reader :a
+end
+g = Again.new(2) { |i| i + 1 }
+p g.a
+g.reset(3)
+p g.a
