@@ -95,6 +95,11 @@ struct LoadRecord {
   struct ElabRec *rec;       /* the record's state while elab_program makes it */
   struct LrHist *hist; int nhist, chist, *hhead;
   struct LrClass *cls; int ncls;
+  /* [ncls] the classes the record holds: those the walk made and the class
+     builders' (elab_record_builders). One registration makes otherwise
+     after the walk (an object's singleton class, which its extends and
+     defs fill) has methods the record never saw, and no entry (lr_class). */
+  unsigned char *held;
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
   char **reopens; int nreopens, creopens;   /* the builtin classes and modules a header of the program reopens, sorted (lr_reopens_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
@@ -757,9 +762,10 @@ static void lr_version(LoadRecord *r, int a, int b, const char *name, LrDef d) {
   r->nentries++;
 }
 
-/* cls's history (LR_MAIN: main's, Object's), NULL past the record's classes */
+/* cls's history (LR_MAIN: main's, Object's), NULL for a class the record
+   does not hold (LoadRecord.held) */
 static LrClass *lr_class(LoadRecord *r, int cls) {
-  return cls >= LR_MAIN && cls + 1 < r->ncls ? &r->cls[cls + 1] : NULL;
+  return cls >= LR_MAIN && cls + 1 < r->ncls && r->held[cls + 1] ? &r->cls[cls + 1] : NULL;
 }
 
 /* The class a class or module header opens, as the scope walk decided it:
@@ -1239,12 +1245,15 @@ void elab_record_write(Compiler *c, int stmt) {
   if (e >= 0 && !(r->bits[stmt] & LR_LATE) && r->st[e].node == stmt) lr_value_write(c, e);
 }
 
-/* A history for each class registration has made so far */
+/* A history for each class registration has made so far, held when the
+   walk made it (before the class builders' step) */
 static void lr_fit_classes(LoadRecord *r, Compiler *c) {
   if (c->nclasses + 1 <= r->ncls) return;
   r->cls = realloc(r->cls, sizeof *r->cls * (size_t)(c->nclasses + 1));
-  if (!r->cls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  r->held = realloc(r->held, (size_t)(c->nclasses + 1));
+  if (!r->cls || !r->held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memset(r->cls + r->ncls, 0, sizeof *r->cls * (size_t)(c->nclasses + 1 - r->ncls));
+  memset(r->held + r->ncls, !r->structs, (size_t)(c->nclasses + 1 - r->ncls));
   r->ncls = c->nclasses + 1;
 }
 
@@ -1299,8 +1308,8 @@ static void lr_record_unplaced(Compiler *c) {
       int e = id < r->n ? r->at[id] : -1, ci = lr_class_opened(c, id);
       if ((e >= 0 && r->st[e].node == id) || ci < 0) continue;
       LrClass *kc = lr_class(r, ci);
-      int have = 0;
-      for (int i = 0; i < kc->nopen && !have; i++) have = kc->open[i].node == id;
+      int have = !kc;
+      for (int i = 0; !have && i < kc->nopen; i++) have = kc->open[i].node == id;
       if (have) continue;
       kc->open = lr_grow(kc->open, &kc->copen, kc->nopen, sizeof *kc->open);
       int at = kc->nopen;
@@ -1383,6 +1392,14 @@ void elab_program(Compiler *c) {
   sp_timing_end(t0, "an_elab_record", "");
 }
 
+/* The block of the class builder class ci is made by (`X = Struct.new(:a)
+   do`), -1 for a class no builder makes */
+static int lr_builder_body(Compiler *c, int ci) {
+  int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
+  NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
+  return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? body : -1;
+}
+
 /* The class builders' blocks (`X = Struct.new(:a) do ... end`) are bodies
    of classes that registration makes after the walk (register_structs):
    once it has, a record that holds such a block with no class is made
@@ -1395,6 +1412,8 @@ void elab_record_builders(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r || !r->recorded) return;
   r->structs = 1;
+  lr_fit_classes(r, c);
+  for (int ci = 0; ci < c->nclasses; ci++) if (lr_builder_body(c, ci) >= 0) r->held[ci + 1] = 1;
   if (r->builders) {
     double t0 = sp_timing_now();
     elab_fresh(c);
@@ -1406,11 +1425,9 @@ void elab_record_builders(Compiler *c) {
     free(x.fc); free(x.fs); free(x.vs); free(x.vmain);
     sp_timing_end(t0, "an_elab_record", "builders");
   }
-  lr_fit_classes(r, c);
   for (int ci = 0; ci < c->nclasses; ci++) {
-    int d = c->classes[ci].def_node, body = d >= 0 ? class_def_body(c, d) : -1;
-    NodeKind k = d >= 0 ? nt_kind(c->nt, d) : NK_NilNode;
-    if (body < 0 || (k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode)) continue;
+    int d = c->classes[ci].def_node, body = lr_builder_body(c, ci);
+    if (body < 0) continue;
     LrClass *kc = lr_class(r, ci);
     int have = 0;
     for (int i = 0; i < kc->nopen; i++) if (kc->open[i].body == body) have = 1;
@@ -1730,9 +1747,7 @@ static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, Lo
   if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
   if (!name && cls == mod && !sg) return ELAB_YES;
   LrClass *k = lr_class(r, cls);
-  /* a class made after the record (an object's singleton class, which
-     its extends and defs fill) holds methods the record never saw */
-  if (!k) return ELAB_UNKNOWN;
+  if (!k) return ELAB_UNKNOWN;   /* a class the record does not hold (LoadRecord.held) */
   int unsure = 0;
   for (int pass = 0; pass < 3; pass++) {   /* prepends, own, includes or extends */
     if (pass == 1) {
@@ -2501,7 +2516,7 @@ void elab_dump(Compiler *c, FILE *out) {
   static const char *const vars[] = { "$", "main ", "const " };
   for (int ci = LR_MAIN; ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
-    if (!k->nopen && !k->nmix) continue;
+    if (!k || (!k->nopen && !k->nmix)) continue;
     fprintf(out, "class %s:", ci == LR_MAIN ? "main" : c->classes[ci].name);
     for (int i = 0; i < k->nopen; i++) fprintf(out, " body#%d", elab_point_of(c, k->open[i].node).seq);
     for (int i = 0; i < k->nmix; i++)
@@ -2585,7 +2600,7 @@ static void elab_check_visibility(Compiler *c) {
      against the visibility the class table finds up the class's chain */
   for (int ci = 0; ci < c->nclasses && ci + 1 < r->ncls; ci++) {
     const LrClass *k = lr_class(r, ci);
-    for (int j = 0; j < k->nmix; j++) {
+    for (int j = 0; k && j < k->nmix; j++) {
       if (k->mix[j].mod < 0 || elab_mix_on_singleton(k->mix[j].kind)) continue;
       for (int i = 0; i < r->nhist; i++) {
         const LrHist *h = &r->hist[i];
@@ -2622,7 +2637,7 @@ void elab_free(Compiler *c) {
   free(r->names); free(r->reopens);
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
-  free(r->hist); free(r->hhead); free(r->cls); free(r->vers); free(r->vers_head); free(r->set);
+  free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   free(r->st); free(r->at); free(r->bits); free(r);
   c->lrec = NULL;
 }
