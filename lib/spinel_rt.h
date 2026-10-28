@@ -3433,7 +3433,14 @@ static SP_THREAD_LOCAL int sp_builtin_hook_depth = 0;
    which knows only the builtin containers. `[]` goes through the binop hook
    above. handled stays FALSE when no arm takes the receiver and key. */
 typedef void (*sp_user_aset_fn)(sp_RbVal recv, sp_RbVal key, sp_RbVal val, sp_bool *handled);
+/* (kept static, with the copy lib/sp_poly_cold.c reads, as the binop hook) */
+#ifdef SPINEL_EXT_HOST
+extern sp_user_aset_fn sp_user_aset_hook_lib;
+#define sp_user_aset_hook sp_user_aset_hook_lib
+#else
 static sp_user_aset_fn sp_user_aset_hook = NULL;
+extern sp_user_aset_fn sp_user_aset_hook_lib;
+#endif
 /* eql? alone, through the same kind of table (sp_user_eql_dispatch): uniq
    and the set operations ask a program object's own eql? of any argument */
 static sp_user_binop_fn sp_user_eql_hook = NULL;

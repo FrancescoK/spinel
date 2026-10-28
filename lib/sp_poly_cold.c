@@ -231,6 +231,7 @@ const char *(*sp_class_user_to_s_fn)(sp_Class);
 const char *(*sp_class_user_inspect_fn)(sp_Class);
 /* the hooks the generated unit installs for this unit (SP_INSTALL_HOOK) */
 sp_user_binop_fn sp_user_binop_hook_lib;
+sp_user_aset_fn sp_user_aset_hook_lib;
 sp_obj_eq_fn sp_obj_eq_hook_lib;
 sp_obj_hash_fn sp_obj_hash_hook_lib;
 sp_obj_eql_fn sp_obj_eql_hook_lib;

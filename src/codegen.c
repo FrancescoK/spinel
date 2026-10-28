@@ -16784,7 +16784,7 @@ void emit_regex_section(Compiler *c, Buf *b) {
   if (program_has_user_eql(c))
     buf_puts(b, "  sp_user_eql_hook = sp_user_eql_dispatch;\n");
   if (g_has_user_aset)
-    buf_puts(b, "  sp_user_aset_hook = sp_user_aset_dispatch;\n");
+    buf_puts(b, "  SP_INSTALL_HOOK(sp_user_aset_hook, sp_user_aset_dispatch);\n");
   if (g_has_user_coerce)
     buf_puts(b, "  sp_user_coerce_hook = sp_user_coerce_dispatch;\n");
   if (g_has_user_to_io)
