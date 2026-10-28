@@ -90,14 +90,17 @@ static size_t g_fsl_nlines = 0;
    would, and a parse error when there is none, which Spinel, compiling the
    file as written, must not take (the dead-require fold reads that parse).
    It would buy nothing else here: Spinel reads no shebang options. */
+static void sp_pm_options_init(pm_options_t *opts, const char *path) {
+  memset(opts, 0, sizeof *opts);
+  pm_options_line_set(opts, 1);
+  pm_options_frozen_string_literal_set(opts, true);
+  pm_options_version_set(opts, "4.0", 3);
+  if (path) pm_options_filepath_set(opts, path);
+}
 static void sp_pm_parser_init(pm_parser_t *parser, const char *src, size_t len,
                               const char *path) {
   pm_options_t opts;
-  memset(&opts, 0, sizeof opts);
-  pm_options_line_set(&opts, 1);
-  pm_options_frozen_string_literal_set(&opts, true);
-  pm_options_version_set(&opts, "4.0", 3);
-  if (path) pm_options_filepath_set(&opts, path);
+  sp_pm_options_init(&opts, path);
   pm_parser_init(parser, (const uint8_t *)src, len, &opts);
   pm_options_free(&opts);
 }
@@ -416,11 +419,26 @@ static void emit_ref(int id, const char *field, pm_node_t *child) {
   nt_put_ref(out_nt, id, field, cid);
 }
 
-/* A block's or lambda's own locals (params + first-assigned-inside), joined
-   with commas: Ruby scoping makes the non-param ones FRESH on every call, and
-   a name the enclosing scope assigns only after the block's text is the
-   block's own, not the enclosing one. */
-static void out_block_locals(int id, const pm_constant_id_list_t *locals) {
+/* `class A < (Base)`: parentheses around a single expression carry no
+   meaning, but every pass reads the superclass by its node kind, and a
+   ParenthesesNode read as no superclass at all (Object). The superclass
+   without them. */
+static pm_node_t *flat_superclass(pm_node_t *sup) {
+  while (sup && PM_NODE_TYPE(sup) == PM_PARENTHESES_NODE) {
+    pm_node_t *pb = ((pm_parentheses_node_t *)sup)->body;
+    if (!pb || PM_NODE_TYPE(pb) != PM_STATEMENTS_NODE ||
+        ((pm_statements_node_t *)pb)->body.size != 1) break;
+    sup = ((pm_statements_node_t *)pb)->body.nodes[0];
+  }
+  return sup;
+}
+
+/* A scope's own locals, joined with commas. A block's or lambda's (params +
+   first-assigned-inside): Ruby scoping makes the non-param ones FRESH on
+   every call, and a name the enclosing scope assigns only after the block's
+   text is the block's own, not the enclosing one. A class or module body's:
+   the frame an eval's text in it reads (sp_parse_snippet_in). */
+static void out_scope_locals(int id, const pm_constant_id_list_t *locals) {
   if (locals->size == 0) return;
   /* join the names in one pass (single cstr per name, no strcat rescans) */
   size_t total = 1;
@@ -1234,24 +1252,16 @@ static int flatten_node(pm_node_t *node) {
   case PM_CLASS_NODE: {
     pm_class_node_t *n = (pm_class_node_t *)node;
     N("ClassNode");
+    out_scope_locals(id, &n->locals);
     R("constant_path", n->constant_path);
-    /* `class A < (Base)`: parentheses around a single expression carry no
-       meaning, but every pass reads the superclass by its node kind, and a
-       ParenthesesNode read as no superclass at all (Object). */
-    pm_node_t *sup = n->superclass;
-    while (sup && PM_NODE_TYPE(sup) == PM_PARENTHESES_NODE) {
-      pm_node_t *pb = ((pm_parentheses_node_t *)sup)->body;
-      if (!pb || PM_NODE_TYPE(pb) != PM_STATEMENTS_NODE ||
-          ((pm_statements_node_t *)pb)->body.size != 1) break;
-      sup = ((pm_statements_node_t *)pb)->body.nodes[0];
-    }
-    R("superclass", sup);
+    R("superclass", flat_superclass(n->superclass));
     R("body", n->body);
     break;
   }
   case PM_MODULE_NODE: {
     pm_module_node_t *n = (pm_module_node_t *)node;
     N("ModuleNode");
+    out_scope_locals(id, &n->locals);
     R("constant_path", n->constant_path);
     R("body", n->body);
     break;
@@ -1914,7 +1924,7 @@ static int flatten_node(pm_node_t *node) {
     /* Block-local variables (params + first-assigned-inside): Ruby scoping
        makes non-param locals FRESH on every block invocation; codegen needs
        the list to reset them per iteration in fused loops. */
-    out_block_locals(id, &n->locals);
+    out_scope_locals(id, &n->locals);
     /* Serialize block parameters */
     if (n->parameters) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
@@ -2122,7 +2132,7 @@ else {
   case PM_LAMBDA_NODE: {
     pm_lambda_node_t *n = (pm_lambda_node_t *)node;
     N("LambdaNode");
-    out_block_locals(id, &n->locals);
+    out_scope_locals(id, &n->locals);
     if (n->parameters) {
       if (PM_NODE_TYPE(n->parameters) == PM_BLOCK_PARAMETERS_NODE) {
         pm_block_parameters_node_t *bp = (pm_block_parameters_node_t *)n->parameters;
@@ -8414,46 +8424,110 @@ NodeTable *sp_parse_file(const char *source_file, const char *argv0) {
   return sp_parse_emit(source_file, argv0);
 }
 
-/* Parse a Ruby snippet -- a class_eval string a desugar can read at compile
-   time -- into a node table of its own, as the entry program is: no source
-   path, no file map. NULL when it does not parse. The flattener's
-   globals belong to the entry parse, which is over by the time this runs;
-   they are saved around the call and reset the way that parse resets them.
-   The entry's source map and per-line frozen_string_literal table describe
-   the entry buffer, not this text, so they are off for it; a node's line is
-   its line in the text (when the entry has lines at all), which the desugar
-   moves to the eval site's. NULL as well for text that does not read the
-   same spliced into the body (sp_snippet_graftable). */
+/* Parse a Ruby snippet -- compiler-written text, or a class_eval string a
+   desugar can read at compile time -- into a node table of its own, as the
+   entry program is. NULL when it does not parse. The flattener's globals
+   belong to the entry parse, which is over by the time this runs; they are
+   saved around the call and reset the way that parse resets them. The
+   entry's source map and per-line frozen_string_literal table describe the
+   entry buffer, not this text, so they are off for it.
+   With no frame the text is parsed as a file of its own: no locals around
+   it, a node's line its line in the text (when the entry has lines at all),
+   and NULL for text that does not read the same spliced into a body
+   (sp_snippet_graftable). With a frame it is parsed as CRuby parses an
+   eval's text: the frame's locals are Prism's scopes, so a name the frame
+   holds reads that local; `__LINE__` counts from the frame's line and
+   `__FILE__` answers its path, "(eval at FILE:LINE)" by default, FILE being
+   what `__FILE__` answers at the site; the text's own source map gives
+   each node the site's line and file, from its line in the text, as
+   positions handed to `#line` and the reports. The table's source_file is
+   the path. */
 NodeTable *sp_parse_snippet(const char *src) {
   if (!src || !sp_snippet_graftable(src)) return NULL;
+  return sp_parse_snippet_in(src, NULL);
+}
+NodeTable *sp_parse_snippet_in(const char *src, const SnipFrame *f) {
+  if (!src || (f && f->line < 1)) return NULL;
   /* the entry buffer's state the flattener reads: its source map, per-line
-     frozen_string_literal table, the statement cursor and owner */
+     frozen_string_literal table, the statement cursor and owner, the file
+     `__FILE__` answers, and whether the file flattened last is a builtins/
+     one (sp_in_builtin), which the text is not */
   const pm_parser_t *saved_parser = g_parser;
   int saved_emit_line = g_emit_line, saved_emit_end = g_emit_end;
   NodeTable *saved_nt = out_nt; int saved_counter = node_counter;
   int saved_map_n = sp_line_map_n; unsigned char *saved_fsl = g_fsl_lines; size_t saved_fsl_n = g_fsl_nlines;
+  int *saved_lf = sp_line_file, *saved_lo = sp_line_orig, *saved_lp = sp_line_pop;
+  int *saved_df = sp_disp_file, *saved_dl = sp_disp_line;
+  const char *saved_src = g_source_file; int saved_flat = g_flat_file, saved_bi = g_flat_builtin;
   pm_node_t **saved_next = g_stmt_next, **saved_end = g_stmt_end; const uint8_t *saved_owner = g_owner;
   sp_line_map_n = 0; g_fsl_lines = NULL; g_fsl_nlines = 0;
-  g_stmt_next = g_stmt_end = NULL; g_owner = NULL; g_emit_end = 0;
-  char *buf = strdup(src);
+  g_stmt_next = g_stmt_end = NULL; g_owner = NULL; g_emit_end = 0; g_flat_builtin = 0;
+  char *buf = strdup(src), *path = NULL;
+  int *map = NULL;
+  pm_options_t opts;
+  sp_pm_options_init(&opts, NULL);
+  if (f && buf) {
+    if (f->path) path = strdup(f->path);
+    else {
+      char *site = f->site_file > 0 && f->site_file < sp_file_count && sp_file_table[f->site_file]
+                   ? sp_required_file_path(sp_file_table[f->site_file]) : strdup(g_source_file);
+      size_t cap = strlen(site) + 48;
+      path = malloc(cap);
+      if (path) snprintf(path, cap, "(eval at %s:%lld)", site, f->site_line);
+      free(site);
+    }
+    if (path) pm_options_filepath_set(&opts, path);
+    /* the frame's scopes, then the text's own, which Prism parses the
+       text's top level in: a local the frame holds reads at depth 1 or more */
+    if (f->nscopes > 0 && pm_options_scopes_init(&opts, (size_t)f->nscopes + 1))
+      for (int i = 0; i <= f->nscopes; i++) {
+        int n = i < f->nscopes ? f->scopes[i].n : 0;
+        pm_options_scope_t *sc = &opts.scopes[i];
+        if (!pm_options_scope_init(sc, (size_t)n)) continue;
+        for (int j = 0; j < n; j++)
+          pm_string_constant_init(&sc->locals[j], f->scopes[i].names[j], strlen(f->scopes[i].names[j]));
+      }
+    /* text line i: the eval's line f->line + i - 1, in no file, shown at
+       the site's line + i - 1 in the site's file */
+    int nl = 1;
+    for (const char *q = buf; *q; q++) nl += *q == '\n';
+    map = calloc((size_t)(nl + 2) * 5, sizeof(int));
+    if (map) {
+      sp_line_file = map; sp_line_orig = map + nl + 2; sp_line_pop = map + 2 * (nl + 2);
+      sp_disp_file = map + 3 * (nl + 2); sp_disp_line = map + 4 * (nl + 2);
+      for (int i = 1; i <= nl; i++) {
+        sp_line_orig[i] = (int)(f->line + i - 1);
+        if (f->site_line > 0) { sp_disp_line[i] = (int)(f->site_line + i - 1); sp_disp_file[i] = f->site_file; }
+      }
+      sp_line_map_n = nl;
+    }
+    g_source_file = path ? path : "";
+    g_flat_file = 0;
+  }
   NodeTable *res = NULL;
   if (buf) {
     pm_parser_t parser;
-    sp_pm_parser_init(&parser, buf, strlen(buf), NULL);
+    pm_parser_init(&parser, (const uint8_t *)buf, strlen(buf), &opts);
     pm_node_t *root = pm_parse(&parser);
     if (parser.error_list.size == 0) {
       g_parser = &parser;
       out_nt = nt_new_table(); node_counter = 0;
       out_nt->root_id = flatten(root);
+      if (path) nt_put_source_file(out_nt, path);
       res = out_nt;
     }
     pm_node_destroy(&parser, root);
     pm_parser_free(&parser);
     free(buf);
   }
+  pm_options_free(&opts);
+  free(path); free(map);
   out_nt = saved_nt; node_counter = saved_counter;
   g_parser = saved_parser; g_emit_line = saved_emit_line; g_emit_end = saved_emit_end;
   sp_line_map_n = saved_map_n; g_fsl_lines = saved_fsl; g_fsl_nlines = saved_fsl_n;
+  sp_line_file = saved_lf; sp_line_orig = saved_lo; sp_line_pop = saved_lp;
+  sp_disp_file = saved_df; sp_disp_line = saved_dl;
+  g_source_file = saved_src; g_flat_file = saved_flat; g_flat_builtin = saved_bi;
   g_stmt_next = saved_next; g_stmt_end = saved_end; g_owner = saved_owner;
   return res;
 }

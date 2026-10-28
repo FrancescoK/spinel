@@ -63,6 +63,8 @@ int is_equality_name(const char *n);  /* equal? eql? == */
 int is_bits_query(const char *n);     /* allbits? anybits? nobits? */
 int is_count_alias(const char *n);    /* length size count */
 int is_class_eval_family(const char *n);  /* class_eval module_eval class_exec module_exec */
+int is_class_eval_text_name(const char *n);  /* class_eval module_eval: run a String as the body's code */
+int is_eval_frame_reader(const char *n);  /* eval and exec forms, binding, __dir__: read an eval's frame */
 int is_eval_exec_family(const char *n);   /* class/module/instance eval and exec */
 int is_key_query(const char *n);      /* key? has_key? include? member?: Hash/ENV membership aliases */
 int is_hash_key_lookup(const char *n); /* [] fetch delete and is_key_query: a Hash call that only compares its key */

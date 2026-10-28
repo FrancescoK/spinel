@@ -83,7 +83,8 @@ static char *mx_name(pm_constant_id_t id) { return cstr(id); }
 
 /* ---- may a string module_eval / class_eval be read as the body's own code?
    Text that a class body evaluates is spliced into it (a macro's module_eval
-   here, a literal class_eval by desugar_static_class_eval), but CRuby runs
+   here, written back as source with no scopes; desugar_static_class_eval
+   parses a literal class_eval's text in its frame instead), but CRuby runs
    it in a scope of its own, so a splice answers differently when the text
    - reads or writes a local, or names one Prism cannot tell from a call
      (`x`, `private`): the eval sees the caller's locals and keeps its own;

@@ -297,6 +297,20 @@ int is_eval_exec_family(const char *n) {
   return is_class_eval_family(n) || sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
 }
 
+/* The calls that run a String in the class or module they are called on, as
+   its body's code: class_eval and module_eval (their exec kin take only a
+   block) */
+int is_class_eval_text_name(const char *n) {
+  return sp_streq(n, "class_eval") || sp_streq(n, "module_eval");
+}
+
+/* The calls that read the frame a String of code runs in: one that runs
+   code itself, the frame's binding, and its file's directory, which an
+   eval's text answers its own */
+int is_eval_frame_reader(const char *n) {
+  return is_code_eval_name(n) || is_eval_exec_family(n) || sp_streq(n, "binding") || sp_streq(n, "__dir__");
+}
+
 int is_key_query(const char *n) {
   return sp_streq(n, "key?") || sp_streq(n, "has_key?") ||
          sp_streq(n, "include?") || sp_streq(n, "member?");
