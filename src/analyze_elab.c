@@ -78,6 +78,11 @@ enum { LR_LATE = 1, LR_BODY = 2 };   /* runs later: in a method body, a lambda o
 /* A def of the program's, by its name (LoadRecord.defs) */
 typedef struct { const char *name; int node; } LrSite;
 
+/* Flat constant slots: first plain write, earliest other write, and the
+   earliest sure/possible completions in each load region. */
+typedef struct LrSlot { const char *name; int first, next, points, other; LoadPoint done, from; } LrSlot;
+typedef struct LrSlotPoint { int region, sure, any, next; } LrSlotPoint;
+
 struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
   int *at;                   /* [n] each node's statement; -1 under no file's root */
@@ -118,6 +123,8 @@ struct LoadRecord {
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
   struct { int node; char *name; } *srcw; int nsrcw;   /* the constant writes the source has, before any pass (elab_note_const_writes) */
+  LrSlot *slot; int nslot, cslot, *slot_head, slot_builds;
+  LrSlotPoint *slotp; int nslotp, cslotp; long slot_entries;
   struct LrVers *vers; int nvers, cvers, *vers_head;
   int follow;                /* the aliases lr_class_of is following, to cap a chain */
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
@@ -242,6 +249,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   else if (k == NK_LambdaNode || (k == NK_BlockNode && pp->defer)) q.bits |= LR_LATE;
   if (pp->kind == EP_LIST) { q.kind = EP_NEW; return q; }
   int spine = pp->kind == EP_SPINE;
+  if (!spine && k != NK_CallNode) return q;
   switch (k) {
     case NK_ClassNode: case NK_ModuleNode: case NK_SingletonClassNode:
       if (spine && ch == nt_ref(nt, p, "body")) { q.frame = pp->e; q.fmay = q.fpartial = 0; return elab_body_pos(nt, ch, q); }
@@ -307,7 +315,9 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
       if (ch != nt_ref(nt, p, "block") || nt_kind(nt, ch) != NK_BlockNode) break;
       int runs = elab_block_runs(nt, p);
       if (runs < 0) { q.defer = 1; break; }
-      if (!spine) break;
+      /* An immediate block keeps its call's point in an expression too;
+         only a call that may keep the block leaves its body unplaced. */
+      if (!spine) { q.defer = runs == 0; break; }
       q.kind = EP_SPINE;
       if (runs == 0) q.may = q.fmay = 1;
       if (elab_opens_frame(nt, p)) { q.frame = pp->e; q.fmay = q.fpartial = 0; }
@@ -571,6 +581,9 @@ static void elab_points_walk(Compiler *c, int reg) {
   }
   for (int id = 0; id < n; id++)
     if (!live[id] || par[id] < 0 || live[par[id]]) up[id] = par[id];
+  /* Reuse the reachability scratch for the part's kind and defer bit,
+     so the climb asks the same placement rule as the walk. */
+  for (int id = 0; id < n; id++) live[id] = (unsigned char)((r->at[id] >= 0 ? EP_SPINE : EP_NODE) << 1);
   for (int id = 0; id < n; id++) {
     int s = 0, a = id;
     while (r->at[a] == -2 && up[a] >= 0) { stack[s++] = a; a = up[a]; }
@@ -578,8 +591,10 @@ static void elab_points_walk(Compiler *c, int reg) {
     while (s > 0) {
       int b = stack[--s], p = up[b];
       r->at[b] = r->at[p];
-      if ((r->bits[p] & LR_LATE) || lr_defers(nt, up, p)) r->bits[b] |= LR_LATE;
-      if ((r->bits[p] & LR_BODY) || nt_kind(nt, p) == NK_DefNode) r->bits[b] |= LR_BODY;
+      ElabPos pos = { .e = r->at[p], .kind = live[p] >> 1, .defer = live[p] & 1, .bits = r->bits[p] };
+      pos = elab_child(nt, p, b, &pos);
+      live[b] = (unsigned char)((pos.kind << 1) | pos.defer);
+      r->bits[b] = (unsigned char)pos.bits;
     }
   }
   if (was) lr_check_map(c, was, wbits);
@@ -928,6 +943,7 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
 static int lr_cref(Compiler *c, int e);
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
 static int lr_named(Compiler *c, const char *name);
+static const char *lr_const_written(const NodeTable *nt, int id);
 static const NodeKind *lr_const_write_kinds(int *n);
 
 /* The class a builder write's block opens (`X = Struct.new(:a) do`,
@@ -1157,6 +1173,25 @@ static void lr_def(ElabRec *x, int def, int fc, int fs, int bvis, int may) {
    a constant's by name and the class whose body (lexical scope) writes it,
    as lr_const_owner numbers it (0: not known) */
 static int lr_const_owner(int cls) { return cls >= LR_MAIN ? cls + 2 : 0; }
+static int lr_sg_const_owner(int cls) { return cls >= LR_MAIN ? -cls - 2 : 0; }
+
+/* A known class's singleton has its own constant history, disjoint from
+   the class's. A singleton of an arbitrary object remains unknown. */
+static int lr_singleton_owner(Compiler *c, int f) {
+  int ex = nt_ref(c->nt, c->lrec->st[f].node, "expression");
+  int cls = nt_kind(c->nt, ex) == NK_SelfNode ? lr_cref(c, f) : elab_class_ref_at(c, ex);
+  return lr_sg_const_owner(cls);
+}
+
+static int lr_const_scope_owner(Compiler *c, int e) {
+  const LoadRecord *r = c->lrec;
+  for (int f = e >= 0 ? r->st[e].frame : -1; f >= 0; f = r->st[f].frame) {
+    NodeKind k = nt_kind(c->nt, r->st[f].node);
+    if (k == NK_SingletonClassNode) return lr_singleton_owner(c, f);
+    if (k == NK_ClassNode || k == NK_ModuleNode) break;
+  }
+  return lr_const_owner(lr_cref(c, e));
+}
 /* Is a written value nil: none, a nil, or the nil a chain of writes ends
    in (`$a = @b = nil`)? */
 static int lr_nil_value(const NodeTable *nt, int v) {
@@ -1165,7 +1200,67 @@ static int lr_nil_value(const NodeTable *nt, int v) {
 /* Record a write under owner, numbered as lr_const_owner numbers it; the
    version keeps the class it names (LrDef.owner) */
 static void lr_write(LoadRecord *r, ElabVar kind, int owner, const char *name, int node, int nilv, int may) {
-  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner - 2 });
+  if (node >= 0 && node < r->n && (r->bits[node] & LR_LATE)) {
+    const LrHist *h = lr_hist(r, -2 - (int)kind, owner, name, 0);
+    for (int i = 0; h && i < h->n; i++) if (h->v[i].node == node) return;
+  }
+  lr_version(r, -2 - (int)kind, owner, name, (LrDef){ node, LR_WRITE, 0, (unsigned char)may, (unsigned char)nilv, NULL, owner < 0 ? -owner - 2 : owner - 2 });
+}
+
+/* Every constant assignment joins its owner's history at its point. A
+   multiple assignment's targets share its completion point; a conditional
+   assignment may leave the previous value in place. */
+static void lr_const_write(Compiler *c, int node, int e, int fc, int fs, int may) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, node);
+  int owner = lr_const_scope_owner(c, e), target = -1, v = nt_ref(nt, node, "value");
+  const char *name;
+  if (node < c->lrec->n && (c->lrec->bits[node] & LR_LATE)) {
+    const int *par = comp_parent_map(c);
+    owner = lr_const_owner(LR_MAIN);
+    for (int a = par[node]; a >= 0; a = par[a]) {
+      NodeKind ak = nt_kind(nt, a);
+      if (ak == NK_SingletonClassNode) {
+        int f = a < c->lrec->n ? c->lrec->at[a] : -1;
+        owner = f >= 0 && c->lrec->st[f].node == a ? lr_singleton_owner(c, f) : 0;
+        break;
+      }
+      if (ak == NK_ClassNode || ak == NK_ModuleNode) { owner = lr_const_owner(elab_header_class(c, a, NULL, NULL)); break; }
+    }
+    fc = owner < 0 ? -owner - 2 : owner - 2;
+    fs = owner < 0 ? LR_FS_SCLASS : LR_FS_NONE;
+  }
+  switch (k) {
+    case NK_ConstantWriteNode: case NK_ConstantTargetNode:
+    case NK_ConstantOrWriteNode: case NK_ConstantAndWriteNode: case NK_ConstantOperatorWriteNode:
+      break;
+    case NK_ConstantPathTargetNode: target = node; break;
+    case NK_ConstantPathWriteNode: case NK_ConstantPathOrWriteNode:
+    case NK_ConstantPathAndWriteNode: case NK_ConstantPathOperatorWriteNode:
+      target = nt_ref(nt, node, "target");
+      break;
+    case NK_CallNode: {
+      const char *nm = nt_str(nt, node, "name");
+      int a = nt_ref(nt, node, "arguments"), an = 0;
+      const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+      if (!nm || !is_const_set_name(nm) || an < 2 || !(name = vis_arg_name(nt, av[0]))) return;
+      int rv = nt_ref(nt, node, "receiver");
+      owner = rv < 0 || nt_kind(nt, rv) == NK_SelfNode ?
+        (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, rv));
+      lr_write(c->lrec, ELAB_CONST, owner, name, node, lr_nil_value(nt, av[1]), may);
+      return;
+    }
+    default: return;
+  }
+  if (!(name = lr_const_written(nt, node))) return;
+  if (target >= 0) {
+    int par = nt_ref(nt, target, "parent");
+    owner = par < 0 ? lr_const_owner(LR_MAIN) : nt_kind(nt, par) == NK_SelfNode ?
+      (fs == LR_FS_SCLASS ? lr_sg_const_owner(fc) : lr_const_owner(fc)) : lr_const_owner(elab_class_ref_at(c, par));
+  }
+  may |= k == NK_ConstantOrWriteNode || k == NK_ConstantAndWriteNode ||
+         k == NK_ConstantPathOrWriteNode || k == NK_ConstantPathAndWriteNode;
+  lr_write(c->lrec, ELAB_CONST, owner, name, node, v >= 0 && lr_nil_value(nt, v), may);
 }
 
 static void lr_form_runs(ElabRec *x, int node, int cls, int sg, int may);
@@ -1551,6 +1646,7 @@ static int lr_nested_part(void *ud, int ch, ElabPos *q) {
   if (q->kind == EP_LIST || q->kind == EP_NEW || (q->bits & LR_LATE) || q->defer) return 0;
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_BlockNode ||
       k == NK_LambdaNode || k == NK_DefinedNode) return 0;
+  lr_const_write(n->x->c, ch, q->e, n->fc, n->fs, q->may || q->partial);
   if (k == NK_DefNode) { lr_def(n->x, ch, n->fc, n->fs, *n->vs, q->may); return 0; }
   if (k == NK_CallNode && lr_nested_form(nt_str(nt, ch, "name"))) { lr_call(n->x, ch, n->fc, n->fs, n->vs, n->fnode, q->may, 1); return 0; }
   return 1;
@@ -1614,8 +1710,9 @@ static void lr_record_stmt(ElabRec *x, int e) {
     if (kc && !kc->nopen && cp >= 0 && !lr_header_builtin(r, node)) {
       int owner;
       elab_header_class(x->c, node, &owner, NULL);
-      if (owner < LR_MAIN) owner = nt_kind(nt, cp) == NK_ConstantReadNode ? lr_cref(x->c, e) : x->c->classes[x->fc[e]].enclosing_class;
-      lr_write(r, ELAB_CONST, lr_const_owner(owner), lr_written_name(nt, cp), node, 0, may);
+      owner = owner >= LR_MAIN ? lr_const_owner(owner) : nt_kind(nt, cp) == NK_ConstantReadNode ?
+        lr_const_scope_owner(x->c, e) : lr_const_owner(x->c->classes[x->fc[e]].enclosing_class);
+      lr_write(r, ELAB_CONST, owner, lr_written_name(nt, cp), node, 0, may);
     }
     int sc = k == NK_ClassNode ? nt_ref(nt, node, "superclass") : -1;
     if (kc && sc >= 0 && !kc->has_sup) { kc->sup = elab_class_ref_at(x->c, sc); kc->sup_ref = sc; kc->has_sup = 1; }
@@ -1629,14 +1726,9 @@ static void lr_record_stmt(ElabRec *x, int e) {
       break;
     }
     case NK_CallNode: lr_call(x, node, fc, fs, vs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), may, 0); break;
-    case NK_ConstantWriteNode: case NK_ConstantOrWriteNode: {   /* in its lexical scope */
-      int v = nt_ref(nt, node, "value");
-      lr_write(r, ELAB_CONST, lr_const_owner(lr_cref(x->c, e)), lr_written_name(nt, node), node, lr_nil_value(nt, v),
-               wmay || k == NK_ConstantOrWriteNode);
-      break;
-    }
     default: lr_value_write(x->c, e); break;
   }
+  lr_const_write(x->c, node, e, fc, fs, wmay);   /* in its lexical scope, or its explicit owner's */
   /* ...and the definition forms in its parts (a form records its own; a
      file's root holds its statements, each one of its own) */
   int own = k == NK_ProgramNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
@@ -1699,6 +1791,7 @@ static void lr_record_drop(LoadRecord *r) {
   if (r->cls) memset(r->cls, 0, sizeof *r->cls * (size_t)r->ncls);
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
   r->nhist = 0; r->frontier = 0; r->nset = 0; r->builders = 0;
+  r->slot_builds = -1;
   r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
   free(r->surf); free(r->surf_at); r->surf = NULL; r->surf_at = NULL;
 }
@@ -1747,6 +1840,18 @@ static void lr_record_unplaced(Compiler *c) {
   const NodeTable *nt = c->nt;
   LoadRecord *r = c->lrec;
   lr_fit_classes(r, c);
+  /* Deferred writes have no load point, but may complete before any read.
+     Reuse the write forms and lexical owners of the placed histories. */
+  int nk = 0;
+  const NodeKind *kinds = lr_const_write_kinds(&nk);
+  for (int k = 0; k <= nk; k++) {
+    NodeKind kind = k < nk ? kinds[k] : NK_CallNode;
+    NT_FOREACH_KIND(nt, kind, id) {
+      if (id >= r->n || !(r->bits[id] & LR_LATE)) continue;
+      if (kind == NK_CallNode && !is_const_set_name(nt_str(nt, id, "name"))) continue;
+      lr_const_write(c, id, r->at[id], LR_UNKNOWN_CLASS, LR_FS_NONE, 1);
+    }
+  }
   for (int q = 0; q < 2; q++)
     NT_FOREACH_KIND(nt, q ? NK_ModuleNode : NK_ClassNode, id) {
       int e = id < r->n ? r->at[id] : -1, ci = elab_header_class(c, id, NULL, NULL);
@@ -2220,16 +2325,20 @@ enum { LR_STOP = 3 };
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
    one -- at the load phase's end too, as elab_written_before answers.
-   skip_vis passes over the visibility versions of a method. */
+   skip_vis passes over the visibility versions of a method. A constant
+   history with only uncertain writes supplies a candidate in *out. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if ((skip_vis && v->kind == LR_VIS) || v->unplaced) continue;
     int o = late ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
-    if (o == PROG_UNKNOWN) { unsure = 1; continue; }
+    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && v->may)) {
+      unsure = 1;
+      if (out && h->a == -2 - (int)ELAB_CONST && !*out) *out = v;
+      continue;
+    }
     if (o != PROG_BEFORE) continue;
-    if (v->may) { unsure = 1; continue; }
     if (out) *out = v;
     return unsure ? ELAB_UNKNOWN : ELAB_YES;
   }
@@ -2283,6 +2392,16 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
+/* A builtin mixin has no program class unless a reopening supplies
+   a recorded history. An unresolved program module stays unknown. */
+static int lr_mixin_class(Compiler *c, LrMixin *m) {
+  int cls = lr_later(c, &m->mod, m->ref);
+  if (cls >= 0) return cls;
+  int mod = elab_mixin_module(c, m);
+  if (mod >= 0 && builtin_mixin_module_id(c->classes[mod].name)) return m->mod = mod;
+  return mod < LR_MAIN ? mod : cls;
+}
+
 /* Is mixin m's module already among cls's ancestors (its singleton's when
    sg) where m runs: ELAB_YES / NO / UNKNOWN. A fact of the mixin, asked
    once and kept: the search it makes reads the earlier mixins' answers in
@@ -2292,7 +2411,7 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
    not depend on where it was first asked; an ask while it runs (modules
    that include each other) answers unknown. */
 static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
-  if (lr_later(c, &m->mod, m->ref) < 0) return ELAB_NO;
+  if (lr_mixin_class(c, m) < 0) return ELAB_NO;
   if (!m->dup) {
     m->dup = 1 + ELAB_UNKNOWN;
     m->dup = (unsigned char)(1 + lr_search(c, cls, sg, NULL, m->mod, elab_point_of(c, m->node), 0, 0, NULL, 0));
@@ -2327,7 +2446,7 @@ static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod
       int dup = lr_mixin_dup(c, cls, sg, m);
       if (dup == ELAB_YES) continue;
       if (dup == ELAB_UNKNOWN) *unsure = 1;
-      int o = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
+      int o = lr_mixin_class(c, m) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return ELAB_YES;
       if (o != ELAB_NO) *unsure = 1;
     }
@@ -2457,7 +2576,7 @@ int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p
     for (int j = 0; kc && j < kc->nmix; j++) {
       LrMixin *m = &kc->mix[j];
       if (lr_inside(c, m->node, p0, p1) &&
-          (lr_later(c, &m->mod, m->ref) < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
+          (lr_mixin_class(c, m) < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
     }
     for (int j = 0; op && j < op->n; j++)
       if (lr_inside(c, op->v[j].node, p0, p1)) return ELAB_UNKNOWN;
@@ -2613,20 +2732,140 @@ int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p
   return unsure ? ELAB_UNKNOWN : ELAB_NO;
 }
 
+/* The flat slot written by a history entry, after qualified names have
+   been lowered. Class headers do not assign a value slot. */
+static const char *lr_const_slot_name(const NodeTable *nt, int node) {
+  NodeKind k = nt_kind(nt, node);
+  if (k == NK_ClassNode || k == NK_ModuleNode) return NULL;
+  if (k == NK_CallNode) {
+    int a = nt_ref(nt, node, "arguments"), n = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
+    return n ? vis_arg_name(nt, av[0]) : NULL;
+  }
+  int target = nt_ref(nt, node, "target");
+  return nt_str(nt, target >= 0 ? target : node, "name");
+}
+
+/* A plain assignment is a statement directly in a file or class body,
+   including a class builder's body and a multiple assignment's targets. */
+static int lr_const_plain(Compiler *c, int node) {
+  LoadRecord *r = c->lrec;
+  LoadPoint p = elab_point_of(c, node);
+  NodeKind k = nt_kind(c->nt, node);
+  if (p.region < 0 || (k != NK_ConstantWriteNode && k != NK_ConstantPathWriteNode && k != NK_ConstantTargetNode)) return 0;
+  const LrStmt *s = &r->st[p.seq];
+  if (s->may || s->partial || (node != s->node && nt_kind(c->nt, s->node) != NK_MultiWriteNode)) return 0;
+  for (;;) {
+    if (s->depth != (s->frame >= 0 ? r->st[s->frame].depth + 1 : 0)) return 0;
+    if (s->frame < 0) return 1;
+    s = &r->st[s->frame];
+  }
+}
+
+static LrSlot *lr_slot(LoadRecord *r, const char *name, int make) {
+  unsigned b = lr_hash(0, 0, name);
+  for (int k = r->slot_head[b]; k >= 0; k = r->slot[k].next)
+    if (sp_streq(r->slot[k].name, name)) return &r->slot[k];
+  if (!make) return NULL;
+  r->slot = lr_grow(r->slot, &r->cslot, r->nslot, sizeof *r->slot);
+  int k = r->nslot++;
+  r->slot[k] = (LrSlot){ .name = name, .first = -1, .next = r->slot_head[b], .points = -1 };
+  r->slot_head[b] = k;
+  return &r->slot[k];
+}
+
+/* Presence belongs to the flat slot, regardless of the lexical owner.
+   Index the histories once per build, by their current lowered names.
+   Regions are incomparable, so each keeps its own earliest completions. */
+static void lr_slot_index(Compiler *c) {
+  LoadRecord *r = elab_fresh(c);
+  if (r->slot_head && r->slot_builds == r->builds && r->slot_entries == r->nentries) return;
+  if (!r->slot_head && !(r->slot_head = malloc(sizeof(int) * LR_BUCKETS))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int b = 0; b < LR_BUCKETS; b++) r->slot_head[b] = -1;
+  r->nslot = r->nslotp = 0;
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->a != -2 - (int)ELAB_CONST) continue;
+    for (int j = 0; j < h->n; j++) {
+      const LrDef *v = &h->v[j];
+      const char *name = lr_const_slot_name(c->nt, v->node);
+      if (!name) continue;
+      LrSlot *s = lr_slot(r, name, 1);
+      LoadPoint p = elab_point_done(c, v->node), q = elab_point_from(c, v->node);
+      int k = s->points;
+      while (k >= 0 && r->slotp[k].region != p.region) k = r->slotp[k].next;
+      if (k < 0) {
+        r->slotp = lr_grow(r->slotp, &r->cslotp, r->nslotp, sizeof *r->slotp);
+        k = r->nslotp++;
+        r->slotp[k] = (LrSlotPoint){ p.region, INT_MAX, INT_MAX, s->points };
+        s->points = k;
+      }
+      LrSlotPoint *t = &r->slotp[k];
+      if (p.seq < t->any) t->any = p.seq;
+      if (!v->may && p.seq < t->sure) t->sure = p.seq;
+      if (lr_const_plain(c, v->node)) {
+        if (s->first < 0 || elab_cmp(p, s->done) == PROG_BEFORE) { s->first = v->node; s->done = p; }
+      }
+      else {
+        if (!s->other || elab_cmp(q, s->from) == PROG_BEFORE) s->from = q;
+        else if (elab_cmp(q, s->from) == PROG_UNKNOWN) s->from = (LoadPoint){ -1, -1 };
+        s->other = 1;
+      }
+    }
+  }
+  r->slot_builds = r->builds; r->slot_entries = r->nentries;
+}
+
+/* Any sure completed write suffices, including nil and before a later
+   conditional update; no possible earlier write answers NO. */
+int elab_const_slot_present_at(Compiler *c, const char *name, LoadPoint p) {
+  if (!lr_ready(c, p)) return ELAB_UNKNOWN;
+  lr_slot_index(c);
+  LoadRecord *r = c->lrec;
+  const LrSlot *s = lr_slot(r, name, 0);
+  int unsure = 0;
+  for (int k = s ? s->points : -1; k >= 0; k = r->slotp[k].next) {
+    const LrSlotPoint *t = &r->slotp[k];
+    if (p.region < 0 || t->region != p.region) unsure = 1;
+    else if (t->sure < p.seq) return ELAB_YES;
+    else if (t->any < p.seq) unsure = 1;
+  }
+  return unsure ? ELAB_UNKNOWN : ELAB_NO;
+}
+
+/* The first plain write, and whether another form may precede it.
+   Settled values are the caller's fact, order is the record's. */
+int elab_const_first_write(Compiler *c, const char *name, int *early) {
+  lr_slot_index(c);
+  const LrSlot *s = lr_slot(c->lrec, name, 0);
+  *early = s && s->other && (s->first < 0 || elab_cmp(s->from, s->done) != PROG_AFTER);
+  return s ? s->first : -1;
+}
+
 /* The constants of cls and its ancestors at p: its own, its mixins' (the
    last first), then its superclass's, and with top Object's after a
    class's. A scoped read (`A::B`) leaves Object's out, as CRuby does. */
 static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
-  if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
+  if (depth > 64) return ELAB_UNKNOWN;
+  if (cls < LR_MAIN) {
+    for (int i = 0; builtin_class_at(i); i++) {
+      const BuiltinClass *b = builtin_class_at(i);
+      if (b->id == cls && builtin_mixin_module_id(b->name))
+        return is_constless_builtin_name(b->name) ? ELAB_NO : ELAB_UNKNOWN;
+    }
+    return ELAB_UNKNOWN;
+  }
   int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(cls), name, 0), p, late, 0, out), unsure = 0;
   if (o != ELAB_NO) return o;
+  if (cls >= 0 && builtin_mixin_module_id(c->classes[cls].name) &&
+      !is_constless_builtin_name(c->classes[cls].name)) return ELAB_UNKNOWN;
   const LrClass *k = lr_class(r, cls);
   for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
     LrMixin *m = &k->mix[i];
     int b = elab_mix_on_singleton(m->kind) ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
     if (b == ELAB_NO) continue;
-    int mo = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, top, out, depth + 1);
+    int mo = lr_const_in(c, lr_mixin_class(c, m), name, p, late, top, out, depth + 1);
     if (mo == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
     if (mo != ELAB_NO) unsure = 1;
   }
@@ -2649,27 +2888,60 @@ static int lr_cref(Compiler *c, int e) {
   return LR_MAIN;
 }
 
+/* An unknown singleton owner has no constant table the record can search.
+   A source write in such a body can hide an enclosing constant; after
+   lexical lookup, a source write can belong to an unsearched ancestor. */
+static int lr_singleton_const_written(Compiler *c, const char *name, int own) {
+  const LoadRecord *r = c->lrec;
+  const int *par = NULL;
+  for (int i = 0; i < r->nsrcw; i++) {
+    if (!sp_streq(r->srcw[i].name, name)) continue;
+    if (!own) return 1;
+    if (!par) par = comp_parent_map(c);
+    for (int a = par[r->srcw[i].node]; a >= 0; a = par[a]) {
+      NodeKind k = nt_kind(c->nt, a);
+      if (k == NK_SingletonClassNode) return 1;
+      if (k == NK_ClassNode || k == NK_ModuleNode) break;
+    }
+  }
+  return 0;
+}
+
 /* What constant `name` read in node's lexical scopes resolves to at p, as
    CRuby resolves it there: each lexical scope's own constants, innermost
    first, then the ancestors of the innermost (Object's last) */
 static int lr_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   LoadRecord *r = elab_fresh(c);
   int e = node >= 0 && node < r->n ? r->at[node] : -1, late = p.region < 0, first = LR_MAIN;
+  int singleton = 0, sgowner = 0;
   if (e < 0 || !name) return ELAB_UNKNOWN;
   for (int g = r->st[e].frame; g >= 0; g = r->st[g].frame) {   /* the class and module bodies around it */
     NodeKind k = nt_kind(c->nt, r->st[g].node);
-    if (k == NK_SingletonClassNode) return ELAB_UNKNOWN;
+    if (k == NK_SingletonClassNode) {
+      int owner = lr_singleton_owner(c, g);
+      if (!owner && lr_singleton_const_written(c, name, 1)) return ELAB_UNKNOWN;
+      if (first == LR_MAIN && !singleton) { singleton = 1; sgowner = owner; }
+      int o = owner ? lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, owner, name, 0), p, late, 0, out) : ELAB_NO;
+      if (o != ELAB_NO) return o;
+      continue;
+    }
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     int ci = elab_header_class(c, r->st[g].node, NULL, NULL);
     if (ci < 0) return ELAB_UNKNOWN;
-    if (first == LR_MAIN) first = ci;
+    if (first == LR_MAIN && !singleton) first = ci;
     int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(ci), name, 0), p, late, 0, out);
     if (o != ELAB_NO) return o;
   }
   /* then the innermost scope's ancestors, and Object's for a module too:
      a lexical read falls back to Object */
+  for (int cls = sgowner ? lr_super(c, -sgowner - 2) : LR_UNKNOWN_CLASS, depth = 0;
+       singleton && cls >= 0 && depth < 64; cls = lr_super(c, cls), depth++) {
+    int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_sg_const_owner(cls), name, 0), p, late, 0, out);
+    if (o != ELAB_NO) return o;
+  }
   int o = lr_const_in(c, first, name, p, late, 1, out, 0);
   if (o == ELAB_NO && first != LR_MAIN && lr_super(c, first) == LR_UNKNOWN_CLASS) o = lr_const_in(c, LR_MAIN, name, p, late, 1, out, 0);
+  if (o == ELAB_NO && singleton && lr_singleton_const_written(c, name, 0)) o = ELAB_UNKNOWN;
   return o;
 }
 
@@ -2802,8 +3074,12 @@ void elab_header_opened(Compiler *c, int node, int cls, int made) {
 
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out) {
   if (out) *out = NULL;
+  const char *nm = node >= 0 ? nt_str(c->nt, node, "name") : NULL;
+  if (name && nm && sp_streq(name, nm)) name = lr_written_name(c->nt, node);
   if (p.region < 0) p = elab_point_of(c, node);
-  return c->lrec && lr_ready(c, p) ? lr_const_at(c, node, name, p, out) : ELAB_UNKNOWN;
+  if (!c->lrec || !lr_ready(c, p)) return ELAB_UNKNOWN;
+  return lr_root_read(c->nt, node) ? lr_const_in(c, LR_MAIN, name, p, p.region < 0, 1, out, 0)
+                                 : lr_const_at(c, node, name, p, out);
 }
 
 /* The constant name a node that writes a constant writes: a write of any
@@ -3376,6 +3652,8 @@ void elab_dump(Compiler *c, FILE *out) {
         fprintf(out, "form #%d runs code%s\n", elab_point_of(c, h->b).seq, h->v[h->n - 1].vis == ELAB_YES && !h->v[h->n - 1].may ? "" : " (maybe)");
       continue;
     }
+    else if (h->a == -2 - (int)ELAB_CONST && h->b < 0)
+      fprintf(out, "const #<Class:%s>::%s:", lr_class_name(c, -h->b - 2), h->name);
     else if (h->a < LR_MAIN) fprintf(out, "%s%s%s%s:", vars[-2 - h->a], h->b >= 2 ? c->classes[h->b - 2].name : "",
                                 h->b >= 2 ? "::" : h->b == 0 && h->a == -2 - (int)ELAB_CONST ? "?::" : "", h->name);
     else fprintf(out, "%s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);
@@ -3573,6 +3851,7 @@ void elab_free(Compiler *c) {
   free(r->names); free(r->defs); free(r->reopens);
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
+  free(r->slot); free(r->slot_head); free(r->slotp);
   free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   for (int i = 0; i < r->nhdr; i++) free(r->hdr[i].leaf);
   free(r->hdr); free(r->hdr_head);

@@ -192,7 +192,8 @@ typedef struct {
                            forwarder def's (lr_def) */
   int owner;            /* a write's: the class whose constant it is (LR_MAIN:
                            Object's), below LR_MAIN when not known or not a
-                           constant's; unused in other versions */
+                           constant's; for a singleton's constant, the class it
+                           is the singleton of; unused in other versions */
   unsigned char unplaced; /* in a body the walk does not place (a builder's
                              block, lr_body_defs): no version, and no query
                              at a point sees it */
@@ -336,8 +337,17 @@ int elab_module_named(Compiler *c, const char *nm);
 /* what constant `name`, read in node's lexical scopes, resolves to at p
    (node's own point when p has none): its lexical scopes' own constants,
    innermost first, then the innermost one's ancestors and Object's; *out
-   the write or class definition found, its owner the class it is in */
+   the write or class definition found, its owner the class it is in;
+   on ELAB_UNKNOWN a visible candidate, or NULL when no searched table
+   supplies a binding (such as an unknown builtin module's constants).
+   A lowered read name is searched under its original lexical name. */
 int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out);
+/* Whether a definite write of flat name completes before p: ELAB_YES;
+   no possible earlier write: ELAB_NO; an uncertain one: ELAB_UNKNOWN. */
+int elab_const_slot_present_at(Compiler *c, const char *name, LoadPoint p);
+/* The first plain body assignment of flat name, or -1; *early says a
+   non-plain write may precede its completion. */
+int elab_const_first_write(Compiler *c, const char *name, int *early);
 /* what constant `name` of class owner's own (-1: Object's) was before p,
    as `class X` asks it of its owner: no lexical scope's, no ancestor's;
    *out the write or header found, on ELAB_UNKNOWN the last one that may

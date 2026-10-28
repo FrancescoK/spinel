@@ -1,0 +1,68 @@
+load record: 43 points, 1 regions
+r0 #0 f0 ProgramNode line 3
+r0 #1 f0 MultiWriteNode line 3
+r0 #2 f0 ConstantWriteNode C line 4
+r0 #3 f0 ConstantOrWriteNode C line 5
+r0 #4 f0 ConstantAndWriteNode C line 6
+r0 #5 f0 ConstantOperatorWriteNode C line 7
+r0 #6 f0 ModuleNode Values line 8
+  r0 #7 f0 ConstantWriteNode G line 9
+r0 #8 f0 MultiWriteNode line 11
+r0 #9 f0 ConstantPathWriteNode line 12
+r0 #10 f0 ConstantPathOrWriteNode line 13
+r0 #11 f0 ConstantPathAndWriteNode line 14
+r0 #12 f0 ConstantPathOperatorWriteNode line 15
+r0 #13 f0 CallNode const_set line 16
+r0 #14 f0 CallNode p line 17
+r0 #15 f0 DefNode run line 20
+r0 #16 f0 CallNode p line 21
+r0 #17 f0 CallNode p line 22
+r0 #18 f0 CallNode run line 23
+  r0 #19 may f0 MultiWriteNode line 23
+r0 #20 f0 CallNode run line 24
+  r0 #21 may f0 MultiWriteNode line 24
+r0 #22 f0 CallNode run line 25
+  r0 #23 may f0 ConstantPathWriteNode line 25
+r0 #24 f0 CallNode run line 26
+  r0 #25 may f0 ConstantPathOrWriteNode line 26
+r0 #26 f0 CallNode run line 27
+  r0 #27 may f0 ConstantPathAndWriteNode line 27
+r0 #28 f0 CallNode run line 28
+  r0 #29 may f0 ConstantPathOperatorWriteNode line 28
+r0 #30 f0 CallNode run line 29
+  r0 #31 may f0 ConstantOrWriteNode M line 29
+r0 #32 f0 CallNode run line 30
+  r0 #33 may f0 ConstantAndWriteNode M line 30
+r0 #34 f0 CallNode run line 31
+  r0 #35 may f0 ConstantOperatorWriteNode M line 31
+r0 #36 f0 ModuleNode Values line 32
+  r0 #37 f0 ConstantWriteNode LATER line 33
+  r0 #38 f0 ConstantWriteNode O line 34
+  r0 #39 f0 DefNode assign line 35
+r0 #40 f0 CallNode call line 37
+r0 #41 f0 CallNode assign line 38
+r0 #42 f0 CallNode p line 39
+class Values: body#6 body#36
+entity Values: owner main leaf Values
+const A: write#1
+const B: write#1
+const C: write#2 write#3 may write#4 may write#5
+const Values: write#6
+const Values::G: write#7 write#13
+const Values::D: write#8
+const Values::E: write#8
+const Values::F: write#9 write#10 may write#11 may write#12
+main#run: def#15 private end=yes
+const H: write#19 may
+const I: write#19 may
+const Values::J: write#21 may
+const Values::K: write#21 may
+const Values::L: write#23 may write#25 may write#27 may write#29 may
+const M: write#31 may write#33 may write#35 may
+const Values::LATER: write#37
+const Values::O: write#38 write#-1 may
+Values.assign: def#39 end=yes
+opaque Values: opaque#41
+const RATE: write#-1 may
+const LIST: write#-1 may
+const Values::N: write#-1 may
