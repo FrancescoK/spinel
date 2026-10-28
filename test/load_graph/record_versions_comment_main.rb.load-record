@@ -11,6 +11,7 @@ r0 #7 f0 ModuleNode Gauge line 9
 r0 #9 f0 CallNode p line 12
 r0 #10 f0 CallNode p line 13
 class Gauge: body#3 body#5 body#7
+entity Gauge: owner main leaf Gauge
 const Gauge: write#3
 Gauge.unit: def#4 end=yes
 Gauge.level: def#6 def#8 end=yes

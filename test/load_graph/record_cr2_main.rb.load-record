@@ -27,6 +27,11 @@ class M: body#3 include TopHelper#4
 class V: body#5
 class C: body#8 include V#9
 class Q: body#17 include M#18
+entity TopHelper: owner main leaf TopHelper
+entity M: owner main leaf M
+entity V: owner main leaf V
+entity C: owner main leaf C
+entity Q: owner main leaf Q
 const TopHelper: write#1
 TopHelper#help: def#2 end=yes
 const M: write#3

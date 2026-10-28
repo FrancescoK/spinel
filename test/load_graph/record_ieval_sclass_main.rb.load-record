@@ -18,6 +18,9 @@ r0 #15 f0 CallNode p line 34
 class M: body#1
 class N: body#3
 class C: body#5 extend ?#8 extend ?#11
+entity M: owner main leaf M
+entity N: owner main leaf N
+entity C: owner main leaf C
 const M: write#1
 M#hi: def#2 end=yes
 const N: write#3

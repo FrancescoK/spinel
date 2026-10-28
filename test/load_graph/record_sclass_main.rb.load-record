@@ -26,6 +26,11 @@ class Plain: body#3
 class Dog: body#5 body#14 singleton_prepend Loud#15
 class Cat: body#7 singleton_prepend Loud#9
 class Bird: body#11 body#19 singleton_prepend Plain#20
+entity Loud: owner main leaf Loud
+entity Plain: owner main leaf Plain
+entity Dog: owner main leaf Dog
+entity Cat: owner main leaf Cat
+entity Bird: owner main leaf Bird
 const Loud: write#1
 Loud#speak: def#2 end=yes
 const Plain: write#3

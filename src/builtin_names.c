@@ -2018,6 +2018,46 @@ int is_method_naming_call(const char *n) {
                sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n));
 }
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+/* The calls by which a method body changes what the load record holds:
+   ones that define, undefine or set methods, constants or variables, mix
+   a module in or refine, load a file, or run code it cannot follow from
+   the call (a send, an eval, a block or proc called) */
+int is_load_effect_call(const char *n) {
+  return n && (visibility_of_name(n) || is_method_naming_call(n) || is_mixin_call(n) || is_refine_name(n) ||
+               is_using_name(n) || is_code_eval_name(n) || is_eval_exec_family(n) || is_rebinding_reach_call(n) ||
+               is_const_set_name(n) || is_remove_const_name(n) || is_const_visibility_name(n) || is_cvar_write_name(n) ||
+               is_ivar_remove_name(n) || is_file_load_name(n));
+}
+int is_using_name(const char *n) { return n && sp_streq(n, "using"); }
+int is_remove_const_name(const char *n) { return n && sp_streq(n, "remove_const"); }
+/* private_constant public_constant deprecate_constant */
+int is_const_visibility_name(const char *n) {
+  static const char *const names[] = { "private_constant", "public_constant", "deprecate_constant", NULL };
+  return n && builtin_name_in(n, names);
+}
+/* class_variable_set remove_class_variable */
+int is_cvar_write_name(const char *n) { return n && (sp_streq(n, "class_variable_set") || sp_streq(n, "remove_class_variable")); }
+/* The names CRuby's core and standard library call on an object by
+   themselves besides the runtime protocols (method_name_implicitly_invoked):
+   an operator, method_missing and respond_to_missing?, a pattern's
+   deconstruct, a conversion, a Range's endpoints and succ, an exception's
+   readers, Marshal's and dup's hooks, a Hash's default, an IO-like's
+   writer and readers, pp's and YAML's hooks, and the Numeric helpers
+   numeric core methods call on a subclass. This is the instance side of
+   is_core_callback_name (the record's reachability work), with
+   method_missing; whichever lands second keeps one predicate. */
+int is_runtime_callback_name(const char *n) {
+  static const char *const names[] = {
+    "method_missing", "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r",
+    "to_c", "to_sym", "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message",
+    "detailed_message", "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result",
+    "marshal_dump", "_dump", "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read",
+    "readpartial", "flush", "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?",
+    "nonzero?", "positive?", "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate",
+    "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
+  if (!n) return 0;
+  return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
+}
 int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||
                sp_streq(n, "remove_method") || sp_streq(n, "undef_method"));

@@ -6,6 +6,7 @@ r0 #3 f0 ClassNode Gauge line 7
   r0 #4 f0 DefNode level line 8
 r0 #5 f0 CallNode p line 10
 class Gauge: body#1 body#3
+entity Gauge: owner main leaf Gauge
 const Gauge: write#1
 Gauge#level: def#2 def#4 end=yes
 versions Gauge#level: def#2..#4 over=def#2, def#4..end; 2 of the name

@@ -184,6 +184,9 @@ typedef struct {
   unsigned char may;    /* recorded under a condition: may not have run */
   unsigned char nil;    /* a write of nil */
   const char *target;   /* an alias's or a copy's original name */
+  int owner;            /* a write's: the class whose constant it is (LR_MAIN:
+                           Object's), below LR_MAIN when not known or not a
+                           constant's; unused in other versions */
 } LrDef;
 typedef struct { int node, body; } LrOpen;
 typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /* LR_SG_PREPEND: a prepend of the singleton class, ahead of its own methods */
@@ -287,10 +290,26 @@ ElabBody *elab_all_bodies(Compiler *c, int *n);
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
 int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
-/* what constant `name`, read at node, resolves to there: its lexical scopes'
-   own constants, innermost first, then the innermost one's ancestors and
-   Object's; *out the write or class definition found */
-int elab_const_at(Compiler *c, int node, const char *name, const LrDef **out);
+/* what constant `name`, read in node's lexical scopes, resolves to at p
+   (node's own point when p has none): its lexical scopes' own constants,
+   innermost first, then the innermost one's ancestors and Object's; *out
+   the write or class definition found, its owner the class it is in */
+int elab_const_at(Compiler *c, int node, const char *name, LoadPoint p, const LrDef **out);
+/* what constant `name` of class owner's own (-1: Object's) was before p,
+   as `class X` asks it of its owner: no lexical scope's, no ancestor's;
+   *out the write or header found, on ELAB_UNKNOWN the last one that may
+   have run before p */
+int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, const LrDef **out);
+/* the class constant reference node (a ConstantReadNode or
+   ConstantPathNode) names where it stands, as the record resolves it
+   there; -1 for Object (main's), below -1 for one it does not know */
+int elab_class_ref_at(Compiler *c, int node);
+/* the node -> class map: the class class or module header `node` opens,
+   as registration decided it there (below -1: none); *owner and *leaf,
+   when asked, its entity: the class whose constants hold its name (-1:
+   Object's; below -1 not known) and the name (NULL outside the load
+   phase's walk) */
+int elab_header_class(Compiler *c, int node, int *owner, const char **leaf);
 /* what constant reference ref (a ConstantReadNode or ConstantPathNode)
    names, read where statement `site` stands: ELAB_NO when it names no
    constant there and the record sees every write of the name there can

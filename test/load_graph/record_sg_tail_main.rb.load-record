@@ -1,0 +1,24 @@
+load record: 11 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 ModuleNode Class__reopen line 5
+  r0 #2 f0 DefNode tag line 6
+r0 #3 f0 ClassNode Module line 8
+  r0 #4 f0 DefNode note line 9
+r0 #5 f0 ClassNode Foo line 11
+  r0 #6 f0 CallNode tag line 12
+r0 #7 f0 ModuleNode Bar line 14
+  r0 #8 f0 CallNode note line 15
+r0 #9 f0 CallNode p line 17
+r0 #10 f0 CallNode p line 18
+class Class__reopen: body#1
+class Module: body#3
+class Foo: body#5
+class Bar: body#7
+entity Foo: owner main leaf Foo
+entity Bar: owner main leaf Bar
+Class__reopen#tag: def#2 end=yes
+Module#note: def#4 end=yes
+const Foo: write#5
+opaque Foo: opaque#6
+const Bar: write#7
+opaque Bar: opaque#8

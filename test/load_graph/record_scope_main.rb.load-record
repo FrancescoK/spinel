@@ -32,6 +32,12 @@ class Outer__Helper: body#4
 class Thing: body#6 body#11 include Outer__Helper#7
 class Other: body#13 include Outer__Helper#14
 class Macro: body#15
+entity Helper: owner main leaf Helper
+entity Outer: owner main leaf Outer
+entity Outer__Helper: owner Outer leaf Helper
+entity Thing: owner Outer leaf Thing
+entity Other: owner main leaf Other
+entity Macro: owner main leaf Macro
 const Helper: write#1
 Helper#from: def#2 end=yes
 const Outer: write#3
@@ -42,7 +48,7 @@ Thing#extra: def#12 end=yes
 const Other: write#13
 const Macro: write#15
 Macro.prop: def#16 end=yes
-opaque Macro: opaque#17 opaque#18
+opaque Macro: opaque#18
 visibility in #15: vis#19 private vis#21 public
 Macro#hidden: def#20 private end=yes
 Macro#shown: def#22 end=yes

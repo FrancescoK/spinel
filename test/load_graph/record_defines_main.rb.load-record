@@ -1,0 +1,31 @@
+load record: 18 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 ClassNode Foo line 5
+  r0 #2 f0 DefNode label line 6
+  r0 #3 f0 DefNode twice line 7
+  r0 #4 f0 DefNode defs line 8
+  r0 #5 f0 DefNode ping line 9
+  r0 #6 f0 DefNode pong line 10
+  r0 #7 f0 DefNode sets line 11
+  r0 #8 f0 DefNode calls_later line 12
+  r0 #9 f0 CallNode twice line 13
+  r0 #10 f0 CallNode defs line 14
+  r0 #11 f0 IfNode line 15
+    r0 #12 may f0 CallNode ping line 15
+  r0 #13 f0 CallNode sets line 16
+  r0 #14 f0 IfNode line 17
+    r0 #15 may f0 CallNode calls_later line 17
+  r0 #16 f0 DefNode later line 18
+r0 #17 f0 CallNode p line 20
+class Foo: body#1
+entity Foo: owner main leaf Foo
+const Foo: write#1
+Foo.label: def#2 end=yes
+Foo.twice: def#3 end=yes
+Foo.defs: def#4 end=yes
+Foo.ping: def#5 end=yes
+Foo.pong: def#6 end=yes
+Foo.sets: def#7 end=yes
+Foo.calls_later: def#8 end=yes
+opaque Foo: opaque#10 opaque#12 may opaque#13 opaque#15 may
+Foo.later: def#16 end=yes

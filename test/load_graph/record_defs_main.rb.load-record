@@ -38,6 +38,10 @@ class Loud: body#1
 class Speaker: body#3 body#14 body#16 include Quiet#15 include Loud#18
 class Quiet: body#12
 class Util: body#23
+entity Loud: owner main leaf Loud
+entity Speaker: owner main leaf Speaker
+entity Quiet: owner main leaf Quiet
+entity Util: owner main leaf Util
 const Loud: write#1
 Loud#say: def#2 end=yes
 const Speaker: write#3

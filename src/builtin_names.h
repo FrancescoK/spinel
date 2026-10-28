@@ -533,5 +533,11 @@ int is_core_change_call(const char *n);    /* class_eval .. module_exec include 
 int is_singleton_reach_call(const char *n);/* define_singleton_method extend singleton_class instance_eval instance_exec: give an object methods of its own */
 int is_method_naming_call(const char *n);  /* define_method define_singleton_method alias_method remove_method undef_method attr*: give or take a method its argument names */
 int is_refine_name(const char *n);         /* refine */
+int is_load_effect_call(const char *n);    /* a method body's call that defines, writes, loads or runs code the load record cannot follow */
+int is_using_name(const char *n);          /* using */
+int is_remove_const_name(const char *n);   /* remove_const */
+int is_const_visibility_name(const char *n);   /* private_constant public_constant deprecate_constant */
+int is_cvar_write_name(const char *n);     /* class_variable_set remove_class_variable */
+int is_runtime_callback_name(const char *n);   /* an operator, method_missing, deconstruct, to_f ...: what CRuby's core calls by itself */
 int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif

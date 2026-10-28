@@ -29,6 +29,12 @@ class Watched: body#6 body#15
 class Sub: body#8
 class Quiet: body#10 include Plain#12 include Hooked#13
 class Own: body#17
+entity Hooked: owner main leaf Hooked
+entity Plain: owner main leaf Plain
+entity Watched: owner main leaf Watched
+entity Sub: owner main leaf Sub
+entity Quiet: owner main leaf Quiet
+entity Own: owner main leaf Own
 const Hooked: write#1
 Hooked.included: def#2 end=yes
 Hooked#hi: def#3 end=yes

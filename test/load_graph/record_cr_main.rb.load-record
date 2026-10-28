@@ -31,6 +31,13 @@ class B: body#8
 class B__Kind: body#10
 class C: body#12 include B#13 include A#13 include A__Kind#15
 class D: body#16
+entity Foo: owner main leaf Foo
+entity A: owner main leaf A
+entity A__Kind: owner A leaf Kind
+entity B: owner main leaf B
+entity B__Kind: owner B leaf Kind
+entity C: owner main leaf C
+entity D: owner main leaf D
 const Foo: write#1
 Foo#bar: def#3 end=yes
 const A: write#4

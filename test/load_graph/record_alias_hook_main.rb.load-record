@@ -12,7 +12,6 @@ r0 #9 f0 LocalVariableWriteNode pt line 12
 r0 #10 f0 CallNode x= line 13
 r0 #11 f0 CallNode p line 14
 class Struct: body#3
-const Struct: write#3
 Struct.on_added: def#4 end=yes
 Struct.method_added: alias#6 (on_added: def#4) end=yes
 const Pt: write#7

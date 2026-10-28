@@ -832,28 +832,35 @@ static const char *local_holds_class(Compiler *c, int v) {
   return held;
 }
 
-/* If `cname` is a constant assigned a class value (`CONST = SomeClass` or
-   `CONST = <expr>.class`), return the underlying class name so `class CONST`
-   reopens that class. Returns NULL if `cname` is a plain new class name. */
+/* The class name a constant write's value v holds, when it is a class
+   (`CONST = SomeClass`, `CONST = <expr>.class`, `CONST = q` where the
+   local q only ever holds one class): a constant reference's class, as
+   the load record resolves it at the write's point (elab_class_ref_at,
+   which follows an alias chain), or where the record does not know, the
+   class or builtin class of its name; NULL for any other value. */
+static const char *resolve_alias_value(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+  if (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode) {
+    int ci = elab_class_ref_at(c, v);
+    if (ci >= 0) return c->classes[ci].name;
+    const char *vn = nt_str(nt, v, "name");
+    return vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn)) ? vn : NULL;
+  }
+  if (vk == NK_LocalVariableReadNode) return local_holds_class(c, v);
+  const char *nm = vk == NK_CallNode ? nt_str(nt, v, "name") : NULL;
+  int r = nm && is_class_query(nm) ? nt_ref(nt, v, "receiver") : -1;
+  return r >= 0 ? builtin_class_of_type(infer_type(c, r)) : NULL;
+}
+
+/* If `cname` is a constant assigned a class value (resolve_alias_value),
+   return the underlying class name so `class CONST` reopens that class.
+   Returns NULL if `cname` is a plain new class name. */
 const char *resolve_class_alias(Compiler *c, const char *cname) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
     const char *n = nt_str(nt, id, "name");
-    if (!n || !sp_streq(n, cname)) continue;
-    int v = nt_ref(nt, id, "value");
-    if (v < 0) return NULL;
-    NodeKind vk = nt_kind(nt, v);
-    if (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode) {
-      const char *vn = nt_str(nt, v, "name");
-      if (vn && (comp_class_index(c, vn) >= 0 || is_builtin_class_name(vn))) return vn;
-    }
-    if (vk == NK_LocalVariableReadNode) return local_holds_class(c, v);
-    if (vk == NK_CallNode && nt_str(nt, v, "name") &&
-        sp_streq(nt_str(nt, v, "name"), "class")) {
-      int r = nt_ref(nt, v, "receiver");
-      if (r >= 0) return builtin_class_of_type(infer_type(c, r));
-    }
-    return NULL;
+    if (n && sp_streq(n, cname)) return resolve_alias_value(c, nt_ref(nt, id, "value"));
   }
   return NULL;
 }
@@ -1060,13 +1067,15 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
    register_extends extends it into every root class, whose subclasses inherit. */
 static const char *const class_reopen_mod = "Class__reopen";
 
+int class_reopen_class(Compiler *c) { return comp_class_index(c, class_reopen_mod); }
+
 int is_class_const(const NodeTable *nt, int id) {
   return id >= 0 && nt_kind(nt, id) == NK_ConstantReadNode &&
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
 
 int class_reopen_cmethod(Compiler *c, int call, int recv, const char *name) {
-  int cm = comp_class_index(c, class_reopen_mod);
+  int cm = class_reopen_class(c);
   if (cm < 0 || !name) return -1;
   if (recv >= 0) {
     NodeKind rk = nt_kind(c->nt, recv);
@@ -1106,6 +1115,7 @@ void desugar_class_reopen(Compiler *c) {
       if (nt_ref(nt, s, "superclass") >= 0)
         unsupported_feature(c, s, "`class Class < ...` is not supported: reopen Class without a superclass");
       nt_node_set_type(nt, s, "ModuleNode");
+      nt_node_set_str(nt, cp, "qc_orig_name", nt_str(nt, cp, "name"));   /* the name the program wrote */
       nt_node_set_str(nt, cp, "name", class_reopen_mod);
       continue;
     }
@@ -1132,6 +1142,7 @@ void desugar_class_reopen(Compiler *c) {
     nt_node_set_int(nt, s, "node_col", col);
     nt_node_set_ref(nt, s, "constant_path", recv);
     nt_node_set_ref(nt, s, "body", bbody);
+    nt_node_set_str(nt, recv, "qc_orig_name", nt_str(nt, recv, "name"));
     nt_node_set_str(nt, recv, "name", class_reopen_mod);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
@@ -1585,8 +1596,9 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     return;
   }
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
-    int cp = nt_ref(c->nt, id, "constant_path");
+    int cp = nt_ref(c->nt, id, "constant_path"), made = 0;
     const char *cname = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    int alias = elab_header_entity(c, id, &w.pos);
     int cls_toplevel = class_id < 0 && cp >= 0 &&
                        nt_kind(c->nt, cp) == NK_ConstantReadNode;
     /* An earlier pass mangles a nested name to `Outer__Inner`: test the leaf. */
@@ -1628,10 +1640,12 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       fprintf(stderr, "spinel: %s:%d: %s is not a class (TypeError)\n", file, ln, cls_leaf);
       exit(1);
     }
-    /* `class CONST` where CONST aliases an existing class reopens that class.
-       Rewrite the AST name so every later pass (registration, includes) agrees. */
-    if (cname && cp >= 0 && comp_class_index(c, cname) < 0) {
-      const char *real = resolve_class_alias(c, cname);
+    /* `class CONST` where CONST aliases an existing class reopens that class:
+       the alias is the write the load record holds of the header's name in
+       its owner, before it (elab_header_entity). Rewrite the AST name so
+       every later pass (registration, includes) agrees. */
+    if (cname && alias >= 0) {
+      const char *real = resolve_alias_value(c, nt_ref(c->nt, alias, "value"));
       if (real && nt_kind(c->nt, id) == NK_ClassNode && cls_toplevel && is_builtin_module_const_name(real)) {
         int ln = (int)nt_int(c->nt, id, "node_line", 0);
         const char *file = c->nt->source_file ? c->nt->source_file : "source.rb";
@@ -1650,6 +1664,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     if (cname && comp_class_index(c, cname) < 0) {
       comp_class_new(c, cname, id);
       child_class = c->nclasses - 1;
+      made = 1;
       c->classes[child_class].enclosing_class = class_id;
       /* a name qualify_colliding_classes gave carries the Ruby path it
          resolved the header to (`AP = P; class AP::Foo` is P::Foo) */
@@ -1679,6 +1694,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
         { c->classes[child_class].def_node = id; comp_touch_class(c->classes[child_class].idx); }
       }
     }
+    elab_header_opened(c, id, cname ? child_class : -1, made);
   }
   else if (ty_k == NK_DefNode) {
     const char *name = nt_str(c->nt, id, "name");
@@ -6869,8 +6885,11 @@ void resolve_parents(Compiler *c) {
       int p = elab_class_super(c, i);
       if (p < 0) p = comp_class_index(c, nt_str(nt, sc, "name"));
       /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
-         is that class; one whose class only the run time picks is refused,
-         where the parent was left unset with no word */
+         is that class: the record follows the alias where the header stands
+         (elab_class_super); where it does not know, superclass_alias_target
+         follows it by name, until the class lookups read the record. One
+         whose class only the run time picks is refused, where the parent
+         was left unset with no word */
       if (p < 0 && !builtin_value_superclass(c, sc)) {
         int wr = -1;
         p = superclass_alias_target(c, nt_str(nt, sc, "name"), 0, &wr);
@@ -8264,7 +8283,7 @@ void desugar_module_prepends(Compiler *c) {
 void register_extends(Compiler *c) {
   const NodeTable *nt = c->nt;
   int did_clone = 0;
-  int cls_mod = comp_class_index(c, class_reopen_mod);
+  int cls_mod = class_reopen_class(c);
   int nseen = 0, capseen = 8;
   int *seen = malloc(sizeof(int) * (size_t)capseen);
   if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
