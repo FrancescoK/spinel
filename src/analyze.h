@@ -204,8 +204,12 @@ typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /
    rescue clause, a modifier, the right of `&&` / `||`) stands between the
    call and the body, or main's file, holding it, so it may not run when
    that body does. A class body opened under a condition is no condition
-   of its statements. */
-typedef struct { int node, kind, mod, ref; unsigned char dup, cond; } LrMixin;
+   of its statements. applied: the load phase runs the call whenever its
+   body runs, as the registration applies an entry (elab_entries): no
+   condition between them, not in an iterator's block or a begin with a
+   rescue clause. open: the statement whose body the call stands in
+   (LrOpen.node; a file's root for main's). */
+typedef struct { int node, kind, mod, ref; unsigned char dup, cond, applied; int open; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
 void elab_program(Compiler *c);
 /* the class builders' blocks recorded as their classes' bodies, once
@@ -311,6 +315,10 @@ ElabBody *elab_all_bodies(Compiler *c, int *n);
    `include A`, A nearest; *n their number */
 const LrMixin *elab_class_mixins(Compiler *c, int cls, int *n);
 int elab_mix_on_singleton(int kind);   /* an extend, or a prepend of the singleton class */
+/* does a body of cls define name with a def of its own on its instance
+   side, wherever in the body (under a condition, in a block), placed or
+   not? */
+int elab_defines(Compiler *c, int cls, const char *name);
 /* the module mixin m names: the one the record resolved where the call
    stands, else the one its constant names (elab_module_named); -1 for none */
 int elab_mixin_module(Compiler *c, const LrMixin *m);

@@ -1503,7 +1503,8 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
       opaque |= mod < 0 && mod != LR_LATER;
       if (!k) continue;
       k->mix = lr_grow(k->mix, &k->cmix, k->nmix, sizeof *k->mix);
-      k->mix[k->nmix++] = (LrMixin){ node, lr_mix_kind(nt, node, nm, sg), mod, av[i], .cond = !x->unplaced && x->r->at[node] >= 0 && x->r->st[x->r->at[node]].fmay };
+      k->mix[k->nmix++] = (LrMixin){ node, lr_mix_kind(nt, node, nm, sg), mod, av[i], .cond = !x->unplaced && x->r->at[node] >= 0 && x->r->st[x->r->at[node]].fmay,
+                                     .applied = lr_stmt_applied(x->unplaced ? NULL : lr_stmt_of(x->r, node), x->unplaced, may) == 1, .open = fnode };
     }
     else if (is_undef_method_name(nm) || is_remove_method_name(nm))
       lr_method(x, cls, sg, an_, node, is_undef_method_name(nm) ? LR_UNDEF : LR_REMOVE, *vs, may, NULL);
@@ -3191,6 +3192,13 @@ int elab_module_named(Compiler *c, const char *nm) {
   if (!al) return -1;
   id = comp_class_index(c, al);
   return id >= 0 ? id : builtin_mixin_module_id(al) ? builtin_mixin_module_id(al) : -1;
+}
+
+int elab_defines(Compiler *c, int cls, const char *name) {
+  const LrHist *h = c->lrec && c->lrec->recorded ? lr_hist(c->lrec, cls, 0, name, 0) : NULL;
+  for (int i = 0; h && i < h->n; i++)
+    if (h->v[i].kind == LR_DEF) return 1;
+  return 0;
 }
 
 int elab_mixin_module(Compiler *c, const LrMixin *m) {

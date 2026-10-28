@@ -6893,6 +6893,43 @@ else {
   }
 }
 
+static int module_prepend_list(Compiler *c, int mod_id, int *out, int max);
+/* One module a mixin call in a class body brings: the call, the argument
+   naming it (-1 for one a module it names prepends), the module's class
+   (-1 for none of the program's) and the LrMixKind. */
+typedef struct { int stmt, ref, mod, kind; } BodyMix;
+/* The mixins of kinds `kinds` (1 << LrMixKind) the load record holds as
+   statements of body `body` of class ci, in the order the passes take
+   them: statement by statement, a call's arguments the last first, `include
+   A, B` as `include B` then `include A` (elab_class_mixins). An include or
+   an extend of a module that prepends others brings those right after it,
+   the front one last, as desugar_module_prepends writes the call
+   (`include M` where M prepends P is `include P, M`). *n of them; the
+   caller frees the array. */
+static BodyMix *body_mixins(Compiler *c, int ci, int body, unsigned kinds, int *n) {
+  int nmx = 0, nb = 0, k = 0, cap = 0, open = -1;
+  const LrMixin *mx = elab_class_mixins(c, ci, &nmx);
+  const LrOpen *ob = nmx && body >= 0 ? elab_class_bodies(c, ci, &nb) : NULL;
+  for (int b = 0; b < nb && open < 0; b++)
+    if (ob[b].body == body) open = ob[b].node;
+  BodyMix *v = NULL;
+  for (int i = 0; i < nmx; i++) {
+    if (!(kinds >> mx[i].kind & 1) || open < 0 || mx[i].open != open || !mx[i].applied) continue;
+    int mod = elab_mixin_module(c, &mx[i]), pre[64], np = 0;
+    if (mod < 0) mod = -1;
+    if (mx[i].kind != LR_PREPEND) np = module_prepend_list(c, mod, pre, 64);
+    if (k + 1 + np > cap) {
+      cap = (k + 1 + np) * 2;
+      v = realloc(v, sizeof *v * (size_t)cap);
+      if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    v[k++] = (BodyMix){ mx[i].node, mx[i].ref, mod, mx[i].kind };
+    for (int q = np - 1; q >= 0; q--) v[k++] = (BodyMix){ mx[i].node, -1, pre[q], mx[i].kind };
+  }
+  *n = k;
+  return v;
+}
+
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
   int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
@@ -6901,98 +6938,77 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       is_comparable_builtin_name(nt_str(nt, sc, "name")))
     c->classes[ci].cmp_inc_at = 1;
   int n = 0;
-  const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    if (nt_kind(nt, s) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, s, "name");
-    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm))) continue;
-    if (nt_ref(nt, s, "receiver") >= 0) continue;
-    int anode = nt_ref(nt, s, "arguments");
-    int an = 0;
-    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    /* `include A, B` includes B first, so A ends up in front (as extend) */
-    for (int j = an - 1; j >= 0; j--) {
-      NodeKind ak = nt_kind(nt, args[j]);
-      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
-      int mod_id = mname ? comp_class_index(c, mname) : -1;
-      /* `M = ::M` beside the include: a constant that merely ALIASES the
-         module names it just as well, and the collision qualifier rewrites
-         the include's own argument to the owner-qualified constant
-         (`Consumer__Rt`) the moment two classes hold an alias of that name.
-         Resolving through the alias keeps the include registered -- without
-         it the module was silently not included at all, and every
-         receiverless call to its module_function methods lost its callee
-         and was refused as an unsupported call. */
-      if (mod_id < 0 && mname) {
-        const char *al = resolve_class_alias(c, mname);
-        if (al) mod_id = comp_class_index(c, al);
-      }
-      if (is_prepend_name(nm)) {
-        if (is_comparable_module_name(mname)) c->classes[ci].cmp_prepended = 1;
-        else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
-          c->classes[ci].cmp_prepended = 2;
-        if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
-        continue;
-      }
-      if (is_comparable_module_name(mname) && !c->classes[ci].cmp_inc_at)
-        c->classes[ci].cmp_inc_at = c->classes[ci].nincluded_mods + 1;
-      /* where Enumerable sits among the includes (a later include goes in
-         front): after the program's modules included so far */
-      if (!c->classes[ci].enum_inc_at && is_enumerable_module_name(mname))
-        c->classes[ci].enum_inc_at = c->classes[ci].nincluded_mods + 1;
-      if (mod_id < 0) {
-        /* A module with no class of its own -- a builtin named through its
-           path, `include IO::WaitReadable`. The AST name is the leaf, so the
-           qualified string is rebuilt from the parent chain; that string is
-           what `rescue IO::WaitReadable` compares against, since the module
-           match is by name. Silently dropping these left the include with no
-           effect at all (#1054, read_nonblock). */
-        if (ak == NK_ConstantPathNode && mname) {
-          char segs[8][64]; int nseg = 0;
-          int qpar = nt_ref(nt, args[j], "parent");
-          while (qpar >= 0 && nseg < 8) {
-            NodeKind pk = nt_kind(nt, qpar);
-            const char *pn = nt_str(nt, qpar, "name");
-            if (pk == NK_ConstantReadNode && pn) {
-              snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
-              break;
-            }
-            if (pk == NK_ConstantPathNode) {
-              if (pn) snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
-              qpar = nt_ref(nt, qpar, "parent");
-              continue;
-            }
+  BodyMix *mx = body_mixins(c, ci, body_node, 1u << LR_INCLUDE | 1u << LR_PREPEND, &n);
+  for (int j = 0; j < n; j++) {
+    int arg = mx[j].ref, mod_id = mx[j].mod;
+    NodeKind ak = arg >= 0 ? nt_kind(nt, arg) : NK_NONE;
+    const char *mname = arg < 0 ? c->classes[mod_id].name
+                      : ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, arg, "name") : NULL;
+    if (mx[j].kind == LR_PREPEND) {
+      if (is_comparable_module_name(mname)) c->classes[ci].cmp_prepended = 1;
+      else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
+        c->classes[ci].cmp_prepended = 2;
+      if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
+      continue;
+    }
+    if (is_comparable_module_name(mname) && !c->classes[ci].cmp_inc_at)
+      c->classes[ci].cmp_inc_at = c->classes[ci].nincluded_mods + 1;
+    /* where Enumerable sits among the includes (a later include goes in
+       front): after the program's modules included so far */
+    if (!c->classes[ci].enum_inc_at && is_enumerable_module_name(mname))
+      c->classes[ci].enum_inc_at = c->classes[ci].nincluded_mods + 1;
+    if (mod_id < 0) {
+      /* A module with no class of its own -- a builtin named through its
+         path, `include IO::WaitReadable`. The AST name is the leaf, so the
+         qualified string is rebuilt from the parent chain; that string is
+         what `rescue IO::WaitReadable` compares against, since the module
+         match is by name. Silently dropping these left the include with no
+         effect at all (#1054, read_nonblock). */
+      if (ak == NK_ConstantPathNode && mname) {
+        char segs[8][64]; int nseg = 0;
+        int qpar = nt_ref(nt, arg, "parent");
+        while (qpar >= 0 && nseg < 8) {
+          NodeKind pk = nt_kind(nt, qpar);
+          const char *pn = nt_str(nt, qpar, "name");
+          if (pk == NK_ConstantReadNode && pn) {
+            snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
             break;
           }
-          char qual[256]; qual[0] = 0;
-          for (int q = nseg - 1; q >= 0; q--) {
-            strncat(qual, segs[q], sizeof qual - strlen(qual) - 1);
-            strncat(qual, "::", sizeof qual - strlen(qual) - 1);
+          if (pk == NK_ConstantPathNode) {
+            if (pn) snprintf(segs[nseg++], sizeof segs[0], "%s", pn);
+            qpar = nt_ref(nt, qpar, "parent");
+            continue;
           }
-          strncat(qual, mname, sizeof qual - strlen(qual) - 1);
-          ClassInfo *cif2 = &c->classes[ci];
-          int dup = 0;
-          for (int m = 0; m < cif2->nincluded_mod_names; m++)
-            if (sp_streq(cif2->included_mod_names[m], qual)) { dup = 1; break; }
-          if (!dup) {
-            if (cif2->nincluded_mod_names >= cif2->cincluded_mod_names) {
-              cif2->cincluded_mod_names = cif2->cincluded_mod_names ? cif2->cincluded_mod_names * 2 : 4;
-              char **nn = realloc(cif2->included_mod_names,
-                                  sizeof(char *) * (size_t)cif2->cincluded_mod_names);
-              if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-              cif2->included_mod_names = nn;
-            }
-            cif2->included_mod_names[cif2->nincluded_mod_names++] = strdup(qual);
-          }
+          break;
         }
-        continue;
+        char qual[256]; qual[0] = 0;
+        for (int q = nseg - 1; q >= 0; q--) {
+          strncat(qual, segs[q], sizeof qual - strlen(qual) - 1);
+          strncat(qual, "::", sizeof qual - strlen(qual) - 1);
+        }
+        strncat(qual, mname, sizeof qual - strlen(qual) - 1);
+        ClassInfo *cif2 = &c->classes[ci];
+        int dup = 0;
+        for (int m = 0; m < cif2->nincluded_mod_names; m++)
+          if (sp_streq(cif2->included_mod_names[m], qual)) { dup = 1; break; }
+        if (!dup) {
+          if (cif2->nincluded_mod_names >= cif2->cincluded_mod_names) {
+            cif2->cincluded_mod_names = cif2->cincluded_mod_names ? cif2->cincluded_mod_names * 2 : 4;
+            char **nn = realloc(cif2->included_mod_names,
+                                sizeof(char *) * (size_t)cif2->cincluded_mod_names);
+            if (!nn) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+            cif2->included_mod_names = nn;
+          }
+          cif2->included_mod_names[cif2->nincluded_mod_names++] = strdup(qual);
+        }
       }
-      /* record membership for `rescue M` matching (dedup across reopenings) */
-      class_note_included_mod(c, ci, mod_id);
-      include_module_methods(c, ci, mod_id);
+      continue;
     }
+    /* record membership for `rescue M` matching (dedup across reopenings) */
+    class_note_included_mod(c, ci, mod_id);
+    include_module_methods(c, ci, mod_id);
   }
+  free(mx);
 }
 
 /* For each class, find `include M` declarations in ALL class bodies
@@ -7003,31 +7019,12 @@ void process_include_body(Compiler *c, int ci, int body_node) {
    for their modules so Comparable membership sees every reopening.
    Read readiness directly: a bounded list missed later include arguments. */
 static int body_mixin_dependencies_ready(Compiler *c, int ci, int body_node, const int *remaining) {
-  const NodeTable *nt = c->nt;
-  int n = 0;
-  const int *stmts = body_node >= 0 ? nt_arr(nt, body_node, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    int s = stmts[k];
-    if (nt_kind(nt, s) != NK_CallNode) continue;
-    const char *nm = nt_str(nt, s, "name");
-    if (!nm || (!is_include_name(nm) && !is_prepend_name(nm)) ||
-        nt_ref(nt, s, "receiver") >= 0) continue;
-    int anode = nt_ref(nt, s, "arguments");
-    int an = 0;
-    const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-    for (int j = 0; j < an; j++) {
-      NodeKind ak = nt_kind(nt, args[j]);
-      const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode)
-                          ? nt_str(nt, args[j], "name") : NULL;
-      int mod_id = mname ? comp_class_index(c, mname) : -1;
-      if (mod_id < 0 && mname) {
-        const char *al = resolve_class_alias(c, mname);
-        if (al) mod_id = comp_class_index(c, al);
-      }
-      if (mod_id >= 0 && mod_id != ci && remaining[mod_id] > 0) return 0;
-    }
-  }
-  return 1;
+  int n = 0, ready = 1;
+  BodyMix *mx = body_mixins(c, ci, body_node, 1u << LR_INCLUDE | 1u << LR_PREPEND, &n);
+  for (int j = 0; j < n && ready; j++)
+    if (mx[j].mod >= 0 && mx[j].mod != ci && remaining[mx[j].mod] > 0) ready = 0;
+  free(mx);
+  return ready;
 }
 
 void register_includes(Compiler *c) {
@@ -7106,34 +7103,6 @@ static void mixin_guard_flag_write(Compiler *c, int list, int after, const char 
    A module takes its own includes' surface in the same walk, and one can come
    after a class that includes it (a module nested in its includer), so the
    walk repeats until no class gains a name. */
-/* Does subtree n of a class body define `name` with a def of its own (one
-   on self, not under a nested class, module or method)? A def under a
-   condition or a block of the body counts: it is the class's when it runs. */
-static int subtree_defs_name(const NodeTable *nt, int n, const char *name, int depth) {
-  if (n < 0 || depth > 64) return 0;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_DefNode) return nt_ref(nt, n, "receiver") < 0 && sp_streq(nt_str(nt, n, "name"), name);
-  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
-  int nr = nt_num_refs(nt, n);
-  for (int i = 0; i < nr; i++) if (subtree_defs_name(nt, nt_ref_at(nt, n, i), name, depth + 1)) return 1;
-  int na = nt_num_arrs(nt, n);
-  for (int i = 0; i < na; i++) {
-    int m = 0; const int *ids = nt_arr_at(nt, n, i, &m);
-    for (int j = 0; j < m; j++) if (subtree_defs_name(nt, ids[j], name, depth + 1)) return 1;
-  }
-  return 0;
-}
-/* Does a body of class ci define `name` with a def of its own, bare, under
-   a visibility call (`private def x`), or in a branch or block of the body
-   (`if cond; def x; end; end`)? */
-static int body_defs_name(Compiler *c, int ci, const char *name) {
-  int nb = 0;
-  const LrOpen *o = elab_class_bodies(c, ci, &nb);
-  for (int b = 0; b < nb; b++)
-    if (subtree_defs_name(c->nt, o[b].body, name, 0)) return 1;
-  return 0;
-}
-
 void register_include_attrs(Compiler *c) {
   /* a class's own def of a name answers before an alias of it a module
      brings (CRuby looks in the class before its modules): the alias is not
@@ -7164,7 +7133,7 @@ void register_include_attrs(Compiler *c) {
         /* a singleton alias names a class method of the module, which an
            include does not bring (#9177) */
         if (mod->alias_sg && mod->alias_sg[a]) continue;
-        if (body_defs_name(c, ci, mod->alias_new[a])) continue;
+        if (elab_defines(c, ci, mod->alias_new[a])) continue;
         /* the module's body of the name, where the class has one of its own;
            an alias of an alias names the module's method below both */
         const char *old_nm = module_alias_root(mod, mod->alias_old[a]);
@@ -7585,49 +7554,23 @@ static int class_extends_module(Compiler *c, int ci, int mod_id) {
   return 0;
 }
 
-/* The class a `prepend` argument names: a constant naming a module of the
-   program, or one that aliases it (`Q = MM`, also through a chain of
-   them), as for `include`. -1 when it names none. */
-static int mixin_arg_class(Compiler *c, int arg) {
-  const NodeTable *nt = c->nt;
-  NodeKind ak = nt_kind(nt, arg);
-  const char *mn = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, arg, "name") : NULL;
-  int k = mn ? comp_class_index(c, mn) : -1;
-  if (k < 0 && mn) {
-    const char *al = resolve_class_alias_chain(c, mn);
-    if (al) k = comp_class_index(c, al);
-  }
-  return k;
-}
-
 /* The modules a module prepends in its bodies, front first, as the
    module's ancestors list them: `prepend A, B` puts A before B, and a later
    `prepend C` goes in front of both. At most `max`; returns the count. */
 static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
-  const NodeTable *nt = c->nt;
   if (mod_id < 0 || !comp_class_is_module(c, &c->classes[mod_id])) return 0;
-  int n = 0, nb = 0;
-  const LrOpen *ob = elab_class_bodies(c, mod_id, &nb);
-  for (int b = 0; b < nb; b++) {
-    int sn = 0;
-    const int *stmts = ob[b].body >= 0 ? nt_arr(nt, ob[b].body, "body", &sn) : NULL;
-    for (int k = 0; k < sn; k++) {
-      int s = stmts[k];
-      const char *nm = nt_kind(nt, s) == NK_CallNode ? nt_str(nt, s, "name") : NULL;
-      if (!nm || !is_prepend_name(nm) || nt_ref(nt, s, "receiver") >= 0) continue;
-      int anode = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      int add[64], na = 0;
-      for (int j = 0; j < an && na < 64; j++) {
-        int pm = mixin_arg_class(c, args[j]);
-        if (pm >= 0 && pm != mod_id) add[na++] = pm;
-      }
-      if (n + na > max) na = max - n;
-      memmove(out + na, out, sizeof(int) * (size_t)n);
-      memcpy(out, add, sizeof(int) * (size_t)na);
-      n += na;
-    }
+  int n = 0, nmx = 0, nb = 0;
+  const LrMixin *mx = elab_class_mixins(c, mod_id, &nmx);
+  const LrOpen *ob = nmx ? elab_class_bodies(c, mod_id, &nb) : NULL;
+  /* the record has a call's arguments the last first: each goes in front */
+  for (int i = 0; i < nmx && n < max; i++) {
+    int in = 0;
+    for (int b = 0; b < nb && !in && mx[i].kind == LR_PREPEND && mx[i].applied; b++) in = mx[i].open == ob[b].node;
+    int pm = in ? elab_mixin_module(c, &mx[i]) : -1;
+    if (pm < 0 || pm == mod_id) continue;
+    memmove(out + 1, out, sizeof(int) * (size_t)n);
+    out[0] = pm;
+    n++;
   }
   return n;
 }
@@ -7639,7 +7582,11 @@ static int module_prepend_list(Compiler *c, int mod_id, int *out, int max) {
    Left to register_prepends, which runs after both, the prepend reached
    only M's own methods, after they had been copied: an includer compiled a
    `super` into a body it never got, and an extender, Class reopened with a
-   prepend among them, ran without the prepended method. */
+   prepend among them, ran without the prepended method. register_includes
+   and register_extends take the mixins from the load record and bring the
+   prepended modules themselves (body_mixins); the rewrite is for the
+   passes that still read the calls' arguments (an_module_tree,
+   an_enum_reaches_v, alias_def_in_effect, among others). */
 void desugar_module_prepends(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int any = 0;
@@ -7696,7 +7643,6 @@ void desugar_module_prepends(Compiler *c) {
 }
 
 void register_extends(Compiler *c) {
-  const NodeTable *nt = c->nt;
   int did_clone = 0;
   int cls_mod = class_reopen_class(c);
   int nseen = 0, capseen = 8;
@@ -7724,33 +7670,20 @@ void register_extends(Compiler *c) {
    for (int bi = 0; bi < nb; bi++) {
     int body = ob[bi].body;
     int n = 0;
-    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+    /* `extend A, B` extends B first, so A ends up in front */
+    BodyMix *mx = body_mixins(c, ci, body, 1u << LR_EXTEND | 1u << LR_SG_PREPEND, &n);
     /* a singleton prepend in a reopening (prepend_late_stmt, asked once, at
        the first): its copies answer as the class's own until the prepend
        has run, each prepend's by a flag of its own */
     int late = -2;
-    for (int k = 0; k < n; k++) {
-      int s = stmts[k];
-      char flag[64] = "";
-      NodeKind sk = nt_kind(nt, s);
-      if (sk != NK_CallNode) continue;
-      const char *nm = nt_str(nt, s, "name");
-      if (!nm || !is_extend_name(nm)) continue;
-      if (nt_ref(nt, s, "receiver") >= 0) continue;
-      int anode = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      /* `extend A, B` extends B first, so A ends up in front */
-      for (int j = an - 1; j >= 0; j--) {
-        NodeKind ak = nt_kind(nt, args[j]);
-        const char *mname = (ak == NK_ConstantReadNode || ak == NK_ConstantPathNode) ? nt_str(nt, args[j], "name") : NULL;
-        int mod_id = mname ? comp_class_index(c, mname) : -1;
-        if (mod_id < 0) continue;
-        /* extending a module the class already extends is a no-op: it stays
-           where it was, and a second copy in front would hide the later one */
-        int again = 0;
-        for (int e = 0; e < nseen; e++) if (seen[e] == mod_id) again = 1;
-        if (again) continue;
+    char flag[64] = "";
+    for (int j = 0; j < n; j++) {
+      int s = mx[j].stmt, mod_id = mx[j].mod;
+      /* extending a module the class already extends is a no-op: it stays
+         where it was, and a second copy in front would hide the later one */
+      int again = mod_id < 0;
+      for (int e = 0; e < nseen && !again; e++) again = seen[e] == mod_id;
+      if (!again) {
         if (nseen == capseen) {
           capseen *= 2;
           seen = realloc(seen, sizeof(int) * (size_t)capseen);
@@ -7767,16 +7700,18 @@ void register_extends(Compiler *c) {
         int inherited = 0;
         for (int p = c->classes[ci].parent; p >= 0 && !inherited; p = c->classes[p].parent)
           inherited = class_extends_module(c, p, mod_id);
-        int sprep = (int)nt_int(nt, s, "sclass_prepend", 0);
+        int sprep = mx[j].kind == LR_SG_PREPEND;
         if (sprep && late == -2) late = prepend_late_stmt(c, ci, body);
         did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? flag : NULL);
       }
-      if (flag[0]) {
+      /* after the call's last module, the write that sets the flag its
+         copies read */
+      if (flag[0] && (j + 1 == n || mx[j + 1].stmt != s)) {
         mixin_guard_flag_write(c, body, s, flag);
-        stmts = nt_arr(nt, body, "body", &n);
-        k++;   /* past the write */
+        flag[0] = 0;
       }
     }
+    free(mx);
    }
   }
   /* The cloned bodies introduced new local nodes, and register_locals ran
@@ -8610,133 +8545,123 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
   int late = prepend_late_stmt(c, ci, body);
   char flag[64] = "";
-  /* a module's prepend goes wherever the module is mixed in, which
-     desugar_module_prepends has written out already */
+  /* a module's prepend goes wherever the module is mixed in, which brings
+     it in front of the module (body_mixins) */
   if (comp_class_is_module(c, &c->classes[ci])) return;
   {
     int n = 0;
-    const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-    for (int k = 0; k < n; k++) {
-      int s = stmts[k];
-      NodeKind sk = nt_kind(nt, s);
-      if (sk != NK_CallNode) continue;
-      const char *nm = nt_str(nt, s, "name");
-      if (!nm || !sp_streq(nm, "prepend")) continue;
-      if (nt_ref(nt, s, "receiver") >= 0) continue;
-      int anode = nt_ref(nt, s, "arguments");
-      int an = 0;
-      const int *args = anode >= 0 ? nt_arr(nt, anode, "arguments", &an) : NULL;
-      /* prepend A, B has A first in the ancestor chain: install B first. */
-      for (int j = an - 1; j >= 0; j--) {
-        int mod_id = mixin_arg_class(c, args[j]);
-        if (mod_id < 0) continue;
-        /* its readers answer in front of the class's own, as its methods do */
-        for (int r = 0; r < c->classes[mod_id].nreaders; r++) {
-          char ivname[256];
-          snprintf(ivname, sizeof ivname, "@%s", c->classes[mod_id].readers[r]);
-          comp_ivar_intern(&c->classes[ci], ivname);
-          comp_add_own_reader(&c->classes[ci], c->classes[mod_id].readers[r]);
-        }
-        /* Transplant each instance method of the module into class ci. */
-        for (int ms = 0; ms < c->nscopes; ms++) {
-          Scope *sc = &c->scopes[ms];
-          if (sc->class_id != mod_id || sc->is_cmethod || !sc->name) continue;
-          const char *method_name = sc->name;
-          int active_mi = comp_method_in_class(c, ci, method_name);
-          int guard = active_mi >= 0 && late >= 0;
-          if (active_mi >= 0) {
-            Scope *active = &c->scopes[active_mi];
-            char shadow[256];
-            snprintf(shadow, sizeof shadow, "__prep_%d_%s",
-                     c->classes[ci].prep_shadow_count++, method_name);
-            /* Rename any existing chain entry for method_name to use shadow. */
-            ClassInfo *cif = &c->classes[ci];
-            for (int kk = 0; kk < cif->nprep_chain; kk++) {
-              if (sp_streq(cif->prep_from[kk], method_name)) {
-                free(cif->prep_from[kk]);
-                cif->prep_from[kk] = strdup(shadow);
-                break;
-              }
-            }
-            /* Rename the currently active scope to the shadow name. */
-            free(active->name);
-            active->name = strdup(shadow);
-            /* Record the new dispatch chain entry: method_name -> shadow. */
-            comp_prep_chain_add(&c->classes[ci], method_name, shadow);
-            /* Visibility is registered before prepends, by name: the class's
-               `private`/`protected` for method_name was declared for the body
-               just renamed, so it moves with that body, and method_name now
-               names the module's copy, which takes the module's own. Left by
-               name, a public module method over a private class one was
-               refused as private, and a private one over a public one was
-               called. */
-            {
-              int had = -1;
-              for (int vi = 0; vi < cif->nvis; vi++)
-                if (sp_streq(cif->vis_names[vi], method_name)) { had = cif->vis_kinds[vi]; break; }
-              if (had >= 0) comp_method_vis_set(cif, shadow, had);
-              comp_method_vis_set(cif, method_name, comp_method_vis(&c->classes[mod_id], method_name));
+    /* prepend A, B has A first in the ancestor chain: install B first. */
+    BodyMix *mx = body_mixins(c, ci, body, 1u << LR_PREPEND, &n);
+    for (int j = 0; j < n; j++) {
+      int mod_id = mx[j].mod;
+      if (mod_id < 0) continue;
+      /* its readers answer in front of the class's own, as its methods do */
+      for (int r = 0; r < c->classes[mod_id].nreaders; r++) {
+        char ivname[256];
+        snprintf(ivname, sizeof ivname, "@%s", c->classes[mod_id].readers[r]);
+        comp_ivar_intern(&c->classes[ci], ivname);
+        comp_add_own_reader(&c->classes[ci], c->classes[mod_id].readers[r]);
+      }
+      /* Transplant each instance method of the module into class ci. */
+      for (int ms = 0; ms < c->nscopes; ms++) {
+        Scope *sc = &c->scopes[ms];
+        if (sc->class_id != mod_id || sc->is_cmethod || !sc->name) continue;
+        const char *method_name = sc->name;
+        int active_mi = comp_method_in_class(c, ci, method_name);
+        int guard = active_mi >= 0 && late >= 0;
+        if (active_mi >= 0) {
+          Scope *active = &c->scopes[active_mi];
+          char shadow[256];
+          snprintf(shadow, sizeof shadow, "__prep_%d_%s",
+                   c->classes[ci].prep_shadow_count++, method_name);
+          /* Rename any existing chain entry for method_name to use shadow. */
+          ClassInfo *cif = &c->classes[ci];
+          for (int kk = 0; kk < cif->nprep_chain; kk++) {
+            if (sp_streq(cif->prep_from[kk], method_name)) {
+              free(cif->prep_from[kk]);
+              cif->prep_from[kk] = strdup(shadow);
+              break;
             }
           }
-          /* CLONE the module method into class ci rather than MOVING it. The
-             same module can be prepended by more than one class, and moving
-             gave the first prepender the scope and left every later one with
-             nothing to transplant -- its prepend did nothing, silently, and
-             the call fell through to the included chain (#4039). The include
-             path clones for this reason among others; a prepended module has
-             the same need. */
+          /* Rename the currently active scope to the shadow name. */
+          free(active->name);
+          active->name = strdup(shadow);
+          /* Record the new dispatch chain entry: method_name -> shadow. */
+          comp_prep_chain_add(&c->classes[ci], method_name, shadow);
+          /* Visibility is registered before prepends, by name: the class's
+             `private`/`protected` for method_name was declared for the body
+             just renamed, so it moves with that body, and method_name now
+             names the module's copy, which takes the module's own. Left by
+             name, a public module method over a private class one was
+             refused as private, and a private one over a public one was
+             called. */
           {
-            int ms_i = ms;
-            Scope *dst = comp_scope_new(c, method_name, sc->def_node);
-            int dst_i = c->nscopes - 1;
-            sc = &c->scopes[ms_i];               /* comp_scope_new may realloc */
-            if (sc->body >= 0) {
-              int nb = nt_clone_subtree((NodeTable *)nt, sc->body);
+            int had = -1;
+            for (int vi = 0; vi < cif->nvis; vi++)
+              if (sp_streq(cif->vis_names[vi], method_name)) { had = cif->vis_kinds[vi]; break; }
+            if (had >= 0) comp_method_vis_set(cif, shadow, had);
+            comp_method_vis_set(cif, method_name, comp_method_vis(&c->classes[mod_id], method_name));
+          }
+        }
+        /* CLONE the module method into class ci rather than MOVING it. The
+           same module can be prepended by more than one class, and moving
+           gave the first prepender the scope and left every later one with
+           nothing to transplant -- its prepend did nothing, silently, and
+           the call fell through to the included chain (#4039). The include
+           path clones for this reason among others; a prepended module has
+           the same need. */
+        {
+          int ms_i = ms;
+          Scope *dst = comp_scope_new(c, method_name, sc->def_node);
+          int dst_i = c->nscopes - 1;
+          sc = &c->scopes[ms_i];               /* comp_scope_new may realloc */
+          if (sc->body >= 0) {
+            int nb = nt_clone_subtree((NodeTable *)nt, sc->body);
+            comp_grow_node_arrays(c);
+            sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
+            if (nb >= 0 && is_builtin_reopen(c->classes[ci].name)) {
+              /* as the include path does for a reopened builtin */
+              desugar_included_self_class(c, nb, c->classes[ci].name);
+              desugar_included_bare_builtin(c, nb, c->classes[ci].name);
+            }
+            if (nb >= 0 && guard) {
+              nb = mixin_guard_body((NodeTable *)nt, nb, mixin_flag_name(c, flag), (int)nt_int(nt, sc->def_node, "node_line", 0));
               comp_grow_node_arrays(c);
               sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
-              if (nb >= 0 && is_builtin_reopen(c->classes[ci].name)) {
-                /* as the include path does for a reopened builtin */
-                desugar_included_self_class(c, nb, c->classes[ci].name);
-                desugar_included_bare_builtin(c, nb, c->classes[ci].name);
-              }
-              if (nb >= 0 && guard) {
-                nb = mixin_guard_body((NodeTable *)nt, nb, mixin_flag_name(c, flag), (int)nt_int(nt, sc->def_node, "node_line", 0));
-                comp_grow_node_arrays(c);
-                sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
-                dst->mixin_guarded = 1;
-              }
-              if (nb >= 0) { { dst->body = nb; comp_touch_scope(dst->idx); } walk_scope(c, nb, dst_i, ci); }
-              else { dst->body = sc->body; comp_touch_scope(dst->idx); }
+              dst->mixin_guarded = 1;
             }
+            if (nb >= 0) { { dst->body = nb; comp_touch_scope(dst->idx); } walk_scope(c, nb, dst_i, ci); }
             else { dst->body = sc->body; comp_touch_scope(dst->idx); }
-            sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
-            { dst->class_id = ci; comp_touch_scope(dst->idx); }
-            { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
-            dst->is_include_copy = 1;
-            dst->is_prepend_copy = 1;
-            { dst->origin_module_ci = mod_id + 1; comp_touch_scope(dst->idx); }   /* #owner names the module */
-            { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); }
-            dst->yields = sc->yields;
-            dst->nrequired = sc->nrequired;
-            dst->rest_idx = sc->rest_idx;
-            dst->kwrest_idx = sc->kwrest_idx;
-            scope_set_ret(dst, sc->ret);
-            scope_copy_block_param(dst, sc);
-            /* register_locals has already run, so the parameters have to be
-               copied across by hand and their locals re-interned -- exactly
-               what the include clone does, and the half my first attempt at
-               this omitted (the clone came out with no signature at all). */
-            scope_copy_params(dst, sc);
-            scope_own_defaults(c, dst_i);
-            sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
-            /* the module body's ivars belong to the prepending class's layout */
-            intern_scope_ivars(c, ms_i, ci);
-            sc = &c->scopes[ms_i];
-            sc->is_transplanted_source = 1;
           }
+          else { dst->body = sc->body; comp_touch_scope(dst->idx); }
+          sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
+          { dst->class_id = ci; comp_touch_scope(dst->idx); }
+          { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
+          dst->is_include_copy = 1;
+          dst->is_prepend_copy = 1;
+          { dst->origin_module_ci = mod_id + 1; comp_touch_scope(dst->idx); }   /* #owner names the module */
+          { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); }
+          dst->yields = sc->yields;
+          dst->nrequired = sc->nrequired;
+          dst->rest_idx = sc->rest_idx;
+          dst->kwrest_idx = sc->kwrest_idx;
+          scope_set_ret(dst, sc->ret);
+          scope_copy_block_param(dst, sc);
+          /* register_locals has already run, so the parameters have to be
+             copied across by hand and their locals re-interned -- exactly
+             what the include clone does, and the half my first attempt at
+             this omitted (the clone came out with no signature at all). */
+          scope_copy_params(dst, sc);
+          scope_own_defaults(c, dst_i);
+          sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
+          /* the module body's ivars belong to the prepending class's layout */
+          intern_scope_ivars(c, ms_i, ci);
+          sc = &c->scopes[ms_i];
+          sc->is_transplanted_source = 1;
         }
       }
     }
+    free(mx);
   }
   if (flag[0]) {   /* after the reopening's statement, in its file's top level */
     int f, rank;
