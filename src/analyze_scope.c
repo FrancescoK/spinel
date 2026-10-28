@@ -1342,8 +1342,6 @@ void refuse_native_singleton_reopen(Compiler *c, Scope *s) {
   refuse_native_class_reopen(c, s->def_node, recv, ci, nt_str(c->nt, recv, "name"));
 }
 
-static int alias_pred_const(const NodeTable *nt, int pred);
-
 /* Whether the program defines or aliases a define_method of its own (a def,
    a singleton def, `alias` or `alias_method`), whose call with a computed name
    is then an ordinary call. Asked once per compile: the first computed-name
@@ -1887,7 +1885,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
   int pred = -1, then_body = -1, else_body = -1;
   NodeKind kind = nt_kind(c->nt, id);
   if (kind == NK_IfNode || kind == NK_UnlessNode) {
-    pred = alias_pred_const(c->nt, nt_ref(c->nt, id, "predicate"));
+    pred = nt_pred_const(c->nt, nt_ref(c->nt, id, "predicate"));
     if (pred >= 0 && kind == NK_UnlessNode) pred = !pred;
     then_body = nt_ref(c->nt, id, "statements");
     else_body = nt_ref(c->nt, id, kind == NK_UnlessNode ? "else_clause" : "subsequent");
@@ -3774,7 +3772,7 @@ static void struct_home_cond_dm(Compiler *c, int cond, int ci) {
     if (k == NK_ElseNode) arm = nt_ref(nt, cond, "statements");
     else if (k == NK_IfNode || k == NK_UnlessNode) {
       int unl = k == NK_UnlessNode;
-      int pc = alias_pred_const(nt, nt_ref(nt, cond, "predicate"));
+      int pc = nt_pred_const(nt, nt_ref(nt, cond, "predicate"));
       if (pc < 0) return;
       if (pc == !unl) arm = nt_ref(nt, cond, "statements");
       else {
@@ -4090,35 +4088,6 @@ void register_attrs(Compiler *c) {
     int ci = comp_class_index(c, nt_str(nt, recv, "name"));
     if (ci >= 0) register_sclass_attrs(c, &c->classes[ci], nt_ref(nt, n, "body"));
   }
-}
-
-/* Classify a modifier/if predicate as a compile-time constant: 1 = always
-   truthy, 0 = always falsy, -1 = a runtime value. Only literal true / non-nil
-   literals and false / nil fold; anything else (a call, constant, variable) is
-   runtime. */
-static int alias_pred_const(const NodeTable *nt, int pred) {
-  if (pred < 0) return -1;
-  const char *t = nt_type(nt, pred);
-  if (!t) return -1;
-  /* unwrap parentheses: `if (cond)`. An empty `()` is nil (falsy); multiple
-     statements are not folded (conservative). */
-  while (sp_streq(t, "ParenthesesNode")) {
-    int stmts = nt_ref(nt, pred, "body");  /* ParenthesesNode -> StatementsNode */
-    int n = 0;
-    const int *body = stmts >= 0 ? nt_arr(nt, stmts, "body", &n) : NULL;
-    if (n == 0 || !body) return 0;
-    if (n != 1) return -1;
-    pred = body[0];
-    if (pred < 0) return -1;
-    t = nt_type(nt, pred);
-    if (!t) return -1;
-  }
-  if (sp_streq(t, "FalseNode") || sp_streq(t, "NilNode")) return 0;
-  if (sp_streq(t, "TrueNode") || sp_streq(t, "IntegerNode") || sp_streq(t, "FloatNode") ||
-      sp_streq(t, "StringNode") || sp_streq(t, "SymbolNode") || sp_streq(t, "ArrayNode") ||
-      sp_streq(t, "HashNode") || sp_streq(t, "RegularExpressionNode"))
-    return 1;
-  return -1;
 }
 
 /* Collect `alias new old` (AliasMethodNode) and `alias_method :new, :old`
@@ -4773,7 +4742,7 @@ void register_aliases_body(Compiler *c, ClassInfo *cls, int body) {
         }
         if (ck != NK_IfNode && ck != NK_UnlessNode) break;
         int is_unless = ck == NK_UnlessNode;
-        int pc = alias_pred_const(nt, nt_ref(nt, curr, "predicate"));
+        int pc = nt_pred_const(nt, nt_ref(nt, curr, "predicate"));
         int then_runs = is_unless ? (pc == 0) : (pc == 1);
         int else_runs = is_unless ? (pc == 1) : (pc == 0);
         if (then_runs) {

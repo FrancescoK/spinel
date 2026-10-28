@@ -1,0 +1,31 @@
+load record: 19 points, 1 regions
+r0 #0 f0 ProgramNode line 7
+r0 #1 f0 ClassNode A line 7
+  r0 #2 f0 CallNode private_class_method line 8
+  r0 #3 f0 DefNode e line 9
+  r0 #4 f0 DefNode f line 10
+  r0 #5 f0 DefNode g line 11
+  r0 #6 f0 CallNode private_class_method line 12
+  r0 #7 f0 CallNode public_class_method line 13
+  r0 #8 f0 SingletonClassNode line 14
+    r0 #9 f0 CallNode private line 15
+    r0 #10 f0 DefNode h line 16
+    r0 #11 f0 CallNode public line 17
+    r0 #12 f0 DefNode k line 18
+  r0 #13 f0 DefNode all line 20
+r0 #14 f0 CallNode p line 22
+r0 #15 f0 BeginNode line 23
+  r0 #16 f0 CallNode d line 24
+  r0 #17 may f0 CallNode puts line 26
+r0 #18 f0 CallNode p line 28
+class A: body#1
+entity A: owner main leaf A
+const A: write#1
+A.d: def#2 vis#2 private end=yes
+A.e: def#3 vis#6 private vis#7 end=yes
+A.f: def#4 vis#6 private end=yes
+A.g: def#5 end=yes
+visibility in #8: vis#9 private vis#11 public
+A.h: def#10 private end=yes
+A.k: def#12 end=yes
+A.all: def#13 end=yes

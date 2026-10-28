@@ -1,0 +1,37 @@
+load record: 21 points, 1 regions
+r0 #0 f0 ProgramNode line 8
+r0 #1 f0 ClassNode A line 8
+  r0 #2 f0 IfNode line 9
+    r0 #3 f0 CallNode attr_reader line 9
+  r0 #4 f0 UnlessNode line 10
+    r0 #5 f0 CallNode attr_writer line 10
+  r0 #6 f0 IfNode line 11
+    r0 #7 may f0 CallNode attr_reader line 11
+    r0 #8 f0 CallNode attr_accessor line 11
+  r0 #9 f0 IfNode line 12
+    r0 #10 may f0 CallNode attr_reader line 12
+    r0 #11 may f0 CallNode attr_reader line 12
+  r0 #12 f0 IfNode line 13
+    r0 #13 f0 CallNode attr_reader line 13
+    r0 #14 may f0 CallNode attr_reader line 13
+  r0 #15 f0 DefNode h line 14
+  r0 #16 f0 IfNode line 15
+    r0 #17 f0 AliasMethodNode line 15
+r0 #18 f0 IfNode line 17
+  r0 #19 f0 GlobalVariableWriteNode $w line 17
+r0 #20 f0 CallNode p line 18
+class A: body#1
+entity A: owner main leaf A
+const A: write#1
+A#a: reader#3 end=yes
+A#b=: writer#5 end=yes
+A#c: reader#7 may end=unknown
+A#d: reader#8 end=yes
+A#d=: writer#8 end=yes
+A#e: reader#10 may end=unknown
+A#f: reader#11 may end=unknown
+A#i: reader#13 end=yes
+A#j: reader#14 may end=unknown
+A#h: def#15 end=yes
+A#g: alias#17 (h: def#15) end=yes
+$w: write#19
