@@ -907,16 +907,32 @@ static int empty_array_poly_view(Compiler *c, int arg) {
    rewrite at[j] to the array type the slot ended up holding. */
 /* `rlen`: the receiver's length, as C; a Range argument materializes only
    that many elements */
+/* Whether the program defines no method a Hash argument of zip could reach
+   in place of the builtin's: an each on Hash's chain (its reopen, a module
+   it prepends or includes), or a to_ary of any class (Object's, Kernel's, a
+   top-level def's reach a Hash too). The Hash arm of emit_zip_args calls
+   neither. */
+static int zip_hash_arm_builtin(Compiler *c) {
+  int hc = comp_class_index(c, "Hash"), n = 0;
+  if (hc >= 0 && comp_method_in_chain(c, hc, "each", NULL) >= 0) return 0;
+  if (call_target(c, -1, -1, "to_ary", CT_TOP, NULL) >= 0) return 0;
+  const int *r = comp_name_responders(c, "to_ary", 0, &n);
+  if (r) return n == 0;
+  for (int k = 0; k < c->nclasses; k++)
+    if (comp_method_in_chain(c, k, "to_ary", NULL) >= 0) return 0;
+  return 1;
+}
+
 static void emit_zip_args(Compiler *c, const int *argv, int nargs, const int *tb, TyKind *at,
                           const char *rlen, Buf *b) {
   for (int j = 0; j < nargs; j++) {
     /* an empty `{}` literal has no node type of its own: it is a Hash
        (`[1, 2].zip({})`), which the Hash arm below materializes; read as
-       an Array, its pointer stopped the C build (not where the program's
-       Hash reopen defines each or to_ary, which that arm does not call) */
+       an Array, its pointer stopped the C build (not where the program
+       defines an each or to_ary the Hash could reach, which that arm does
+       not call) */
     if (at[j] == TY_UNKNOWN && nt_kind(c->nt, nt_paren_single(c->nt, argv[j])) == NK_HashNode &&
-        comp_builtin_kind_reopen_mi(c, TY_POLY_POLY_HASH, "each") < 0 &&
-        comp_builtin_kind_reopen_mi(c, TY_POLY_POLY_HASH, "to_ary") < 0)
+        zip_hash_arm_builtin(c))
       at[j] = TY_POLY_POLY_HASH;
     /* a Range argument materializes to its int array, as far as the
        receiver reaches: `[1, 2].zip(10.upto(Float::INFINITY))` */
