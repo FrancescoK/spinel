@@ -2193,12 +2193,16 @@ int emit_call_append_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        to widen (an_push_widens_fresh): its elements, boxed, then the push */
     if (!needs_lift && an_push_widens_fresh(c, id)) {
       int t = ++g_tmp;
-      buf_printf(b, "({ sp_PolyArray *_t%d = sp_poly_to_poly_array(", t);
-      emit_boxed(c, recv, b);
-      buf_printf(b, "); SP_GC_ROOT(_t%d); ", t);
+      buf_printf(b, "({ sp_PolyArray *_t%d = ", t);
+      emit_fresh_lift_recv(c, recv, b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", t);
+      /* every argument runs before a frozen receiver raises, as in CRuby */
+      int vbase = g_tmp + 1; g_tmp += argc;
       for (int a = 0; a < argc; a++) {
-        buf_printf(b, "sp_PolyArray_push(_t%d, ", t); emit_boxed(c, argv[a], b); buf_puts(b, "); ");
+        buf_printf(b, "sp_RbVal _t%d = ", vbase + a); emit_boxed(c, argv[a], b);
+        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", vbase + a);
       }
+      for (int a = 0; a < argc; a++) buf_printf(b, "sp_PolyArray_push(_t%d, _t%d); ", t, vbase + a);
       buf_printf(b, "_t%d; })", t);
       return 1;
     }
