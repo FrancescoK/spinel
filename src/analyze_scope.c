@@ -10700,6 +10700,11 @@ static int infer_struct_aset_call(Compiler *c, int id, NilWrites *writes, Struct
   const NodeTable *nt = c->nt;
   int one, how = struct_aset_receiver(c, id, &one);
   if (!how) return 0;
+  /* a store in a method no call can reach never runs: it types nothing
+     (csv's Row#[]=, kept by a `[]=` on a Hash literal in Row#to_h, typed the
+     members of every Struct of a program that parses, #10489) */
+  { Scope *ms = comp_scope_of(c, id);
+    if (ms && ms->def_node >= 0 && ms->name && !ms->reachable) return 0; }
   int v = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", NULL)[1];
   TyKind vt = infer_type(c, v);
   int handle = an_arg_is_shared_handle(c, nt_paren_single(nt, v));

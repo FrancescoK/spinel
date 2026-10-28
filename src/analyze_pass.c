@@ -19049,6 +19049,69 @@ void cr_class_only_names(Compiler *c, ANameHash *out) {
   anh_free(&held);
 }
 
+/* Set by compute_reachable for its passes before the types settle: the
+   names a call on a literal container may leave unmarked (the class-only
+   names), and, by local, whether every write of it in its scope is a Hash
+   or Array literal. Such a local holds a builtin container whatever the
+   types say later, so a call on it reaches no program method of a name
+   only plain classes define: a `h[k] = v` on `h = {}` kept every class's
+   `[]=` alive, and the stores in them typed the members of every Struct
+   (#10489). */
+const ANameHash *g_cr_untyped = NULL;
+/* the locals, keyed "scope:name", and per key 1 while every write is a
+   container literal */
+static ANameHash g_cr_lit; static char **g_cr_lit_keys; static signed char *g_cr_lit_state; static int g_cr_lit_cap;
+static const char *cr_lit_key(char *buf, size_t n, int scope, const char *name) {
+  snprintf(buf, n, "%d:%s", scope, name);
+  return buf;
+}
+void cr_literal_locals_build(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  for (int i = 0; i < g_cr_lit.n; i++) free(g_cr_lit_keys[i]);
+  anh_free(&g_cr_lit); memset(&g_cr_lit, 0, sizeof g_cr_lit);
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int write = k == NK_LocalVariableWriteNode, other = k == NK_LocalVariableTargetNode ||
+      k == NK_LocalVariableOperatorWriteNode || k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode;
+    if (!write && !other) continue;
+    const char *nm = nt_str(nt, id, "name");
+    Scope *sc = comp_scope_of(c, id);
+    if (!nm || !sc) continue;
+    int v = write ? nt_ref(nt, id, "value") : -1;
+    NodeKind vk = v >= 0 ? nt_kind(nt, v) : NK_NONE;
+    int lit = write && (vk == NK_HashNode || vk == NK_ArrayNode);
+    char kb[300];
+    cr_lit_key(kb, sizeof kb, sc->idx, nm);
+    int i = anh_find(&g_cr_lit, kb);
+    if (i < 0) {
+      if (g_cr_lit.n == g_cr_lit_cap) {
+        g_cr_lit_cap = g_cr_lit_cap ? g_cr_lit_cap * 2 : 64;
+        g_cr_lit_keys = realloc(g_cr_lit_keys, sizeof(char *) * (size_t)g_cr_lit_cap);
+        g_cr_lit_state = realloc(g_cr_lit_state, (size_t)g_cr_lit_cap);
+        if (!g_cr_lit_keys || !g_cr_lit_state) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      i = g_cr_lit.n;
+      if (!(g_cr_lit_keys[i] = strdup(kb))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      anh_add(&g_cr_lit, g_cr_lit_keys[i]);
+      g_cr_lit_state[i] = 1;
+    }
+    if (!lit) g_cr_lit_state[i] = 0;
+  }
+}
+/* Is local read r one whose every write in its scope is a Hash or Array
+   literal, and no parameter? */
+static int cr_literal_local(Compiler *c, const NodeTable *nt, int r) {
+  if (r < 0 || nt_kind(nt, r) != NK_LocalVariableReadNode) return 0;
+  const char *nm = nt_str(nt, r, "name");
+  Scope *sc = comp_scope_of(c, r);
+  if (!nm || !sc) return 0;
+  LocalVar *lv = scope_local(sc, nm);
+  if (!lv || lv->is_param || lv->is_block_param || lv->is_cell) return 0;
+  char kb[300];
+  int i = anh_find(&g_cr_lit, cr_lit_key(kb, sizeof kb, sc->idx, nm));
+  return i >= 0 && g_cr_lit_state[i] == 1;
+}
+
 /* A replaced method version is reached only by the calls call_target binds
    to it (Scope.replaced), as is one an alias's capture renamed. For call
    node id of a name with replaced versions or an alias, the "\x01<scope>"
@@ -19243,6 +19306,11 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   /* a call on a builtin value reaches no method of the program's (nor any
      version of one) */
   int builtin_recv = g_cr_typed && (k0 == NK_CallNode || var_opw) && nm && names[0] == nm && cr_recv_builtin_value(c, nt, id, nm);
+  /* (before the types settle: a local only Hash or Array literals write) */
+  if (!builtin_recv && g_cr_untyped && k0 == NK_CallNode && nm && names[0] == nm && anh_has(g_cr_untyped, nm) &&
+      !sp_streq(nm, "=~") && !sp_streq(nm, "!~") && !sp_streq(nm, "!=") && !sp_streq(nm, "===") &&
+      cr_literal_local(c, nt, nt_ref(nt, id, "receiver")))
+    builtin_recv = 1;
   if (builtin_recv) names[0] = NULL;
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);

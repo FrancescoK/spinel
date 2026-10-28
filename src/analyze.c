@@ -553,7 +553,8 @@ static int an_sum_needs_coerce(Compiler *c, int id, int typed) {
   return et == TY_UNKNOWN || et == TY_POLY || ty_is_object(et);
 }
 
-extern const ANameHash *g_cr_typed;
+extern const ANameHash *g_cr_typed, *g_cr_untyped;
+void cr_literal_locals_build(Compiler *c);
 void cr_class_only_names(Compiler *c, ANameHash *out);
 /* Can the receiver of the `%` call `id` be a format String? A String
    literal can; once types are known (typed), a receiver typed String can.
@@ -577,6 +578,7 @@ void compute_reachable(Compiler *c, int typed) {
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
   ANameHash held; memset(&held, 0, sizeof held);
   if (typed == 2) { cr_class_only_names(c, &held); g_cr_typed = &held; }
+  else { cr_class_only_names(c, &held); g_cr_untyped = &held; cr_literal_locals_build(c); }
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *sc = &c->scopes[s];
     int instance_self = sc->name && !sc->is_cmethod && sc->class_id >= 0 &&
@@ -591,7 +593,7 @@ void compute_reachable(Compiler *c, int typed) {
         cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     }
   }
-  g_cr_typed = NULL;
+  g_cr_typed = NULL; g_cr_untyped = NULL;
   anh_free(&held);
 
 
