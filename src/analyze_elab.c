@@ -2201,6 +2201,16 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
   return o == PROG_UNKNOWN ? ELAB_UNKNOWN : o != PROG_BEFORE ? ELAB_NO : may ? ELAB_UNKNOWN : ELAB_YES;
 }
 
+/* A builtin mixin has no program class unless a reopening supplies
+   a recorded history. An unresolved program module stays unknown. */
+static int lr_mixin_class(Compiler *c, LrMixin *m) {
+  int cls = lr_later(c, &m->mod, m->ref);
+  if (cls >= 0) return cls;
+  int mod = elab_mixin_module(c, m);
+  if (mod >= 0 && builtin_mixin_module_id(c->classes[mod].name)) return m->mod = mod;
+  return mod < LR_MAIN ? mod : cls;
+}
+
 /* Is mixin m's module already among cls's ancestors (its singleton's when
    sg) where m runs: ELAB_YES / NO / UNKNOWN. A fact of the mixin, asked
    once and kept: the search it makes reads the earlier mixins' answers in
@@ -2210,7 +2220,7 @@ static int lr_mixed_before(Compiler *c, const LrMixin *m, LoadPoint p, int late,
    not depend on where it was first asked; an ask while it runs (modules
    that include each other) answers unknown. */
 static int lr_mixin_dup(Compiler *c, int cls, int sg, LrMixin *m) {
-  if (lr_later(c, &m->mod, m->ref) < 0) return ELAB_NO;
+  if (lr_mixin_class(c, m) < 0) return ELAB_NO;
   if (!m->dup) {
     m->dup = 1 + ELAB_UNKNOWN;
     m->dup = (unsigned char)(1 + lr_search(c, cls, sg, NULL, m->mod, elab_point_of(c, m->node), 0, 0, NULL, 0));
@@ -2245,7 +2255,7 @@ static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod
       int dup = lr_mixin_dup(c, cls, sg, m);
       if (dup == ELAB_YES) continue;
       if (dup == ELAB_UNKNOWN) *unsure = 1;
-      int o = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
+      int o = lr_mixin_class(c, m) < 0 ? ELAB_UNKNOWN : !name && m->mod == mod ? ELAB_YES : lr_search(c, m->mod, 0, name, mod, p, late, vis, out, depth + 1);
       if (o == ELAB_YES && b == ELAB_YES) return ELAB_YES;
       if (o != ELAB_NO) *unsure = 1;
     }
@@ -2375,7 +2385,7 @@ int elab_method_over(Compiler *c, int cls, const char *name, int sg, LoadPoint p
     for (int j = 0; kc && j < kc->nmix; j++) {
       LrMixin *m = &kc->mix[j];
       if (lr_inside(c, m->node, p0, p1) &&
-          (lr_later(c, &m->mod, m->ref) < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
+          (lr_mixin_class(c, m) < 0 || lr_search(c, m->mod, 0, name, -1, p1, 1, 0, NULL, 0) != ELAB_NO)) return ELAB_UNKNOWN;
     }
     for (int j = 0; op && j < op->n; j++)
       if (lr_inside(c, op->v[j].node, p0, p1)) return ELAB_UNKNOWN;
@@ -2537,15 +2547,25 @@ int elab_written_before(Compiler *c, ElabVar kind, const char *name, LoadPoint p
    class's. A scoped read (`A::B`) leaves Object's out, as CRuby does. */
 static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int late, int top, const LrDef **out, int depth) {
   LoadRecord *r = c->lrec;
-  if (depth > 64 || cls < LR_MAIN) return ELAB_UNKNOWN;
+  if (depth > 64) return ELAB_UNKNOWN;
+  if (cls < LR_MAIN) {
+    for (int i = 0; builtin_class_at(i); i++) {
+      const BuiltinClass *b = builtin_class_at(i);
+      if (b->id == cls && builtin_mixin_module_id(b->name))
+        return is_constless_builtin_name(b->name) ? ELAB_NO : ELAB_UNKNOWN;
+    }
+    return ELAB_UNKNOWN;
+  }
   int o = lr_last_before(c, lr_hist(r, -2 - (int)ELAB_CONST, lr_const_owner(cls), name, 0), p, late, 0, out), unsure = 0;
   if (o != ELAB_NO) return o;
+  if (cls >= 0 && builtin_mixin_module_id(c->classes[cls].name) &&
+      !is_constless_builtin_name(c->classes[cls].name)) return ELAB_UNKNOWN;
   const LrClass *k = lr_class(r, cls);
   for (int i = k ? k->nmix - 1 : -1; i >= 0; i--) {
     LrMixin *m = &k->mix[i];
     int b = elab_mix_on_singleton(m->kind) ? ELAB_NO : lr_mixed_before(c, m, p, late, elab_point_may(c, m->node));
     if (b == ELAB_NO) continue;
-    int mo = lr_later(c, &m->mod, m->ref) < 0 ? ELAB_UNKNOWN : lr_const_in(c, m->mod, name, p, late, top, out, depth + 1);
+    int mo = lr_const_in(c, lr_mixin_class(c, m), name, p, late, top, out, depth + 1);
     if (mo == ELAB_YES && b == ELAB_YES) return unsure ? ELAB_UNKNOWN : ELAB_YES;
     if (mo != ELAB_NO) unsure = 1;
   }
