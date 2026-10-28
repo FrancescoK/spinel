@@ -726,7 +726,7 @@ typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink;
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup, sup_ref; unsigned char has_sup; } LrClass;
 /* LR_NEW: a header's entity names a new class; LR_LATER_ALIAS: one an
    alias written after it reopens until N2b; LR_BUILTIN: it reopens a
-   builtin, whose class registration then names (LrHeader.want) */
+   builtin, the class registration names (LrHeader.want) */
 enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2, LR_LATER = -3, LR_NEW = -4, LR_LATER_ALIAS = -5, LR_BUILTIN = -6 };
 /* the histories that are not a method's or a variable's: a frame's bare
    visibility words, keyed by the frame's node; the code a class's body ran
@@ -805,6 +805,12 @@ static LrHeader *lr_header(LoadRecord *r, int node, int make) {
   r->hdr[r->nhdr] = (LrHeader){ node, LR_UNKNOWN_CLASS, LR_UNKNOWN_CLASS, ELAB_UNKNOWN, -1, LR_UNKNOWN_CLASS, r->hdr_head[h], NULL };
   r->hdr_head[h] = r->nhdr;
   return &r->hdr[r->nhdr++];
+}
+
+/* Does the header at node reopen a builtin (LR_BUILTIN)? */
+static int lr_header_builtin(LoadRecord *r, int node) {
+  const LrHeader *h = lr_header(r, node, 0);
+  return h && h->want == LR_BUILTIN;
 }
 
 /* The node -> class map: the class header `node` opens, as registration
@@ -1403,8 +1409,9 @@ static void lr_record_stmt(ElabRec *x, int e) {
     int cp = k == NK_ClassNode || k == NK_ModuleNode ? nt_ref(nt, node, "constant_path") : -1;
     /* the first opening defines its constant: in its entity's owner;
        where that is not known, in the lexical scope for a name, in the
-       class the scope walk nested it in for a path */
-    if (kc && !kc->nopen && cp >= 0) {
+       class the scope walk nested it in for a path. A builtin's reopening
+       finds Object's constant and writes none, as in CRuby. */
+    if (kc && !kc->nopen && cp >= 0 && !lr_header_builtin(r, node)) {
       int owner;
       elab_header_class(x->c, node, &owner, NULL);
       if (owner < LR_MAIN) owner = nt_kind(nt, cp) == NK_ConstantReadNode ? lr_cref(x->c, e) : x->c->classes[x->fc[e]].enclosing_class;
@@ -2423,19 +2430,17 @@ static const char *lr_class_name(Compiler *c, int cls) {
 void elab_header_opened(Compiler *c, int node, int cls, int made) {
   LoadRecord *r = lr_get(c);
   LrHeader *h = lr_header(r, node, 1);
-  int builtin = h->want == LR_BUILTIN;
   h->cls = cls >= 0 ? cls : LR_UNKNOWN_CLASS;
-  if (builtin) h->want = h->cls;
   if (!r->check || !r->walk || !h->leaf) return;
   NodeKind fk = h->found >= 0 ? nt_kind(c->nt, h->found) : NK_NilNode;
   if (h->want == LR_LATER_ALIAS) { lr_family(r, "class header, alias written after it (until N2b)")->asked++; return; }
-  if (h->want < 0 && h->want != LR_NEW) {
+  if (h->want < 0 && h->want != LR_NEW && h->want != LR_BUILTIN) {
     lr_family(r, h->found >= 0 && fk != NK_ClassNode && fk != NK_ModuleNode ? "class header, alias" : "class header, not known")->asked++;
     return;
   }
   LrCheck *f = lr_family(r, "class header entity");
   f->asked++;
-  const char *kind = builtin ? NULL : h->want == LR_NEW && !made ? "reopen-not-new" : h->want >= 0 && made ? "new-not-reopen" :
+  const char *kind = h->want == LR_BUILTIN ? NULL : h->want == LR_NEW && !made ? "reopen-not-new" : h->want >= 0 && made ? "new-not-reopen" :
                      h->want >= 0 && h->cls != h->want ? "other-class" : NULL;
   if (!kind) return;
   f->differ++;

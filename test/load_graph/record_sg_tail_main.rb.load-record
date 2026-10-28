@@ -16,9 +16,7 @@ class Foo: body#5
 class Bar: body#7
 entity Foo: owner main leaf Foo
 entity Bar: owner main leaf Bar
-const Class: write#1
 Class__reopen#tag: def#2 end=yes
-const Module: write#3
 Module#note: def#4 end=yes
 const Foo: write#5
 opaque Foo: opaque#6
