@@ -8954,6 +8954,8 @@ int desugar_lazy_method_call(Compiler *c) {
   return changed;
 }
 
+static int iter_name_program_defined(Compiler *c, const char *nm);
+
 /* The iterators whose poly arm yields exactly one boxed value per element,
    so an anonymous `&` forward on a poly receiver can become a one-parameter
    yielding block (#4625). */
@@ -9415,6 +9417,18 @@ int desugar_value_callable_forwards(Compiler *c) {
     if (recv < 0) continue;
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
+    /* Array#fill keeps its `&b` form where the program defines a fill of
+       its own on Array, or a splat gives the arguments (`super(*a, &b)` in
+       an Array subclass's fill): the fill emitter reads each argument as
+       one start or length, and the inlined body of a program's fill
+       cannot take the caller's block */
+    if (sp_streq(name, "fill")) {
+      int fa = nt_ref(nt, id, "arguments"), fn = 0;
+      const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
+      int fsplat = 0;
+      for (int k = 0; k < fn; k++) if (nt_kind(nt, fv[k]) == NK_SplatNode) fsplat = 1;
+      if (fsplat || iter_name_program_defined(c, name)) continue;
+    }
     int encl = c->nscope[id];
     TyKind rt = infer_type(c, recv);
     /* an Array or Hash subclass instance's call the builtin answers is the
