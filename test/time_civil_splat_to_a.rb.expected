@@ -9,3 +9,9 @@
 wrong number of arguments (given 0, expected 1..8)
 wrong number of arguments (given 9, expected 1..8)
 wrong number of arguments (given 11, expected 1..8)
+2
+3
+2
+(1/2)
+no implicit conversion of true into Integer
+invalid value for Integer(): "2024x"

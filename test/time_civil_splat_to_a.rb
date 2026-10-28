@@ -28,3 +28,25 @@ p [q.year, q.month, q.day, q.hour]
     puts e.message
   end
 end
+
+# fields read as CRuby reads them: a built String month, a String field as
+# Integer(str, 10), a Float or Rational truncated, a boolean refused, and
+# with eight arguments the seventh ignored along with the eighth
+m = +"fe"
+m << "b"
+p Time.utc(*[2024, m, 3]).month
+p Time.utc(*[" 20_24 ", "02", "3"]).day
+p Time.utc(*[2024, 1.9, Rational(5, 2)]).day
+p Time.utc(*[2024, 1, 1, 0, 0, 5.5, "UTC", 0]).subsec
+b = [2024, 1, 1, 0]
+b[3] = true if ARGV.empty?
+begin
+  Time.utc(*b)
+rescue TypeError => e
+  puts e.message
+end
+begin
+  Time.utc(*["2024x"])
+rescue ArgumentError => e
+  puts e.message
+end
