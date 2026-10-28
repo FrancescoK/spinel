@@ -604,9 +604,13 @@ static LoadRecord *elab_fresh(Compiler *c) {
    the first ask copies the map and its parent map, and every later ask
    reads that copy (elab_plan_enter). A node appended since takes the facts
    of the node it was first linked under (nt_origin), as the climb would
-   place it there; a copy (a clone) has no such place, and asks the map as
-   it is. SPINEL_ELAB_CHECK asks each call's version of the map as it is too
-   (elab_check_version). */
+   place it there, and a copy (a clone) the facts of the node it copies,
+   whose place it takes. A clone that asked the map as it is rebuilt the
+   map whenever a node had been appended since its last ask: a Rails
+   program's runtime-name sends make a clone of each call per name, and
+   desugar_builtin_method_obj, which appends a wrapper between its asks,
+   rebuilt the map hundreds of times a round. SPINEL_ELAB_CHECK asks each
+   call's version of the map as it is too (elab_check_version). */
 static void lr_plan_swap(LoadRecord *r) {
   struct LrPlan live = { r->st, r->nst, r->cst, r->at, r->bits, r->n, r->ncap };
   r->st = r->plan.st; r->nst = r->plan.nst; r->cst = r->plan.cst; r->at = r->plan.at;
@@ -620,19 +624,24 @@ static void *lr_dup(const void *v, size_t sz) {
   return d;
 }
 /* Inside the frame: node id, appended since the copy, placed where it was
-   first linked; past a chain of 64 such links the map as it is answers */
+   first linked, or where the node it copies is; past a chain of 64 such
+   links the map as it is answers */
 static int lr_plan_place(Compiler *c, int id, int depth) {
   LoadRecord *r = c->lrec;
   if (id < r->n && r->at[id] != -2) return 1;
   char how = 0; int a = 0, k = 0; unsigned pass = 0;
   int o = depth < 64 ? nt_origin(c->nt, id, &how, &a, &pass, &k) : -1;
-  if (o < 0 || how == 'c' || !lr_plan_place(c, o, depth + 1)) return 0;
+  if (o < 0 || !lr_plan_place(c, o, depth + 1)) return 0;
   int cap = r->ncap, n0 = r->n;
   lr_fit(r, id + 1);
   if (r->ncap != cap && !(r->plan_par = realloc(r->plan_par, sizeof(int) * (size_t)r->ncap))) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
   for (int i = n0; i < r->n; i++) r->plan_par[i] = -1;
+  if (how == 'c') {   /* a clone stands where the node it copies stands */
+    r->at[id] = r->at[o]; r->bits[id] = r->bits[o]; r->plan_par[id] = r->plan_par[o];
+    return 1;
+  }
   r->at[id] = r->at[o]; r->plan_par[id] = o;
   r->bits[id] = (unsigned char)(((r->bits[o] & LR_LATE) || lr_defers(c->nt, r->plan_par, o) ? LR_LATE : 0) |
                                 ((r->bits[o] & LR_BODY) || nt_kind(c->nt, o) == NK_DefNode ? LR_BODY : 0));
