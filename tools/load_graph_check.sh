@@ -258,6 +258,19 @@ else
   fail "sym did not compile"; sed -n 1,3p "$tmp/order/sym/cc"
 fi
 
+# A library (--ext-init) runs its top level in its init function, not in
+# main: the init starts $LOAD_PATH as main does, so a computed path there
+# searches the -I directories too.
+mkdir "$tmp/ext" "$tmp/ext/inc"
+printf 'puts "xlib"\n' > "$tmp/ext/inc/xlib.rb"
+printf 'def never = require("xlib")\nname = ARGV.empty? ? "xlib" : ARGV.first\np require(name)\n' > "$tmp/ext/main.rb"
+if "$SPINEL" --load-model=graph -I "$tmp/ext/inc" -c --no-line-map --ext-init spx_lp "$tmp/ext/main.rb" -o "$tmp/ext/out.c" >"$tmp/ext/cc" 2>&1; then
+  awk '/^void spx_lp\(void\)\{/ { f = 1 } f && /sp_load_path_seed\(/ { s = 1 } f && /^}/ { exit } END { exit !s }' "$tmp/ext/out.c" ||
+    fail "a library's init function does not start \$LOAD_PATH"
+else
+  fail "ext did not compile"; sed -n 1,3p "$tmp/ext/cc"
+fi
+
 # A file beside the program is on its load path only where the program puts
 # its directory there ($LOAD_PATH.unshift __dir__). A literal require finds
 # it after a statement of a top level that does, and a computed one finds it
