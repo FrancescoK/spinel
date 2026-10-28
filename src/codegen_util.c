@@ -4096,11 +4096,14 @@ int one_tail_fresh(Compiler *c, int n) {
   if (k == NK_CallNode) {
     const CallPlan *pl = cplan_user(c, n);
     if (pl->mi >= 0 || pl->dispatch != CP_NONE) return 0;
-    /* (a builtin answering its receiver, `s.tap { }`, is that String: the
-       channel is how the caller finds its handle) */
+    /* (a builtin answering its receiver, `s.tap { }`, is that String: new
+       when the receiver is, `s[i, n].to_s`, and otherwise the channel is
+       how the caller finds its handle) */
     int r = nt_ref(c->nt, n, "receiver"), argc = 0;
     call_args(c->nt, n, &argc);
-    return !(r >= 0 && bop_answers_recv(comp_ntype(c, r), nt_str(c->nt, n, "name"), argc, nt_ref(c->nt, n, "block") >= 0));
+    if (r >= 0 && bop_answers_recv(comp_ntype(c, r), nt_str(c->nt, n, "name"), argc, nt_ref(c->nt, n, "block") >= 0))
+      return one_tail_fresh(c, r);
+    return 1;
   }
   return 0;
 }

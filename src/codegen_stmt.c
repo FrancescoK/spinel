@@ -22665,7 +22665,9 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
     /* (one representation: a String tail of either face lands in a bytes
        slot as its view, which the slot's root keeps alive) */
     int one_tail_b = !want_poly && tail_slot_ty == TY_STRING;
-    int one_unpub = one_tail_b && !g_result_var && one_tail_fresh(c, id);
+    /* (a result slot too: the function returns the slot as it is, and a
+       read in the body, a rescue's or an earlier statement's, published) */
+    int one_unpub = one_tail_b && one_tail_fresh(c, id);
     /* (...and in a handle slot as its handle) */
     int one_tail_h = !want_poly && tail_slot_ty == TY_STRBUF;
     if (one_unpub) buf_puts(b, "sp_strface_unpub(");
