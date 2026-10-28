@@ -31,6 +31,10 @@
 static inline unsigned sp_field_disc(const char *k) {
   return SP_FIELD_DISC(k, __builtin_strlen(k));
 }
+/* A call rename nt_node_swap_str or nt_node_restore_str made: the name it
+   replaced and the one it set, or cut when either did not fit. */
+typedef struct { char from[32], to[32]; unsigned char cut; } NtRename;
+#define NT_RENAME_LOG 64
 typedef struct { char *key; unsigned disc; char *val; size_t val_len; } SpStrField;
 typedef struct { char *key; unsigned disc; long long val; }    SpIntField;
 typedef struct { char *key; unsigned disc; int ref; }          SpRefField;
@@ -75,6 +79,9 @@ typedef struct {
      found, so an index of the nodes by name extends over the clones when
      every bump since its build was one (an_calls_named_first). */
   unsigned read_version, rename_version, clone_version;
+  /* The last NT_RENAME_LOG of the renames rename_version counts, by that
+     count: the name each replaced and the one it set (nt_renames_spare). */
+  NtRename rename_log[NT_RENAME_LOG];
   /* Bumped by every edit of a node, an int, ref or array field's included,
      which version leaves out. infer_type keeps an earlier query's answers
      only while neither it nor version has moved (#8852). */
@@ -303,6 +310,11 @@ int  nt_new_local_read(NodeTable *nt, const char *name);
 typedef struct { unsigned version, reads, renames; } NtStamp;
 NtStamp nt_stamp(const NodeTable *nt);
 int  nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames);
+/* nt_stamp_holds with renames, where each rename since also replaced and
+   set names `reads` answers 0 for: an index that reads a call's name only
+   through `reads` is then still the index of the table. 0 as well when the
+   renames since outran the log. */
+int  nt_renames_spare(const NodeTable *nt, NtStamp s, int (*reads)(const char *name));
 
 /* Accessors. id must be in [0, nt->count). Out-of-range ids return the
    given defaults so callers can walk freely without bounds checks. */

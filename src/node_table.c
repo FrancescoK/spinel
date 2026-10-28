@@ -491,6 +491,14 @@ int nt_stamp_holds(const NodeTable *nt, NtStamp s, int renames) {
   if (renames) counted += nt->rename_version - s.renames;
   return nt->version - s.version == counted;
 }
+int nt_renames_spare(const NodeTable *nt, NtStamp s, int (*reads)(const char *name)) {
+  if (!nt_stamp_holds(nt, s, 1) || nt->rename_version - s.renames > NT_RENAME_LOG) return 0;
+  for (unsigned r = s.renames; r != nt->rename_version; r++) {
+    const NtRename *e = &nt->rename_log[r % NT_RENAME_LOG];
+    if (e->cut || reads(e->from) || reads(e->to)) return 0;
+  }
+  return 1;
+}
 int nt_new_int(NodeTable *nt, long long v) {
   int n = nt_new_node(nt, "IntegerNode");
   nt_node_set_int(nt, n, "value", v);
@@ -533,13 +541,26 @@ void nt_node_set_str(NodeTable *nt, int id, const char *key, const char *val) {
   node_add_str(nd, key, klen, dup_n(val, vlen), vlen);
 }
 
+/* rename_log's entry for the rename about to be counted */
+static void nt_rename_note(NodeTable *nt, const char *from, const char *to) {
+  NtRename *e = &nt->rename_log[nt->rename_version % NT_RENAME_LOG];
+  size_t fl = from ? strlen(from) : 0, tl = to ? strlen(to) : 0;
+  e->cut = fl >= sizeof e->from || tl >= sizeof e->to;
+  if (e->cut) return;
+  memcpy(e->from, from ? from : "", fl + 1);
+  memcpy(e->to, to ? to : "", tl + 1);
+}
+
 /* the replaced string is answered, not freed: a caller up the stack may hold
    the pointer nt_str answered for it (node_table.h) */
 char *nt_node_swap_str(NodeTable *nt, int id, const char *key, const char *val) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) return NULL;
   nt->version++;
-  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) nt->rename_version++;
+  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) {
+    nt_rename_note(nt, nt_str(nt, id, "name"), val);
+    nt->rename_version++;
+  }
   size_t vlen = strlen(val);
   for (int j = 0; j < nd->ns; j++)
     if (sp_streq(nd->s[j].key, key)) {
@@ -555,7 +576,10 @@ void nt_node_restore_str(NodeTable *nt, int id, const char *key, char *held) {
   SpNode *nd = (SpNode *)node_at(nt, id);
   if (!nd) { free(held); return; }
   nt->version++;
-  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) nt->rename_version++;
+  if (nt_kind(nt, id) == NK_CallNode && sp_streq(key, "name")) {
+    nt_rename_note(nt, nt_str(nt, id, "name"), held);
+    nt->rename_version++;
+  }
   for (int j = 0; j < nd->ns; j++)
     if (sp_streq(nd->s[j].key, key)) {
       free(nd->s[j].val);
