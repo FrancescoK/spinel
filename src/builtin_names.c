@@ -1117,6 +1117,12 @@ int is_initialize_name(const char *n) {
   return sp_streq(n, "initialize");
 }
 
+/* The names CRuby's core asks a receiver through rb_check_funcall, which
+   calls method_missing when respond_to_missing? answers true */
+int is_check_funcall_name(const char *n) {
+  return n && (sp_streq(n, "respond_to?") || sp_streq(n, "respond_to_missing?") || sp_streq(n, "method_missing"));
+}
+
 /* The methods CRuby makes private wherever they are defined:
    initialize, its copy forms, and respond_to_missing? */
 int is_implicitly_private_name(const char *n) {

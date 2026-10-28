@@ -1043,6 +1043,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--check-bop-share")) return builtin_ops_share_check() ? 1 : 0;
 #endif
     else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
+    else if (sp_streq(a, "--check-bop-callbacks")) return builtin_ops_callbacks_check() ? 1 : 0;
     else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }
