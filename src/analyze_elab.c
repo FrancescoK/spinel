@@ -3413,7 +3413,10 @@ enum { LR_SF_READER, LR_SF_WRITER, LR_SF_UNDEF, LR_SF_COPY, LR_SF_ALIAS, LR_SF_V
    alias with another original counts 2. */
 static void lr_check_name(Compiler *c, ClassInfo *k, int cls, int sg, const char *name, const ElabSurface *s, int mask) {
   const char *fam[] = { "the record's surface: readers", "the record's surface: writers", "the record's surface: undefs",
-                               "the record's surface: module_function copies", "the record's surface: aliases",
+                               /* the table's are still the module_function pass's (conditional-def
+                                  arms by its own rule), not filled from the record */
+                               "the record's surface: module_function copies, not filled from the record yet",
+                               "the record's surface: aliases",
                                "the record's surface: visibility" };
   int now[LR_SF_N] = { 0 }, rec[LR_SF_N] = { 0 }, nl = (int)strlen(name), w = nl > 1 && name[nl - 1] == '=';
   char base[256];
