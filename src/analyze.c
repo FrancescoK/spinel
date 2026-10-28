@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include "analyze_internal.h"
+#include "implicit_calls.h"
 #include "builtin_ops.h"
 #include "repr.h"
 #include "decide.h"
@@ -576,13 +577,14 @@ void compute_reachable(Compiler *c, int typed) {
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
-  ANameHash held; memset(&held, 0, sizeof held);
-  if (typed == 2) { cr_class_only_names(c, &held); g_cr_typed = &held; }
-  else { cr_class_only_names(c, &held); g_cr_untyped = &held; cr_literal_locals_build(c); }
+  ic_begin(c, typed);
+  if (typed == 2) g_cr_typed = &c->ic->class_only;
+  else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *sc = &c->scopes[s];
     int instance_self = sc->name && !sc->is_cmethod && sc->class_id >= 0 &&
                         !comp_class_is_module(c, &c->classes[sc->class_id]);
+    ic_scope(c, s);
     if (c->scopes[s].body >= 0)
       cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     /* Also scan parameter defaults (e.g. def foo(opt = bar)) -- these emit calls
@@ -593,8 +595,10 @@ void compute_reachable(Compiler *c, int typed) {
         cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     }
   }
+  ic_scope(c, 0);
+  cr_collect_program_end(c, &scope_calls[0], &sc_n[0], &sc_cap[0]);
+  ic_scope(c, -1);
   g_cr_typed = NULL; g_cr_untyped = NULL;
-  anh_free(&held);
 
 
   /* BFS queue (scope indices). */
@@ -977,6 +981,8 @@ void compute_reachable(Compiler *c, int typed) {
   #undef CN_ADD
   #undef MARK_NAME
   #undef SN_FIRST
+
+  ic_end(c);
 
   /* Cleanup. */
   for (int s = 0; s < c->nscopes; s++) {
@@ -52163,6 +52169,7 @@ void analyze_program(Compiler *c) {
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */
   AN_STEP_V("compute_reachable", compute_reachable(c, 2));
+  if (g_dump_implicit) { ic_dump(c, stdout); exit(0); }   /* the methods CRuby calls that the program does not name, and the defs kept */
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,

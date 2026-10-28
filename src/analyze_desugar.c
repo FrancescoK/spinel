@@ -12525,18 +12525,23 @@ int builtin_enum_name_index(const char *name) {
   return -1;
 }
 
+/* does a builtin value that an Enumerable method is copied for (an Array, a
+   Hash, a Range, an Enumerator) answer a method of this name itself? A
+   private Kernel function it also answers (`select`) is reached through the
+   receiver, which is a method of its class ahead of Kernel's. */
+int builtin_instance_method_known(const char *cls, const char *m);
+static int bi_receiver_answers(const char *nm) {
+  static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
+  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 1;
+  return 0;
+}
+
 /* the receiverless calls a builtin body may make that are NOT methods of
-   the receiver: Kernel's functions */
-static int bi_kernel_call_name(const char *nm) {
-  static const char *const ks[] = {
-    "raise", "puts", "p", "print", "printf", "format", "sprintf", "block_given?", "loop",
-    "lambda", "proc", "rand", "srand", "sleep", "require", "require_relative", "catch",
-    "throw", "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex", "gets",
-    "exit", "abort", "at_exit", "binding", "warn", "fail", "freeze", "frozen?", "nil?",
-    "respond_to?", "is_a?", "kind_of?", "instance_of?", "equal?", "eql?", "hash",
-    "object_id", "dup", "clone", "itself", "then", "tap", "inspect", "to_s", "class",
-    "__enum_pairs", "__enum_count_int", NULL };
-  return str_in(nm, ks);
+   the receiver: Kernel's functions, and the public methods of Object */
+static int bi_keeps_receiverless(const char *nm) {
+  if (is_enum_helper_name(nm)) return 1;
+  if (!object_instance_method_name(nm)) return 0;
+  return object_public_method_name(nm) || !bi_receiver_answers(nm);
 }
 
 /* does any DefNode among the program's own nodes carry this name? (the
@@ -12559,7 +12564,7 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
     }
     else if (kind == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || bi_kernel_call_name(nm)) continue;
+      if (!nm || bi_keeps_receiverless(nm)) continue;
       int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return;
       nt_node_set_str(nt, rd, "name", "__self");
       nt_node_set_int(nt, rd, "depth", 0);
@@ -12576,12 +12581,9 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
    registers a class no builtin receiver dispatches through, so a name it
    adds that none of them answers otherwise is given a generic definition
    beside the builtins', and each call takes its copy the same way. */
-int builtin_instance_method_known(const char *cls, const char *m);
 static int own_enum_name_routable(const char *nm) {
-  static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
-  if (!nm || builtin_enum_name_index(nm) >= 0 || bi_kernel_call_name(nm) || object_public_method_name(nm)) return 0;
-  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 0;
-  return 1;
+  if (!nm || builtin_enum_name_index(nm) >= 0 || is_enum_helper_name(nm) || object_public_method_name(nm)) return 0;
+  return !bi_receiver_answers(nm);
 }
 
 /* The generic definition of an own Enumerable method: a copy of its def,
@@ -20495,6 +20497,13 @@ static int name_in_list(const char *const *list, const char *n) {
    answers about itself (the generated RB_OBJECT_PUBLIC)? */
 int object_public_method_name(const char *n) {
   return name_in_list(RB_OBJECT_PUBLIC, n);
+}
+
+/* Is `n` one of Object's instance methods, public or private (Kernel's puts,
+   raise, format ...)? The names an object of a plain class answers (the
+   generated OBJECT_METHOD_NAMES). */
+int object_instance_method_name(const char *n) {
+  return name_in_list(OBJECT_METHOD_NAMES, n);
 }
 
 static int rbself_builtin(const char *cn) {

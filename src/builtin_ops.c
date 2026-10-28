@@ -178,16 +178,9 @@ int bop_name_callbacks(const char *builtin, const BopCallback **out) {
   return r->count;
 }
 
-unsigned bop_callback_roles(const char *name) {
-  int lo = 0, hi = BOP_CB_ROLES - 1;
-  while (name && lo <= hi) {
-    int mid = (lo + hi) / 2;
-    int c = strcmp(name, bop_cb_roles[mid].name);
-    if (!c) return bop_cb_roles[mid].roles;
-    if (c < 0) hi = mid - 1;
-    else lo = mid + 1;
-  }
-  return 0;
+int bop_callback_names(const BopCallback **out) {
+  if (out) *out = bop_cb_roles;
+  return BOP_CB_ROLES;
 }
 
 int bop_class_callbacks(const char *recv_class, const char *builtin, const BopCallback **out) {

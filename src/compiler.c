@@ -489,6 +489,7 @@ void comp_free(Compiler *c) {
   free(c->cext_classes);
   share_facts_free(c);
   share_plan_free(c);
+  ic_free(c);
   free(c->bsl_gen);
   free(c->bsl_val);
   if (g_repr_check) repr_channel_free(c);
@@ -2981,29 +2982,34 @@ static int mixin_level_answers(Compiler *c, int k, const char *name) {
    its ancestors already (the include is then a no-op). */
 /* The same positions and walker also answer Comparable membership and equality
    precedence; neither query reconstructs includes from the node table. */
-/* Whether Enumerable is among the ancestors class or module k brings: it
+/* What the mixin walk looks for: Enumerable, Comparable, or any core module
+   (one of those, or a builtin module named by path) */
+enum { MX_ENUM = 0, MX_CMP = 1, MX_CORE = 2 };
+static int mixin_here(const ClassInfo *ci, int what) {
+  int en = ci->enum_inc_at || ci->enum_prepended, cm = ci->cmp_inc_at || ci->cmp_prepended;
+  return what == MX_ENUM ? en : what == MX_CMP ? cm : en || cm || ci->nincluded_mod_names > 0;
+}
+/* Whether what is among the ancestors class or module k brings: it
    includes (or prepends) it, or includes a module that does, at any depth.
    Each module is asked once (`seen`), so a module several includes share
    costs one visit. */
-static int mixin_reaches_from(Compiler *c, int k, int comparable, unsigned char *seen) {
+static int mixin_reaches_from(Compiler *c, int k, int what, unsigned char *seen) {
   ClassInfo *ci = &c->classes[k];
   seen[k] = 1;
-  if (comparable ? (ci->cmp_inc_at || ci->cmp_prepended) :
-                   (ci->enum_inc_at || ci->enum_prepended)) return 1;
+  if (mixin_here(ci, what)) return 1;
   for (int j = 0; j < ci->nincluded_mods; j++) {
     int m = ci->included_mods[j];
-    if (m >= 0 && m < c->nclasses && !seen[m] && mixin_reaches_from(c, m, comparable, seen)) return 1;
+    if (m >= 0 && m < c->nclasses && !seen[m] && mixin_reaches_from(c, m, what, seen)) return 1;
   }
   return 0;
 }
-static int mixin_reaches(Compiler *c, int k, int comparable) {
+static int mixin_reaches(Compiler *c, int k, int what) {
   const ClassInfo *ci = &c->classes[k];
   /* a class with no includes answers by its own flags, with no set */
-  if (ci->nincluded_mods == 0)
-    return comparable ? (ci->cmp_inc_at || ci->cmp_prepended) : (ci->enum_inc_at || ci->enum_prepended);
+  if (ci->nincluded_mods == 0) return mixin_here(ci, what);
   unsigned char *seen = (unsigned char *)calloc((size_t)c->nclasses, 1);
   if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  int r = mixin_reaches_from(c, k, comparable, seen);
+  int r = mixin_reaches_from(c, k, what, seen);
   free(seen);
   return r;
 }
@@ -3090,6 +3096,19 @@ int comp_enum_behind(Compiler *c, int cid) {
     if (k == ci->parent) break;
   }
   return 0;
+}
+/* A plain class: Object (or BasicObject) is the only core class behind it and
+   no core module is among its ancestors, so its instances answer a program's
+   methods and Object's and Kernel's, and no other builtin's. */
+int comp_plain_class(Compiler *c, int cid) {
+  int n = 0;
+  for (int k = cid; k >= 0 && k < c->nclasses && n < c->nclasses; k = c->classes[k].parent, n++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->is_native_class || ci->is_struct || ci->nsub_root > 0 || comp_ary_root(c, k) >= 0 || comp_class_is_module(c, ci) ||
+        ci->def_node < 0 || mixin_reaches(c, k, MX_CORE)) return 0;
+    if (k == ci->parent) break;
+  }
+  return cid >= 0 && cid < c->nclasses && !class_is_exc_subclass(c, cid) && is_plain_builtin_superclass(class_builtin_parent(c, cid));
 }
 int comp_comparable_reaches(Compiler *c, int cid) {
   return cid >= 0 && cid < c->nclasses && mixin_reaches(c, cid, 1);
