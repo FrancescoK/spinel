@@ -337,15 +337,20 @@ fi
 
 # A library (--ext-init) runs its top level in its init function, not in
 # main: the init starts $LOAD_PATH as main does, so a computed path there
-# searches the -I directories too.
+# searches the -I directories too. A pure-C host runs the init, as
+# `make ext-test`'s do.
 mkdir "$tmp/ext" "$tmp/ext/inc"
 printf 'puts "xlib"\n' > "$tmp/ext/inc/xlib.rb"
 printf 'def never = require("xlib")\nname = ARGV.empty? ? "xlib" : ARGV.first\np require(name)\n' > "$tmp/ext/main.rb"
-if "$SPINEL" --load-model=graph -I "$tmp/ext/inc" -c --no-line-map --ext-init spx_lp "$tmp/ext/main.rb" -o "$tmp/ext/out.c" >"$tmp/ext/cc" 2>&1; then
-  awk '/^void spx_lp\(void\)\{/ { f = 1 } f && /sp_load_path_seed\(/ { s = 1 } f && /^}/ { exit } END { exit !s }' "$tmp/ext/out.c" ||
-    fail "a library's init function does not start \$LOAD_PATH"
+printf 'void spx_lp(void);\nint main(void) { spx_lp(); return 0; }\n' > "$tmp/ext/host.c"
+rt=$(dirname "$SPINEL")/../lib
+if "$SPINEL" --load-model=graph -I "$tmp/ext/inc" -c --no-line-map --ext-init spx_lp "$tmp/ext/main.rb" -o "$tmp/ext/out.c" >"$tmp/ext/cc" 2>&1 &&
+   ${CC:-cc} -O1 -w -I"$rt" "$tmp/ext/host.c" "$tmp/ext/out.c" "$rt/libspinel_rt.a" -lm -o "$tmp/ext/host" >>"$tmp/ext/cc" 2>&1; then
+  "$tmp/ext/host" > "$tmp/ext/out" 2>&1 || fail "ext host exits $?"
+  printf 'xlib\ntrue\n' | cmp -s - "$tmp/ext/out" ||
+    { fail "a library's top level did not find a file on its -I directory"; cat "$tmp/ext/out"; }
 else
-  fail "ext did not compile"; sed -n 1,3p "$tmp/ext/cc"
+  fail "ext did not build"; sed -n 1,3p "$tmp/ext/cc"
 fi
 
 # A file beside the program is on its load path only where the program puts
