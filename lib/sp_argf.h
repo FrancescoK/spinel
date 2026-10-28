@@ -37,14 +37,51 @@ sp_StrArray *sp_get_loaded_features(void);
    written or as the end of a longer path (`File.join(__dir__, "x")`), with
    or without its ".rb". */
 void sp_require_computed(const char *path, const char *const *features, int n);
+/* --load-model=graph: `require path` with a path known only at run time
+   names a file the program was compiled with, found as CRuby finds one
+   (the inline model's sp_require_computed above is deleted with that model).
+   A path is
+     - absolute: that file;
+     - `./` or `../`: relative to the current directory, expanded then;
+     - `require_relative`'s (`rel`): relative to `dir`, the requiring file's
+       directory;
+     - bare: searched along $LOAD_PATH as it stands when the require runs, in
+       order. An entry names a file of the program by its absolute path; the
+       entry that is the compiler's feature root (sp_load_path_seed) also
+       names the features the compiler's rule for a literal `require "x"`
+       maps to a file (`bare`, newline-separated), the native libraries and
+       the features loaded already.
+   A candidate is
+     - a file of the program (`top`): its absolute path without ".rb"; the
+       program's Kernel#require or Kernel#require_relative (`require`, so the
+       load has its frame) runs it the first time, answering true, and
+       answers false after;
+     - a native library (`loaded` only): its feature; its flag answers true
+       the first time;
+     - a feature loaded already (neither): its feature; false.
+   Any other path raises CRuby's LoadError. Answers whether this call ran
+   the file. */
+typedef struct { const char *path; const char *bare; int *loaded; void (*top)(void); } sp_LoadCand;
+int sp_require_search(const char *path, const sp_LoadCand *cands, int n, const char *dir, int rel,
+                      int (*require)(const char *, int *, void (*)(void)));
+/* What $LOAD_PATH holds as the program starts, under the graph model, as
+   CRuby's does: the directories from -I, as File.expand_path gives them
+   (against the directory the program was compiled in), in order, then the
+   compiler's feature root (the place CRuby's own library directories take,
+   so a directory the program appends comes after it and one it puts in front
+   comes before). The strings are static; the array is made when the program
+   first reads $LOAD_PATH or searches it. */
+void sp_load_path_seed(const char *const *dirs, int n, const char *feature_root);
 /* The LoadError of a require that loads nothing, as CRuby raises it: the
    message names the feature, and LoadError#path answers it. */
 SP_NORETURN void sp_raise_load_error(const char *feature);
 
 /* $LOAD_PATH (`$:`, `$-I`): an Array of Strings the program reads and
-   changes. It starts empty: requires are resolved when the program is
-   compiled, so there is no directory to look in as it runs, and a change
-   the program makes to it looks nothing up. Allocated and marked as
+   changes. It starts empty (under the graph model, as sp_load_path_seed
+   gives it): requires are resolved when the program is compiled, so there
+   is no directory to look in as it runs, and a change the program makes to
+   it looks nothing up, except for a path computed when the require runs
+   (sp_require_search). Allocated and marked as
    $LOADED_FEATURES' array is. */
 extern sp_StrArray *sp_load_path_cache;
 sp_StrArray *sp_get_load_path(void);

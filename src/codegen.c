@@ -21177,6 +21177,53 @@ static void emit_native_flag(void *ud, int load) {
   snprintf(decl, sizeof decl, "static int %s;\n", fl);
   if (!q->b->p || !strstr(q->b->p, decl)) buf_puts(q->b, decl);
 }
+/* What a path computed when it runs and known to no set may name
+   (sp_require_search): each file of the program with its flag and
+   function, each native library with its flag, each feature loaded already
+   (a core capability, a library CRuby has at boot). Declared once, where
+   the program has such a require. */
+static void emit_required_table(Compiler *c, Buf *b, const unsigned char *has) {
+  const NodeTable *nt = c->nt;
+  int n = nt_nroots(nt), open = 0;
+  NT_FOREACH_KIND(nt, NK_LoadNode, id)
+    if (prog_load_open(nt, id)) { Scope *s = comp_scope_of(c, id); open |= !s || s->reachable; }
+  if (!open) return;
+  Buf t; memset(&t, 0, sizeof t);
+  int count = 0;
+  for (int f = 1; f < n; f++) {
+    if (!has[f]) continue;
+    buf_puts(&t, "{");
+    emit_file_feature(nt, f, &t);
+    buf_printf(&t, ", &sp_loaded_%d, sp_file_%d_top}, ", f, f);
+    count++;
+  }
+  NT_FOREACH_KIND(nt, NK_LoadNode, id) {
+    const char *how = nt_str(nt, id, "how"), *path = nt_str(nt, id, "path");
+    if (!path || !(is_load_how_core(how) || is_load_how_native(how))) continue;
+    size_t len = strlen(path);
+    if (len > 3 && !strcmp(path + len - 3, ".rb")) len -= 3;
+    char *feat = strndup(path, len), flag[96];
+    if (!feat) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    Buf lit; memset(&lit, 0, sizeof lit);
+    emit_str_literal(&lit, feat);
+    char *key = malloc(strlen(lit.p) + 16);
+    if (!key) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    sprintf(key, "{NULL, %s,", lit.p);
+    if (!t.p || !strstr(t.p, key)) {
+      int own = is_load_how_native(how) && !is_native_lib_at_boot(path);
+      if (own) {
+        native_load_flag(nt, id, flag, sizeof flag);
+        buf_printf(b, "static int %s;\n", flag);
+      }
+      buf_printf(&t, "{NULL, %s, %s%s, NULL}, ", lit.p, own ? "&" : "", own ? flag : "NULL");
+      count++;
+    }
+    free(key); free(lit.p); free(feat);
+  }
+  buf_printf(b, "static const sp_LoadCand sp_load_candidates[] = {%s{NULL, NULL, NULL, NULL} };\nstatic const int sp_nload_candidates = %d;\n",
+             t.p ? t.p : "", count);
+  free(t.p);
+}
 static void emit_file_top_decls(Compiler *c, Buf *b) {
   int n = nt_nroots(c->nt);
   if (!prog_has_files(c)) return;
@@ -21186,6 +21233,7 @@ static void emit_file_top_decls(Compiler *c, Buf *b) {
   prog_file_tops(c, has, emit_native_flag, &nf);
   for (int f = 1; f < n; f++)
     if (has[f]) buf_printf(b, "static int sp_loaded_%d;\n%svoid sp_file_%d_top(void);\n", f, file_top_storage(), f);
+  emit_required_table(c, b, has);
   free(has);
 }
 static void emit_file_tops(Compiler *c, Buf *body) {
@@ -22013,6 +22061,7 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(body, "    SP_GC_SAVE();\n");
   main_frame_ins = body->len;
   if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
+  emit_load_path_seed(c, body);
   /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
      sp_tu_init so it chains whatever globals hook that installed. */
   if (g_uses_threads || g_uses_thread_current) buf_puts(body, "    sp_sched_init();\n");

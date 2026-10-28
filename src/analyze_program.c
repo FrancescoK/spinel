@@ -103,6 +103,33 @@ int prog_site_places(const Compiler *c, int id) {
   return r >= 0 && prog_load_by(c, f) == id && nt_int(nt, r, "load_stmt", -1) >= 0 ? f : -1;
 }
 
+/* The files a require whose path is computed when it runs may name (`how`
+   set): candidate k's file when the parse knows them, or any file of the
+   program (open). */
+int prog_load_ncand(const NodeTable *nt, int load) {
+  return is_load_how_set(nt_str(nt, load, "how")) ? (int)nt_int(nt, load, "ncand", 0) : 0;
+}
+int prog_load_cand(const NodeTable *nt, int load, int k) {
+  char key[32];
+  snprintf(key, sizeof key, "cand_%d", k);
+  return (int)nt_int(nt, load, key, -1);
+}
+int prog_load_open(const NodeTable *nt, int load) {
+  return is_load_how_set(nt_str(nt, load, "how")) && nt_int(nt, load, "open", 0);
+}
+/* Does the program need the run-time $LOAD_PATH to start as CRuby's does
+   (sp_load_path_seed)? Under --load-model=graph (the entry's root carries the
+   directories), where it has a require of a set of files, which searches the
+   array, or reads it. A program writes none of $LOAD_PATH's names (refused). */
+int prog_load_path_seeded(const NodeTable *nt) {
+  if (!nt_str(nt, nt_root(nt, 0), "load_root")) return 0;
+  NT_FOREACH_KIND(nt, NK_LoadNode, id)
+    if (is_load_how_set(nt_str(nt, id, "how"))) return 1;
+  NT_FOREACH_KIND(nt, NK_GlobalVariableReadNode, id)
+    if (is_load_path_global(nt_str(nt, id, "name"))) return 1;
+  return 0;
+}
+
 /* The program's top-level statements in load order: the entry's, and after
    the statement that first loads a file at the top level (prog_ordered_load)
    that file's. A file loaded only elsewhere -- in a method, or a block kept to
@@ -370,10 +397,13 @@ static void prog_reach(const NodeTable *nt, unsigned char *seen, unsigned char *
   while (top > 0) {
     int id = stack[--top];
     if (nt_kind(nt, id) == NK_LoadNode) {
-      int t = (int)nt_int(nt, id, "target_file", -1);
-      if (t > 0 && t < n && !live[t]) {
-        live[t] = 1;
-        if (nt_root(nt, t) >= 0 && !seen[nt_root(nt, t)]) { seen[nt_root(nt, t)] = 1; stack[top++] = nt_root(nt, t); }
+      int nc = prog_load_ncand(nt, id);
+      for (int k = -1; k < nc; k++) {   /* its file, and a closed set's */
+        int t = k < 0 ? (int)nt_int(nt, id, "target_file", -1) : prog_load_cand(nt, id, k);
+        if (t > 0 && t < n && !live[t]) {
+          live[t] = 1;
+          if (nt_root(nt, t) >= 0 && !seen[nt_root(nt, t)]) { seen[nt_root(nt, t)] = 1; stack[top++] = nt_root(nt, t); }
+        }
       }
     }
     for (int j = 0; j < nt_num_refs(nt, id); j++) {
@@ -408,6 +438,13 @@ void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, in
   const int *parent = comp_parent_map(c);
   NT_FOREACH_KIND(nt, NK_LoadNode, id) {
     int f = (int)nt_int(nt, id, "target_file", -1);
+    /* a closed set's files run through the dispatch, each a function of its own */
+    for (int k = 0; seen[id] && k < prog_load_ncand(nt, id); k++) {
+      int t = prog_load_cand(nt, id, k);
+      if (t > 0 && t < n) has[t] = 1;
+    }
+    if (seen[id] && prog_load_open(nt, id))   /* an open one: every file the program runs */
+      for (int t = 1; t < n; t++) has[t] |= live[t];
     if (!seen[id] || (f > 0 && f < n && has[f]) || (f <= 0 && !native)) continue;
     int stmt = parent[id] >= 0 && nt_kind(nt, parent[id]) == NK_StatementsNode;
     if (stmt && an_node_dropped(c, id)) continue;
@@ -421,8 +458,6 @@ void prog_file_tops(Compiler *c, unsigned char *has, void (*native)(void *ud, in
    once the load sites are known, ahead of the desugaring:
      - a require of the program's own entry file, which CRuby runs again as
        a new file since `$0` is not a loaded feature;
-     - one whose path is computed when it runs: its file is chosen among
-       the candidates then (part 4);
      - an autoload: its file loads at the constant's first reference
        (part 4);
      - in a required file, an END block, registered when its statement
@@ -442,13 +477,8 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, id, "--load-model=graph loads an autoload's file at its constant's first reference only later, for now");
     }
     else if (k == NK_LoadNode) {
-      /* (one that names no file runs no file's top level: it raises
-         LoadError wherever it stands) */
-      const char *how = nt_str(nt, id, "how");
       if (nt_int(nt, id, "target_file", -1) == 0)
         unsupported_feature(c, id, "--load-model=graph does not load the program's own entry file again, for now");
-      if (is_load_how_computed(how))
-        unsupported_feature(c, id, "--load-model=graph loads only a require whose path is known at compile time, for now");
     }
     else if (k == NK_PostExecutionNode) {
       int r = prog_root_of(c, parent, id);
@@ -487,9 +517,11 @@ void prog_refuse_loads(Compiler *c) {
      never loaded. The inline model splices a file at its require, so a dead
      branch takes the file along; here the file's statements are taken out
      of the tree, and nothing registers its classes, methods and constants
-     (ruby_version_fold's `const_defined?`). A file named by an autoload or a
-     computed require has no LoadNode: both are refused (prog_refuse_loads)
-     until their own steps.
+     (ruby_version_fold's `const_defined?`). A file named by an autoload has
+     no LoadNode: it is refused (prog_refuse_loads) until its own step. One a
+     computed require's closed set names is reached by that LoadNode
+     (prog_load_cand), and is never placed at one site: the require may run
+     it first.
    - A file the parse does not place (it has no require that is a statement
      of a top level) and that has one require in all, where the load phase's
      walk reaches it (elab_load_sites: under a condition, a loop, a rescue,
@@ -499,13 +531,61 @@ void prog_refuse_loads(Compiler *c) {
      may, as the inline model splices it. Any other file keeps a region of
      its own.
    Asked after the folds, ahead of the readers of the program's order. */
-typedef struct { Compiler *c; int stmt, n; int *nsite, *site, *at; unsigned char *ok; } ProgSites;
+typedef struct { Compiler *c; int stmt, n, open; int *nsite, *site, *at; unsigned char *ok; } ProgSites;
 static void prog_site_note(void *ud, int load, int in_place) {
   ProgSites *q = ud;
+  for (int k = 0; k < prog_load_ncand(q->c->nt, load); k++) {   /* a set's files: no one site places them */
+    int t = prog_load_cand(q->c->nt, load, k);
+    if (t > 0 && t < q->n) { q->nsite[t]++; q->ok[t] = 0; }
+  }
+  q->open |= prog_load_open(q->c->nt, load);
   int t = (int)nt_int(q->c->nt, load, "target_file", -1);
   if (t <= 0 || t >= q->n) return;
   q->nsite[t]++; q->site[t] = load; q->at[t] = q->stmt; q->ok[t] = (unsigned char)in_place;
 }
+/* The top-level statement of a file that holds node id, or -1. */
+static int prog_top_stmt_of(const Compiler *c, const int *parent, int id) {
+  while (id >= 0 && parent[id] >= 0 && !prog_is_root_stmts(c, parent[id])) id = parent[id];
+  return id >= 0 && parent[id] >= 0 ? id : -1;
+}
+
+/* A file a computed require may name is placed at its own require only if
+   that require, a statement of a top level, runs before the computed one
+   does: before the top-level statement holding it, a method or block it
+   stands in being made no earlier than that statement. Any other file the
+   require may name could be run by it first, and has no place (a region of
+   its own). A placed file whose require is no longer in the order, since
+   its file lost its place, has none either. (A window that tells when a
+   method can first be called would tighten this: the statement holding the
+   require is the earliest it can run.) */
+static void prog_unplace_candidates(Compiler *c, const unsigned char *seen, const unsigned char *live) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n = nt_nroots(nt);
+  int *parent = an_parent_map(nt), *pos = malloc(sizeof(int) * ((size_t)nt->count + 1));
+  if (!parent || !pos) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int again = 1; again; ) {
+    int sn = 0, *seq = prog_top_seq(c, &sn, NULL);
+    for (int i = 0; i < nt->count; i++) pos[i] = -1;
+    for (int k = 0; k < sn; k++) pos[seq[k]] = k;
+    free(seq);
+    again = 0;
+    for (int f = 1; f < n; f++) {   /* a require that is no statement of the order places nothing */
+      int l = prog_load_by(c, f);
+      if (l >= 0 && pos[l] < 0) { nt_node_set_int(nt, nt_root(nt, f), "load_by", -1); again = 1; }
+    }
+    NT_FOREACH_KIND(nt, NK_LoadNode, id) {
+      int nc = prog_load_ncand(nt, id), open = prog_load_open(nt, id);
+      if (!seen[id] || (!nc && !open)) continue;
+      int ts = prog_top_stmt_of(c, parent, id), sp = ts >= 0 ? pos[ts] : -1;
+      for (int k = 0; k < (open ? n - 1 : nc); k++) {
+        int f = open ? k + 1 : prog_load_cand(nt, id, k), l = f > 0 && f < n && (open ? live[f] : 1) ? prog_load_by(c, f) : -1;
+        if (l >= 0 && (sp < 0 || pos[l] > sp)) { nt_node_set_int(nt, nt_root(nt, f), "load_by", -1); again = 1; }
+      }
+    }
+  }
+  free(parent); free(pos);
+}
+
 void prog_settle_files(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n = nt_nroots(nt);
@@ -514,12 +594,14 @@ void prog_settle_files(Compiler *c) {
   int *nsite = calloc((size_t)n, sizeof(int)), *site = calloc((size_t)n, sizeof(int)), *at = calloc((size_t)n, sizeof(int));
   if (!seen || !live || !ok || !nsite || !site || !at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   prog_reach(nt, seen, live);
-  ProgSites q = { c, -1, n, nsite, site, at, ok };
+  ProgSites q = { c, -1, n, 0, nsite, site, at, ok };
   for (int f = 0; f < n; f++) {
     int st = prog_root_stmts(c, f), m = 0;
     const int *v = st >= 0 && live[f] ? nt_arr(nt, st, "body", &m) : NULL;
     for (int k = 0; k < m; k++) { q.stmt = v[k]; elab_load_sites(c, v[k], prog_site_note, &q); }
   }
+  if (q.open) memset(ok, 0, (size_t)n);   /* an open require may run any file first */
+  prog_unplace_candidates(c, seen, live);
   for (int f = 1; f < n; f++) {
     int st = live[f] ? -1 : prog_root_stmts(c, f);
     if (st >= 0) nt_node_set_arr(nt, st, "body", NULL, 0);

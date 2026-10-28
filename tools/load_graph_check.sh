@@ -13,10 +13,11 @@
 # A require that names no file raises LoadError when it runs, and a
 # --debug build reports a required file's frames as CRuby does
 # (`<top (required)>`, `Kernel#require_relative`). What graph mode does not
-# compile yet it refuses by name: a require whose path is computed, an
-# autoload, a load of the entry file, an END block or a top-level include
-# in a required file. A required file that
-# only defines things costs no C.
+# compile yet it refuses by name: an autoload, a load of the entry file, an END
+# block or a top-level include in a required file. A required file that
+# only defines things costs no C. A require whose path is computed when it
+# runs names a set of files, or any file of the program, and loads the one
+# its path names (test/load_graph/computed_*).
 # The load record's points of a program with a .load-record are those it
 # lists.
 #
@@ -173,6 +174,114 @@ else
   fail "frames did not compile"
 fi
 
+# A computed path names a file as CRuby finds one: an absolute path exactly,
+# `./` from the directory the program runs in, a bare feature on the load
+# path (-I here) and no other file of the same name beside it.
+mkdir "$tmp/exact" "$tmp/exact/root"
+printf 'puts "root dup"\n' > "$tmp/exact/root/dup.rb"
+printf 'puts "beside dup"\n' > "$tmp/exact/dup.rb"
+cat > "$tmp/exact/main.rb" <<'RB'
+def pull(path) = require(path)
+def never
+  require "dup"
+  require_relative "dup"
+end
+p pull("dup")
+p pull("./dup")
+p pull("dup")
+p pull(File.join(__dir__, "dup"))
+begin
+  pull("dup/dup")
+rescue LoadError => e
+  p e.class
+end
+RB
+if "$SPINEL" --load-model=graph -I "$tmp/exact/root" "$tmp/exact/main.rb" -o "$tmp/exact/bin" >"$tmp/exact/cc" 2>&1; then
+  (cd "$tmp/exact" && ./bin > out 2>&1)
+  printf 'root dup\ntrue\nbeside dup\ntrue\nfalse\nfalse\nLoadError\n' | cmp -s - "$tmp/exact/out" ||
+    { fail "a computed path did not name the file CRuby finds"; cat "$tmp/exact/out"; }
+else
+  fail "exact did not compile"; sed -n 1,3p "$tmp/exact/cc"
+fi
+
+# The run-time $LOAD_PATH starts as CRuby's does: the directories from -I,
+# then the library roots, so a bare computed path searches them in order and
+# a directory the program adds comes after (<<, push, insert past the -I
+# directories, or the same one twice) or before (unshift, insert at 0). Two
+# files of one name, in the -I directory and in the one the program adds.
+mkdir "$tmp/order" "$tmp/order/inc" "$tmp/order/app"
+printf 'puts "inc"\n' > "$tmp/order/inc/dup.rb"
+printf 'puts "app"\n' > "$tmp/order/app/dup.rb"
+order() {   # NAME STATEMENT EXPECTED-OUTPUT
+  mkdir "$tmp/order/$1"
+  printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\n  require_relative "../app/dup"\nend\n%s\ndef load_it(n) = require(n)\np load_it("dup")\np load_it("dup")\n' \
+    "$2" > "$tmp/order/$1/main.rb"
+  if "$SPINEL" --load-model=graph -I "$tmp/order/inc" "$tmp/order/$1/main.rb" -o "$tmp/order/$1/bin" >"$tmp/order/$1/cc" 2>&1; then
+    "$tmp/order/$1/bin" > "$tmp/order/$1/out" 2>&1
+    printf '%s\n' "$3" | cmp -s - "$tmp/order/$1/out" || { fail "order $1: \$LOAD_PATH did not search as CRuby's does"; cat "$tmp/order/$1/out"; }
+  else
+    fail "order $1 did not compile"; sed -n 1,3p "$tmp/order/$1/cc"
+  fi
+}
+app='File.join(__dir__, "..", "app")'
+order append "\$LOAD_PATH << $app" 'inc
+true
+false'
+order push "\$LOAD_PATH.push $app" 'inc
+true
+false'
+order twice "\$LOAD_PATH << $app
+\$LOAD_PATH << $app" 'inc
+true
+false'
+order unshift "\$LOAD_PATH.unshift $app" 'app
+true
+false'
+order insert0 "\$LOAD_PATH.insert(0, $app)" 'app
+true
+false'
+order insert1 "\$LOAD_PATH.insert(1, $app)" 'inc
+true
+false'
+
+# A symlinked -I directory is in $LOAD_PATH as written (File.expand_path
+# does not resolve it) and still names the program's file; the feature root
+# after the -I directories is a directory that exists.
+mkdir "$tmp/order/sym"
+ln -s "$tmp/order/inc" "$tmp/order/sym/lnk"
+printf 'if ARGV.size > 5\n  require_relative "../inc/dup"\nend\np $LOAD_PATH[0].end_with?("/sym/lnk")\np File.directory?($LOAD_PATH[1])\ndef load_it(n) = require(n)\np load_it("dup")\n' > "$tmp/order/sym/main.rb"
+if "$SPINEL" --load-model=graph -I "$tmp/order/sym/lnk" "$tmp/order/sym/main.rb" -o "$tmp/order/sym/bin" >"$tmp/order/sym/cc" 2>&1; then
+  "$tmp/order/sym/bin" > "$tmp/order/sym/out" 2>&1
+  printf 'true\ntrue\ninc\ntrue\n' | cmp -s - "$tmp/order/sym/out" ||
+    { fail "a symlinked -I directory was not on \$LOAD_PATH as written, or did not name its file"; cat "$tmp/order/sym/out"; }
+else
+  fail "sym did not compile"; sed -n 1,3p "$tmp/order/sym/cc"
+fi
+
+# A file beside the program is on its load path only where the program puts
+# its directory there ($LOAD_PATH.unshift __dir__). A literal require finds
+# it after a statement of a top level that does, and a computed one finds it
+# whenever the program's $LOAD_PATH holds it as the require runs; either is
+# a LoadError before, as CRuby has it.
+mkdir "$tmp/lp_no" "$tmp/lp_yes" "$tmp/lp_before" "$tmp/lp_cond" "$tmp/lp_cbefore" "$tmp/lp_ccond"
+for d in lp_no lp_yes lp_before lp_cond lp_cbefore lp_ccond; do printf 'puts "x loaded"\n' > "$tmp/$d/x.rb"; done
+printf 'def pull(path) = require(path)\ndef never = require_relative("x")\nbegin\n  pull("x")\nrescue LoadError => e\n  p e.class\nend\n' > "$tmp/lp_no/main.rb"
+printf '$LOAD_PATH.unshift __dir__\ndef pull(path) = require(path)\ndef never = require_relative("x")\np pull("x")\np pull("x")\np require("x")\n' > "$tmp/lp_yes/main.rb"
+printf 'def never = require_relative("x")\nbegin\n  require "x"\nrescue LoadError => e\n  p e.class\nend\n$LOAD_PATH.unshift __dir__\np require("x")\n' > "$tmp/lp_before/main.rb"
+printf '$LOAD_PATH.unshift __dir__ if false\ndef never = require_relative("x")\nbegin\n  require "x"\nrescue LoadError => e\n  p e.class\nend\n' > "$tmp/lp_cond/main.rb"
+printf 'def pull(path) = require(path)\ndef never = require_relative("x")\nbegin\n  pull("x")\nrescue LoadError => e\n  p e.class\nend\n$LOAD_PATH.unshift __dir__\np pull("x")\n' > "$tmp/lp_cbefore/main.rb"
+printf '$LOAD_PATH.unshift __dir__ if ARGV.empty?\ndef pull(path) = require(path)\ndef never = require_relative("x")\np pull("x")\n' > "$tmp/lp_ccond/main.rb"
+for d in lp_no lp_yes lp_before lp_cond lp_cbefore lp_ccond; do
+  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then "$tmp/$d/bin" > "$tmp/$d/out" 2>&1
+  else fail "$d did not compile"; sed -n 1,3p "$tmp/$d/cc"; fi
+done
+printf 'LoadError\n' | cmp -s - "$tmp/lp_no/out" || { fail "a bare computed path found a file beside the program, which is not on the load path"; cat "$tmp/lp_no/out"; }
+printf 'x loaded\ntrue\nfalse\nfalse\n' | cmp -s - "$tmp/lp_yes/out" || { fail "a bare computed path did not find a file on the load path the program wrote"; cat "$tmp/lp_yes/out"; }
+printf 'LoadError\nx loaded\ntrue\n' | cmp -s - "$tmp/lp_before/out" || { fail "a require found a directory the program put on its load path after it"; cat "$tmp/lp_before/out"; }
+printf 'LoadError\nx loaded\ntrue\n' | cmp -s - "$tmp/lp_cbefore/out" || { fail "a computed path found a directory the program put on its load path after it ran"; cat "$tmp/lp_cbefore/out"; }
+printf 'x loaded\ntrue\n' | cmp -s - "$tmp/lp_ccond/out" || { fail "a computed path missed a directory a conditional statement put on the load path when it ran"; cat "$tmp/lp_ccond/out"; }
+printf 'LoadError\n' | cmp -s - "$tmp/lp_cond/out" || { fail "a require found a directory a conditional statement may have put on the load path"; cat "$tmp/lp_cond/out"; }
+
 # refused NAME MESSAGE: $tmp/NAME/main.rb refuses with MESSAGE
 refused() {
   if "$SPINEL" --load-model=graph "$tmp/$1/main.rb" -o "$tmp/$1/bin" >"$tmp/$1/out" 2>&1; then
@@ -181,9 +290,7 @@ refused() {
     grep -qF -- "$2" "$tmp/$1/out" || { fail "$1 refused without naming why"; sed -n 1,3p "$tmp/$1/out"; }
   fi
 }
-mkdir "$tmp/computed" "$tmp/autoload" "$tmp/entry" "$tmp/end" "$tmp/mixin"
-printf 'name = ARGV.first || "lib"\nrequire name\n' > "$tmp/computed/main.rb"
-refused computed "loads only a require whose path is known at compile time"
+mkdir "$tmp/autoload" "$tmp/entry" "$tmp/end" "$tmp/mixin"
 printf 'module Lib; end\n' > "$tmp/autoload/lib.rb"
 printf 'autoload :Lib, File.join(__dir__, "lib")\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "an autoload's file"
@@ -209,6 +316,25 @@ mkdir "$tmp/late_include_method"
 printf 'p C.new.tag\n' > "$tmp/late_include_method/lib.rb"
 printf 'module M\n  def tag = "m"\nend\nclass C\nend\ndef load_plugin\n  require_relative "lib"\nend\nbegin\n  load_plugin\nrescue NoMethodError\n  puts "no tag yet"\nend\nclass C\n  include M\nend\n' > "$tmp/late_include_method/main.rb"
 refused late_include_method "a later statement mixes module M into class C"
+
+# A require whose path no expression tells may name any file of the program,
+# so a file it might run first has no fixed place, and an alias that reads
+# its order is refused for now: a file whose require is under a condition,
+# one that comes after the method holding the computed require, and one a
+# file with no place requires. A file whose require precedes the computed
+# one, as a statement of a top level, is placed (computed_open_main).
+mkdir "$tmp/open_cond" "$tmp/open_after" "$tmp/open_nested"
+open_lib() { printf 'class OpenMoney\n  def initialize(c) = @c = c\n  def +(o) = OpenMoney.new(@c + o)\n  def cents = @c\nend\n' > "$tmp/$1/lib.rb"; }
+open_lib open_cond
+printf 'require_relative "lib" if ARGV.empty?\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_cond/main.rb"
+refused open_cond "the alias reading reads the order of two files"
+open_lib open_after
+printf 'def pull(path) = require_relative(path)\nrequire_relative "lib"\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_after/main.rb"
+refused open_after "the alias reading reads the order of two files"
+open_lib open_nested
+printf 'require_relative "lib"\n' > "$tmp/open_nested/wrap.rb"
+printf 'def setup = require_relative("wrap")\nsetup\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_nested/main.rb"
+refused open_nested "the alias reading reads the order of two files"
 
 # --strict-require holds in graph mode as in the inline one: a feature no
 # require names is not there (CRuby's NoMethodError for winsize, refused

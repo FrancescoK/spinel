@@ -4298,6 +4298,10 @@ void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap) {
   size_t n = sl && sl > sf ? (size_t)(sl - sf) : 1;
   if (n >= cap) n = cap - 1;
   memcpy(dir, sl ? sf : ".", n); dir[n] = 0;
+  /* CRuby's __dir__ is the file's real directory, whatever path the compiler was given */
+  char *real = realpath(dir, NULL);
+  if (real && strlen(real) < cap) memcpy(dir, real, strlen(real) + 1);
+  free(real);
 }
 
 /* The classes whose instances are the runtime's IO handles (sp_File). */

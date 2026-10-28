@@ -48,8 +48,6 @@
    compile-time evaluator shares */
 #include "ct_value.h"
 
-typedef struct { char *name; Mv v; } MxVar;
-
 typedef struct {
   char *module;           /* the path of the module that defines it */
   char *name;             /* the method's name */
@@ -67,8 +65,8 @@ typedef struct {
 static MxMacro *g_mx_macros; static int g_mx_nmacros, g_mx_cmacros;
 
 typedef struct {
-  MxVar loc[64]; int nloc;
-  MxVar *iv; int *niv;    /* the class's macro state: the ivars its macros keep */
+  PevCtx ev;              /* the evaluator's: the locals */
+  PevVar *iv; int *niv;    /* the class's macro state: the ivars its macros keep */
   int *unsure;            /* the class may have state the evaluator did not see */
   MvBuf *out;             /* residual code, or NULL: evaluate only */
   int returned; Mv ret;
@@ -152,19 +150,6 @@ static int sp_snippet_graftable(const char *src) {
   pm_node_destroy(&parser, root);
   pm_parser_free(&parser);
   return ok;
-}
-
-static Mv *mx_lookup(MxVar *vars, int n, const char *name) {
-  for (int i = n - 1; i >= 0; i--) if (strcmp(vars[i].name, name) == 0) return &vars[i].v;
-  return NULL;
-}
-
-static int g_mx_full;   /* a table was full: the evaluation cannot be trusted */
-static void mx_set(MxVar *vars, int *n, int cap, const char *name, Mv v) {
-  Mv *p = mx_lookup(vars, *n, name);
-  if (p) { *p = v; return; }
-  if (*n >= cap) { g_mx_full = 1; return; }
-  vars[*n].name = strdup(name); vars[*n].v = v; (*n)++;
 }
 
 /* A set of names (strdup'd), in the order added, with a table to find one. */
@@ -293,7 +278,7 @@ static int mx_writer_named(const char *name) {
 }
 
 /* what the evaluator cannot know: every value, and every ivar not seen yet */
-static void mx_forget(MxVar *iv, int niv, int *unsure) {
+static void mx_forget(PevVar *iv, int niv, int *unsure) {
   for (int i = 0; i < niv; i++) iv[i].v = mv_undef();
   if (unsure) *unsure = 1;
 }
@@ -315,16 +300,15 @@ static int mv_same(Mv a, Mv b) {
 /* After branches the evaluator cannot choose between: a value every branch
    left the same is kept, any other becomes unknown. Returns 0 when the table
    was too full to mark one: then nothing is known. */
-static int mx_merge_state(MxVar *acc, int *nacc, const MxVar *br, int nbr) {
+static int mx_merge_state(PevVar *acc, int *nacc, const PevVar *br, int nbr) {
   int ok = 1;
   for (int i = 0; i < *nacc; i++) {
-    Mv *b = mx_lookup((MxVar *)br, nbr, acc[i].name);
+    Mv *b = pev_lookup((PevVar *)br, nbr, acc[i].name);
     if (!b || !mv_same(acc[i].v, *b)) acc[i].v = mv_undef();
   }
   for (int j = 0; j < nbr; j++)
-    if (!mx_lookup(acc, *nacc, br[j].name)) {
-      mx_set(acc, nacc, 64, br[j].name, mv_undef());
-      if (!mx_lookup(acc, *nacc, br[j].name)) ok = 0;
+    if (!pev_lookup(acc, *nacc, br[j].name)) {
+      if (!pev_set(acc, nacc, 64, br[j].name, mv_undef())) ok = 0;
     }
   return ok;
 }
@@ -396,8 +380,6 @@ static int mx_attr_dyn(const pm_call_node_t *cn, int strict) {
   return 0;
 }
 
-static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out);
-
 static int mx_exec_stmts(MxCtx *c, pm_statements_node_t *s);
 
 static int mx_residual(MxCtx *c, pm_node_t *n, MvBuf *b);
@@ -407,152 +389,44 @@ static int mx_template_writes(const char *code);
 static int mx_node_writes_ivar(const pm_node_t *n);
 static void mx_poison_writes_in(const pm_node_t *body);
 
-static int mx_eval_list(MxCtx *c, pm_node_list_t *l, Mv *out) {
-  Mv v; memset(&v, 0, sizeof v); v.k = MV_ARR;
-  v.a = calloc(l->size + 1, sizeof(Mv)); v.n = (int)l->size;
-  for (size_t i = 0; i < l->size; i++) {
-    if (PM_NODE_TYPE(l->nodes[i]) == PM_SPLAT_NODE) return 0;
-    if (!mx_eval(c, l->nodes[i], &v.a[i])) return 0;
-  }
-  *out = v;
-  return 1;
-}
-
-/* the value of a string-ish node's parts */
-static int mx_eval_parts(MxCtx *c, pm_node_list_t *parts, MvBuf *b) {
-  for (size_t i = 0; i < parts->size; i++) {
-    pm_node_t *p = parts->nodes[i];
-    if (PM_NODE_TYPE(p) == PM_STRING_NODE) {
-      pm_string_node_t *s = (pm_string_node_t *)p;
-      mvb_putn(b, (const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped));
-    }
-    else if (PM_NODE_TYPE(p) == PM_EMBEDDED_STATEMENTS_NODE) {
-      pm_embedded_statements_node_t *e = (pm_embedded_statements_node_t *)p;
-      if (!e->statements || e->statements->body.size != 1) return 0;
-      Mv v;
-      if (!mx_eval(c, e->statements->body.nodes[0], &v)) return 0;
-      if (v.k == MV_ARR) { if (!mv_inspect_exact(v)) return 0; mv_inspect(v, b); }
-      else mv_to_s(v, b);
-    }
-    else if (PM_NODE_TYPE(p) == PM_INTERPOLATED_STRING_NODE) {
-      if (!mx_eval_parts(c, &((pm_interpolated_string_node_t *)p)->parts, b)) return 0;
-    }
-    else return 0;
-  }
-  return 1;
-}
-
-static int mx_pattern(pm_node_t *n, MxCtx *c, MvPat *pt) {
-  memset(pt, 0, sizeof *pt);
-  if (PM_NODE_TYPE(n) == PM_REGULAR_EXPRESSION_NODE) {
-    pm_regular_expression_node_t *re = (pm_regular_expression_node_t *)n;
-    if (n->flags & (PM_REGULAR_EXPRESSION_FLAGS_IGNORE_CASE | PM_REGULAR_EXPRESSION_FLAGS_EXTENDED |
-                    PM_REGULAR_EXPRESSION_FLAGS_MULTI_LINE | PM_REGULAR_EXPRESSION_FLAGS_ONCE)) return 0;
-    return mv_pat_regexp((const char *)re->content_loc.start, (const char *)re->content_loc.end, pt);
-  }
-  Mv v;
-  if (!mx_eval(c, n, &v) || v.k != MV_STR || !mv_ascii(v.s) || !v.s[0]) return 0;
-  pt->lit = 1; pt->text = v.s; pt->tn = strlen(v.s);
-  return 1;
-}
-
-static int mx_eval_call(MxCtx *c, pm_call_node_t *n, Mv *out) {
-  char *name = mx_name(n->name);
+/* PevHooks.self_call: a call on no receiver (or self) is a nested macro's, or
+   the class's own `name`, `to_s` or `inspect`. */
+static int mx_hook_call(PevCtx *pc, pm_call_node_t *n, const char *name, Mv *out) {
+  MxCtx *c = (MxCtx *)pc;
   int ok = 0;
   pm_node_list_t *args = n->arguments ? &n->arguments->arguments : NULL;
   size_t argc = args ? args->size : 0;
-  if (n->block) goto done;
-  if (!n->receiver || PM_NODE_TYPE(n->receiver) == PM_SELF_NODE) {
-    MxMacro *m = mx_nested_macro(c->modname, name);
-    if (m && c->depth < 16) {
-      /* a macro whose value is used: one that leaves residual code, or no
-         value the evaluator made, has none here -- the call stays in the text */
-      MvBuf scratch = {0};
-      MvBuf *sv_out = c->out;
-      MxVar sv_iv[64]; int sv_niv = c->niv ? *c->niv : 0;
-      if (c->iv) memcpy(sv_iv, c->iv, sizeof(MxVar) * (size_t)sv_niv);
-      c->out = &scratch;
-      ok = mx_call_macro(c, m, n->arguments, out) && out->k != MV_UNDEF && scratch.len == 0;
-      c->out = sv_out;
-      free(scratch.p);
-      /* it still runs at run time, from the text that keeps it */
-      if (!ok && c->iv) { memcpy(c->iv, sv_iv, sizeof(MxVar) * (size_t)sv_niv); *c->niv = sv_niv; mx_forget(c->iv, sv_niv, c->unsure); }
-    }
-    /* the class's own name: `self.name`, `to_s`, `inspect` (Module's own) */
-    else if (!m && c->clspath && !argc && (strcmp(name, "name") == 0 || strcmp(name, "to_s") == 0 ||
-                                           strcmp(name, "inspect") == 0) && mx_prim_builtin(name) && !g_mx_selfname) {
-      *out = mv_str(c->clspath, strlen(c->clspath), MV_STR); ok = 1;
-    }
-    goto done;
+  MxMacro *m = mx_nested_macro(c->modname, name);
+  if (m && c->depth < 16) {
+    /* a macro whose value is used: one that leaves residual code, or no
+       value the evaluator made, has none here -- the call stays in the text */
+    MvBuf scratch = {0};
+    MvBuf *sv_out = c->out;
+    PevVar sv_iv[64]; int sv_niv = c->niv ? *c->niv : 0;
+    if (c->iv) memcpy(sv_iv, c->iv, sizeof(PevVar) * (size_t)sv_niv);
+    c->out = &scratch;
+    ok = mx_call_macro(c, m, n->arguments, out) && out->k != MV_UNDEF && scratch.len == 0;
+    c->out = sv_out;
+    free(scratch.p);
+    /* it still runs at run time, from the text that keeps it */
+    if (!ok && c->iv) { memcpy(c->iv, sv_iv, sizeof(PevVar) * (size_t)sv_niv); *c->niv = sv_niv; mx_forget(c->iv, sv_niv, c->unsure); }
   }
-  Mv r;
-  if (!mx_eval(c, n->receiver, &r)) goto done;
-  if (argc == 2 && (strcmp(name, "gsub") == 0 || strcmp(name, "sub") == 0) && r.k == MV_STR && mv_ascii(r.s)) {
-    MvPat pt; Mv rep;
-    if (mx_pattern(args->nodes[0], c, &pt) && mx_eval(c, args->nodes[1], &rep) && rep.k == MV_STR)
-      ok = mv_sub(r, &pt, rep.s, name[0] == 'g', out);
-    goto done;
+  /* the class's own name: `self.name`, `to_s`, `inspect` (Module's own) */
+  else if (!m && c->clspath && !argc && (strcmp(name, "name") == 0 || strcmp(name, "to_s") == 0 ||
+                                         strcmp(name, "inspect") == 0) && mx_prim_builtin(name) && !g_mx_selfname) {
+    *out = mv_str(c->clspath, strlen(c->clspath), MV_STR); ok = 1;
   }
-  Mv a0; memset(&a0, 0, sizeof a0);
-  if (argc == 1 && !mx_eval(c, args->nodes[0], &a0)) goto done;
-  if (argc > 1) goto done;
-  ok = mv_call(name, r, (int)argc, a0, out);
-done:
-  free(name);
   return ok;
 }
 
-static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
-  if (!n) { *out = mv_nil(); return 1; }
+/* PevHooks.node: the class's instance variables, as its macros keep them */
+static int mx_hook_node(PevCtx *pc, pm_node_t *n, Mv *out) {
+  MxCtx *c = (MxCtx *)pc;
   switch (PM_NODE_TYPE(n)) {
-  case PM_NIL_NODE: *out = mv_nil(); return 1;
-  case PM_TRUE_NODE: *out = mv_nil(); out->k = MV_TRUE; return 1;
-  case PM_FALSE_NODE: *out = mv_nil(); out->k = MV_FALSE; return 1;
-  case PM_INTEGER_NODE: {
-    pm_integer_node_t *in = (pm_integer_node_t *)n;
-    unsigned long long uv;
-    if (in->value.values) {
-      if (in->value.length > 2) return 0;
-      uv = (unsigned long long)in->value.values[0] |
-           (in->value.length > 1 ? (unsigned long long)in->value.values[1] << 32 : 0);
-      if (uv > 0x7fffffffffffffffULL) return 0;
-    }
-    else uv = in->value.value;
-    *out = mv_nil(); out->k = MV_INT;
-    out->i = in->value.negative ? -(long long)uv : (long long)uv;
-    return 1;
-  }
-  case PM_STRING_NODE: {
-    pm_string_node_t *s = (pm_string_node_t *)n;
-    *out = mv_str((const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped), MV_STR);
-    return 1;
-  }
-  case PM_SYMBOL_NODE: {
-    pm_symbol_node_t *s = (pm_symbol_node_t *)n;
-    *out = mv_str((const char *)pm_string_source(&s->unescaped), pm_string_length(&s->unescaped), MV_SYM);
-    return 1;
-  }
-  case PM_INTERPOLATED_STRING_NODE: case PM_INTERPOLATED_SYMBOL_NODE: {
-    pm_node_list_t *parts = PM_NODE_TYPE(n) == PM_INTERPOLATED_STRING_NODE
-      ? &((pm_interpolated_string_node_t *)n)->parts : &((pm_interpolated_symbol_node_t *)n)->parts;
-    MvBuf b = {0};
-    if (!mx_eval_parts(c, parts, &b)) { free(b.p); return 0; }
-    *out = mv_str(b.p ? b.p : "", b.len, PM_NODE_TYPE(n) == PM_INTERPOLATED_STRING_NODE ? MV_STR : MV_SYM);
-    free(b.p);
-    return 1;
-  }
-  case PM_ARRAY_NODE: return mx_eval_list(c, &((pm_array_node_t *)n)->elements, out);
-  case PM_LOCAL_VARIABLE_READ_NODE: {
-    char *nm = mx_name(((pm_local_variable_read_node_t *)n)->name);
-    Mv *v = mx_lookup(c->loc, c->nloc, nm);
-    free(nm);
-    if (!v) return 0;
-    *out = *v; return 1;
-  }
   case PM_INSTANCE_VARIABLE_READ_NODE: {
     char *nm = mx_name(((pm_instance_variable_read_node_t *)n)->name);
     int known = c->iv && !mx_poisoned(nm);
-    Mv *v = known ? mx_lookup(c->iv, *c->niv, nm) : NULL;
+    Mv *v = known ? pev_lookup(c->iv, *c->niv, nm) : NULL;
     free(nm);
     /* a value the evaluator cannot know (written under a condition it cannot
        decide, or where it does not look) leaves the call as it is */
@@ -564,51 +438,17 @@ static int mx_eval(MxCtx *c, pm_node_t *n, Mv *out) {
     if (!v || PM_NODE_TYPE(v) != PM_INSTANCE_VARIABLE_READ_NODE) return 0;
     char *nm = mx_name(((pm_instance_variable_read_node_t *)v)->name);
     int known = c->iv && !mx_poisoned(nm);
-    Mv *iv = known ? mx_lookup(c->iv, *c->niv, nm) : NULL;
+    Mv *iv = known ? pev_lookup(c->iv, *c->niv, nm) : NULL;
     free(nm);
     if (!known || (iv && iv->k == MV_UNDEF) || (!iv && c->unsure && *c->unsure)) return 0;
     *out = iv ? mv_str("instance-variable", 17, MV_STR) : mv_nil();
     return 1;
   }
-  case PM_PARENTHESES_NODE: {
-    pm_node_t *b = ((pm_parentheses_node_t *)n)->body;
-    if (b && PM_NODE_TYPE(b) == PM_STATEMENTS_NODE) {
-      pm_statements_node_t *s = (pm_statements_node_t *)b;
-      if (s->body.size != 1) return 0;
-      b = s->body.nodes[0];
-    }
-    return mx_eval(c, b, out);
-  }
-  case PM_AND_NODE: case PM_OR_NODE: {
-    pm_node_t *l = PM_NODE_TYPE(n) == PM_AND_NODE ? ((pm_and_node_t *)n)->left : ((pm_or_node_t *)n)->left;
-    pm_node_t *r = PM_NODE_TYPE(n) == PM_AND_NODE ? ((pm_and_node_t *)n)->right : ((pm_or_node_t *)n)->right;
-    Mv lv;
-    if (!mx_eval(c, l, &lv)) return 0;
-    if ((PM_NODE_TYPE(n) == PM_AND_NODE) != mv_truthy(lv)) { *out = lv; return 1; }
-    return mx_eval(c, r, out);
-  }
-  /* __LINE__ / __FILE__ are the macro source's: kept as written */
-  case PM_SOURCE_LINE_NODE: case PM_SOURCE_FILE_NODE: return 0;
-  case PM_CALL_NODE: return mx_eval_call(c, (pm_call_node_t *)n, out);
-  case PM_IF_NODE: {
-    /* `c ? a : b`, and an if whose arms are one expression each */
-    pm_if_node_t *in = (pm_if_node_t *)n;
-    Mv pv;
-    if (!mx_eval(c, in->predicate, &pv)) return 0;
-    pm_statements_node_t *arm = in->statements;
-    if (!mv_truthy(pv)) {
-      pm_node_t *e = in->subsequent;
-      if (!e) { *out = mv_nil(); return 1; }
-      if (PM_NODE_TYPE(e) != PM_ELSE_NODE) return mx_eval(c, e, out);
-      arm = ((pm_else_node_t *)e)->statements;
-    }
-    if (!arm) { *out = mv_nil(); return 1; }
-    if (arm->body.size != 1) return 0;
-    return mx_eval(c, arm->body.nodes[0], out);
-  }
   default: return 0;
   }
 }
+
+static const PevHooks mx_hooks = { mx_hook_call, mx_hook_node };
 
 /* the node's source text with every macro local it reads replaced by its value */
 /* `scope`: the blocks and lambdas entered since the macro body -- a read is
@@ -719,14 +559,14 @@ static bool mx_subst_visit(const pm_node_t *n, void *data) {
     /* the text assigning a macro local: its later reads are not the value
        substituted here */
     char *w = mx_name(wn);
-    if (mx_lookup(s->c->loc, s->c->nloc, w)) s->bad = 1;
+    if (pev_lookup(s->c->ev.loc, s->c->ev.nloc, w)) s->bad = 1;
     free(w);
     if (s->bad) return false;
   }
   if (PM_NODE_TYPE(n) == PM_LOCAL_VARIABLE_READ_NODE &&
       ((pm_local_variable_read_node_t *)n)->depth == s->scope) {
     nm = mx_name(((pm_local_variable_read_node_t *)n)->name);
-    Mv *p = mx_lookup(s->c->loc, s->c->nloc, nm);
+    Mv *p = pev_lookup(s->c->ev.loc, s->c->ev.nloc, nm);
     if (p) { v = *p; is_var = 1; }
   }
   if (nm) free(nm);
@@ -831,11 +671,11 @@ static bool mx_loc_read_visit(const pm_node_t *n, void *data) {
 }
 
 static int mx_capture_rebound(MxCtx *c, const pm_node_t *dm) {
-  for (int i = 0; c->mbody && i < c->nloc; i++) {
-    MxLocScan r = { c->loc[i].name, NULL, 0 };
+  for (int i = 0; c->mbody && i < c->ev.nloc; i++) {
+    MxLocScan r = { c->ev.loc[i].name, NULL, 0 };
     pm_visit_node(dm, mx_loc_read_visit, &r);
     if (!r.found) continue;
-    MxLocScan w = { c->loc[i].name, dm->location.end, 0 };
+    MxLocScan w = { c->ev.loc[i].name, dm->location.end, 0 };
     pm_visit_node(c->mbody, mx_loc_write_visit, &w);
     if (w.found) return 1;
   }
@@ -899,7 +739,7 @@ static int mx_block_is_method_body(const pm_block_node_t *blk) {
 
 static int mx_residual(MxCtx *c, pm_node_t *n, MvBuf *b) {
   Mv v;
-  if (mx_eval(c, n, &v)) { mv_inspect(v, b); return 1; }
+  if (pev_eval(&c->ev, n, &v)) { mv_inspect(v, b); return 1; }
   if (PM_NODE_TYPE(n) == PM_CALL_NODE) {
     pm_call_node_t *cn = (pm_call_node_t *)n;
     char *name = mx_name(cn->name);
@@ -909,7 +749,7 @@ static int mx_residual(MxCtx *c, pm_node_t *n, MvBuf *b) {
     if (snd && (!cn->receiver || PM_NODE_TYPE(cn->receiver) == PM_SELF_NODE) && cn->arguments &&
         cn->arguments->arguments.size >= 1 && !cn->block) {
       Mv mn;
-      if (!mx_eval(c, cn->arguments->arguments.nodes[0], &mn) || (mn.k != MV_STR && mn.k != MV_SYM) ||
+      if (!pev_eval(&c->ev, cn->arguments->arguments.nodes[0], &mn) || (mn.k != MV_STR && mn.k != MV_SYM) ||
           !mv_sym_plain(mn.s)) return 0;
       /* `attr=(v)` would read as a local assignment, not a call */
       if (mn.s[0] && mn.s[strlen(mn.s) - 1] == '=') return 0;
@@ -948,16 +788,16 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
   case PM_RETURN_NODE: {
     pm_return_node_t *r = (pm_return_node_t *)n;
     if (r->arguments && r->arguments->arguments.size > 1) return 0;
-    if (!mx_eval(c, r->arguments ? r->arguments->arguments.nodes[0] : NULL, &c->ret)) return 0;
+    if (!pev_eval(&c->ev, r->arguments ? r->arguments->arguments.nodes[0] : NULL, &c->ret)) return 0;
     c->returned = 1;
     return 1;
   }
   case PM_LOCAL_VARIABLE_WRITE_NODE: {
     pm_local_variable_write_node_t *w = (pm_local_variable_write_node_t *)n;
     Mv v;
-    if (!mx_eval(c, w->value, &v)) return 0;
+    if (!pev_eval(&c->ev, w->value, &v)) return 0;
     char *nm = mx_name(w->name);
-    mx_set(c->loc, &c->nloc, 64, nm, v);
+    pev_bind(&c->ev, nm, v);
     free(nm);
     c->ret = v;
     return 1;
@@ -966,9 +806,8 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     pm_instance_variable_write_node_t *w = (pm_instance_variable_write_node_t *)n;
     char *nm = mx_name(w->name);
     Mv v;
-    if (!c->iv || mx_poisoned(nm) || !mx_eval(c, w->value, &v)) { free(nm); return 0; }
-    mx_set(c->iv, c->niv, 64, nm, v);
-    if (!mx_lookup(c->iv, *c->niv, nm)) { free(nm); return 0; }    /* the table was full */
+    if (!c->iv || mx_poisoned(nm) || !pev_eval(&c->ev, w->value, &v)) { free(nm); return 0; }
+    if (!pev_set(c->iv, c->niv, 64, nm, v)) { c->ev.full = 1; free(nm); return 0; }    /* the table was full */
     if (o) { mvb_puts(o, nm); mvb_puts(o, " = "); mv_inspect(v, o); mvb_puts(o, "\n"); }
     free(nm);
     c->ret = v;
@@ -978,7 +817,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     int is_if = PM_NODE_TYPE(n) == PM_IF_NODE;
     pm_node_t *pred = is_if ? ((pm_if_node_t *)n)->predicate : ((pm_unless_node_t *)n)->predicate;
     Mv pv;
-    if (!mx_eval(c, pred, &pv)) return 0;
+    if (!pev_eval(&c->ev, pred, &pv)) return 0;
     int take = mv_truthy(pv) == is_if;
     pm_statements_node_t *then = is_if ? ((pm_if_node_t *)n)->statements : ((pm_unless_node_t *)n)->statements;
     pm_node_t *els = is_if ? ((pm_if_node_t *)n)->subsequent : (pm_node_t *)((pm_unless_node_t *)n)->else_clause;
@@ -1041,7 +880,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              (strcmp(name, "module_eval") == 0 || strcmp(name, "class_eval") == 0) &&
              mx_prim_builtin(name)) {
       Mv code;
-      if (mx_eval(c, args->nodes[0], &code) && code.k == MV_STR && sp_snippet_graftable(code.s) &&
+      if (pev_eval(&c->ev, args->nodes[0], &code) && code.k == MV_STR && sp_snippet_graftable(code.s) &&
           !mx_template_writes(code.s)) {
         if (o) { mvb_puts(o, code.s); mvb_puts(o, "\n"); }
         c->ret = mv_nil();
@@ -1051,7 +890,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
     else if (self_recv && argc == 2 && strcmp(name, "const_set") == 0 && !cn->block &&
              mx_prim_builtin(name)) {
       Mv cnm;
-      if (mx_eval(c, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
+      if (pev_eval(&c->ev, args->nodes[0], &cnm) && (cnm.k == MV_STR || cnm.k == MV_SYM) &&
           isupper((unsigned char)cnm.s[0]) && mv_sym_plain(cnm.s)) {
         ok = 1;
         if (o) {
@@ -1067,7 +906,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
              PM_NODE_TYPE(args->nodes[1]) == PM_LAMBDA_NODE &&
              !((pm_lambda_node_t *)args->nodes[1])->parameters) {
       Mv mn;
-      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
+      if (pev_eval(&c->ev, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
           !mx_capture_rebound(c, n)) {
         ok = 1;
         mx_poison_writes_in(((pm_lambda_node_t *)args->nodes[1])->body);
@@ -1101,7 +940,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
          the method's, so it is the same text as a def */
       pm_block_node_t *blk = (pm_block_node_t *)cn->block;
       Mv mn;
-      if (mx_eval(c, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
+      if (pev_eval(&c->ev, args->nodes[0], &mn) && (mn.k == MV_STR || mn.k == MV_SYM) && mv_sym_plain(mn.s) &&
           !mx_capture_rebound(c, n)) {
         ok = 1;
         mx_poison_writes_in(blk->body);
@@ -1127,7 +966,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
       /* a call the evaluator can make (a macro's last expression, `a.join`)
          is its value: nothing to keep */
       Mv ev;
-      if (mx_eval(c, n, &ev)) { c->ret = ev; free(name); return 1; }
+      if (pev_eval(&c->ev, n, &ev)) { c->ret = ev; free(name); return 1; }
       /* a call that writes instance variables the evaluator would not see
          (instance_variable_*, a macro that may write some, left as written,
          a block that assigns one) is not followed: the macro is not expanded */
@@ -1135,7 +974,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
           mx_writer_named(name) || mx_node_writes_ivar(n)) { free(name); return 0; }
       Mv rv;
       if (cn->receiver && PM_NODE_TYPE(cn->receiver) != PM_SELF_NODE &&
-          mx_eval(c, cn->receiver, &rv) && (rv.k == MV_ARR || rv.k == MV_STR)) {
+          pev_eval(&c->ev, cn->receiver, &rv) && (rv.k == MV_ARR || rv.k == MV_STR)) {
         free(name);
         return 0;
       }
@@ -1187,7 +1026,7 @@ static int mx_exec(MxCtx *c, pm_node_t *n) {
   }
   default: {
     Mv v;
-    if (mx_eval(c, n, &v)) { c->ret = v; return 1; }
+    if (pev_eval(&c->ev, n, &v)) { c->ret = v; return 1; }
     return 0;
   }
   }
@@ -1224,17 +1063,17 @@ static int mx_bind_params(MxCtx *c, MxCtx *sub, MxMacro *m, pm_arguments_node_t 
   for (size_t i = 0; i < nreq; i++, ai++) {
     Mv v;
     if (PM_NODE_TYPE(ps->requireds.nodes[i]) != PM_REQUIRED_PARAMETER_NODE) return !strict;
-    if (!mx_eval(c, args->nodes[ai], &v)) { if (strict) return 0; continue; }
+    if (!pev_eval(&c->ev, args->nodes[ai], &v)) { if (strict) return 0; continue; }
     char *nm = mx_name(((pm_required_parameter_node_t *)ps->requireds.nodes[i])->name);
-    mx_set(sub->loc, &sub->nloc, 64, nm, v); free(nm);
+    pev_bind(&sub->ev, nm, v); free(nm);
   }
   for (size_t i = 0; i < nopt; i++) {
     pm_optional_parameter_node_t *op = (pm_optional_parameter_node_t *)ps->optionals.nodes[i];
     Mv v;
-    if (ai < argc) { if (!mx_eval(c, args->nodes[ai++], &v)) { if (strict) return 0; continue; } }
-    else if (!mx_eval(sub, op->value, &v)) { if (strict) return 0; continue; }
+    if (ai < argc) { if (!pev_eval(&c->ev, args->nodes[ai++], &v)) { if (strict) return 0; continue; } }
+    else if (!pev_eval(&sub->ev, op->value, &v)) { if (strict) return 0; continue; }
     char *nm = mx_name(op->name);
-    mx_set(sub->loc, &sub->nloc, 64, nm, v); free(nm);
+    pev_bind(&sub->ev, nm, v); free(nm);
   }
   size_t nkw = ps ? ps->keywords.size : 0;
   if (kw && nkw == 0) return !strict;
@@ -1244,7 +1083,7 @@ static int mx_bind_params(MxCtx *c, MxCtx *sub, MxMacro *m, pm_arguments_node_t 
       pm_node_t *el = kw->elements.nodes[j];
       if (PM_NODE_TYPE(el) != PM_ASSOC_NODE) return !strict;
       Mv k;
-      if (!mx_eval(c, ((pm_assoc_node_t *)el)->key, &k) || k.k != MV_SYM) return !strict;
+      if (!pev_eval(&c->ev, ((pm_assoc_node_t *)el)->key, &k) || k.k != MV_SYM) return !strict;
       int found = 0;
       for (size_t i = 0; i < nkw && !found; i++) {
         pm_node_t *kp = ps->keywords.nodes[i];
@@ -1272,17 +1111,17 @@ static int mx_bind_params(MxCtx *c, MxCtx *sub, MxMacro *m, pm_arguments_node_t 
     for (size_t j = 0; kw && j < kw->elements.size && !have; j++) {
       pm_assoc_node_t *as = (pm_assoc_node_t *)kw->elements.nodes[j];
       Mv k;
-      if (mx_eval(c, as->key, &k) && k.k == MV_SYM && strcmp(k.s, kn) == 0) {
-        if (!mx_eval(c, as->value, &v)) { free(kn); if (strict) return 0; have = -1; break; }
+      if (pev_eval(&c->ev, as->key, &k) && k.k == MV_SYM && strcmp(k.s, kn) == 0) {
+        if (!pev_eval(&c->ev, as->value, &v)) { free(kn); if (strict) return 0; have = -1; break; }
         have = 1;
       }
     }
     if (have < 0) continue;
     if (!have) {
       if (req) { free(kn); if (strict) return 0; continue; }
-      if (!mx_eval(sub, ((pm_optional_keyword_parameter_node_t *)kp)->value, &v)) { free(kn); if (strict) return 0; continue; }
+      if (!pev_eval(&sub->ev, ((pm_optional_keyword_parameter_node_t *)kp)->value, &v)) { free(kn); if (strict) return 0; continue; }
     }
-    mx_set(sub->loc, &sub->nloc, 64, kn, v);
+    pev_bind(&sub->ev, kn, v);
     free(kn);
   }
   return 1;
@@ -1291,18 +1130,19 @@ static int mx_bind_params(MxCtx *c, MxCtx *sub, MxMacro *m, pm_arguments_node_t 
 /* bind the macro's parameters to the call's (literal) arguments and run it */
 static int mx_call_macro(MxCtx *c, MxMacro *m, pm_arguments_node_t *argn, Mv *ret) {
   MxCtx sub; memset(&sub, 0, sizeof sub);
+  sub.ev.hooks = &mx_hooks;
   sub.out = c->out; sub.depth = c->depth + 1;
   sub.iv = c->iv; sub.niv = c->niv; sub.unsure = c->unsure;
   sub.modname = m->module; sub.own_class = m->self_def; sub.clspath = c->clspath;
   sub.mbody = m->def->body;
-  if (!mx_bind_params(c, &sub, m, argn, 1)) return 0;
+  int ok = mx_bind_params(c, &sub, m, argn, 1);
   sub.ret = mv_nil();
   pm_node_t *body = m->def->body;
-  int ok = 1;
-  if (body) {
+  if (ok && body) {
     if (PM_NODE_TYPE(body) == PM_STATEMENTS_NODE) ok = mx_exec_stmts(&sub, (pm_statements_node_t *)body);
     else ok = mx_exec(&sub, body);
   }
+  c->ev.full |= sub.ev.full;   /* (a table full in the macro's own locals) */
   if (!ok) return 0;
   *ret = sub.ret;
   return 1;
@@ -1843,7 +1683,7 @@ static int mx_returns(MxCtx *c, const pm_node_t *n) {
     int is_if = PM_NODE_TYPE(n) == PM_IF_NODE;
     pm_node_t *pred = is_if ? ((pm_if_node_t *)n)->predicate : ((pm_unless_node_t *)n)->predicate;
     Mv pv;
-    if (!mx_eval(c, pred, &pv)) return 0;
+    if (!pev_eval(&c->ev, pred, &pv)) return 0;
     pm_statements_node_t *then = is_if ? ((pm_if_node_t *)n)->statements : ((pm_unless_node_t *)n)->statements;
     if (mv_truthy(pv) != is_if || !then) return 0;
     for (size_t i = 0; i < then->body.size; i++) if (mx_returns(c, then->body.nodes[i])) return 1;
@@ -1868,7 +1708,7 @@ static bool mx_may_visit(const pm_node_t *n, void *data) {
     int is_if = PM_NODE_TYPE(n) == PM_IF_NODE;
     pm_node_t *pred = is_if ? ((pm_if_node_t *)n)->predicate : ((pm_unless_node_t *)n)->predicate;
     Mv pv;
-    if (!mx_eval(d->c, pred, &pv)) return true;          /* undecided: the predicate and both branches */
+    if (!pev_eval(&d->c->ev, pred, &pv)) return true;          /* undecided: the predicate and both branches */
     pm_statements_node_t *then = is_if ? ((pm_if_node_t *)n)->statements : ((pm_unless_node_t *)n)->statements;
     pm_node_t *els = is_if ? ((pm_if_node_t *)n)->subsequent : (pm_node_t *)((pm_unless_node_t *)n)->else_clause;
     if (mv_truthy(pv) == is_if) { if (then) pm_visit_node((pm_node_t *)then, mx_may_visit, d); }
@@ -1944,8 +1784,10 @@ static void mx_may_macro(MxMacro *m, MxCtx *caller, pm_arguments_node_t *argn, i
                          MxNames *w, int *all, int depth) {
   if (!bind || depth > 4) { mx_union_writes(m, w, all); return; }
   MxCtx sub; memset(&sub, 0, sizeof sub);
+  sub.ev.hooks = &mx_hooks;
   sub.modname = m->module;
   MxCtx none; memset(&none, 0, sizeof none);
+  none.ev.hooks = &mx_hooks;
   if (bind == 1) mx_bind_params(caller ? caller : &none, &sub, m, argn, 0);
   MxMay d = { &sub, w, all, depth };
   if (m->def->body) pm_visit_node(m->def->body, mx_may_visit, &d);
@@ -2376,7 +2218,7 @@ typedef struct {
   MxNames selfdefs;             /* the `def self.m`s its body gave so far, at its top level */
   const char *clsname;          /* its name while a `class X` body that names it for certain is walked */
   int noiv;                     /* this body may run out of order, or be another class's: no state */
-  MxVar iv[64]; int niv;        /* the ivars its macros keep, as the evaluator follows them */
+  PevVar iv[64]; int niv;        /* the ivars its macros keep, as the evaluator follows them */
 } MxClass;
 static MxClass *g_mx_classes; static int g_mx_nclasses;
 
@@ -2628,20 +2470,20 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
           free(brs);
           continue;
         }
-        MxVar pre[64]; int npre = k->niv;
-        memcpy(pre, k->iv, sizeof(MxVar) * (size_t)npre);
-        MxVar acc[64]; int nacc = -1;
+        PevVar pre[64]; int npre = k->niv;
+        memcpy(pre, k->iv, sizeof(PevVar) * (size_t)npre);
+        PevVar acc[64]; int nacc = -1;
         for (int b = 0; b < nbr; b++) {
-          memcpy(k->iv, pre, sizeof(MxVar) * (size_t)npre); k->niv = npre;
+          memcpy(k->iv, pre, sizeof(PevVar) * (size_t)npre); k->niv = npre;
           if (brs[b]) mx_class_body(brs[b], ed, k, 0, 0);
-          if (nacc < 0) { memcpy(acc, k->iv, sizeof(MxVar) * (size_t)k->niv); nacc = k->niv; }
+          if (nacc < 0) { memcpy(acc, k->iv, sizeof(PevVar) * (size_t)k->niv); nacc = k->niv; }
           else if (!mx_merge_state(acc, &nacc, k->iv, k->niv)) k->unknown = 1;
         }
         if (!has_else) {                     /* no branch taken is a branch too */
-          if (nacc < 0) { memcpy(acc, pre, sizeof(MxVar) * (size_t)npre); nacc = npre; }
+          if (nacc < 0) { memcpy(acc, pre, sizeof(PevVar) * (size_t)npre); nacc = npre; }
           else if (!mx_merge_state(acc, &nacc, pre, npre)) k->unknown = 1;
         }
-        memcpy(k->iv, acc, sizeof(MxVar) * (size_t)nacc); k->niv = nacc;
+        memcpy(k->iv, acc, sizeof(PevVar) * (size_t)nacc); k->niv = nacc;
         free(brs);
         continue;
       }
@@ -2705,18 +2547,18 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     if (!extended || k->vis || k->unknown || hd) { k->unknown = 1; continue; }
     MvBuf out = {0};
     MxCtx c; memset(&c, 0, sizeof c);
+    c.ev.hooks = &mx_hooks;
     c.out = dyn ? &out : NULL; c.modname = m->module; c.own_class = m->self_def; c.clspath = k->clsname;
     c.iv = k->noiv ? NULL : k->iv; c.niv = &k->niv; c.unsure = &k->unknown;
     /* evaluate on a copy of the state: a failed expansion must not leave half
        its writes behind */
-    MxVar save[64]; int nsave = k->niv;
-    memcpy(save, k->iv, sizeof(MxVar) * (size_t)nsave);
+    PevVar save[64]; int nsave = k->niv;
+    memcpy(save, k->iv, sizeof(PevVar) * (size_t)nsave);
     Mv r;
-    g_mx_full = 0;
-    int ok = mx_call_macro(&c, m, cn->arguments, &r) && !g_mx_full;
+    int ok = mx_call_macro(&c, m, cn->arguments, &r) && !c.ev.full;
     if (!ok) {
       /* what it would have done at run time is not known here */
-      memcpy(k->iv, save, sizeof(MxVar) * (size_t)nsave); k->niv = nsave;
+      memcpy(k->iv, save, sizeof(PevVar) * (size_t)nsave); k->niv = nsave;
       k->unknown = 1;
       free(out.p); continue;
     }
@@ -2734,7 +2576,7 @@ static void mx_class_body(pm_statements_node_t *st, MxEdits *ed, MxClass *k, int
     }
     char *body = mx_join_residual(out.p ? out.p : "");
     if (!body) {
-      memcpy(k->iv, save, sizeof(MxVar) * (size_t)nsave); k->niv = nsave;
+      memcpy(k->iv, save, sizeof(PevVar) * (size_t)nsave); k->niv = nsave;
       k->unknown = 1;
       free(rep.p); free(out.p); continue;
     }

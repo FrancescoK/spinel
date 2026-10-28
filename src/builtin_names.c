@@ -1305,6 +1305,7 @@ int is_include_name(const char *n) { return sp_streq(n, "include"); }
 int is_prepend_name(const char *n) { return sp_streq(n, "prepend"); }
 int is_load_name(const char *n) { return sp_streq(n, "load"); }
 int is_require_name(const char *n) { return sp_streq(n, "require") || sp_streq(n, "require_relative"); }
+int is_require_relative_name(const char *n) { return sp_streq(n, "require_relative"); }
 int is_extend_name(const char *n) { return sp_streq(n, "extend"); }
 int is_autoload_name(const char *n) { return sp_streq(n, "autoload"); }
 int is_file_load_name(const char *n) {
@@ -1312,9 +1313,13 @@ int is_file_load_name(const char *n) {
 }
 /* A LoadNode's `how` (spinel_parse.c, sp_load_resolve) that names no file
    at compile time: one not there (LoadError when it runs, for the feature
-   the node carries), or a path the require computes when it runs. */
+   the node carries), or a path the require computes when it runs
+   (is_load_how_set). */
 int is_load_how_missing(const char *how) { return how && sp_streq(how, "none"); }
-int is_load_how_computed(const char *how) { return how && sp_streq(how, "run-time"); }
+/* ...a path computed when it runs: it names one of a set of files (the
+   node's candidates, prog_load_cand), or any file of the program (open), or a
+   feature the runtime provides, or none of them */
+int is_load_how_set(const char *how) { return how && sp_streq(how, "set"); }
 /* ...and the two the runtime provides without a file: a core capability
    (Thread, Enumerator, Rational: CRuby has it loaded already) and a native
    library (io/console, time, socket, ostruct, monitor). */

@@ -325,6 +325,7 @@ static char *cstr(pm_constant_id_t id) {
 
 static void sp_find_builtin_ranges(const char *src);
 static int sp_in_builtin(const uint8_t *at);
+#include "prism_eval.c"
 #include "sp_macro.c"
 #include "sp_const_loop.c"
 
@@ -361,7 +362,7 @@ static int flatten(pm_node_t *node);
 static void sp_lower_rows_note(const pm_node_t *node, int id);   /* SPINEL_LOWER_ROWS_CHECK */
 static int sp_load_call(const pm_call_node_t *n);
 static int sp_flatten_call_as(int id, pm_call_node_t *n);
-static void sp_graph_site_take(int id, const pm_node_t *call);
+static int sp_graph_site_take(int id, const pm_node_t *call);   /* 1: its path is computed when it runs */
 /* inline RBS (inline_rbs.c): the facts of a node, written by flatten */
 static void sp_inline_rbs_emit(const pm_node_t *node, int id);
 /* --no-inline-rbs: the driver clears it, and comments are only comments */
@@ -2466,9 +2467,10 @@ else {
 /* A call flattened as node `id` of another kind: `__FILE__ == $0` and its
    spellings as the constant they answer, stamped program_guard; and under
    --load-model=graph a require as its LoadNode, which carries its path when
-   it is one literal, else the expression that computes it when it runs,
-   and what its site resolved to before the file was flattened
-   (sp_graph_site_take). 0 for a call flattened as a CallNode. */
+   it is one literal (or the one path its expression names), else the
+   expression that computes it when it runs, and what its site resolved to
+   before the file was flattened (sp_graph_site_take). 0 for a call
+   flattened as a CallNode. */
 static int sp_flatten_call_as(int id, pm_call_node_t *n) {
   pm_node_t *node = (pm_node_t *)n;
   int pg = sp_program_guard(node);
@@ -2485,8 +2487,7 @@ static int sp_flatten_call_as(int id, pm_call_node_t *n) {
   free(m);
   emit_int(id, "line", pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line));
   if (PM_NODE_TYPE(arg) == PM_STRING_NODE) emit_pm_string(id, "path", &((pm_string_node_t *)arg)->unescaped);
-  else emit_ref(id, "argument", arg);
-  sp_graph_site_take(id, node);
+  if (sp_graph_site_take(id, node)) emit_ref(id, "argument", arg);
   return 1;
 }
 
@@ -2719,11 +2720,14 @@ static char **sp_feature_roots = NULL;
 static int sp_feature_roots_n = 0;
 static int sp_feature_roots_cap = 0;
 
-void sp_add_feature_root(const char *dir) {
+static void sp_feature_root_at(const char *dir, int first) {
   if (!dir) return;
   sp_feature_roots = sp_grow_strs(sp_feature_roots, sp_feature_roots_n, &sp_feature_roots_cap, 16);
-  sp_feature_roots[sp_feature_roots_n++] = strdup(dir);
+  if (first) memmove(sp_feature_roots + 1, sp_feature_roots, sizeof *sp_feature_roots * (size_t)sp_feature_roots_n);
+  sp_feature_roots[first ? 0 : sp_feature_roots_n] = strdup(dir);
+  sp_feature_roots_n++;
 }
+void sp_add_feature_root(const char *dir) { sp_feature_root_at(dir, 0); }
 
 /* Resolve a path to its canonical form for dedup. realpath() returns NULL
    on missing files; in that case fall back to the literal path. */
@@ -3677,6 +3681,60 @@ static bool sp_load_sites_visit(const pm_node_t *node, void *data) {
 static void sp_load_sites_note(const pm_parser_t *parser, const pm_node_t *root, int count) {
   SpLoadSites w = { parser, count };
   if (!g_require_unread && root) pm_visit_node(root, sp_load_sites_visit, &w);
+}
+
+/* ---- the directories a program puts on its load path ----
+ *
+ * `$LOAD_PATH.unshift __dir__`, `$: << File.expand_path("lib", __dir__)` as a
+ * statement of a file's top level: a directory the evaluator knows becomes a
+ * root of the load path, as one from -I is (sp_feature_roots), for the
+ * requires that run after the statement. A write under a condition, in a
+ * method or in a block is none: the compiler does not follow whether or
+ * when it runs, and a file it would name is not found. */
+
+/* The real directory top-level statement `stmt` of the file in `dir` puts on
+   the load path, or NULL; *first: at the front (unshift, prepend). */
+static char *sp_load_dir_stmt(const pm_parser_t *pp, const pm_node_t *stmt, const char *dir, int *first) {
+  if (PM_NODE_TYPE(stmt) != PM_CALL_NODE) return NULL;
+  const pm_call_node_t *c = (const pm_call_node_t *)stmt;
+  if (!c->receiver || PM_NODE_TYPE(c->receiver) != PM_GLOBAL_VARIABLE_READ_NODE || !c->arguments ||
+      c->arguments->arguments.size != 1 || c->block) return NULL;
+  pm_constant_id_t gv = ((const pm_global_variable_read_node_t *)c->receiver)->name;
+  *first = sp_pm_name_is(pp, c->name, "unshift") || sp_pm_name_is(pp, c->name, "prepend");
+  if (!(*first || sp_pm_name_is(pp, c->name, "<<") || sp_pm_name_is(pp, c->name, "push") ||
+        sp_pm_name_is(pp, c->name, "append")) ||
+      !(sp_pm_name_is(pp, gv, "$LOAD_PATH") || sp_pm_name_is(pp, gv, "$:") || sp_pm_name_is(pp, gv, "$-I"))) return NULL;
+  PevCtx ev;
+  memset(&ev, 0, sizeof ev);
+  ev.dir = dir;
+  const pm_parser_t *saved = g_parser;   /* (the evaluator reads names from it) */
+  g_parser = pp;
+  Mv v;
+  int ok = pev_eval(&ev, c->arguments->arguments.nodes[0], &v) && v.k == MV_STR && v.s[0] == '/';
+  g_parser = saved;
+  struct stat st;
+  char *real = ok ? realpath(v.s, NULL) : NULL;
+  if (real && !(stat(real, &st) == 0 && S_ISDIR(st.st_mode))) { free(real); real = NULL; }
+  return real;
+}
+
+/* The directory of `file`, real, or NULL */
+static char *sp_file_real_dir(const char *file) {
+  char *real = file ? realpath(file, NULL) : NULL, *sl = real ? strrchr(real, '/') : NULL;
+  if (!sl) { free(real); return NULL; }
+  *sl = 0;
+  return real;
+}
+
+/* Is `dir` a root already? */
+static int sp_feature_root_has(const char *dir) {
+  int have = 0;
+  for (int i = 0; i < sp_feature_roots_n; i++) {
+    char *r = realpath(sp_feature_roots[i], NULL);
+    have |= r && strcmp(r, dir) == 0;
+    free(r);
+  }
+  return have;
 }
 
 /* ---- a require that runs later than the program start ----
@@ -4816,7 +4874,7 @@ static void sp_req_note_hoist(SpEditMap *m, const SpReqSite *site, size_t ins, s
  * ones named or read; a file only the graph names is not walked yet.
  * builtins/ and the libraries the parser prepends (Set, IO::Buffer) are
  * left out for now. */
-enum { SP_LOAD_FILE, SP_LOAD_NATIVE, SP_LOAD_CORE, SP_LOAD_NONE, SP_LOAD_RUNTIME };
+enum { SP_LOAD_FILE, SP_LOAD_NATIVE, SP_LOAD_CORE, SP_LOAD_NONE, SP_LOAD_RUNTIME, SP_LOAD_SET };
 typedef struct {
   int from, line, plain;  /* the requiring file, the call's line, `require` (not _relative) */
   char *name;             /* the path as written */
@@ -4825,6 +4883,8 @@ typedef struct {
                              call stands in (a boot library's: below 0, ahead of the
                              entry's first), and 1 when the call is that statement */
   int node;               /* --load-model=graph: its LoadNode, once flattened (-1 before) */
+  int ncand, *cand;       /* SP_LOAD_SET: the files a path computed when it runs may name, ... */
+  int open;               /* ... or (open) any file of the program */
 } SpLoadEdge;
 
 /* --load-model=graph: a require of a file's tree: its edge, the call node it
@@ -4839,6 +4899,7 @@ typedef struct {
   int read;               /* text and src are set */
   int root;               /* its ProgramNode, once flattened */
   SpGraphSite *site; int nsite, sitecap;
+  char **dirs; int ndirs; /* the directories the program had put on its load path when the file was first named */
 } SpGraphFile;
 
 typedef struct {
@@ -4853,6 +4914,7 @@ typedef struct {
   int *boot; int nboot, bootcap;            /* the edges of the libraries loaded at the
                                                program's start (sp_graph_boot) */
   int *entered;                             /* [file] where it runs in load order (--dump-load-graph) */
+  int root_base;                            /* the roots from -I: the others are the program's */
 } SpLoadGraph;
 
 /* The file `path`'s id, added the first time it is named. */
@@ -4997,15 +5059,29 @@ static void sp_load_plain(SpLoadGraph *g, SpLoadEdge **v, int *n, int *cap, int 
                                                                                          : SP_LOAD_NONE, -1);
 }
 
+/* Is `arg` of a kind that names no path (a number, a Symbol, nil, true,
+   false, an Array or a Hash)? Kernel#require raises TypeError for it, so a
+   call that passes one is a method of the program's own that has the
+   name. */
+static int sp_req_not_path(const pm_node_t *arg) {
+  switch (PM_NODE_TYPE(arg)) {
+    case PM_INTEGER_NODE: case PM_FLOAT_NODE: case PM_SYMBOL_NODE: case PM_NIL_NODE: case PM_TRUE_NODE:
+    case PM_FALSE_NODE: case PM_ARRAY_NODE: case PM_HASH_NODE: return 1;
+    default: return 0;
+  }
+}
+
 /* Is `n` a require the load model loads: `require` or `require_relative`,
-   receiverless or on Kernel, with one argument and no block? */
+   receiverless or on Kernel, with one argument that can name a path and no
+   block? */
 static int sp_load_call(const pm_call_node_t *n) {
   if (!sp_pm_name_is(g_parser, n->name, "require") && !sp_pm_name_is(g_parser, n->name, "require_relative"))
     return 0;
   if (n->receiver && (!sp_call_receiver_is_kernel(g_parser, n->receiver) ||
                       !n->call_operator_loc.start || *n->call_operator_loc.start != '.')) return 0;
   return !n->block && n->arguments && n->arguments->arguments.size == 1 &&
-         PM_NODE_TYPE(n->arguments->arguments.nodes[0]) != PM_SPLAT_NODE;
+         PM_NODE_TYPE(n->arguments->arguments.nodes[0]) != PM_SPLAT_NODE &&
+         !sp_req_not_path(n->arguments->arguments.nodes[0]);
 }
 
 /* Sites by file, then line (the plain ones were noted first). */
@@ -5015,7 +5091,7 @@ static int sp_load_edge_cmp(const void *x, const void *y) {
 }
 
 static void sp_load_graph_dump(const SpLoadGraph *g) {
-  static const char *const how[] = { "", "native", "core", "unresolved", "run-time" };
+  static const char *const how[] = { "", "native", "core", "unresolved", "run-time", "set" };
   /* the sites in an insertion-sorted copy, which keeps two sites of one
      line in the order they were noted (the edges' own order is what the
      load order's indices name) */
@@ -5048,11 +5124,16 @@ static void sp_load_graph_free(SpLoadGraph *g) {
     if (!r) continue;
     if (r->read) { sp_src_file_free(&r->src); free(r->text); }
     free(r->site);
+    for (int k = 0; k < r->ndirs; k++) free(r->dirs[k]);
+    free(r->dirs);
     free(r);
   }
   free(g->gf); free(g->boot); free(g->entered);
   for (int i = 0; i < g->nfile; i++) free(g->file[i]);
-  for (int i = 0; i < g->nedge; i++) free(g->edge[i].name);
+  for (int i = 0; i < g->nedge; i++) {
+    free(g->edge[i].name);
+    free(g->edge[i].cand);
+  }
   for (int i = 0; i < g->nspl; i++) free(g->spl[i].name);
   free(g->file); free(g->flags); free(g->edge); free(g->spl);
 }
@@ -6465,11 +6546,15 @@ static void sp_load_rel_path(const SpLoadGraph *g, int from, const char *path, c
   sp_normalize_dots(out);
 }
 
-static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const char *path, int line) {
-  int rel = method && strcmp(method, "require_relative") == 0, how = SP_LOAD_NONE, tier = 0;
+static void sp_graph_inherit(SpLoadGraph *g, int f);
+
+/* What a require of `path` (relative to the file when `rel`) from file
+   `from` names: SP_LOAD_*, the target file in `to` for SP_LOAD_FILE (-1
+   otherwise). The features it names and enables are noted. */
+static int sp_load_target(SpLoadGraph *g, int from, int rel, const char *path, int *to) {
+  int how = SP_LOAD_NONE, tier = 0;
   char found[1024];
-  if (!path) how = SP_LOAD_RUNTIME;
-  else if (rel) {
+  if (rel) {
     sp_load_rel_path(g, from, path, found, sizeof found);
     size_t fl = strlen(found);
     if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
@@ -6494,13 +6579,27 @@ static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const c
     if (how == SP_LOAD_FILE || how == SP_LOAD_NATIVE) sp_feature_mark(lib_name);
     if (how != SP_LOAD_NONE) sp_note_required_feature(lib_name);
   }
-  int to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1;
-  if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
-  /* a require written in a file read for g_require_unread, resolved: a file
-     of the graph, read before or now, or what the runtime provides */
-  if ((how == SP_LOAD_FILE || how == SP_LOAD_NATIVE || how == SP_LOAD_CORE) &&
-      !(*sp_load_flags(g, from) & SP_FILE_BUILTIN)) sp_req_resolved++;
-  sp_load_edge(&g->edge, &g->nedge, &g->edgecap, from, line, !rel, path ? path : "(computed)", how, to);
+  int known = g->nfile;
+  *to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1;
+  if (*to >= known) sp_graph_inherit(g, *to);
+  if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, *to) |= SP_FILE_BUILTIN;
+  return how;
+}
+
+/* A require written in a file read for g_require_unread, resolved: a file
+   of the graph, read before or now, or what the runtime provides (or a
+   closed set of them) */
+static void sp_load_resolved(SpLoadGraph *g, int from) {
+  if (!(*sp_load_flags(g, from) & SP_FILE_BUILTIN)) sp_req_resolved++;
+}
+
+/* `force_rel`: the path is the file's directory's (a path built on `__dir__`),
+   whichever the call. */
+static int sp_load_resolve(SpLoadGraph *g, int from, const char *method, const char *path, int line, int force_rel) {
+  int rel = force_rel || (method && strcmp(method, "require_relative") == 0), to = -1;
+  int how = sp_load_target(g, from, rel, path, &to);
+  if (how == SP_LOAD_FILE || how == SP_LOAD_NATIVE || how == SP_LOAD_CORE) sp_load_resolved(g, from);
+  sp_load_edge(&g->edge, &g->nedge, &g->edgecap, from, line, !rel, path, how, to);
   if (how == SP_LOAD_NONE)
     fprintf(stderr, "warning: %s:%d: cannot load such file -- %s (the %s raises LoadError when it runs)\n",
             g->file[from], line, path, method);
@@ -7014,38 +7113,444 @@ static SpGraphFile *sp_graph_rec(SpLoadGraph *g, int f) {
   return g->gf[f];
 }
 
-/* The requires of a file's tree, in the tree's order, each resolved
-   (sp_load_resolve), noted with the top-level statement it stands in, and
-   kept with its call node, which flatten's LoadNode looks it up by
-   (sp_graph_site_take). */
-typedef struct { SpLoadGraph *g; int f, stmt; const pm_node_t *top; } SpSiteWalk;
-static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
-  SpSiteWalk *w = data;
-  if (PM_NODE_TYPE(node) != PM_CALL_NODE || !sp_load_call((const pm_call_node_t *)node)) return true;
-  const pm_call_node_t *n = (const pm_call_node_t *)node;
-  const pm_node_t *arg = n->arguments->arguments.nodes[0];
-  char *method = cstr(n->name), *path = NULL;
-  if (PM_NODE_TYPE(arg) == PM_STRING_NODE) {
-    const pm_string_t *u = &((const pm_string_node_t *)arg)->unescaped;
-    path = strndup((const char *)pm_string_source(u), pm_string_length(u));
-    if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+/* ---- the files a computed require may name ----
+ *
+ * A require whose path is not a literal: the values its expression can take,
+ * read from the tree with the parse-side evaluator (prism_eval.c) over the
+ * file's directory. The locals it reads are bound first: a local assigned
+ * one expression in its scope takes that expression's value, and the block
+ * parameter of `%w(a b).each` takes each word in turn. One value is that
+ * literal require. Several, or (for a plain require) the literals a path
+ * built on a constant joins (the Mr Bones layout, sp_join_visit), which name
+ * files beside this one, are a closed set of files (SP_LOAD_SET, with
+ * candidates). A path not known is a set too, an open one: it may name any
+ * file of the program. */
+#define SP_REQ_MAX 16
+typedef struct { char *v[SP_REQ_MAX]; int n, open; } SpPaths;
+typedef struct { const pm_parser_t *pp; const pm_node_t *const *stack; int depth; const char *dir; } SpReqCtx;
+
+static void sp_paths_free(SpPaths *k) {
+  for (int i = 0; i < k->n; i++) free(k->v[i]);
+  k->n = 0;
+}
+static void sp_paths_open(SpPaths *k) { sp_paths_free(k); k->open = 1; }
+static void sp_paths_add(SpPaths *k, const char *s, size_t len) {
+  if (k->n == SP_REQ_MAX) { sp_paths_open(k); return; }
+  if (!(k->v[k->n] = strndup(s, len))) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  k->n++;
+}
+
+static int sp_scope_node(pm_node_type_t t) {
+  return t == PM_BLOCK_NODE || t == PM_LAMBDA_NODE || t == PM_DEF_NODE || t == PM_CLASS_NODE ||
+         t == PM_MODULE_NODE || t == PM_SINGLETON_CLASS_NODE || t == PM_PROGRAM_NODE;
+}
+static const pm_node_t *sp_scope_params(const pm_node_t *s) {
+  switch (PM_NODE_TYPE(s)) {
+    case PM_BLOCK_NODE: return ((const pm_block_node_t *)s)->parameters;
+    case PM_LAMBDA_NODE: return ((const pm_lambda_node_t *)s)->parameters;
+    case PM_DEF_NODE: return (const pm_node_t *)((const pm_def_node_t *)s)->parameters;
+    default: return NULL;
   }
-  int line = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line);
-  int e = sp_load_resolve(w->g, w->f, method, path, line);
-  w->g->edge[e].stmt = w->stmt;
-  w->g->edge[e].top = node == w->top;
-  SpGraphFile *r = sp_graph_rec(w->g, w->f);
-  if (r->nsite == r->sitecap) {
-    r->sitecap = r->sitecap ? r->sitecap * 2 : 8;
-    r->site = realloc(r->site, sizeof *r->site * (size_t)r->sitecap);
-    if (!r->site) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+}
+static const pm_node_t *sp_scope_body(const pm_node_t *s) {
+  switch (PM_NODE_TYPE(s)) {
+    case PM_BLOCK_NODE: return ((const pm_block_node_t *)s)->body;
+    case PM_LAMBDA_NODE: return ((const pm_lambda_node_t *)s)->body;
+    case PM_DEF_NODE: return ((const pm_def_node_t *)s)->body;
+    case PM_PROGRAM_NODE: return (const pm_node_t *)((const pm_program_node_t *)s)->statements;
+    case PM_CLASS_NODE: return ((const pm_class_node_t *)s)->body;
+    case PM_MODULE_NODE: return ((const pm_module_node_t *)s)->body;
+    case PM_SINGLETON_CLASS_NODE: return ((const pm_singleton_class_node_t *)s)->body;
+    default: return NULL;
   }
-  r->site[r->nsite++] = (SpGraphSite){ e, node, 0 };
-  free(method);
-  free(path);
+}
+
+/* Does the parameter list under `n` bind local `id`? */
+typedef struct { pm_constant_id_t id; int found; } SpParamScan;
+static bool sp_param_binds(const pm_node_t *n, void *data) {
+  SpParamScan *p = data;
+  pm_constant_id_t id = 0;
+  switch (PM_NODE_TYPE(n)) {
+    case PM_REQUIRED_PARAMETER_NODE: id = ((const pm_required_parameter_node_t *)n)->name; break;
+    case PM_OPTIONAL_PARAMETER_NODE: id = ((const pm_optional_parameter_node_t *)n)->name; break;
+    case PM_REST_PARAMETER_NODE: id = ((const pm_rest_parameter_node_t *)n)->name; break;
+    case PM_REQUIRED_KEYWORD_PARAMETER_NODE: id = ((const pm_required_keyword_parameter_node_t *)n)->name; break;
+    case PM_OPTIONAL_KEYWORD_PARAMETER_NODE: id = ((const pm_optional_keyword_parameter_node_t *)n)->name; break;
+    case PM_KEYWORD_REST_PARAMETER_NODE: id = ((const pm_keyword_rest_parameter_node_t *)n)->name; break;
+    case PM_BLOCK_PARAMETER_NODE: id = ((const pm_block_parameter_node_t *)n)->name; break;
+    case PM_BLOCK_LOCAL_VARIABLE_NODE: id = ((const pm_block_local_variable_node_t *)n)->name; break;
+    case PM_LOCAL_VARIABLE_TARGET_NODE: id = ((const pm_local_variable_target_node_t *)n)->name; break;
+    default: return true;
+  }
+  if (id == p->id) p->found = 1;
   return true;
 }
 
+/* The writes of one local of a scope: `lvl` soft scopes below it, a write
+   names it by that depth. A plain write is counted (its value kept); any
+   other form that assigns it (a target, an operator write) is `other`. */
+typedef struct { pm_constant_id_t name; int lvl, nwrite, other; const pm_node_t *val; } SpLocalScan;
+static bool sp_local_scan(const pm_node_t *n, void *data) {
+  SpLocalScan *s = data;
+  switch (PM_NODE_TYPE(n)) {
+    case PM_DEF_NODE: case PM_CLASS_NODE: case PM_MODULE_NODE: case PM_SINGLETON_CLASS_NODE: return false;
+    case PM_BLOCK_NODE: case PM_LAMBDA_NODE:
+      s->lvl++; pm_visit_child_nodes(n, sp_local_scan, s); s->lvl--;
+      return false;
+    case PM_LOCAL_VARIABLE_WRITE_NODE: {
+      const pm_local_variable_write_node_t *w = (const pm_local_variable_write_node_t *)n;
+      if (w->name == s->name && (int)w->depth == s->lvl) { s->nwrite++; s->val = w->value; }
+      return true;
+    }
+#define SP_LOCAL_OTHER(T, t) case T: \
+      if (((const t *)n)->name == s->name && (int)((const t *)n)->depth == s->lvl) s->other = 1; \
+      return true;
+    SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_TARGET_NODE, pm_local_variable_target_node_t)
+    SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_OPERATOR_WRITE_NODE, pm_local_variable_operator_write_node_t)
+    SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_OR_WRITE_NODE, pm_local_variable_or_write_node_t)
+    SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_AND_WRITE_NODE, pm_local_variable_and_write_node_t)
+#undef SP_LOCAL_OTHER
+    default: return true;
+  }
+}
+
+/* A block parameter of `%w(a b).each { |p| ... }`: the words, and 1 when
+   scope `si` is such a block whose only parameter is `want` (any when 0);
+   `got` is that parameter */
+static int sp_each_words(const SpReqCtx *x, int si, pm_constant_id_t want, const pm_node_list_t **words, pm_constant_id_t *got) {
+  const pm_node_t *s = x->stack[si];
+  if (si < 1 || PM_NODE_TYPE(s) != PM_BLOCK_NODE || PM_NODE_TYPE(x->stack[si - 1]) != PM_CALL_NODE) return 0;
+  const pm_call_node_t *c = (const pm_call_node_t *)x->stack[si - 1];
+  const pm_node_t *bp = ((const pm_block_node_t *)s)->parameters;
+  if (c->block != s || c->arguments || !c->receiver || PM_NODE_TYPE(c->receiver) != PM_ARRAY_NODE ||
+      !sp_pm_name_is(x->pp, c->name, "each") || !bp || PM_NODE_TYPE(bp) != PM_BLOCK_PARAMETERS_NODE) return 0;
+  const pm_parameters_node_t *pa = ((const pm_block_parameters_node_t *)bp)->parameters;
+  const pm_array_node_t *list = (const pm_array_node_t *)c->receiver;
+  if (!pa || pa->requireds.size != 1 || pa->optionals.size || pa->rest || pa->posts.size || pa->keywords.size ||
+      pa->keyword_rest || pa->block || !list->elements.size ||
+      PM_NODE_TYPE(pa->requireds.nodes[0]) != PM_REQUIRED_PARAMETER_NODE ||
+      (want && ((const pm_required_parameter_node_t *)pa->requireds.nodes[0])->name != want)) return 0;
+  *got = ((const pm_required_parameter_node_t *)pa->requireds.nodes[0])->name;
+  for (size_t i = 0; i < list->elements.size; i++)
+    if (PM_NODE_TYPE(list->elements.nodes[i]) != PM_STRING_NODE) return 0;
+  *words = &list->elements;
+  return 1;
+}
+
+/* Is a path built as the Mr Bones layout builds one: literals, the loop's
+   word, and calls on constants (`File.join(LIBPATH, "x", f)`,
+   `Gem.libpath(["x", f])`), with at least one constant? */
+typedef struct { int constants, bad; } SpShape;
+static bool sp_shape_visit(const pm_node_t *n, void *data) {
+  SpShape *s = data;
+  switch (PM_NODE_TYPE(n)) {
+    case PM_CONSTANT_READ_NODE: case PM_CONSTANT_PATH_NODE: s->constants++; return true;
+    case PM_STRING_NODE: case PM_LOCAL_VARIABLE_READ_NODE: case PM_ARRAY_NODE: case PM_ARGUMENTS_NODE:
+    case PM_CALL_NODE: return true;
+    default: s->bad = 1; return false;
+  }
+}
+
+
+/* The locals an expression reads (a block in it is not followed) */
+typedef struct { const pm_local_variable_read_node_t *rd[8]; int n, bad; } SpReads;
+static bool sp_reads_visit(const pm_node_t *n, void *data) {
+  SpReads *r = data;
+  if (PM_NODE_TYPE(n) == PM_BLOCK_NODE || PM_NODE_TYPE(n) == PM_LAMBDA_NODE) { r->bad = 1; return false; }
+  if (PM_NODE_TYPE(n) != PM_LOCAL_VARIABLE_READ_NODE) return true;
+  const pm_local_variable_read_node_t *rd = (const pm_local_variable_read_node_t *)n;
+  for (int i = 0; i < r->n; i++) if (r->rd[i]->name == rd->name && r->rd[i]->depth == rd->depth) return true;
+  if (r->n == 8) r->bad = 1;
+  else r->rd[r->n++] = rd;
+  return true;
+}
+
+/* Local `rd` of the require at `x`: its value bound in `ev` (a local assigned
+   one expression in its scope, that expression's), or the words of the loop
+   it is the parameter of. 0 when it is neither: any value. */
+static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_read_node_t *rd,
+                       const pm_node_list_t **words, pm_constant_id_t *wid) {
+  int si = -1, hop = 0;
+  for (int i = x->depth - 1; i >= 0 && si < 0; i--) {
+    pm_node_type_t t = PM_NODE_TYPE(x->stack[i]);
+    if (!sp_scope_node(t)) continue;
+    if (hop++ == (int)rd->depth) si = i;
+    else if (t != PM_BLOCK_NODE && t != PM_LAMBDA_NODE) break;
+  }
+  if (si < 0) return 0;
+  const pm_node_t *s = x->stack[si], *params = sp_scope_params(s), *body = sp_scope_body(s);
+  pm_constant_id_t pid = 0;
+  int word = sp_each_words(x, si, rd->name, words, &pid);
+  if (!word && params) {   /* a parameter, or a block-local, of the scope: any value */
+    SpParamScan ps = { rd->name, 0 };
+    pm_visit_node(params, sp_param_binds, &ps);
+    if (ps.found) return 0;
+  }
+  SpLocalScan sc = { rd->name, 0, 0, 0, NULL };
+  if (body) pm_visit_node(body, sp_local_scan, &sc);
+  if (sc.other || (word ? sc.nwrite != 0 : sc.nwrite != 1)) return 0;
+  if (word) { *wid = pid; return 1; }
+  PevCtx sub;   /* (the expression's own locals are not looked into) */
+  memset(&sub, 0, sizeof sub);
+  sub.dir = x->dir;
+  Mv v;
+  char *nm = cstr(rd->name);
+  int ok = pev_eval(&sub, (pm_node_t *)sc.val, &v) && v.k == MV_STR;
+  if (ok) pev_bind(ev, nm, v);
+  free(nm);
+  return ok;
+}
+
+/* The paths `arg` takes: one for each word of the loop it reads, or one.
+   Open when a local it reads is no known value or the evaluator does not
+   know the rest. */
+static void sp_req_paths(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out) {
+  PevCtx ev;
+  memset(&ev, 0, sizeof ev);
+  ev.dir = x->dir;
+  SpReads rs = { { NULL }, 0, 0 };
+  pm_visit_node(arg, sp_reads_visit, &rs);
+  const pm_node_list_t *words = NULL;
+  pm_constant_id_t wid = 0;
+  int ok = !rs.bad;
+  for (int i = 0; ok && i < rs.n; i++) {
+    const pm_node_list_t *w = NULL;
+    pm_constant_id_t id = 0;
+    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id);
+    if (ok && w) { ok = !words; words = w; wid = id; }
+  }
+  char *wname = words ? cstr(wid) : NULL;
+  for (size_t k = 0; ok && k < (words ? words->size : 1); k++) {
+    Mv v;
+    if (words) {
+      const pm_string_t *u = &((const pm_string_node_t *)words->nodes[k])->unescaped;
+      pev_bind(&ev, wname, mv_str((const char *)pm_string_source(u), pm_string_length(u), MV_STR));
+    }
+    if (pev_eval(&ev, (pm_node_t *)arg, &v) && v.k == MV_STR) sp_paths_add(out, v.s, strlen(v.s));
+    else ok = 0;
+  }
+  if (!ok) sp_paths_open(out);
+  free(wname);
+  for (int i = 0; i < ev.nloc; i++) free(ev.loc[i].name);
+}
+
+/* The literals a computed path joins, as the inline model reads a plain
+   require naming a file beside this one (sp_join_visit): one path for each
+   word of the `%w(...).each` the require stands in, or one path. Open when
+   the path is not built so, or joins no literal. */
+static void sp_req_beside(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out) {
+  const pm_node_list_t *words = NULL;
+  SpShape shape = { 0, 0 };
+  pm_visit_node(arg, sp_shape_visit, &shape);
+  if (shape.bad || !shape.constants) { sp_paths_open(out); return; }
+  pm_constant_id_t pid = 0;
+  for (int i = x->depth - 1; i >= 0 && !words; i--)
+    if (PM_NODE_TYPE(x->stack[i]) == PM_BLOCK_NODE && sp_each_words(x, i, 0, &words, &pid)) {
+      SpLocalScan sc = { pid, 0, 0, 0, NULL };   /* (a word the block assigns anew is not the loop's) */
+      pm_visit_node(sp_scope_body(x->stack[i]), sp_local_scan, &sc);
+      if (sc.nwrite || sc.other) { sp_paths_open(out); return; }
+    }
+  char *var = words ? cstr(pid) : NULL;
+  for (size_t k = 0; k < (words ? words->size : 1) && !out->open; k++) {
+    const pm_string_t *u = words ? &((const pm_string_node_t *)words->nodes[k])->unescaped : NULL;
+    char *val = u ? strndup((const char *)pm_string_source(u), pm_string_length(u)) : NULL, joined[512];
+    SpJoin j = { x->pp, var, val, joined, 0, sizeof joined, 0, 0 };
+    joined[0] = 0;
+    pm_visit_node(arg, sp_join_visit, &j);
+    if (j.bad || !j.n) sp_paths_open(out);
+    else {
+      if (j.o > 3 && strcmp(joined + j.o - 3, ".rb") == 0) j.o -= 3;
+      sp_paths_add(out, joined, j.o);
+    }
+    free(val);
+  }
+  free(var);
+}
+
+
+/* Does the file's directory hold `path`? */
+static int sp_beside_file(SpLoadGraph *g, int from, const char *path) {
+  char found[1024];
+  sp_load_rel_path(g, from, path, found, sizeof found);
+  size_t fl = strlen(found);
+  if (fl < sizeof found - 4 && (fl < 3 || strcmp(found + fl - 3, ".rb") != 0)) strcat(found, ".rb");
+  return sp_lib_file(found);
+}
+
+/* The bare features that name file `f`, newline-separated (NULL for none):
+   the ends of its path, from a '/', that a literal `require` of resolves to
+   it (sp_lib_lookup, the one rule, so the load path's order decides which
+   file a feature names), and the directory's, where the lookup reads
+   <root>/X/X.rb as X. Those the compiler's own roots answer (lib/, builtins/,
+   packages/): a computed bare path names a file by exactly these at the
+   compiler's root of the run-time $LOAD_PATH. A file under a root from -I is
+   named by that root's entry there, which sp_require_search matches by the
+   file's path. */
+static char *sp_bare_features(SpLoadGraph *g, int f) {
+  char *a = strdup(g->file[f]), *list = NULL;
+  if (!a) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  size_t al = strlen(a), ll = 0;
+  if (al > 3 && strcmp(a + al - 3, ".rb") == 0) a[al -= 3] = 0;
+  const char *last = strrchr(a, '/');
+  for (int dirpass = 0; dirpass < 2; dirpass++) {
+    if (dirpass) {   /* X for <root>/X/X */
+      size_t ln = last ? strlen(last + 1) : 0;
+      if (!ln || al < 2 * ln + 2 || a[al - ln - 1] != '/' || a[al - 2 * ln - 2] != '/' || strncmp(a + al - 2 * ln - 1, a + al - ln, ln) != 0) break;
+      a[al - ln - 1] = 0;
+    }
+    for (const char *t = strchr(a, '/'); t; t = strchr(t + 1, '/')) {
+      char found[1024], *canon;
+      int tier = t[1] ? sp_lib_lookup(g->lib_dir, t + 1, found, sizeof found) : SP_LIB_NONE;
+      /* (a file under a root from -I is named by that entry of the run-time $LOAD_PATH, not by the compiler's root) */
+      if (tier == SP_LIB_NONE || tier == SP_LIB_ROOT) continue;
+      int same = (canon = sp_canonical_path(found)) && strcmp(canon, g->file[f]) == 0;
+      free(canon);
+      if (!same) continue;
+      size_t tl = strlen(t + 1);
+      list = realloc(list, ll + tl + 2);
+      if (!list) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      memcpy(list + ll, t + 1, tl); ll += tl; list[ll++] = '\n'; list[ll] = 0;
+    }
+  }
+  free(a);
+  return list;
+}
+
+/* The directories -I names as File.expand_path gives them (against the
+   current directory, "." and ".." folded, a symlink left as written), one
+   per line and in order: the first entries of the run-time $LOAD_PATH, as
+   CRuby's start with them (sp_load_path_seed). NULL for none. */
+static char *sp_seed_dirs(const SpLoadGraph *g) {
+  char *list = NULL;
+  size_t ll = 0;
+  for (int i = 0; i < g->root_base; i++) {
+    char cwd[1024], full[2048];
+    const char *r = sp_feature_roots[i];
+    if (r[0] != '/' && getcwd(cwd, sizeof cwd)) snprintf(full, sizeof full, "%s/%s", cwd, r);
+    else snprintf(full, sizeof full, "%s", r);
+    sp_normalize_dots(full);
+    size_t dl = strlen(full);
+    list = realloc(list, ll + dl + 2);
+    if (!list) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    memcpy(list + ll, full, dl); ll += dl; list[ll++] = '\n'; list[ll] = 0;
+  }
+  return list;
+}
+
+/* The requires of a file's tree, in the tree's order, each resolved
+   (sp_load_resolve), noted with the top-level statement it stands in, and
+   kept with its call node, which flatten's LoadNode looks it up by
+   (sp_graph_site_take). `stack` holds the nodes above the one visited,
+   from the file's root. */
+typedef struct { SpLoadGraph *g; int f, stmt; const pm_node_t *top; const pm_node_t **stack; int depth, cap; } SpSiteWalk;
+
+/* The edge of a require whose path is no literal: the one file a known path
+   names, as that literal does; the files a known set or the files beside
+   this one name (SP_LOAD_SET); or open (SP_LOAD_SET too, `open`: any file
+   of the program). */
+static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char *method, int line) {
+  SpLoadGraph *g = w->g;
+  char *dir = strdup(g->file[w->f]), *sl = dir ? strrchr(dir, '/') : NULL;
+  if (!dir) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  if (sl) *sl = 0;
+  SpReqCtx x = { g_parser, w->stack, w->depth, dir };
+  const pm_node_t *arg = n->arguments->arguments.nodes[0];
+  SpPaths kv = { { NULL }, 0, 0 };
+  int plain = strcmp(method, "require") == 0, beside = 0, e;
+  sp_req_paths(&x, arg, &kv);
+  if (kv.open && plain) {
+    sp_paths_free(&kv); kv.open = 0; beside = 1;
+    sp_req_beside(&x, arg, &kv);
+  }
+  free(dir);
+  int nfile = 0, to[SP_REQ_MAX], rel = 0, bad = kv.open;
+  const char *one = NULL;
+  for (int i = 0; i < kv.n && !bad; i++) {
+    const char *p = kv.v[i];
+    rel = beside || !plain || p[0] == '/';
+    int f = -1, how = SP_LOAD_NONE;
+    /* (a path beside the file is looked up only where the file is: the
+       features a require names are noted as it resolves) */
+    if (!rel || sp_beside_file(g, w->f, p)) how = sp_load_target(g, w->f, rel, p, &f);
+    one = p;
+    if (how != SP_LOAD_FILE) continue;
+    int dup = 0;
+    for (int k = 0; k < nfile; k++) dup |= to[k] == f;
+    if (!dup) to[nfile++] = f;
+  }
+  if (!bad && !(beside && !nfile) && !beside && kv.n == 1) {   /* one path is known: that literal */
+    e = sp_load_resolve(g, w->f, method, one, line, rel);
+  }
+  else {
+    sp_load_edge(&g->edge, &g->nedge, &g->edgecap, w->f, line, plain, "(computed)", SP_LOAD_SET, -1);
+    e = g->nedge - 1;
+    g->edge[e].open = bad || (beside && !nfile);
+    g->edge[e].ncand = g->edge[e].open ? 0 : nfile;
+    g->edge[e].cand = g->edge[e].ncand ? malloc(sizeof(int) * (size_t)nfile) : NULL;
+    for (int k = 0; k < g->edge[e].ncand; k++) g->edge[e].cand[k] = to[k];
+    sp_load_resolved(g, w->f);
+  }
+  sp_paths_free(&kv);
+  return e;
+}
+
+static bool sp_graph_site_visit(const pm_node_t *node, void *data) {
+  SpSiteWalk *w = data;
+  if (PM_NODE_TYPE(node) == PM_CALL_NODE && sp_load_call((const pm_call_node_t *)node)) {
+    const pm_call_node_t *n = (const pm_call_node_t *)node;
+    const pm_node_t *arg = n->arguments->arguments.nodes[0];
+    char *method = cstr(n->name), *path = NULL;
+    int line = pm_newline_list_line(&g_parser->newline_list, node->location.start, g_parser->start_line), e;
+    if (PM_NODE_TYPE(arg) == PM_STRING_NODE) {
+      const pm_string_t *u = &((const pm_string_node_t *)arg)->unescaped;
+      path = strndup((const char *)pm_string_source(u), pm_string_length(u));
+      if (!path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      e = sp_load_resolve(w->g, w->f, method, path, line, 0);
+    }
+    else e = sp_graph_computed(w, n, method, line);
+    w->g->edge[e].stmt = w->stmt;
+    w->g->edge[e].top = node == w->top;
+    SpGraphFile *r = sp_graph_rec(w->g, w->f);
+    if (r->nsite == r->sitecap) {
+      r->sitecap = r->sitecap ? r->sitecap * 2 : 8;
+      r->site = realloc(r->site, sizeof *r->site * (size_t)r->sitecap);
+      if (!r->site) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    }
+    r->site[r->nsite++] = (SpGraphSite){ e, node, 0 };
+    free(method);
+    free(path);
+  }
+  if (w->depth == w->cap) {
+    w->cap = w->cap ? w->cap * 2 : 32;
+    w->stack = realloc(w->stack, sizeof *w->stack * (size_t)w->cap);
+    if (!w->stack) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
+  w->stack[w->depth++] = node;
+  pm_visit_child_nodes(node, sp_graph_site_visit, w);
+  w->depth--;
+  return false;
+}
+
+/* The load path as the program has made it by the statement the walk is at:
+   the roots from -I, then the directories its statements have written
+   (`dirs`), which a file loaded from there starts with. */
+static void sp_roots_set(const SpLoadGraph *g, char *const *dirs, int n) {
+  for (int i = g->root_base; i < sp_feature_roots_n; i++) free(sp_feature_roots[i]);
+  sp_feature_roots_n = g->root_base;
+  for (int i = 0; i < n; i++) sp_feature_root_at(dirs[i], 0);
+}
+/* File `f`, named just now by a require of the file being read: it starts
+   with the load path as that file has it. */
+static void sp_graph_inherit(SpLoadGraph *g, int f) {
+  SpGraphFile *r = sp_graph_rec(g, f);
+  int n = sp_feature_roots_n - g->root_base;
+  r->dirs = n > 0 ? malloc(sizeof *r->dirs * (size_t)n) : NULL;
+  for (int i = 0; i < n; i++) {
+    r->dirs[i] = strdup(sp_feature_roots[g->root_base + i]);
+    if (!r->dirs[i]) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  }
+  r->ndirs = n > 0 ? n : 0;
+}
 /* --load-model=graph: file `f` of graph `g` read and parsed, before any
    file is flattened: its requires resolved (each target file a file of the
    graph, read in its turn) and the names it uses added to `facts`. 0 when it
@@ -7073,13 +7578,29 @@ static int sp_graph_read(SpLoadGraph *g, int f, const char *source_file, SpNames
   if (!(*sp_load_flags(g, f) & SP_FILE_BUILTIN)) {
     sp_load_sites_note(&r->src.parser, r->src.root, 1);
   }
+  sp_roots_set(g, r->dirs, r->ndirs);
   g_parser = &r->src.parser;
   const pm_node_t *root = r->src.root;
   const pm_statements_node_t *st = PM_NODE_TYPE_P(root, PM_PROGRAM_NODE) ? ((const pm_program_node_t *)root)->statements : NULL;
-  for (size_t i = 0; st && i < st->body.size; i++) {
-    SpSiteWalk w = { g, f, (int)i, st->body.nodes[i] };
-    pm_visit_node(st->body.nodes[i], sp_graph_site_visit, &w);
+  SpSiteWalk w = { g, f, 0, NULL, NULL, 0, 0 };
+  if (st) {
+    w.stack = malloc(sizeof *w.stack * (size_t)(w.cap = 32));
+    if (!w.stack) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+    w.stack[w.depth++] = root;
   }
+  char *dir = sp_file_real_dir(path);
+  int builtin = (*sp_load_flags(g, f) & SP_FILE_BUILTIN) != 0;
+  for (size_t i = 0; st && i < st->body.size; i++) {
+    w.stmt = (int)i; w.top = st->body.nodes[i];
+    pm_visit_node(st->body.nodes[i], sp_graph_site_visit, &w);
+    /* a directory the statement puts on the load path is one for the statements after it */
+    int first;   /* (a directory goes after the roots from -I, in the order written) */
+    char *real = dir && !builtin ? sp_load_dir_stmt(&r->src.parser, st->body.nodes[i], dir, &first) : NULL;
+    if (real && !sp_feature_root_has(real)) sp_feature_root_at(real, 0);   /* a root from here on */
+    free(real);
+  }
+  free(dir);
+  free(w.stack);
   sp_names_of(facts, &r->src.parser, r->src.root);
   return 1;
 }
@@ -7096,9 +7617,10 @@ static SpGraphFlat g_flat_sites;
    requires in its own order, which is not the tree's everywhere (a begin's
    ensure comes before its else), and two requires on one line differ only
    by their node. The search starts at the site after the last one taken,
-   where the next one nearly always is. */
-static void sp_graph_site_take(int id, const pm_node_t *call) {
-  static const char *const how_name[] = { "file", "native", "core", "none", "run-time" };
+   where the next one nearly always is. 1 when the path is computed when
+   the require runs (its LoadNode keeps the expression). */
+static int sp_graph_site_take(int id, const pm_node_t *call) {
+  static const char *const how_name[] = { "file", "native", "core", "none", "run-time", "set" };   /* (SP_LOAD_*; no LoadNode is run-time) */
   SpGraphFile *r = g_flat_sites.r;
   for (int i = 0; r && i < r->nsite; i++) {
     int k = (g_flat_sites.next + i) % r->nsite;
@@ -7109,6 +7631,25 @@ static void sp_graph_site_take(int id, const pm_node_t *call) {
     e->node = id;
     emit_str(id, "how", how_name[e->how]);
     if (e->to >= 0) emit_int(id, "target_file", e->to);
+    /* the path a computed expression names, when it names one */
+    if (e->how != SP_LOAD_SET &&
+        PM_NODE_TYPE(((const pm_call_node_t *)call)->arguments->arguments.nodes[0]) != PM_STRING_NODE)
+      emit_str(id, "path", e->name);
+    /* a set: the files it may name (prog_load_cand), or any (open) */
+    if (e->how == SP_LOAD_SET) {
+      emit_int(id, "ncand", e->ncand);
+      if (e->open) emit_int(id, "open", 1);
+      char *dir = strdup(g_flat_sites.g->file[e->from]), *sl = dir ? strrchr(dir, '/') : NULL;   /* the requiring file's directory */
+      if (!dir) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+      if (sl) *sl = 0;
+      emit_str(id, "dir", dir);
+      free(dir);
+      for (int c = 0; c < e->ncand; c++) {
+        char key[32];
+        snprintf(key, sizeof key, "cand_%d", c);
+        emit_int(id, key, e->cand[c]);
+      }
+    }
     /* one that names no file: the feature its LoadError names, the path
        as written for a require, from the file's directory for a
        require_relative */
@@ -7118,8 +7659,9 @@ static void sp_graph_site_take(int id, const pm_node_t *call) {
       else sp_load_rel_path(g_flat_sites.g, e->from, e->name, feature, sizeof feature);
       emit_str(id, "feature", feature);
     }
-    return;
+    return e->how == SP_LOAD_SET;
   }
+  return 0;
 }
 
 /* --load-model=graph: file `f` of graph `g`, read before (sp_graph_read),
@@ -7154,6 +7696,30 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   if (!f) out_nt->root_id = root;
   r->root = root;
   emit_int(root, "load_file", f);
+  emit_str(root, "file_path", g->file[f]);
+  int any_set = 0;   /* the bare features a computed require names it by (prog_load_cand) */
+  for (int e = 0; e < g->nedge; e++) any_set |= g->edge[e].how == SP_LOAD_SET;
+  if (any_set && f > 0) {
+    char *bare = sp_bare_features(g, f);
+    if (bare) emit_str(root, "bare_features", bare);
+    free(bare);
+  }
+  if (!f) {   /* the run-time $LOAD_PATH as CRuby's starts: -I's directories, then the compiler's feature root */
+    char *dirs = sp_seed_dirs(g);
+    /* the library directory, as sp_lib_lookup finds lib/: <exe dir>/lib, or one level up
+       when the compiler binary is in bin/ or build/ (then <exe dir>/lib is no directory) */
+    char root_dir[1100];
+    char *lib = realpath(g->lib_dir, NULL);
+    if (!lib) {
+      snprintf(root_dir, sizeof root_dir, "%.*s/../lib", strlen(g->lib_dir) > 4 ? (int)(strlen(g->lib_dir) - 4) : 0, g->lib_dir);
+      lib = realpath(root_dir, NULL);
+    }
+    snprintf(root_dir, sizeof root_dir, "%s", lib ? lib : g->lib_dir);
+    free(lib);
+    if (dirs) emit_str(root, "load_dirs", dirs);
+    emit_str(root, "load_root", root_dir);
+    free(dirs);
+  }
   /* each site made one LoadNode, and each LoadNode took a site */
   int loads = 0, once = 1;
   for (int id = start; id < node_counter; id++) loads += nt_kind(out_nt, id) == NK_LoadNode;
@@ -7343,8 +7909,10 @@ static int sp_graph_boot(SpLoadGraph *g, const char *source_file, SpNames *facts
  * run inside that statement the first time one reaches it. `entered[f]` is
  * that require's edge (-2 for the entry). Every other file is not placed:
  * a require under a condition, in a method, block or class body, or in a
- * value may run it at another time, and so may one whose path is computed
- * when it runs, which may name any file. */
+ * value may run it at another time. (A file a computed path may name is
+ * placed here as a literal require places it; the program module takes it
+ * out of that place where the computed require may run first,
+ * prog_settle_files.) */
 static void sp_load_enter(SpLoadGraph *g, int e) {
   const SpLoadEdge *x = &g->edge[e];
   if (!x->top || x->how != SP_LOAD_FILE || g->entered[x->to] != -1) return;
@@ -7358,12 +7926,8 @@ static void sp_load_order_build(SpLoadGraph *g) {
   if (!g->entered) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   for (int f = 0; f < g->nfile; f++) g->entered[f] = -1;
   g->entered[0] = -2;
-  int computed = 0;
-  for (int e = 0; e < g->nedge; e++) computed |= g->edge[e].how == SP_LOAD_RUNTIME;
-  if (!computed) {
-    for (int b = 0; b < g->nboot; b++) sp_load_enter(g, g->boot[b]);
-    for (int i = 0; i < g->gf[0]->nsite; i++) sp_load_enter(g, g->gf[0]->site[i].edge);
-  }
+  for (int b = 0; b < g->nboot; b++) sp_load_enter(g, g->boot[b]);
+  for (int i = 0; i < g->gf[0]->nsite; i++) sp_load_enter(g, g->gf[0]->site[i].edge);
   /* a file another require may run first is not placed, nor is any file
      only such a file places */
   for (int changed = 1; changed; ) {
@@ -7495,12 +8059,14 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
   out_nt = nt_new_table();
   node_counter = 0;
   sp_load_file(&g, source_file);
+  g.root_base = sp_feature_roots_n;
   SpNames facts = { NULL, 0, 0, 0 };
   int ok = 1;
   /* every file of the program read first, the libraries CRuby has at boot
      among them, then each flattened: what a pass over the whole program
      asks of the trees is known before any file becomes nodes */
   for (int f = 0; f < g.nfile && ok; f++) ok = sp_graph_read(&g, f, source_file, &facts);
+  sp_roots_set(&g, NULL, 0);   /* (the libraries CRuby has at boot are found as the program starts) */
   if (ok) ok = sp_graph_boot(&g, source_file, &facts);
   sp_names_free(&facts);
   if (ok) sp_load_order_build(&g);
