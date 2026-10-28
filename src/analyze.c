@@ -45391,6 +45391,12 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
     arysub_super_into(c, id, id, mname, init, args, -1);
     return;
   }
+  /* `super(n, &blk)` in initialize with the method's own block, named or
+     anonymous, is the forward below: a `new` with no block gives none */
+  int bx = init == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -2;
+  if (bx == -1 || (bx >= 0 && nt_kind(nt, bx) == NK_LocalVariableReadNode && s->blk_param &&
+                   nt_str(nt, bx, "name") && sp_streq(nt_str(nt, bx, "name"), s->blk_param)))
+    blk = -1;
   if (blk >= 0) { arysub_super_into(c, id, id, mname, init, args, blk); return; }
   /* In self.new, a split on block_given? would make the method a yielding
      one, which a call through a class value cannot reach: with no block
@@ -52071,6 +52077,16 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
     }
     for (int i = 0; i < c->ngvars; i++)
       if (c->gvars[i].type == TY_INT) lv_set_type(&c->gvars[i], TY_POLY);
+    /* the blockless answer of an `if block_given?` tail is its else arm's,
+       which the widened locals may have changed: `Array.new(n, v)` of a
+       widened v is a poly Array, not the Integer one it was */
+    for (int s = 0; s < c->nscopes; s++) {
+      Scope *sc = &c->scopes[s];
+      if (sc->ret_noblock == TY_UNKNOWN) continue;
+      int el = scope_block_given_else_last(c, sc);
+      TyKind et = el >= 0 ? infer_type(c, el) : TY_UNKNOWN;
+      if (et != TY_UNKNOWN && et != sc->ret_noblock) scope_set_ret_noblock(sc, et);
+    }
   }
 
   /* narrow monomorphic object arrays (POLY_ARRAY -> obj-pointer array) before

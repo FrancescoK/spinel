@@ -9152,6 +9152,14 @@ static int fwd_bam_lambda_count(Compiler *c, int ex) {
   return f;
 }
 
+/* `Array.new(n, &blk)`: the forward of a block to the Array builder */
+static int fwd_array_new_call(const NodeTable *nt, int id) {
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  return recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && name && sp_streq(name, "new") &&
+         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array");
+}
+
 /* `recv.name(arg)` (no argument for -1), for the forwards built below */
 static int fwd_new_call(NodeTable *nt, int recv, const char *name, int arg) {
   int call = nt_new_node(nt, "CallNode");
@@ -9217,15 +9225,26 @@ static int fwd_arity_pick(Compiler *c, NodeTable *nt, int ex, int id, int pair, 
    or a `&expr` that may be nil? Its own block forwarded to a builtin is then
    absent at that site, where the builtin answers its blockless form. A call
    counts when it may reach ms: receiverless, or on a receiver of ms's class
-   (or a subclass), or one not typed yet. */
+   (or a subclass), or one not typed yet. An initialize runs from a `new`
+   and from a subclass's super, which hands on the block its own caller gave:
+   any `new` with no block of its own counts, and any super in an
+   initialize. */
 static int fwd_method_called_blockless(Compiler *c, Scope *ms) {
   const NodeTable *nt = c->nt;
   if (!ms || !ms->name) return 0;
+  int init = !ms->is_cmethod && sp_streq(ms->name, "initialize");
+  for (int sk = 0; init && sk < 2; sk++) {
+    NT_FOREACH_KIND(nt, sk ? NK_ForwardingSuperNode : NK_SuperNode, u) {
+      Scope *us = comp_scope_of(c, u);
+      if (us && us->name && sp_streq(us->name, "initialize")) return 1;
+    }
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, u) {
     const char *un = nt_str(nt, u, "name");
-    if (!un || !sp_streq(un, ms->name)) continue;
+    if (!un || !sp_streq(un, init ? "new" : ms->name)) continue;
     int ub = nt_ref(nt, u, "block");
     if (ub >= 0 && nt_kind(nt, ub) == NK_BlockNode) continue;
+    if (init) return 1;
     /* a respond_to? probe is analysis-only and never runs: counted as a
        blockless call, it put the blockless form beside the forward, which a
        File or IO loop does not have, and the clone a poly dispatch arm runs
@@ -9468,8 +9487,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 2;
       pty[0] = pty[1] = TY_UNKNOWN;
     }
-    else if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && sp_streq(name, "new") &&
-             nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Array")) {
+    else if (fwd_array_new_call(nt, id)) {
       /* Array.new(n, &blk): the block takes each index. Left in its &-form,
          the builder's loop has no block body to run and the array came out
          empty. */
@@ -9646,7 +9664,8 @@ int desugar_value_callable_forwards(Compiler *c) {
                        nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), fms->blk_param));
     int blockless_form = rt == TY_STRING || rt == TY_IO ||
                          ((ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_POLY) &&
-                          builtin_enum_name_index(name) < 0);
+                          builtin_enum_name_index(name) < 0) ||
+                         fwd_array_new_call(nt, id);
     if (own && blockless_form && fwd_method_called_blockless(c, fms))
       fwd_branch_on_block_given(c, id);
     /* a splat beside the forward was kept whole while the block was an
