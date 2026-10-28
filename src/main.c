@@ -19,6 +19,7 @@
  */
 #include "node_table.h"
 #include "value_pos.h"
+#include "implicit_calls.h"
 #include "spinel_rev.h"
 #include "codegen.h"
 #include "analyze.h"
@@ -600,6 +601,7 @@ static int parse_flag(const char *a) {
    when `a` is one of them. */
 static int analysis_dump_flag(const char *a) {
   if (sp_streq(a, "--dump-repr")) return g_dump_repr = 1;
+  if (sp_streq(a, "--dump-implicit")) return g_dump_implicit = 1;
   return sp_streq(a, "--dump-load-record") ? (g_dump_load_record = 1) : 0;
 }
 /* --rbs: the seed file the extractor wrote, removed however the compile

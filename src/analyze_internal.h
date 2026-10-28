@@ -917,6 +917,8 @@ int backprop_hash_return_types(Compiler *c);
 int backprop_call_target(Compiler *c, int call_id);
 int ivar_src_slot(Compiler *c, int v, const char **ivn);
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap, int instance_self);
+void cr_collect_program_end(Compiler *c, char ***out, int *n, int *cap);   /* the printer of an uncaught exception */
+int cr_ty_builtin_value(Compiler *c, TyKind t);
 void compute_reachable(Compiler *c, int typed);
 void refuse_native_singleton_reopen(Compiler *c, Scope *s);
 void compute_instantiated(Compiler *c, int early);
@@ -929,6 +931,7 @@ int anh_has(const ANameHash *st, const char *nm);
 int anh_find(const ANameHash *st, const char *nm);   /* insertion index, or -1 */
 void anh_add(ANameHash *st, const char *nm);
 void anh_free(ANameHash *st);
+void cr_class_only_names(Compiler *c, ANameHash *out);   /* the names only plain classes' methods hold */
 /* The scopes of a name, ascending: the first, and the next after s (-1 at
    the end); from a table while the scope index is frozen, else a scan
    (analyze.c). A pass walking every scope for a name's methods per call

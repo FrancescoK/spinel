@@ -60,6 +60,9 @@ typedef struct { const char *name; unsigned roles; } BopCallback;
 int bop_name_callbacks(const char *builtin, const BopCallback **out);
 /* The roles in which some builtin calls `name` back; 0: no builtin does */
 unsigned bop_callback_roles(const char *name);
+/* Every callback name with the roles in which some builtin calls it, sorted;
+   their number */
+int bop_callback_names(const BopCallback **out);
 /* The callbacks of `builtin` on one receiver class ("Array"; "File." for a
    singleton method), for the typed passes. -1 means unknown, as it does for
    bop_name_callbacks: that receiver was not probed for it, and the caller

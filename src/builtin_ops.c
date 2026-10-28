@@ -190,6 +190,11 @@ unsigned bop_callback_roles(const char *name) {
   return 0;
 }
 
+int bop_callback_names(const BopCallback **out) {
+  if (out) *out = bop_cb_roles;
+  return BOP_CB_ROLES;
+}
+
 int bop_class_callbacks(const char *recv_class, const char *builtin, const BopCallback **out) {
   if (out) *out = NULL;
   const BopCbRow *r = recv_class && builtin ? bop_cb_find(builtin, recv_class) : NULL;

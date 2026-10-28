@@ -1468,6 +1468,9 @@ typedef struct {
   /* the program has a `**` operand and defines #to_hash: the bridge carries
      the #to_hash row a boxed operand converts through (sp_kw_splat_conv). */
   int uses_kw_to_hash;
+  /* the methods CRuby calls that the program does not name, as the last
+     reachability run found them (implicit_calls.h); freed with the Compiler */
+  struct IcState *ic;
   int uses_exc_text_handle;  /* emitted shared exception text routes, to_s/message bits */
   char *exc_text_late;  /* the plain exception text dispatchers, defined after the globals (emit_exc_text_dispatch) */
   int exc_text_super;        /* exc_text_override_calls_super's memo: 0 unasked, 1 no, 2 yes */
@@ -1636,6 +1639,7 @@ enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
 Compiler *comp_new(const NodeTable *nt);
 void comp_free(Compiler *c);
+void ic_free(Compiler *c);   /* implicit_calls.c */
 /* Is `name` one of the n strings in `list`? (0 for a NULL name) */
 int name_list_has(char **list, int n, const char *name);
 

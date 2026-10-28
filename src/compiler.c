@@ -489,6 +489,7 @@ void comp_free(Compiler *c) {
   free(c->cext_classes);
   share_facts_free(c);
   share_plan_free(c);
+  ic_free(c);
   free(c->bsl_gen);
   free(c->bsl_val);
   if (g_repr_check) repr_channel_free(c);

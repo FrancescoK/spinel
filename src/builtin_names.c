@@ -2075,6 +2075,10 @@ int is_runtime_callback_name(const char *n) {
   if (!n) return 0;
   return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
 }
+int is_hook_protocol_name(const char *n) {
+  return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
+}
+
 int is_port_gvar_name(const char *n) {
   return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
 }

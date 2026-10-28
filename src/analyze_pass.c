@@ -1,5 +1,6 @@
 #include "cext_bridge.h"
 #include "analyze_internal.h"
+#include "implicit_calls.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "value_pos.h"
@@ -18895,8 +18896,9 @@ int infer_return_types(Compiler *c) {
    with the count and the last name it left there. Another list, or one
    changed behind it, rebuilds the set from the list. */
 static ANameHash cr_set; static char **cr_set_arr; static int cr_set_n; static const char *cr_set_last;
-static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
-  if (!nm) return;
+static int cr_add_name(char ***out, int *n, int *cap, const char *nm) {
+  if (!nm) return 0;
+  int added = 0;
   if (cr_set_arr != *out || cr_set_n != *n || (*n > 0 && (*out)[*n - 1] != cr_set_last)) {
     anh_free(&cr_set); memset(&cr_set, 0, sizeof cr_set);
     for (int i = 0; i < *n; i++) if (!anh_has(&cr_set, (*out)[i])) anh_add(&cr_set, (*out)[i]);
@@ -18905,8 +18907,10 @@ static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
     if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
     (*out)[(*n)++] = strdup(nm);
     anh_add(&cr_set, (*out)[*n - 1]);
+    added = 1;
   }
   cr_set_arr = *out; cr_set_n = *n; cr_set_last = *n > 0 ? (*out)[*n - 1] : NULL;
+  return added;
 }
 
 /* `recv.method(name).arity`: a Method asked only what it is -- its name,
@@ -18945,7 +18949,7 @@ static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
 const ANameHash *g_cr_typed = NULL;
 static int g_cr_user_coerce = 0;
 
-static int cr_ty_builtin_value(Compiler *c, TyKind t) {
+int cr_ty_builtin_value(Compiler *c, TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
          t == TY_BOOL || t == TY_NIL || ((ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub);
 }
@@ -19063,6 +19067,82 @@ static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char *
       for (int h = -1, k, sg; (h = elab_method_holder(c, nm, h, &k, &sg)) >= 0;)
         if (k >= 0) cr_mark_version(c, id, nm, k, sg ? CT_CMETHOD : 0, out, n, cap);
     }
+  }
+}
+
+/* What a node makes CRuby call that the program does not name (implicit_calls.h):
+   its implied calls and, for a call, the callbacks of its builtin, each added
+   to the scope's names as a called name would be, once the operand that
+   receives it may hold an object of the program's. A call of a core name the
+   builtin table does not cover may call any callback name. The scope's nodes
+   are collected whether the scope is reachable or not, as its called names
+   are; only a reachable scope marks them. */
+static void cr_mark_implied(Compiler *c, char ***out, int *n, int *cap, const char *name, unsigned side, const char *cause) {
+  char mark[300];
+  if (!ic_defined(c, name)) return;
+  snprintf(mark, sizeof mark, "%s%s", side == IC_INST ? "\x03" : "", name);
+  if (cr_add_name(out, n, cap, mark)) ic_record(c, name, side, cause);
+}
+
+static void cr_collect_implied(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
+  IcCall buf[64], *calls = buf;
+  char cause[200];
+  if (!c->ic || c->ic->scope < 0) return;
+  int k = ic_node_calls(c, id, buf, 64);
+  if (k == 0) return;
+  /* a call that runs a method of the program's runs no builtin: its callbacks are the method's own */
+  if (nt_kind(nt, id) == NK_CallNode && ic_runs_program_method(c, id)) return;
+  if (k == IC_ANY) {
+    const BopCallback *names = NULL;
+    int nn = bop_callback_names(&names);
+    snprintf(cause, sizeof cause, "IC_ANY: call of %s, line %d", nt_str(nt, id, "name"), (int)nt_int(nt, id, "node_line", 0));
+    ic_record(c, "*", IC_INST | IC_CLASS, cause);
+    for (int i = 0; i < nn; i++)
+      if (!is_definition_hook_name(names[i].name) && !is_hook_protocol_name(names[i].name))
+        cr_mark_implied(c, out, n, cap, names[i].name, IC_INST | IC_CLASS, cause);
+    return;
+  }
+  if (k > 64) {
+    calls = malloc(sizeof *calls * (size_t)k);
+    if (!calls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    ic_node_calls(c, id, calls, k);
+  }
+  /* a name asked through rb_check_funcall is asked of an object handed over in some other role */
+  int handed = 0;
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < k; i++) {
+      int asked = calls[i].role == BCR_ASKED;
+      if (asked != (pass == 1) || (asked && !handed)) continue;
+      /* the hooks the call forms send (include's `included`) are sent by the
+         explicit calls definition_form_hooks desugars them to; the methods
+         they send first (append_features, extend_object) Spinel's forms do
+         not call, so a def of one is not kept for them */
+      if (calls[i].role && (is_definition_hook_name(calls[i].name) || is_hook_protocol_name(calls[i].name))) continue;
+      if (!ic_operand_may_hold(c, &calls[i])) continue;
+      if (calls[i].role) handed = 1;
+      ic_cause(c, id, &calls[i], cause, sizeof cause);
+      cr_mark_implied(c, out, n, cap, calls[i].name, calls[i].side, cause);
+    }
+  if (calls != buf) free(calls);
+}
+
+/* The end of the program: an uncaught exception is printed through its class's
+   message, detailed_message, to_s and backtrace, so the exception classes'
+   methods of those names run (a program's own are the only ones asked). */
+void cr_collect_program_end(Compiler *c, char ***out, int *n, int *cap) {
+  const NodeTable *nt = c->nt;
+  for (int r = 0; r < nt_nroots(nt); r++) {
+    NtImplied rows[16];
+    int nr = nt_implied_calls(nt, nt_root(nt, r), rows, 16);
+    for (int i = 0; i < nr && i < 16; i++)
+      for (int s = 0; s < c->nscopes; s++) {
+        const Scope *sc = &c->scopes[s];
+        char mark[32], cause[120];
+        if (!sc->name || sc->is_cmethod || sc->class_id < 0 || !class_is_exc_subclass(c, sc->class_id) || !sp_streq(sc->name, rows[i].name)) continue;
+        snprintf(mark, sizeof mark, "\x01%d", s);
+        snprintf(cause, sizeof cause, "ProgramNode: %s of an uncaught exception", rows[i].name);
+        if (cr_add_name(out, n, cap, mark)) ic_record(c, rows[i].name, IC_INST, cause);
+      }
   }
 }
 
@@ -19205,6 +19285,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   if (builtin_recv) names[0] = NULL;
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);
+  cr_collect_implied(c, nt, id, out, n, cap);
   int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap, inner_self); }
