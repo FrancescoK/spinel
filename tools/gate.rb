@@ -7,13 +7,22 @@ module Gate
   CONTAINER = <<~'SH'
     tar -x -C /src && cd /src
     cache="vendor/prism vendor/rbs build/rubyspec build/optcarrot build/rubyboy"
-    for d in $cache; do [ -d /cache/$d ] && mkdir -p $(dirname $d) && cp -a /cache/$d $d; done
+    # The result cache changes on each run, so it goes back after each run,
+    # pruned entries included. Without it, each gate compiled and ran every
+    # program again. A lock and an atomic swap keep a whole copy in the
+    # volume, also when a run stops or two gates share the volume.
+    results=build/result-cache
+    for d in $cache $results; do [ -d /cache/$d ] && mkdir -p $(dirname $d) && cp -a /cache/$d $d; done
     chown -R gate:gate /src
     runuser -u gate -- env HOME=/home/gate PATH="$PATH" GATE_JOBS="$GATE_JOBS" bash -c 'cd /src && git init -q && git add -A &&
       git -c user.email=gate@local -c user.name=gate commit -qm gate &&
       for i in 1 2 3 4 5; do make deps >/dev/null 2>&1 && break; sleep 5; done; make -j${GATE_JOBS:-$(nproc)} gate 2>&1'
     rc=$?
     for d in $cache; do [ -d $d ] && [ ! -d /cache/$d ] && mkdir -p /cache/$(dirname $d) && cp -a $d /cache/$d; done
+    [ -d $results ] && mkdir -p /cache/build && flock /cache/build/.result-cache.lock bash -c "
+      rm -rf /cache/$results.new && cp -a $results /cache/$results.new &&
+      if [ -d /cache/$results ]; then mv -T --exchange /cache/$results.new /cache/$results && rm -rf /cache/$results.new
+      else mv /cache/$results.new /cache/$results; fi"
     echo "@@platform linux-$(uname -m) gcc-$(gcc -dumpfullversion)"
     exit $rc
   SH
