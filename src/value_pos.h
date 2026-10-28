@@ -216,4 +216,42 @@ void value_pos_dump(const NodeTable *nt, FILE *out);
    walked in order. 0 when they hold. */
 int value_pos_check(void);
 
+/* ---- implied calls ----
+   The methods CRuby calls for a node that the program's text does not name
+   (tools/implied_calls.yml, generated into src/implied_calls.inc): the
+   to_s of an interpolation, the to_ary of `a, b = o`, the each of a `for`,
+   the === of a `when`, the inherited of a class header. Pure over the node
+   table, like the walk above. */
+
+/* the side a call lands on: a method of an object's class, or of a class object */
+enum { NTS_INST = 1, NTS_CLASS = 2 };
+
+/* the receiver of a call that no child node holds */
+enum {
+  NTI_NONE = -1,     /* no node holds it: the value a read answers, the class a hook is sent to */
+  NTI_SELF = -2,     /* the self of the method or class body the node is in */
+  NTI_YIELDED = -3,  /* the value yielded to the block, or to the loop variable */
+  NTI_MATCHED = -4   /* the value a pattern is matched against */
+};
+
+typedef struct {
+  const char *name;        /* the method called */
+  int operand;             /* the node whose value receives the call (a wrapper
+                              such as a StatementsNode may stand for its last
+                              statement), or an NTI_ code */
+  unsigned char side;      /* NTS_ bits: both when the operand is an object or a class */
+} NtImplied;
+
+/* The calls node `id` makes: written to out[0..max), their number answered
+   (more than max when the array was short; 0 for a node that calls nothing,
+   a kind with no row, and a bad id). A call whose operand is a literal that
+   cannot hold an object of the program's, or a pattern or a target, is not
+   one. */
+int nt_implied_calls(const NodeTable *nt, int id, NtImplied *out, int max);
+
+/* --dump-implied-calls: for each node of the program's own file that makes
+   implied calls, one line per call (the unit-test surface of
+   tools/implied_calls.yml). */
+void implied_calls_dump(const NodeTable *nt, FILE *out);
+
 #endif
