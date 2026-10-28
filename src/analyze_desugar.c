@@ -9495,6 +9495,14 @@ int desugar_value_callable_forwards(Compiler *c) {
       arity = 1;
       pty[0] = TY_INT;
     }
+    else if (rt == TY_POLY && sp_streq(name, "fill") && !recv_may_reach_program_method(c, id, rt, name)) {
+      /* Array#fill on a boxed receiver (an Array parameter its callers pass
+         of more than one kind) yields each index, as on a typed one. Left
+         as `&b`, the poly arm filled from the first argument as the value
+         and never ran the block. */
+      arity = 1;
+      pty[0] = TY_INT;
+    }
     else if ((sp_streq(name, "tap") || sp_streq(name, "then") || sp_streq(name, "yield_self")) &&
              rt != TY_UNKNOWN && !recv_may_reach_program_method(c, id, rt, name)) {
       /* Kernel#tap / #then hand the receiver itself to the block: any
