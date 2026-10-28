@@ -591,6 +591,7 @@ const char *conv_builtin_class_name(TyKind t) {
   if (t == TY_COMPLEX) return "Complex";
   if (t == TY_RATIONAL) return "Rational";
   if (ty_is_hash(t)) return "Hash";
+  if (t == TY_REGEX) return "Regexp";
   return "Object";
 }
 /* True for a builtin type that certainly has no #to_ary, so an Array method
@@ -602,7 +603,44 @@ int conv_to_ary_impossible(TyKind t) {
   return t == TY_STRING || t == TY_STRBUF || t == TY_INT || t == TY_BIGINT ||
          t == TY_FLOAT || t == TY_SYMBOL || t == TY_PROC || t == TY_TIME ||
          t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE ||
-         t == TY_COMPLEX || t == TY_RATIONAL || ty_is_hash(t);
+         t == TY_COMPLEX || t == TY_RATIONAL || t == TY_REGEX || ty_is_hash(t);
+}
+/* Whether the program defines `name` where every object finds it: a
+   top-level def, a reopened Object, Kernel or BasicObject, or a module
+   the top level includes. */
+static int every_object_answers(Compiler *c, const char *name) {
+  if (comp_method_index(c, name) >= 0) return 1;
+  static const char *const roots[] = { "Object", "Kernel", "BasicObject", "Toplevel", NULL };
+  for (int i = 0; roots[i]; i++) {
+    int k = comp_class_index(c, roots[i]);
+    if (k >= 0 && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
+  }
+  for (int i = 0; i < c->ntoplevel_includes; i++) {
+    int mk = c->toplevel_includes[i];
+    if (mk >= 0 && comp_method_in_chain(c, mk, name, NULL) >= 0) return 1;
+  }
+  return 0;
+}
+/* An object no Array conversion takes: its class and every subclass define
+   no #to_ary, and nothing can answer one at run time instead
+   (method_missing, respond_to_missing?), there or for every object. */
+static int obj_to_ary_misfit(Compiler *c, TyKind t) {
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  if (cid < 0 || cid >= c->nclasses) return 0;
+  static const char *const answers[] = { "to_ary", "method_missing", "respond_to_missing?", NULL };
+  for (int i = 0; answers[i]; i++)
+    if (comp_method_in_chain(c, cid, answers[i], NULL) >= 0 || comp_subclass_answers(c, cid, answers[i]) ||
+        every_object_answers(c, answers[i]))
+      return 0;
+  return 1;
+}
+/* An operand to the Array-expecting methods (concat, replace, +, ...) that
+   is CRuby's TypeError "no implicit conversion of X into Array": nil, a
+   boolean, a builtin with no #to_ary, or such an object. Read as an Array,
+   an object or a Regexp stopped the C build. */
+int conv_to_ary_misfit(Compiler *c, TyKind t) {
+  return t == TY_NIL || t == TY_BOOL || conv_to_ary_impossible(t) || obj_to_ary_misfit(c, t);
 }
 
 /* The C type of a shared-mutable shim's result temp. The arm it re-runs
@@ -3249,7 +3287,7 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   int bad = -1;
   for (int ai = 0; ai < argc; ai++) {
     TyKind at = comp_ntype(c, argv[ai]);
-    if (at == TY_NIL || at == TY_BOOL || conv_to_ary_impossible(at)) { bad = ai; break; }
+    if (conv_to_ary_misfit(c, at)) { bad = ai; break; }
   }
   if (bad < 0) return 0;
   TyKind arty = repr_of(c, id).as_ty;
@@ -3275,11 +3313,14 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
     TyKind at = ar.as_ty;
     g_pre = &ap;
     if (ai == bad && at == TY_BOOL) emit_expr(c, argv[ai], &av);
+    else if (ai == bad && ty_is_object(at)) emit_boxed(c, argv[ai], &av);
     else if (ai < bad && ar.kind == RK_BOXED) emit_boxed(c, argv[ai], &av);
     else emit_expr(c, argv[ai], &av);
     g_pre = sv_pre;
     if (ap.p) buf_puts(b, ap.p);
     if (ai == bad && at == TY_BOOL) buf_printf(b, "int _t%d = (%s); ", tb, av.p ? av.p : "0");
+    /* an object names its class at run time: a subclass instance its own */
+    else if (ai == bad && ty_is_object(at)) buf_printf(b, "sp_RbVal _t%d = %s; ", tb, av.p ? av.p : "sp_box_nil()");
     else if (ai < bad && ar.kind == RK_BOXED)
       buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + ai, av.p ? av.p : "sp_box_nil()", t0 + ai);
     else buf_printf(b, "(void)(%s); ", av.p ? av.p : "0");
@@ -3299,6 +3340,8 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
     buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d"
                   " ? \"no implicit conversion of true into Array\""
                   " : \"no implicit conversion of false into Array\");", tb);
+  else if (ty_is_object(comp_ntype(c, argv[bad])))
+    buf_printf(b, "sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d)));", tb);
   else
     buf_printf(b, "sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Array\");",
                conv_builtin_class_name(comp_ntype(c, argv[bad])));

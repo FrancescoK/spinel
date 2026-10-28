@@ -338,7 +338,7 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
   const int *argv = call_args(c->nt, x->id, &argc);
   if (argc != 1) return 0;
   TyKind at = comp_ntype(c, argv[0]);
-  if (at != TY_NIL && at != TY_BOOL && !conv_to_ary_impossible(at)) return 0;
+  if (!conv_to_ary_misfit(c, at)) return 0;
   /* a nullable Integer or Float slot (a parameter one call site passes nil)
      names nil or its class by what it holds */
   int nil_rt = repr_opt_kind(c, argv[0]) != TY_UNKNOWN;
@@ -350,6 +350,11 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
   if (nil_rt) {
     buf_printf(b, "%s _t%d = (", oint_ctype(at), tb);
     emit_oint_expr(c, argv[0], at, b); buf_puts(b, "); ");
+  }
+  /* an object names its class at run time (a subclass instance its own,
+     a nil one nil) */
+  else if (ty_is_object(at)) {
+    buf_printf(b, "sp_RbVal _t%d = ", tb); emit_boxed(c, argv[0], b); buf_puts(b, "; ");
   }
   else if (at == TY_BOOL || str_rt) {
     buf_printf(b, "%s _t%d = (", at == TY_BOOL ? "int" : "const char *", tb);
@@ -367,6 +372,8 @@ static int emit_array_operand_type_error(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d == NULL"
                   " ? \"no implicit conversion of nil into Array\""
                   " : \"no implicit conversion of String into Array\");", tb);
+  else if (ty_is_object(at))
+    buf_printf(b, "sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Array\", sp_convert_src_name(_t%d)));", tb);
   else if (nil_rt)
     buf_printf(b, "sp_raise_cls(\"TypeError\", _t%d.nil"
                   " ? \"no implicit conversion of nil into Array\""
