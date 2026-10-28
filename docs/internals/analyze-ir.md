@@ -142,6 +142,9 @@ Verify with `make gate`; see [the README](../README.md).
   entry points and their verifiers.
 - [docs/AST.md](AST.md) -- the `NodeTable` the analyzer and code generator
   both read, and its `--dump-ast` text form.
+- [load-model.md](load-model.md) -- the load record: where each statement
+  runs in the load phase, what the program defines by then, and what keeps
+  the record fresh and cheap while passes edit the tree.
 - `src/compiler.h` -- the `Compiler` / `Scope` / `ClassInfo` structs and
   the `comp_*` accessor API.
 - `src/analyze.h` -- `analyze_program` / `infer_type` entry points.
