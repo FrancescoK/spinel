@@ -73,6 +73,9 @@ enum { LR_CHECK_MAX = 16, LR_CHECK_SHOW = 100 };
 
 enum { LR_LATE = 1, LR_BODY = 2 };   /* runs later: in a method body, a lambda or a block kept to run later; in a method body */
 
+/* A def of the program's, by its name (LoadRecord.defs) */
+typedef struct { const char *name; int node; } LrSite;
+
 struct LoadRecord {
   LrStmt *st; int nst, cst;  /* the walked statements, in the order they run: seq is the index */
   int *at;                   /* [n] each node's statement; -1 under no file's root */
@@ -101,6 +104,8 @@ struct LoadRecord {
      defs fill) has methods the record never saw, and no entry (lr_class). */
   unsigned char *held;
   char **names; int nnames, cnames;     /* the names the program defines methods by, sorted (lr_names_take) */
+  LrSite *defs; int ndefs;              /* ...and its defs, sorted by name */
+  unsigned char callbacks;              /* lr_callbacks_define's memo: 1 no, 2 yes */
   char **reopens; int nreopens, creopens;   /* the builtin classes and modules a header of the program reopens, sorted (lr_reopens_take) */
   unsigned char names_any;              /* ...and one it defines by a name the record cannot read */
   unsigned char structs;     /* registration has made the class builders' classes (elab_record_builders) */
@@ -727,8 +732,9 @@ enum { LR_BUCKETS = 4096, LR_MAIN = -1, LR_UNKNOWN_CLASS = -2, LR_LATER = -3, LR
    visibility words, keyed by the frame's node; the code a class's body ran
    that the record cannot follow, keyed as a constant owner; and whether a
    definition form runs code of the program's, keyed by its node (vis: the
-   answer, lr_form_runs) */
-enum { LR_KEY_VIS = -5, LR_KEY_OPAQUE = -6, LR_KEY_RUNS = -7 };
+   answer, lr_form_runs); whether a def's body defines or writes anything
+   when it runs, keyed by the def (vis: the answer, lr_body_defines) */
+enum { LR_KEY_VIS = -5, LR_KEY_OPAQUE = -6, LR_KEY_RUNS = -7, LR_KEY_DEFINES = -8 };
 
 static void *lr_grow(void *v, int *cap, int n, size_t sz) {
   if (n < *cap) return v;
@@ -843,6 +849,8 @@ static int lr_const_in(Compiler *c, int cls, const char *name, LoadPoint p, int 
 
 static int lr_cref(Compiler *c, int e);
 static int lr_search(Compiler *c, int cls, int sg, const char *name, int mod, LoadPoint p, int late, int vis, const LrDef **out, int depth);
+static int lr_named(Compiler *c, const char *name);
+static const NodeKind *lr_const_write_kinds(int *n);
 
 /* The class a builder write's block opens (`X = Struct.new(:a) do`,
    `k = Data.define(:a) do`): the one registration homes it in
@@ -1074,7 +1082,14 @@ static void lr_name(LoadRecord *r, const char *name, const char *suffix) {
 static void lr_names_take(Compiler *c) {
   const NodeTable *nt = c->nt;
   LoadRecord *r = c->lrec;
-  NT_FOREACH_KIND(nt, NK_DefNode, n) lr_name(r, nt_str(nt, n, "name"), "");
+  NT_FOREACH_KIND(nt, NK_DefNode, n) {
+    const char *nm = nt_str(nt, n, "name");
+    lr_name(r, nm, "");
+    if (!nm) continue;
+    LrSite *d = realloc(r->defs, sizeof *r->defs * (size_t)(r->ndefs + 1));
+    if (!d) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    (r->defs = d)[r->ndefs++] = (LrSite){ nm, n };
+  }
   NT_FOREACH_KIND(nt, NK_AliasMethodNode, n) {
     int nn = nt_ref(nt, n, "new_name");
     lr_name(r, nn >= 0 ? vis_arg_name(nt, nn) : NULL, "");
@@ -1097,6 +1112,19 @@ static void lr_names_take(Compiler *c) {
       lr_name(r, vis_arg_name(nt, av[0]), "");
   }
   if (r->nnames > 1) qsort(r->names, (size_t)r->nnames, sizeof *r->names, lr_name_cmp);
+  if (r->ndefs > 1) qsort(r->defs, (size_t)r->ndefs, sizeof *r->defs, lr_name_cmp);   /* the name leads an LrSite */
+}
+
+/* The entries of `name` in v, n of size sz sorted by the name that leads
+   each (lr_name_cmp): the first, and their number in *k */
+static const void *lr_name_range(const void *v, int n, size_t sz, const char *name, int *k) {
+  const char *m = n ? bsearch(&name, v, (size_t)n, sz, lr_name_cmp) : NULL, *lo = m, *hi = m, *end = (const char *)v + (size_t)n * sz;
+  *k = 0;
+  if (!m) return NULL;
+  while (lo > (const char *)v && lr_name_cmp(lo - sz, &name) == 0) lo -= sz;
+  while (hi + sz < end && lr_name_cmp(hi + sz, &name) == 0) hi += sz;
+  *k = (int)((size_t)(hi - lo) / sz) + 1;
+  return lo;
 }
 
 int elab_mix_on_singleton(int kind) { return kind == LR_EXTEND || kind == LR_SG_PREPEND; }
@@ -1130,13 +1158,140 @@ static void lr_reopens_take(Compiler *c) {
   if (r->nreopens > 1) qsort(r->reopens, (size_t)r->nreopens, sizeof *r->reopens, lr_name_cmp);
 }
 
-/* A call statement's definitions: attrs, aliases, visibility, mixins,
-   define_method, undef_method / remove_method, on the class its receiver
-   names. vs is the frame's visibility state. */
+static int lr_body_defines(Compiler *c, int def, int direct, int depth);
+static int lr_callbacks_define(Compiler *c, int depth);
+
+/* May a call of `name` in a method body run a method of the program's
+   that defines or writes something? Each place the program defines the
+   name must be a def whose body does neither (lr_body_defines), and one
+   the record has: a def not recorded yet (past the frontier, or in a
+   method body, while the record is made), an attr, an alias or a
+   define_method may. A name the program defines nowhere is a builtin's,
+   which lr_node_defines answers for by its name. */
+static int lr_callee_defines(Compiler *c, const char *name, int direct, int depth) {
+  LoadRecord *r = c->lrec;
+  int nn = 0, nd = 0;
+  if (r->names_any) return 1;
+  lr_name_range(r->names, r->nnames, sizeof *r->names, name, &nn);
+  const LrSite *d = lr_name_range(r->defs, r->ndefs, sizeof *r->defs, name, &nd);
+  if (nd < nn) return 1;
+  for (int i = 0; i < nd; i++) {
+    LoadPoint p = elab_point_of(c, d[i].node);
+    if ((!r->recorded && (p.region < 0 || p.seq >= r->frontier)) || lr_body_defines(c, d[i].node, direct, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* May node n call into the runtime, which may call back a method of the
+   program's by itself (lr_callbacks_define): any call, and any node but
+   those that only hold, read or write values. EL2a-2b's lr_node_runs
+   draws the same line (its LR_DISPATCH); whichever lands second keeps
+   one. */
+static int lr_node_dispatches(const NodeTable *nt, int n) {
+  switch (nt_kind(nt, n)) {
+    case NK_ProgramNode: case NK_StatementsNode: case NK_BlockNode: case NK_ConstantReadNode: case NK_ConstantPathNode:
+    case NK_SelfNode: case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_IntegerNode: case NK_FloatNode:
+    case NK_StringNode: case NK_SymbolNode: case NK_ArrayNode: case NK_HashNode: case NK_KeywordHashNode:
+    case NK_ParenthesesNode: case NK_BeginNode: case NK_IfNode: case NK_UnlessNode: case NK_ElseNode: case NK_WhileNode:
+    case NK_UntilNode: case NK_AndNode: case NK_OrNode: case NK_ReturnNode: case NK_BreakNode: case NK_NextNode:
+    case NK_ArgumentsNode: case NK_BlockParametersNode: case NK_ParametersNode: case NK_RequiredParameterNode:
+    case NK_OptionalParameterNode: case NK_LocalVariableReadNode: case NK_LocalVariableWriteNode:
+    case NK_InstanceVariableReadNode: case NK_GlobalVariableReadNode: case NK_ClassVariableReadNode:
+      return 0;
+    default: return 1;
+  }
+}
+
+/* Does node n, run, define or write anything (lr_body_defines)? With
+   direct, the runtime's own calls back into the program are left out */
+static int lr_node_defines(Compiler *c, int n, int direct, int depth) {
+  static const NodeKind kinds[] = {
+    NK_DefNode, NK_SingletonClassNode, NK_AliasMethodNode, NK_AliasGlobalVariableNode, NK_UndefNode, NK_YieldNode,
+    NK_SuperNode, NK_ForwardingSuperNode, NK_ForwardingArgumentsNode, NK_GlobalVariableWriteNode,
+    NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode, NK_GlobalVariableOperatorWriteNode,
+    NK_GlobalVariableTargetNode, NK_InstanceVariableWriteNode, NK_InstanceVariableOrWriteNode,
+    NK_InstanceVariableAndWriteNode, NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableTargetNode,
+    NK_ClassVariableWriteNode, NK_ClassVariableOrWriteNode, NK_ClassVariableAndWriteNode,
+    NK_ClassVariableOperatorWriteNode, NK_ClassVariableTargetNode };
+  const NodeTable *nt = c->nt;
+  if (n < 0) return 0;
+  NodeKind k = nt_kind(nt, n);
+  int nc = 0;
+  const NodeKind *ck = lr_const_write_kinds(&nc);
+  for (int i = 0; i < (int)(sizeof kinds / sizeof *kinds); i++) if (k == kinds[i]) return 1;
+  for (int i = 0; i < nc; i++) if (k == ck[i]) return 1;
+  if (k == NK_BlockArgumentNode && nt_kind(nt, nt_ref(nt, n, "expression")) != NK_SymbolNode) return 1;   /* a block passed on */
+  if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, n, "name");
+    if (!nm || is_load_effect_call(nm) || (lr_named(c, nm) && lr_callee_defines(c, nm, direct, depth)) ||
+        (is_new_name(nm) && lr_callee_defines(c, "initialize", direct, depth))) return 1;
+  }
+  if (!direct && lr_node_dispatches(nt, n) && lr_callbacks_define(c, depth)) return 1;
+  for (int i = 0, nr = nt_num_refs(nt, n); i < nr; i++)
+    if (lr_node_defines(c, nt_ref_at(nt, n, i), direct, depth)) return 1;
+  for (int i = 0, na = nt_num_arrs(nt, n); i < na; i++) {
+    int m = 0;
+    const int *ids = nt_arr_at(nt, n, i, &m);
+    for (int j = 0; j < m; j++) if (lr_node_defines(c, ids[j], direct, depth)) return 1;
+  }
+  return 0;
+}
+
+/* Does the body of def node `def`, run, define or write anything: a def,
+   a class, module or alias, a call that changes what the record holds or
+   runs code it cannot follow (is_load_effect_call), a write of a
+   constant, a global, a class variable or an instance variable (its
+   class's, run on a class), a yield, a super or a block passed on, a call
+   of a method of the program's that may (lr_callee_defines; `new` runs
+   initialize), or, but with direct, a node by which the runtime may call
+   back one that may (lr_callbacks_define)? A def asked again while it is
+   asked (a cycle) may. Memoized by the def (LR_KEY_DEFINES; "direct" for
+   the direct answer). */
+static int lr_body_defines(Compiler *c, int def, int direct, int depth) {
+  LoadRecord *r = c->lrec;
+  const char *key = direct ? "direct" : "";
+  const LrHist *h = lr_hist(r, LR_KEY_DEFINES, def, key, 0);
+  if (h && h->n) return h->v[h->n - 1].vis;
+  if (depth > 64) return 1;
+  lr_version(r, LR_KEY_DEFINES, def, key, (LrDef){ def, LR_OPAQUE, 1, 0, 0, NULL });   /* while it is asked */
+  int o = lr_node_defines(c, nt_ref(c->nt, def, "parameters"), direct, depth) ||
+          lr_node_defines(c, nt_ref(c->nt, def, "body"), direct, depth);
+  LrHist *m = lr_hist(r, LR_KEY_DEFINES, def, key, 0);
+  m->v[m->n - 1].vis = (unsigned char)o;
+  return o;
+}
+
+/* May a method the runtime calls back by itself (a protocol's,
+   method_name_implicitly_invoked; an operator, method_missing, a
+   conversion ..., is_runtime_callback_name) define or write something?
+   Its direct answer is enough: what it calls back in turn is one of these
+   too. Kept once no such method may, or once the record is made. */
+static int lr_callbacks_define(Compiler *c, int depth) {
+  LoadRecord *r = c->lrec;
+  if (r->callbacks) return r->callbacks == 2;
+  int o = 0;
+  for (int i = 0; i < r->nnames && !o; i++)
+    if ((i == 0 || strcmp(r->names[i - 1], r->names[i]) != 0) &&
+        (method_name_implicitly_invoked(r->names[i]) || is_runtime_callback_name(r->names[i])))
+      o = lr_callee_defines(c, r->names[i], 1, depth);
+  if (!o || r->recorded) r->callbacks = (unsigned char)(o ? 2 : 1);
+  return o;
+}
+
+/* Does a call of `name` on class cls (its singleton when sg) at p run a
+   method of the program's that may define or write something: any one
+   it may find but a def whose body does neither (lr_body_defines)? */
+static int lr_runs_defining(Compiler *c, int cls, int sg, const char *name, LoadPoint p) {
+  const LrDef *d = NULL;
+  int o = lr_search(c, cls, sg, name, -1, p, 0, 0, &d, 0);
+  return o != ELAB_NO && !(o == ELAB_YES && d && d->kind == LR_DEF && !lr_body_defines(c, d->node, 0, 0));
+}
+
 /* Does call `node` on class cls (in its singleton when sg) run code the
    record cannot follow: a send, an eval of a String, or a method of the
-   program called on the class (its singleton method, from its body or
-   through its constant) or from its body (a top-level one)? */
+   program that may define or write something (lr_runs_defining), called
+   on the class (its singleton method, from its body or through its
+   constant) or from its body (a top-level one)? */
 static int lr_opaque_call(Compiler *c, int node, int cls, int sg) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, node, "name");
@@ -1144,9 +1299,11 @@ static int lr_opaque_call(Compiler *c, int node, int cls, int sg) {
   LoadPoint p = elab_point_of(c, node);
   int bare = recv < 0 || nt_kind(nt, recv) == NK_SelfNode;
   return is_send_family(nm) || (is_eval_exec_family(nm) && nt_ref(nt, node, "block") < 0) ||
-         (!sg && lr_search(c, cls, 1, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO) ||
-         (bare && lr_search(c, LR_MAIN, 0, nm, -1, p, 0, 0, NULL, 0) != ELAB_NO);
+         (!sg && lr_runs_defining(c, cls, 1, nm, p)) || (bare && lr_runs_defining(c, LR_MAIN, 0, nm, p));
 }
+/* A call statement's definitions: attrs, aliases, visibility, mixins,
+   define_method, undef_method / remove_method, on the class its receiver
+   names. vs is the frame's visibility state. */
 static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int fnode, int may) {
   const NodeTable *nt = x->c->nt;
   const char *nm = nt_str(nt, node, "name");
@@ -1194,10 +1351,7 @@ static void lr_call(ElabRec *x, int node, int fc, int fs, unsigned char *vs, int
     lr_method(x, cls, sg || is_define_singleton_method_name(nm), vis_arg_name(nt, av[0]), node, LR_DEFINE_METHOD, *vs, may, NULL);
   if (is_alias_method_name(nm) && ac == 2)
     lr_method(x, cls, sg, vis_arg_name(nt, av[0]), node, LR_ALIAS, *vs, may, vis_arg_name(nt, av[1]));
-  /* code the record cannot follow, run on a class: a send, an eval of a
-     String, or a method of the program called on the class (its singleton
-     method, from its body or through its constant) or from its body (a
-     top-level one) */
+  /* code the record cannot follow, run on a class (lr_opaque_call) */
   if (!naming && !mix) {
     opaque = lr_opaque_call(x->c, node, cls, sg);
     lr_settle_add(x->r, SET_OPAQUE, node, cls, sg, may, 0, NULL);
@@ -2731,6 +2885,7 @@ void elab_dump(Compiler *c, FILE *out) {
       fprintf(out, "entity %s: owner %s leaf %s\n", lr_class_name(c, r->hdr[i].cls), lr_class_name(c, r->hdr[i].owner), r->hdr[i].leaf);
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
+    if (h->a == LR_KEY_DEFINES) continue;
     if (h->a == LR_KEY_VIS) fprintf(out, "visibility in #%d:", elab_point_of(c, h->b).seq);
     else if (h->a == LR_KEY_OPAQUE) fprintf(out, "opaque %s:", h->b >= 2 ? c->classes[h->b - 2].name : "main");
     else if (h->a == LR_KEY_RUNS) {   /* only the forms that run the program's code */
@@ -2839,7 +2994,7 @@ void elab_free(Compiler *c) {
   free(r->plan.st); free(r->plan.at); free(r->plan.bits); free(r->plan_par); free(r->up);
   for (int i = 0; i < r->nnames; i++) free(r->names[i]);
   for (int i = 0; i < r->nreopens; i++) free(r->reopens[i]);
-  free(r->names); free(r->reopens);
+  free(r->names); free(r->defs); free(r->reopens);
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
   free(r->hist); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);

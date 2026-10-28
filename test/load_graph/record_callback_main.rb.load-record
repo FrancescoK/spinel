@@ -1,0 +1,18 @@
+load record: 8 points, 1 regions
+r0 #0 f0 ProgramNode line 4
+r0 #1 f0 ClassNode Tag line 4
+  r0 #2 f0 DefNode to_s line 5
+r0 #3 f0 ClassNode Foo line 10
+  r0 #4 f0 DefNode show line 11
+  r0 #5 f0 CallNode show line 12
+r0 #6 f0 CallNode p line 14
+r0 #7 f0 CallNode p line 15
+class Tag: body#1
+class Foo: body#3
+entity Tag: owner main leaf Tag
+entity Foo: owner main leaf Foo
+const Tag: write#1
+Tag#to_s: def#2 end=yes
+const Foo: write#3
+Foo.show: def#4 end=yes
+opaque Foo: opaque#5

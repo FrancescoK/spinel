@@ -48,7 +48,7 @@ Thing#extra: def#12 end=yes
 const Other: write#13
 const Macro: write#15
 Macro.prop: def#16 end=yes
-opaque Macro: opaque#17 opaque#18
+opaque Macro: opaque#18
 visibility in #15: vis#19 private vis#21 public
 Macro#hidden: def#20 private end=yes
 Macro#shown: def#22 end=yes
