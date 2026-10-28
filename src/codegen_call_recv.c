@@ -3604,7 +3604,9 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
     if (fk && fbn > 0) {
       TyKind et = ty_array_elem(frt);
       int trecv = ++g_tmp, tn = ++g_tmp, ts = ++g_tmp, te = ++g_tmp, ti = ++g_tmp;
-      const char *ip = block_param_name(c, fblk, 0); if (ip) ip = rename_local(ip);
+      /* (the scope knows the parameter by its own name, not the name an
+         inlined body renames it to) */
+      const char *ip0 = block_param_name(c, fblk, 0), *ip = ip0 ? rename_local(ip0) : NULL;
       Buf rb; memset(&rb, 0, sizeof rb);
       if (fill_conflict) { buf_puts(&rb, "sp_poly_to_poly_array("); emit_boxed(c, recv, &rb); buf_puts(&rb, ")"); }
       else rb = expr_buf(c, recv);
@@ -3645,7 +3647,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       buf_printf(g_pre, "for (sp_int _t%d = _t%d; _t%d < _t%d; _t%d++) {\n", ti, ts, ti, te, ti);
       if (ip) {
         Scope *fic = comp_scope_of(c, fblk);
-        LocalVar *filv = fic ? scope_local(fic, ip) : NULL;
+        LocalVar *filv = fic ? scope_local(fic, ip0) : NULL;
         TyKind fit = filv ? filv->type : TY_INT;
         emit_indent(g_pre, g_indent + 1);
         if (fit == TY_POLY) buf_printf(g_pre, "lv_%s = sp_box_int(_t%d);\n", ip, ti);
@@ -3660,7 +3662,30 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
         ((vr.strbuf_src != RS_NONE || strbuf_value_carries(c, fbb[fbn - 1])))), g_indent + 1, &st);
       Buf vb; memset(&vb, 0, sizeof vb); vt = emit_iter_step_tail(c, &st, &vb);
       emit_indent(g_pre, g_indent + 1);
-      if (sp_streq(fk, "Poly")) {
+      /* A value of a kind the typed array cannot hold, which the analysis
+         did not see at the fill (a block inlined from one of several call
+         sites, through a yield or a forwarded &b): refused as it lands, as
+         a boxed value of another kind is (#4481). Stored as is, an Integer
+         went into a String array as nil, a Symbol into an Integer array as
+         its id, and an Integer into a Float array as a Float. */
+      int ffor = vt != TY_UNKNOWN && vt != TY_POLY && vt != TY_NIL && vt != TY_VOID &&
+                 ((sp_streq(fk, "Int") && vt != TY_INT) ||
+                  (sp_streq(fk, "Float") && vt != TY_FLOAT) ||
+                  (sp_streq(fk, "Str") && vt != TY_STRING && vt != TY_STRBUF));
+      if (ffor) {
+        Buf bx; memset(&bx, 0, sizeof bx);
+        emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", &bx);
+        /* (sp_poly_elem_f takes an Integer as a Float: refused here) */
+        if (sp_streq(fk, "Float") && vt == TY_INT)
+          buf_printf(g_pre, "sp_raise_typed_elem(%s, \"Float\");\n", bx.p ? bx.p : "");
+        else if (sp_streq(fk, "Str"))
+          buf_printf(g_pre, "sp_StrArray_set_e(_t%d, _t%d, SP_STR_HDL(sp_poly_elem_s(%s)));\n", trecv, ti, bx.p ? bx.p : "");
+        else
+          buf_printf(g_pre, "sp_%sArray_set_nilable(_t%d, _t%d, sp_poly_elem_%s(%s));\n", fk, trecv, ti,
+                     sp_streq(fk, "Int") ? "i" : "f", bx.p ? bx.p : "");
+        free(bx.p);
+      }
+      else if (sp_streq(fk, "Poly")) {
         buf_printf(g_pre, "sp_PolyArray_set(_t%d, _t%d, ", trecv, ti);
         if (vt != TY_POLY && vt != TY_UNKNOWN) emit_boxed_text(c, vt, vb.p ? vb.p : "sp_box_nil()", g_pre);
         else buf_puts(g_pre, vb.p ? vb.p : "sp_box_nil()");
@@ -3672,13 +3697,17 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
       }
       else {
         const char *fsfx = nil_store_sfx(c, fk, fbb[fbn - 1]);
-        buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, ", fk, fsfx, trecv, ti);
         /* the _nilable store takes the value with its nil (a block
            parameter that can be nil, a nullable read); the plain store the
-           sink's plain value */
-        if (fsfx[0]) emit_oint_expr(c, fbb[fbn - 1], sp_streq(fk, "Float") ? TY_FLOAT : TY_INT, g_pre);
-        else emit_typed_sink_text(c, fbb[fbn - 1], sp_streq(fk, "Int") ? TY_INT : sp_streq(fk, "Float") ? TY_FLOAT : TY_UNKNOWN, vb.p ? vb.p : "", g_pre);
-        buf_puts(g_pre, ");\n");
+           sink's plain value; a boxed value is checked against the
+           element's kind (sp_poly_elem_i / _f), not cut to it. Rendered
+           first: a value with lines of its own (a proc's call) puts them in
+           g_pre before the store begins. */
+        Buf sv; memset(&sv, 0, sizeof sv);
+        if (fsfx[0]) emit_elem_store_value(c, fk, fbb[fbn - 1], &sv);
+        else emit_typed_sink_text(c, fbb[fbn - 1], sp_streq(fk, "Int") ? TY_INT : sp_streq(fk, "Float") ? TY_FLOAT : TY_UNKNOWN, vb.p ? vb.p : "", &sv);
+        buf_printf(g_pre, "sp_%sArray_set%s(_t%d, _t%d, %s);\n", fk, fsfx, trecv, ti, sv.p ? sv.p : "");
+        free(sv.p);
       }
       free(vb.p);
       emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
