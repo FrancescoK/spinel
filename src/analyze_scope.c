@@ -9964,18 +9964,19 @@ static void pivs_ix_add(PivsFacts *f, int q, const char *nm, int node, int aux) 
   else f->next[f->last[q][k]] = node;
   f->last[q][k] = node;
 }
+/* the methods answering their receiver (pivs_read_root) */
+static const char *const PIVS_SELF[] = { "each", "each_with_index", "reverse_each", "tap", "itself", "freeze",
+                                         "sort!", "sort_by!", "shuffle!", "reverse!", "rotate!", NULL };
 /* The local `n` reads: the name of the local read it is, or of the one a
    chain of the methods answering their receiver ends on (`xs.each { }`,
    `xs.tap { }`); NULL for none. */
 static const char *pivs_read_root(const NodeTable *nt, int n) {
-  static const char *const SELF[] = { "each", "each_with_index", "reverse_each", "tap", "itself", "freeze",
-                                      "sort!", "sort_by!", "shuffle!", "reverse!", "rotate!", NULL };
   for (int d = 0; n >= 0 && d < 16; d++) {
     if (nt_kind(nt, n) == NK_LocalVariableReadNode) return nt_str(nt, n, "name");
     if (nt_kind(nt, n) != NK_CallNode) return NULL;
     const char *un = nt_str(nt, n, "name");
     int self = 0;
-    for (int i = 0; SELF[i] && un && !self; i++) self = sp_streq(un, SELF[i]);
+    for (int i = 0; PIVS_SELF[i] && un && !self; i++) self = sp_streq(un, PIVS_SELF[i]);
     if (!self) return NULL;
     n = nt_ref(nt, n, "receiver");
   }
@@ -9985,6 +9986,14 @@ static const char *pivs_read_root(const NodeTable *nt, int n) {
 static int pivs_is_read_of(const NodeTable *nt, int n, const char *vn) {
   const char *r = pivs_read_root(nt, n);
   return r && sp_streq(r, vn);
+}
+/* Does pivs_rv_build read a call of this name differently from another
+   name: a receiver chain's link (pivs_read_root), a printer, or an iterator
+   moved onto its copy (pivs_enum_iter)? */
+static int pivs_rv_reads_name(const char *name) {
+  for (int i = 0; PIVS_SELF[i]; i++) if (sp_streq(name, PIVS_SELF[i])) return 1;
+  return sp_streq(name, "p") || sp_streq(name, "puts") || sp_streq(name, "print") || sp_streq(name, "pp") ||
+         strncmp(name, "__enum_", 7) == 0;
 }
 static void pivs_rv_build(Compiler *c, PivsFacts *f);
 /* The facts' indexes, built for the tree as it is now */
@@ -9996,8 +10005,12 @@ static PivsFacts *pivs_ix_ready(Compiler *c) {
      call indexes read the calls' names, so a rename rebuilds them alone. */
   if (f->ix_nt == nt && f->ix_ver != nt->version && f->ix_count >= 0 && nt_stamp_holds(nt, f->ix_stamp, 1)) {
     if (!nt_stamp_holds(nt, f->rv_stamp, 0)) {
-      pivs_rv_clear(f);
-      pivs_rv_build(c, f);
+      /* a call renamed between two names the build reads alike, as a
+         re-entry swaps `[]` for `new` and back, leaves the indexes as built */
+      if (!nt_renames_spare(nt, f->rv_stamp, pivs_rv_reads_name)) {
+        pivs_rv_clear(f);
+        pivs_rv_build(c, f);
+      }
       f->rv_stamp = nt_stamp(nt);
     }
     f->ix_ver = nt->version; f->ix_count = nt->count; f->ix_stamp = nt_stamp(nt);
