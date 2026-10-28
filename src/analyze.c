@@ -13532,6 +13532,12 @@ static void oa_uf_union(OAS *sl, int a, int b) {
 #define OA_CLS_IA (-1000)
 #define OA_CLS_FA (-1001)
 #define OA_CLS_IS_NESTED(x) ((x) == OA_CLS_IA || (x) == OA_CLS_FA)
+/* --int-overflow=promote: a row of Integers some of which are boxed (`[a, a + b]`
+   once the widening made them poly). It is an Integer row as the program and an
+   `Array[Array[Integer]]` seed mean it, but no unboxed table holds it: an int
+   row joins it to this, and the component stays the boxed table. */
+#define OA_CLS_PIA (-1002)
+#define OA_CLS_IS_ROW(x) (OA_CLS_IS_NESTED(x) || (x) == OA_CLS_PIA)
 /* the single user-object class of a node's value, a nested scalar-array
    sentinel, or -1 if neither a lone object nor a lone scalar array. */
 static int oa_obj_class_of(Compiler *c, int node) {
@@ -13557,6 +13563,15 @@ static int oa_obj_class_of(Compiler *c, int node) {
     }
     return t == TY_INT_ARRAY ? OA_CLS_IA : OA_CLS_FA;
   }
+  if (g_promote_mode && t == TY_POLY_ARRAY && nt_kind(c->nt, node) == NK_ArrayNode) {
+    int en = 0; const int *els = nt_arr(c->nt, node, "elements", &en);
+    int ints = en > 0;
+    for (int k = 0; k < en && ints; k++) {
+      TyKind et = nt_kind(c->nt, els[k]) == NK_SplatNode ? TY_UNKNOWN : infer_type(c, els[k]);
+      ints = et == TY_INT || et == TY_POLY || et == TY_BIGINT;
+    }
+    if (ints) return OA_CLS_PIA;
+  }
   /* A value of another CONCRETE type is evidence against one class: a String
      or an Integer pushed or `[]=`-stored into the array puts something in it
      the pointer array cannot hold (`a[0] = "x"` was joined as "nothing seen"
@@ -13572,6 +13587,7 @@ static int oa_cls_join(int a, int b) {
   if (b == -1) return a;
   if (a == -1) return b;
   if (a == b) return a;
+  if ((a == OA_CLS_PIA && b == OA_CLS_IA) || (a == OA_CLS_IA && b == OA_CLS_PIA)) return OA_CLS_PIA;
   return -2;   /* two classes, or a foreign element (-2) from either side */
 }
 /* The empty `[]` literals that flowed into a slot as ELEMENTS this round: a
@@ -14486,7 +14502,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
          An empty `[]` element is a row with no kind of its own yet: neutral,
          and built at the component's kind if it narrows (oa_note_empty). */
       if (is_empty_array_literal(nt, el[e], c->node_cap) && !OA_CLS_IS_NESTED(ec)) continue;
-      if (ec < 0 && !OA_CLS_IS_NESTED(ec)) { sl[S].alive = 0; break; }
+      if (ec < 0 && !OA_CLS_IS_ROW(ec)) { sl[S].alive = 0; break; }
       sl[S].cls = oa_cls_join(sl[S].cls, ec);
     }
     return;
@@ -14527,7 +14543,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
     else if (crecv >= 0 && nt_kind(nt, crecv) == NK_ConstantReadNode &&
              is_array_new(nt_str(nt, crecv, "name"), cn) && nt_ref(nt, v, "block") < 0 && can == 2) {
       int ec = oa_elem_evidence(c, sl, S, nt_arr(nt, cargs, "arguments", &can)[1]);
-      if (ec < 0 && !OA_CLS_IS_NESTED(ec)) sl[S].alive = 0;
+      if (ec < 0 && !OA_CLS_IS_ROW(ec)) sl[S].alive = 0;
       else sl[S].cls = oa_cls_join(sl[S].cls, ec);
     }
     /* `t = Array.new(n) { <int array> }`: the generator block's value is the
@@ -14548,7 +14564,7 @@ static void oa_classify_value(Compiler *c, OAS *sl, int n, const int *read_slot,
       if (gs && gn > 0 && is_empty_array_literal(nt, gs[gn - 1], c->node_cap) &&
           !ty_is_ptr_array(infer_type(c, gs[gn - 1])) &&
           infer_type(c, gs[gn - 1]) != TY_INT_ARRAY && infer_type(c, gs[gn - 1]) != TY_FLOAT_ARRAY) { }
-      else if (ec < 0 && !OA_CLS_IS_NESTED(ec)) sl[S].alive = 0;
+      else if (ec < 0 && !OA_CLS_IS_ROW(ec)) sl[S].alive = 0;
       else sl[S].cls = oa_cls_join(sl[S].cls, ec);
     }
     /* `raw = idx.map { |k| cols[k] }`: the mapped table's rows ARE the other
@@ -15849,8 +15865,8 @@ static int narrow_object_arrays(Compiler *c) {
        this pass reaches no decision, or the two passes alternate forever and
        the fixpoint burns its whole round budget (#3781). */
     if (sl[i].ici >= 0 && c->classes[sl[i].ici].ivar_oa_seed[sl[i].iiv] < 0)
-      c->classes[sl[i].ici].ivar_oa_conflict[sl[i].iiv] = (unsigned char)(sl[r].cls == -2);
-    if (!sl[r].alive || sl[r].cls == -1 || sl[r].cls == -2) {
+      c->classes[sl[i].ici].ivar_oa_conflict[sl[i].iiv] = (unsigned char)(sl[r].cls == -2 ? 1 : sl[r].cls == OA_CLS_PIA ? 2 : 0);
+    if (!sl[r].alive || sl[r].cls == -1 || sl[r].cls == -2 || sl[r].cls == OA_CLS_PIA) {
       OA_DROP_SRC_STAMP();
       if (sl[i].ici >= 0) continue;   /* an ivar with no decision stays the poly array it was reset to */
       oa_restore_pin(c, &sl[i]);
@@ -49638,7 +49654,8 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
       if (!req) continue;
       TyKind got = cl->ivar_types[iv];
       const char *asked;
-      if (req == SEED_OA_INT_TABLE)      { if (got == TY_INT_ARRAY_ARRAY) continue; asked = "Array[Integer]"; }
+      /* promote: rows of the Integers the program boxes answer the request in the boxed table */
+      if (req == SEED_OA_INT_TABLE)      { if (got == TY_INT_ARRAY_ARRAY || cl->ivar_oa_conflict[iv] == 2) continue; asked = "Array[Integer]"; }
       else if (req == SEED_OA_FLT_TABLE) { if (got == TY_FLOAT_ARRAY_ARRAY) continue; asked = "Array[Float]"; }
       else {
         if (ty_is_obj_array(got)) continue;
@@ -49655,7 +49672,7 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
          other): refused like one, not warned about (#4484). */
       const InlinePin *byp = inline_pin_of_ivar(ci, cl->ivars[iv]);
       const char *by = byp ? byp->where : NULL;
-      if (req < 0 && (cl->ivar_oa_conflict[iv] || ty_is_ptr_array(got))) {
+      if (req < 0 && (cl->ivar_oa_conflict[iv] == 1 || ty_is_ptr_array(got))) {
         if (by)
           fprintf(stderr,
                   "spinel: %s: inline RBS annotation contradicted: %s %s is declared Array[%s] but "
