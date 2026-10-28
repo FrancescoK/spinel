@@ -4845,13 +4845,16 @@ void sp_load_path_seed(const char *const *dirs, int n, const char *feature_root)
 }
 /* The candidate whose path names file `<base>.rb`, or NULL. The candidates'
    paths are real, and `base` may run through a symlink, as written: a file
-   that is there is named by its real path, as CRuby's loaded features name
-   it. */
+   that is there is named by its real path, as CRuby tells one file loaded
+   under two names. A candidate's path is its file's without the `.rb`, and
+   the whole of it for a file that has another name (a symlink `x.rb` to
+   `x.txt`), so the real path is put the same way. */
 static const sp_LoadCand *sp_require_cand(const char *base, const sp_LoadCand *cands, int n) {
   char file[4096], real[4096];
   snprintf(file, sizeof file, "%s.rb", base);
   size_t rl = realpath(file, real) ? strlen(real) : 0;
-  if (rl > 3 && strcmp(real + rl - 3, ".rb") == 0) { real[rl - 3] = 0; base = real; }
+  if (rl > 3 && strcmp(real + rl - 3, ".rb") == 0) real[rl - 3] = 0;
+  if (rl) base = real;
   for (int i = 0; i < n; i++)
     if (cands[i].path && strcmp(cands[i].path, base) == 0) return &cands[i];
   return NULL;

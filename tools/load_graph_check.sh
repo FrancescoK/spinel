@@ -227,6 +227,30 @@ else
   fail "link did not compile"; sed -n 1,3p "$tmp/link/cc"
 fi
 
+# ...also where the symlink `alias.rb` points to a file of another name
+# (`impl.txt`): a computed require of the feature runs it, and one through
+# a second symlink to it, an absolute path or a literal require of the
+# feature answers false after, as CRuby's do.
+mkdir "$tmp/link_ext" "$tmp/link_ext/inc"
+printf 'puts "impl ran"\n' > "$tmp/link_ext/inc/impl.txt"
+ln -s impl.txt "$tmp/link_ext/inc/alias.rb"
+ln -s impl.txt "$tmp/link_ext/inc/alias2.rb"
+cat > "$tmp/link_ext/main.rb" <<'RB'
+def pull(path) = require(path)
+def never = require("alias")
+p pull("alias")
+p pull("alias2")
+p pull(File.join(__dir__, "inc", "alias"))
+p require("alias")
+RB
+if "$SPINEL" --load-model=graph -I "$tmp/link_ext/inc" "$tmp/link_ext/main.rb" -o "$tmp/link_ext/bin" >"$tmp/link_ext/cc" 2>&1; then
+  "$tmp/link_ext/bin" > "$tmp/link_ext/out" 2>&1 || fail "link_ext exits $?"
+  printf 'impl ran\ntrue\nfalse\nfalse\nfalse\n' | cmp -s - "$tmp/link_ext/out" ||
+    { fail "a computed path through a symlink to a file of another name did not name it"; cat "$tmp/link_ext/out"; }
+else
+  fail "link_ext did not compile"; sed -n 1,3p "$tmp/link_ext/cc"
+fi
+
 # The run-time $LOAD_PATH starts as CRuby's does: the directories from -I,
 # then the library roots, so a bare computed path searches them in order and
 # a directory the program adds comes after (<<, push, insert past the -I
