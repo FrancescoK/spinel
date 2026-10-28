@@ -986,8 +986,9 @@ pass the same kind).
 
 A typed Hash is handled the same way. A parameter the method stores keys or
 values of another kind into, by `[]=`, `store`, or a `merge!` or `update` of
-another of its parameters, widens a hash literal the call passes; a typed
-Hash it cannot follow back to one, such as a getter's, is refused:
+another of its parameters, widens a hash literal the call passes, or one it
+follows back to through locals and method values; a typed Hash it cannot
+follow back to one, such as a getter's, is refused:
 
 ```ruby
 class Holder

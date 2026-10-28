@@ -451,6 +451,29 @@ static int param_gets_boxed_arg(Compiler *c, Scope *sc, int p) {
   return 0;
 }
 
+/* Whether some call of the method `sc` by name passes positional parameter
+   p a typed Hash of a kind other than `hv`: narrowed to hv, the parameter
+   met that argument again in the next round's binding, which joined the
+   two back to the boxed value, and the narrowing was made again after it,
+   to the round cap. */
+static int param_gets_other_hash_arg(Compiler *c, Scope *sc, int p, TyKind hv) {
+  const NodeTable *nt = c->nt;
+  if (!sc->name) return 0;
+  for (int id = an_calls_named_first(c, sc->name); id >= 0; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    ArgLayout L;
+    call_layout(c, sc, av, an, &L);
+    int a = layout_plain_arg(c, sc, av, &L, p);
+    arg_layout_free(&L);
+    if (a < 0 || nt_kind(nt, a) == NK_HashNode) continue;
+    TyKind at = infer_type(c, a);
+    if (ty_is_hash(at) && at != hv) return 1;
+  }
+  return 0;
+}
+
 static int named_param_gets_boxed_arg(Compiler *c, Scope *sc, const char *name) {
   for (int q = 0; name && q < sc->nparams; q++)
     if (sc->pnames && sc->pnames[q] && sp_streq(sc->pnames[q], name)) return param_gets_boxed_arg(c, sc, q);
@@ -532,6 +555,7 @@ int infer_param_hash_value(Compiler *c) {
          so the narrowing was undone by the next round's writes and made
          again after them, to the round cap. */
       if (lv->body_write != TY_UNKNOWN && ty_unify(hv, lv->body_write) != hv) continue;
+      if (cur == TY_POLY && param_gets_other_hash_arg(c, sc, p, hv)) continue;
       if (empty_hash_default && !seedable) {
         /* only the key mismatch, and keep whatever value type is already
            settled unless the writes are more specific */
@@ -6037,17 +6061,109 @@ static int value_node_or_self(const NodeTable *nt, int n) {
   return vp_one(nt, n, VPS_NONE, &one) == VP1_NODE ? one : n;
 }
 
+/* The hashes the value `v` can be, followed back to where each is built:
+   through a local's writes and a method's values, a chain of them, to a
+   hash literal or `Hash.new`, or a parameter. With `apply` 0 it answers
+   whether every one of them can be the poly-keyed variant; with 1 it makes
+   them so, answering 1 on a change. A literal is built as it; a local on
+   the way is pinned to it, since its own stores re-derive the narrower
+   kind each round, and a method's value follows its locals; a parameter
+   widens for its own callers, as a store through it widens it. An ivar, a
+   block parameter, a call nothing resolves or one another body may answer
+   is none of these, and answers 0: the call site refuses it. The methods
+   being walked are on `stack`, and a call back into one of them answers
+   what the method does. */
+static int local_has_target_write(Compiler *c, Scope *sc, const char *name);
+static int hash_src_walk(Compiler *c, int v, int apply, int *stack, int depth) {
+  const NodeTable *nt = c->nt;
+  v = value_node_or_self(nt, v);
+  if (v < 0 || depth > 6) return 0;
+  stack[depth] = -1;
+  if (is_fresh_hash(c, v)) return apply ? want_poly_hash(c, v) : 1;
+  TyKind vt = infer_type(c, v);
+  if (vt == TY_POLY_POLY_HASH) return !apply;
+  if (!ty_is_hash(vt)) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) {
+    const char *nm = nt_str(nt, v, "name");
+    Scope *sc = nm ? comp_scope_of(c, v) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (!lv || lv->is_block_param || lv->rbs_seeded) return 0;
+    if (lv->is_param) {
+      if (!apply) return 1;
+      lv_set_type(lv, TY_POLY_POLY_HASH); lv->push_widened = 1;
+      return 1;
+    }
+    /* a multiple assignment's target takes an element it does not convert */
+    if (local_has_target_write(c, sc, nm)) return 0;
+    int saw = 0, ch = 0;
+    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode && nt_kind(nt, w) != NK_LocalVariableOrWriteNode) return 0;
+      int wl[16];
+      int nl = value_leaves(c, nt_ref(nt, w, "value"), wl, 0, 16);
+      if (nl <= 0) return 0;
+      for (int i = 0; i < nl; i++) {
+        /* `x = m(x) ? x : y`: this slot's own hash */
+        if (nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
+            sp_streq(nt_str(nt, wl[i], "name"), nm)) continue;
+        int got = hash_src_walk(c, wl[i], apply, stack, depth + 1);
+        if (!apply && !got) return 0;
+        ch |= got;
+      }
+      saw = 1;
+    }
+    if (!saw || !apply) return saw;
+    if (!lv->poly_hash_pin || lv->type != TY_POLY_POLY_HASH) {
+      lv_set_type(lv, TY_POLY_POLY_HASH); lv->poly_hash_pin = 1; ch = 1;
+    }
+    return ch;
+  }
+  if (k != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  int mi = backprop_call_target(c, v);
+  if (mi < 0 || method_has_other_body(c, mi)) return 0;
+  for (int d = 0; d < depth; d++) if (stack[d] == mi) return !apply;
+  Scope *m = &c->scopes[mi];
+  if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield) return 0;
+  int lv[16];
+  int n = method_value_leaves(c, mi, lv, 16);
+  if (n <= 0) return 0;
+  stack[depth] = mi;
+  int ch = 0;
+  for (int i = 0; i < n; i++) {
+    if (nt_kind(nt, lv[i]) == NK_YieldNode) return 0;
+    int got = hash_src_walk(c, lv[i], apply, stack, depth + 1);
+    if (!apply && !got) return 0;
+    ch |= got;
+  }
+  return apply ? ch : 1;
+}
+
+/* Widens every hash the value `v` can be to the poly-keyed variant, when
+   all of them can be (hash_src_walk). Returns 1 on a change. */
+static int widen_hash_sources(Compiler *c, int v) {
+  int stack[8];
+  if (!hash_src_walk(c, v, 0, stack, 0)) return 0;
+  return hash_src_walk(c, v, 1, stack, 0);
+}
+
 /* A callee stores into the hash argument `arg` names what its variant cannot
    hold: the caller's own hash has to be the poly-keyed variant. Widens the
    hashes the argument's slot is built from, and the slot, where every write
    of it builds a new hash; a parameter widens as the callee's did, for its
-   own callers. Returns 1 on a change. */
+   own callers. A local or a call whose hashes come from further back (a
+   method's value, a local assigned one) is followed to where they are
+   built (widen_hash_sources). Returns 1 on a change. */
 static int widen_arg_hash(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   arg = value_node_or_self(nt, arg);   /* `(a; {k: 1})` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
-  if (ak == NK_CallNode) { int w = widen_returned_hashes(c, arg); if (w >= 0) return w; }
+  if (ak == NK_CallNode) {
+    int w = widen_returned_hashes(c, arg);
+    return w >= 0 ? w : widen_hash_sources(c, arg);
+  }
   const char *an = nt_str(nt, arg, "name");
   Scope *asc = an ? comp_scope_of(c, arg) : NULL;
   if (!asc) return 0;
@@ -6073,7 +6189,8 @@ static int widen_arg_hash(Compiler *c, int arg) {
     for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
       int w = lw_shared_node(r);
       if (comp_scope_of(c, w) != asc || !sp_streq(nt_str(nt, w, "name"), an)) continue;
-      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !is_fresh_hash(c, nt_ref(nt, w, "value"))) return 0;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !is_fresh_hash(c, nt_ref(nt, w, "value")))
+        return widen_hash_sources(c, arg);
       saw = 1;
     }
     if (!saw) return 0;

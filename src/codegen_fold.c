@@ -7818,8 +7818,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
             snprintf(msg, sizeof msg,
                      "a typed Hash is passed to `%s`'s parameter `%s`, which the method stores keys or "
                      "values of other types into: the caller's hash cannot hold them, and a converted copy "
-                     "would not see the stores. Build the argument from a hash literal the call can see, "
-                     "so it is widened with the parameter.",
+                     "would not see the stores. Build the argument where the call can follow it (a hash "
+                     "literal or `Hash.new`, through locals and method values), so it is widened with the "
+                     "parameter.",
                      m->name ? m->name : "?", m->pnames[idx]);
             unsupported_feature(c, provided, msg);
           }
