@@ -3813,7 +3813,7 @@ static int ver_cell_put(Compiler *c, const char *cell, int list, int at, int aft
   return g;
 }
 /* ...and the cells' writes: after each statement that makes a version an
-   entry a reachable call reaches arms (compute_reachable), the write of
+   entry arms, the write of
    the version's number to its history's cell (0 for a remove_method's,
    which passes the search on), in the same statement list; and 0 ahead of
    the entry file's first statement (unless that statement makes one of the
@@ -3829,7 +3829,8 @@ void ver_cells_write(Compiler *c) {
   const int *par = c->nver_entries ? comp_parent_map(c) : NULL, *first = top >= 0 ? nt_arr(nt, top, "body", &ntop) : NULL;
   for (int i = 0; i < c->nver_entries; i++) {
     const struct VerEntry *e = &c->ver_entries[i];
-    if (e->scope < 0 || !c->scopes[e->scope].reachable) continue;
+    /* (not only the entries reached now: a send's arms, made in the fixpoint, reach methods whose calls bind entries this first pass leaves unreached) */
+    if (e->scope < 0) continue;
     int nv = elab_chain_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS);
     for (int j = 0; j < nv; j++) {
       int node = vs[j].v->node, st = node, dup = 0;
