@@ -44,3 +44,24 @@ n = 0
   n += 1 if e[1].include?(w)
 end
 p n
+
+# a needle whose == grows or empties the Array: include? reads the Array
+# itself, so it sees the change as CRuby does
+class G
+  def initialize(a) = @a = a
+  def ==(o)
+    @a << 9 if o == 1
+    o == 9
+  end
+end
+class Z
+  def initialize(a) = @a = a
+  def ==(o) = (@a.clear; false)
+end
+ga = [1, 2]
+gf = [1.0, 2.0]
+gz = [1, 2]
+h = [ga, gf, gz, "s"]
+p h[0].include?([G.new(ga), 1][ARGV.size]), ga
+p h[1].include?([G.new(gf), 1][ARGV.size]), gf
+p h[2].include?([Z.new(gz), 1][ARGV.size]), gz
