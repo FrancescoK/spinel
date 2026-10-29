@@ -3813,7 +3813,7 @@ static int ver_cell_put(Compiler *c, const char *cell, int list, int at, int aft
   return g;
 }
 /* ...and the cells' writes: after each statement that makes a version an
-   entry arms, the write of
+   entry arms (ahead of it when it is a def, an alias or an undef), the write of
    the version's number to its history's cell (0 for a remove_method's,
    which passes the search on), in the same statement list; and 0 ahead of
    the entry file's first statement (unless that statement makes one of the
@@ -3849,7 +3849,10 @@ void ver_cells_write(Compiler *c) {
     for (int j = 0; j < nw && z; j++)   /* (one per cell; none where the first statement writes it) */
       z = w[j].hist != w[k].hist || (j >= k && w[j].stmt != at0);
     if (z) made[nw + nz++] = ver_cell_put(c, cell, top, at0, 0, 0);
-    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, 1, w[k].n);
+    NodeKind sk = nt_kind(nt, w[k].stmt);
+    /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
+    int after = sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode;
+    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, after, w[k].n);
   }
   for (int k = 0; k < nw + nz; k++) elab_record_write(c, made[k]);
   free(made); free(w);

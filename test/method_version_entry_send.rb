@@ -21,3 +21,13 @@ class K
 end
 
 p run(:via), run2(:cvia)
+
+# A def that ends a branch is still the branch's value.
+def j = 1
+def u = j + 10
+def run3(name) = send(name)
+p run3(:u)
+r = if ARGV.empty?
+  def j = 2
+end
+p r, run3(:u)
