@@ -2361,7 +2361,7 @@ int strbuf_ivar_owner(Compiler *c, int node) {
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
   if (g_ie_class_id >= 0) return g_ie_class_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 /* ---- Is an object's ivar set? ----
    An object lays out every ivar its class can hold, and a slot nothing has

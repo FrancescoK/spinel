@@ -20462,7 +20462,7 @@ static void sb_mut_tabs_sync(Compiler *c) {
      only answers once that class has been seeded -- a fact that arrives
      independently of the scope-index epoch, so it joins the stamp rather than
      being resolved once and cached wrong (the #3227 P4 top-level case). */
-  int toplevel = comp_class_index(c, "Toplevel");
+  int toplevel = c->toplevel_class;
   /* nt->version as well as count: a rename pass rewrites a call's `name` in
      place (nt_set_str) without growing the table, and this index is keyed by
      name. Worst case the version churns and we rebuild per query -- one
@@ -23845,7 +23845,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
     /* a class variable is every class's of the name, as the facts key it;
        a top-level one (CRuby raises RuntimeError on its access) is left to
        the seal's refusal */
-    int any = 0, tl = comp_class_index(c, "Toplevel");
+    int any = 0, tl = c->toplevel_class;
     if (tl >= 0 && comp_cvar_index(&c->classes[tl], grn) >= 0) return 0;
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *ci = &c->classes[k];
