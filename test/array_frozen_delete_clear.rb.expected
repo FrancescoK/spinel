@@ -1,0 +1,60 @@
+int delete hit: FrozenError: can't modify frozen Array: [1, 2]
+int delete miss: nil
+int delete_at hit: FrozenError: can't modify frozen Array: [1, 2]
+int delete_at miss: nil
+str delete hit: FrozenError: can't modify frozen Array: ["a", "b"]
+str delete miss: nil
+str delete_at hit: FrozenError: can't modify frozen Array: ["a", "b"]
+str delete_at miss: nil
+sym delete hit: FrozenError: can't modify frozen Array: [:a, :b]
+sym delete miss: nil
+sym delete_at hit: FrozenError: can't modify frozen Array: [:a, :b]
+sym delete_at miss: nil
+float delete hit: FrozenError: can't modify frozen Array: [1.5, 2.5]
+float delete miss: nil
+float delete_at hit: FrozenError: can't modify frozen Array: [1.5, 2.5]
+float delete_at miss: nil
+mixed delete hit: FrozenError: can't modify frozen Array: [1, "a"]
+mixed delete miss: nil
+mixed delete_at hit: FrozenError: can't modify frozen Array: [1, "a"]
+mixed delete_at miss: nil
+object delete hit: FrozenError
+object delete miss: nil
+object delete_at hit: FrozenError
+object delete_at miss: nil
+int nil delete hit: FrozenError: can't modify frozen Array: [1, nil]
+int nil delete miss: nil
+float nil delete hit: FrozenError: can't modify frozen Array: [1.5, nil]
+[[1, 2], ["a", "b"], [:a, :b], [1.5, 2.5], [1, "a"], [1, nil], [1.5, nil]]
+2
+boxed int clear: FrozenError: can't modify frozen Array: [1, 2]
+boxed str clear: FrozenError: can't modify frozen Array: ["x"]
+boxed mixed clear: FrozenError: can't modify frozen Array: [1, "a"]
+boxed mixed delete hit: FrozenError: can't modify frozen Array: [1, "a"]
+boxed mixed delete miss: nil
+boxed int delete miss: nil
+boxed str delete_at miss: nil
+boxed mixed delete_at hit: FrozenError: can't modify frozen Array: [1, "a"]
+[[1, 2], ["x"], [1, "a"], nil]
+[[], [], ["a"], nil]
+int slice! miss: FrozenError: can't modify frozen Array: [1, 2]
+str slice! miss: FrozenError: can't modify frozen Array: ["a", "b"]
+sym slice! miss: FrozenError: can't modify frozen Array: [:a, :b]
+float slice! miss: FrozenError: can't modify frozen Array: [1.5, 2.5]
+mixed slice! miss: FrozenError: can't modify frozen Array: [1, "a"]
+int slice! hit: FrozenError: can't modify frozen Array: [1, 2]
+eq 1
+eq 2
+eq hit: FrozenError
+eq 1
+eq 2
+eq 3
+eq miss: nil
+eq 1
+eq 1
+eq 2
+eq hits in a row: FrozenError
+eq 1
+eq 2
+eq 3
+boxed eq hit: FrozenError
