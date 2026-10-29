@@ -8676,7 +8676,9 @@ int desugar_to_proc_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
@@ -8724,6 +8726,7 @@ int desugar_to_proc_block_arg(Compiler *c) {
     lv_set_type(lv, TY_PROC);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -8736,7 +8739,9 @@ int desugar_proc_expr_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
@@ -8776,6 +8781,7 @@ int desugar_proc_expr_block_arg(Compiler *c) {
     lv_set_type(lv, TY_PROC);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -9468,7 +9474,9 @@ int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;  /* snapshot: synthetic nodes are appended past here */
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
     if (blk < 0) continue;
@@ -9852,6 +9860,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     else if (anon) expand_static_splat_args(c, id, id + 1);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 

@@ -744,6 +744,37 @@ static int cn_collect(Compiler *c, const char *const *names, int (*pred)(const c
   *out = ids;
   return m;
 }
+/* The calls whose block is a block argument (`&x`), ascending, rebuilt when
+   the table changes as the call names are */
+static int *g_ba_ids, g_ba_n, g_ba_cnt = -1;
+static unsigned g_ba_ver;
+static const NodeTable *g_ba_nt;
+int an_calls_with_block_arg(Compiler *c, int n0, int **out) {
+  const NodeTable *nt = c->nt;
+  if (g_ba_nt != nt || g_ba_ver != nt->version || g_ba_cnt != nt->count) {
+    g_ba_n = 0;
+    int cap = 64;
+    free(g_ba_ids);
+    g_ba_ids = malloc(sizeof(int) * (size_t)cap);
+    if (!g_ba_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int id = comp_kind_first(c, NK_CallNode); id >= 0; id = comp_kind_next(c, id)) {
+      if (nt_call_block_arg(nt, id) < 0) continue;
+      if (g_ba_n == cap) {
+        cap *= 2;
+        g_ba_ids = realloc(g_ba_ids, sizeof(int) * (size_t)cap);
+        if (!g_ba_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      g_ba_ids[g_ba_n++] = id;
+    }
+    g_ba_nt = nt; g_ba_ver = nt->version; g_ba_cnt = nt->count;
+  }
+  int m = 0;
+  while (m < g_ba_n && g_ba_ids[m] < n0) m++;
+  *out = malloc(sizeof(int) * (size_t)(m > 0 ? m : 1));
+  if (!*out) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(*out, g_ba_ids, sizeof(int) * (size_t)m);
+  return m;
+}
 int an_calls_named_any(Compiler *c, const char *const *names, int n0, int **out) {
   return cn_collect(c, names, NULL, n0, out);
 }

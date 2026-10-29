@@ -9869,7 +9869,9 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
   static const char *const KFN[] = { "Integer", "Float", "String", "Array",
                                      "Rational", "Complex", "puts", "print",
                                      "p", "pp", NULL };
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     NodeKind ty_k = nt_kind(nt, id);
     if (ty_k != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
@@ -9927,6 +9929,7 @@ static int desugar_kernel_method_block_arg(Compiler *c) {
     nt_node_set_ref(nt, id, "block", blk2);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -9974,7 +9977,9 @@ static int desugar_hash_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     NodeKind k = nt_kind(nt, id);
     if (k != NK_CallNode) continue;
     int blk = nt_call_block_arg(nt, id);
@@ -10018,6 +10023,7 @@ static int desugar_hash_block_arg(Compiler *c) {
     nt_node_set_ref(nt, id, "block", blk2);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -12297,7 +12303,9 @@ static int desugar_curry_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int blk = nt_ref(nt, id, "block");
     if (blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
@@ -12334,6 +12342,7 @@ static int desugar_curry_block_arg(Compiler *c) {
     if (sc) { LocalVar *lv = scope_local_intern(sc, pnm); if (lv) lv->is_block_param = 1; }
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -12344,7 +12353,9 @@ static int desugar_method_block_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int cid = 0; cid < n0; cid++) {
+  int *calls, ncalls = an_calls_with_block_arg(c, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int cid = calls[q];
     if (nt_kind(nt, cid) != NK_CallNode) continue;
     int id = nt_ref(nt, cid, "block");
     if (id < 0 || nt_kind(nt, id) != NK_BlockArgumentNode) continue;
@@ -12377,6 +12388,7 @@ static int desugar_method_block_arg(Compiler *c) {
     c->nscope[tp] = c->nscope[id];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 

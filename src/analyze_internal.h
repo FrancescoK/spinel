@@ -216,6 +216,8 @@ int an_calls_named_next(int id);
 int an_calls_named_any(Compiler *c, const char *const *names, int n0, int **out);
 /* The same for the calls whose name pred accepts. */
 int an_calls_named_if(Compiler *c, int (*pred)(const char *), int n0, int **out);
+/* The same for the calls passed a block argument (`&x`). */
+int an_calls_with_block_arg(Compiler *c, int n0, int **out);
 /* The local variable writes named `name`, ascending, the same way. */
 int an_local_writes_named_first(Compiler *c, const char *name);
 int an_local_writes_named_next(int id);
