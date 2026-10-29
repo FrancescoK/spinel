@@ -2026,7 +2026,7 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
          got an arm calling it with none, which C refused (#5359). A
          receiver of that class then lands in the default arm. */
       if (nmi >= 0 && native_takes(&c->native_methods[nmi], 0)) {
-        TyKind mret = native_spec_to_ty(c->native_methods[nmi].ret);
+        TyKind mret = comp_native_ret_ty(c, nmi, k);
         cpoly_add(p, &cap, PA_NATIVE, k, -1, mret, mret == TY_NIL ? PC_VOID : cpoly_conv(ret, mret));
       }
       /* one that needs arguments is CRuby's ArgumentError for this call */
