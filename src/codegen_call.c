@@ -28044,6 +28044,25 @@ static int at_index_convert(Compiler *c, int id, Buf *b) {
    #at, though some answer #[]: a receiver typed as one raises, and a boxed
    receiver is checked before the index read picks an arm for the key. */
 static int g_at_chk_id = -1;
+/* The index read behind the check, with what its emission hoists kept
+   inside the statement expression, after the temps the check declared
+   there. The receiver and the converted index are bound to those temps,
+   and an emitter that hoists into the statement's prelude reads them
+   through the bindings: a class-receiver `[]` dispatch
+   (emit_unresolved_call, for a receiver that may hold a Class whose
+   `self.[]` the program calls) held the receiver and spilled the index
+   there, ahead of the statement, where the temps were not yet declared
+   (`value.public_send(op, i)` taking the at arm in Duration::Scalar). */
+static void emit_at_call_held(Compiler *c, int id, Buf *b) {
+  Buf pre; memset(&pre, 0, sizeof pre);
+  Buf cb; memset(&cb, 0, sizeof cb);
+  Buf *sv_pre = g_pre; g_pre = &pre;
+  emit_call_held(c, id, &cb);
+  g_pre = sv_pre;
+  if (pre.p && pre.p[0]) buf_puts(b, pre.p);
+  if (cb.p) buf_puts(b, cb.p);
+  free(pre.p); free(cb.p);
+}
 static int emit_at_without_array(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   /* first and last were rewritten to [] reads too (desugar_array_first_last):
@@ -28065,7 +28084,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     buf_printf(b, "if (SP_UNLIKELY(_t%d.tag == SP_TAG_NIL)) sp_nil_recv(\"%s\"); ", t, fl);
     view_bind(recv, "_t%d", t);
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
-    emit_call_held(c, id, b);
+    emit_at_call_held(c, id, b);
     g_at_chk_id = sv_chk;
     view_unbind(sv_n);
     buf_puts(b, "; })");
@@ -28115,7 +28134,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     view_bind(recv, "_t%d", t);
     at_index_convert(c, id, b);
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
-    emit_call_held(c, id, b);
+    emit_at_call_held(c, id, b);
     g_at_chk_id = sv_chk;
     view_unbind(sv_n);
     buf_puts(b, "; })");
@@ -28137,7 +28156,7 @@ static int emit_at_without_array(Compiler *c, int id, Buf *b) {
     view_bind(recv, "_t%d", hold_operand_pre(c, recv, rt, 0, ++g_tmp, 1));
     at_index_convert(c, id, b);
     int sv_chk = g_at_chk_id; g_at_chk_id = id;
-    emit_call_held(c, id, b);
+    emit_at_call_held(c, id, b);
     g_at_chk_id = sv_chk;
     view_unbind(sv_n);
     buf_puts(b, "; })");

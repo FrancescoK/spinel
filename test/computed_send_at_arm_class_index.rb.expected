@@ -1,0 +1,23 @@
+Reg[0]
+Tbl[0]
+Stamp.at(0)
+Zone.at(0)
+Bag#0
+4
+NoMethodError: undefined method 'at' for an instance of
+1
+NoMethodError: undefined method '+' for class Reg
+NoMethodError: undefined method 'at' for class Reg
+"Reg[1]"
+NoMethodError: undefined method '+' for class Tbl
+NoMethodError: undefined method 'at' for class Tbl
+"Tbl[1]"
+NoMethodError: undefined method '+' for class Stamp
+"Stamp.at(1)"
+NoMethodError: undefined method '[]' for class Stamp
+NoMethodError: undefined method '+' for an instance of 
+"Zone.at(1)"
+NoMethodError: undefined method '[]' for an instance of
+TypeError: no implicit conversion of Integer into S
+NoMethodError: undefined method 'at' for an instance of
+"t"
