@@ -14,6 +14,8 @@
 "<7>"
 :comparable_putc
 :comparable_putc
+:integer_sprintf
+:float_sprintf
 "can't define singleton"
 "can't define singleton"
 "can't define singleton"

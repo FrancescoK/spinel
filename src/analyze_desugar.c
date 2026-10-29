@@ -12763,11 +12763,21 @@ static int bi_enum_receivers_answer(const char *nm) {
   for (int i = 0; bi_receiver_class(i); i++) if (builtin_instance_method_known(bi_receiver_class(i), nm)) return 1;
   return 0;
 }
-/* the same for a copy of a method of the class or module cls: Enumerable's
-   receivers above, else cls's own builtin methods (an Integer's, a
-   Float's, Comparable's, Monitor's) */
+/* the builtin classes a copy of a method of the class or module cls is
+   made for, the i-th of them, NULL past the last: Enumerable's receivers
+   above, an Integer or a Float for a Comparable copy (the receivers
+   bx_recv_concrete rewrites onto it), and cls itself for a copy of a
+   class's method (an Integer's, a Float's, a Monitor's) */
+static const char *bi_copy_receiver(const char *cls, int i) {
+  static const char *const cmp_recvs[] = { "Integer", "Float", NULL };
+  if (is_enumerable_module_name(cls)) return bi_receiver_class(i);
+  if (is_comparable_module_name(cls)) return cmp_recvs[i];
+  return i == 0 ? cls : NULL;
+}
+/* does one of those receivers answer a method of this name itself? */
 static int bi_receiver_answers(const char *cls, const char *nm) {
-  return is_enumerable_module_name(cls) ? bi_enum_receivers_answer(nm) : builtin_instance_method_known(cls, nm);
+  for (int i = 0; bi_copy_receiver(cls, i); i++) if (builtin_instance_method_known(bi_copy_receiver(cls, i), nm)) return 1;
+  return 0;
 }
 
 /* the classes and modules a walk over includes has reached, by full key */
@@ -12847,13 +12857,13 @@ static int bi_body_defines(const NodeTable *nt, const char *ns, const char *leaf
 
 /* is nm defined on the chain of the receivers a copy of a method of the
    top-level class or module cls serves: by cls (and the modules it takes
-   in) and, for Enumerable, by the builtin receivers its copies are made
-   for (bi_body_defines) */
+   in) and by the builtin receivers its copies are made for
+   (bi_copy_receiver; bi_body_defines) */
 static int own_chain_defines(const NodeTable *nt, const char *cls, const char *nm) {
   BiSeen seen = { NULL, 0 };
   int o = bi_body_defines(nt, "", cls, nm, &seen);
-  for (int i = 0; !o && is_enumerable_module_name(cls) && bi_receiver_class(i); i++)
-    o = bi_body_defines(nt, "", bi_receiver_class(i), nm, &seen);
+  for (int i = 0; !o && bi_copy_receiver(cls, i); i++)
+    o = bi_body_defines(nt, "", bi_copy_receiver(cls, i), nm, &seen);
   bi_seen_free(&seen);
   return o;
 }

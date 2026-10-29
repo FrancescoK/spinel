@@ -54,6 +54,20 @@ p 7.cmp_format
 p 7.cmp_putc
 p 2.5.cmp_putc
 
+# a private Kernel name the program defines on Integer and on Float, called
+# bare in a Comparable method, reaches the receiver's own method
+class Integer
+  def sprintf(*) = :integer_sprintf
+end
+class Float
+  def sprintf(*) = :float_sprintf
+end
+module Comparable
+  def cmp_sprintf = sprintf("%d", 1)
+end
+p 7.cmp_sprintf
+p 2.5.cmp_sprintf
+
 class Integer
   def call_added = singleton_method_added(:x)
 end
