@@ -2463,6 +2463,8 @@ int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *n
    dispatch's temp for the row's $T, or 0 */
 int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                              const char *rtext, int t0, Buf *b);
+/* the same, the answer boxed into b by the row's result kind (0: no arm) */
+int emit_builtin_op_arm_boxed(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b);
 /* the same, with the temp t0 the family took before its arms ($T) */
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b);

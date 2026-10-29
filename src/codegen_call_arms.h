@@ -199,6 +199,11 @@ void emit_class_id_is(Compiler *c, const char *cname, const char *expr, Buf *b);
 int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls, const char *raise, Buf *b);
 extern int g_cls_value_recv;
 int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);
+/* A boxed Integer or Float at a call no target answers: the arms that
+   answer it through the scalar kinds' rows ahead of the NoMethodError. */
+typedef struct { int open, arms, hn, bslot, *hsv, *hvw; } PolyScalarArms;
+int poly_scalar_arms_open(Compiler *c, int id, PolyScalarArms *pa, Buf *b);
+void poly_scalar_arms_close(Compiler *c, PolyScalarArms *pa, Buf *b);
 int obj_member_shadows(Compiler *c, TyKind rt, const char *nm);
 void refl_class_singleton_methods(Compiler *c, int ci, int all, ReflNames *r);
 void refl_builtin_singleton_methods(const char *cls, int all, ReflNames *r);
