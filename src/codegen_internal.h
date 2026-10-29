@@ -1219,6 +1219,7 @@ int is_builtin_reopen(const char *name);
 int reopened_builtin_chain_id(Compiler *c, int ci);
 int is_exc_name(const char *n);
 int class_is_exc_subclass(Compiler *c, int ci);
+int class_is_builtin_reopen(Compiler *c, int ci);   /* is_builtin_reopen of class ci, kept per class table */
 int exc_class_defines(Compiler *c, const char *name);
 int class_is_exc_reopen(Compiler *c, int ci);
 int super_reaches_exc_text(Compiler *c, int id, int reopen);

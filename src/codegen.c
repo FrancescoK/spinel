@@ -10943,6 +10943,25 @@ int is_builtin_reopen(const char *name) {
   return is_builtin_reopen_name(name) || io_family_name(name) ||
          is_builtin_exception_name(name);
 }
+/* ...asked of class ci, once per class table (comp_class_shape_gen, as
+   class_is_exc_subclass keeps its answers): the poly block dispatch asks
+   it of every class for each call it weighs, and the share facts weigh
+   every boxed block call each time they are built. */
+static unsigned char *g_breopen;
+static int g_breopen_n = -1;
+static unsigned g_breopen_gen;
+static const Compiler *g_breopen_c;
+int class_is_builtin_reopen(Compiler *c, int ci) {
+  if (ci < 0 || ci >= c->nclasses) return 0;
+  if (g_breopen_c != c || g_breopen_n != c->nclasses || g_breopen_gen != comp_class_shape_gen()) {
+    free(g_breopen);
+    g_breopen = calloc((size_t)c->nclasses + 1, 1);
+    g_breopen_n = c->nclasses; g_breopen_gen = comp_class_shape_gen(); g_breopen_c = c;
+  }
+  if (!g_breopen) return is_builtin_reopen(c->classes[ci].name);
+  if (!g_breopen[ci]) g_breopen[ci] = (unsigned char)(is_builtin_reopen(c->classes[ci].name) ? 2 : 1);
+  return g_breopen[ci] == 2;
+}
 
 /* Returns 1 if n is a known built-in exception class name. */
 /* The builtin exception class names, as one authority: is_builtin_exception_name

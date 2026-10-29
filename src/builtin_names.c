@@ -1417,30 +1417,44 @@ int is_boxed_self_class_name(const char *name) {
                   sp_streq(name, "Array") || sp_streq(name, "Hash"));
 }
 
-/* Classes whose reopenings keep the runtime value instead of a user struct. */
+/* Classes whose reopenings keep the runtime value instead of a user struct.
+   The names are a hash set, built at the first ask: the question is asked
+   of every class of the program at each poly block dispatch the share facts
+   weigh, where a chain of twenty-seven compares cost a Rails application
+   ten seconds of its storage phase. */
+static const char *const builtin_reopen_names[] = {
+  "Toplevel", "String", "Integer", "Float", "Symbol", "TrueClass", "FalseClass",
+  "NilClass", "Array", "Object", "Numeric", "Dir",
+  /* runtime value types with a typedef of their own (sp_Range, sp_Time,
+     sp_File, sp_Class): a user struct under that name was a C-level
+     typedef collision before any call was reached (activesupport's
+     blank.rb reopens Range and Time) */
+  "Range", "Time", "Rational", "Proc", "Enumerator", "MatchData", "Complex",
+  "Regexp", "Struct", "File", "Class", "Hash",
+  /* a thread and a fiber are runtime handles too (activesupport's
+     IsolatedExecutionState gives both an accessor) */
+  "Thread", "Fiber", "Random",
+  NULL };
+#define BRN_CAP 128   /* a power of two above 4 * the names */
+static signed char brn_slot[BRN_CAP];
+static int brn_built;
 int is_builtin_reopen_name(const char *name) {
-  return sp_streq(name, "Toplevel") ||
-         sp_streq(name, "String")    || sp_streq(name, "Integer") ||
-         sp_streq(name, "Float")     || sp_streq(name, "Symbol")  ||
-         sp_streq(name, "TrueClass") || sp_streq(name, "FalseClass") ||
-         sp_streq(name, "NilClass")  || sp_streq(name, "Array")   ||
-         sp_streq(name, "Object")    || sp_streq(name, "Numeric") ||
-         sp_streq(name, "Dir")       ||
-         /* runtime value types with a typedef of their own (sp_Range, sp_Time,
-            sp_File, sp_Class): a user struct under that name was a C-level
-            typedef collision before any call was reached (activesupport's
-            blank.rb reopens Range and Time) */
-         sp_streq(name, "Range")     || sp_streq(name, "Time") ||
-         sp_streq(name, "Rational")  || sp_streq(name, "Proc") ||
-         sp_streq(name, "Enumerator") || sp_streq(name, "MatchData") ||
-         sp_streq(name, "Complex")   || sp_streq(name, "Regexp") ||
-         sp_streq(name, "Struct")    ||
-         sp_streq(name, "File")      || sp_streq(name, "Class") ||
-         sp_streq(name, "Hash")      ||
-         /* a thread and a fiber are runtime handles too (activesupport's
-            IsolatedExecutionState gives both an accessor) */
-         sp_streq(name, "Thread")    || sp_streq(name, "Fiber") ||
-         sp_streq(name, "Random");
+  if (!brn_built) {
+    for (int i = 0; i < BRN_CAP; i++) brn_slot[i] = -1;
+    for (int i = 0; builtin_reopen_names[i]; i++) {
+      unsigned h = sp_strhash(builtin_reopen_names[i]) & (BRN_CAP - 1);
+      while (brn_slot[h] >= 0) h = (h + 1) & (BRN_CAP - 1);
+      brn_slot[h] = (signed char)i;
+    }
+    brn_built = 1;
+  }
+  if (!name) return 0;
+  unsigned h = sp_strhash(name) & (BRN_CAP - 1);
+  while (brn_slot[h] >= 0) {
+    if (sp_streq(builtin_reopen_names[brn_slot[h]], name)) return 1;
+    h = (h + 1) & (BRN_CAP - 1);
+  }
+  return 0;
 }
 
 /* CRuby's nil.public_methods: NilClass's own (to_a, to_s, inspect, &, ...)

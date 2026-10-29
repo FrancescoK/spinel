@@ -3796,7 +3796,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
      block (a plain method wouldn't consume the block anyway) */
   int nc = 0;
   for (int k = 0; k < c->nclasses; k++) {
-    if (!c->classes[k].instantiated || is_builtin_reopen(c->classes[k].name)) continue;
+    if (!c->classes[k].instantiated || class_is_builtin_reopen(c, k)) continue;
     int km = call_target(c, id, k, name, 0, NULL);
     if (km < 0) continue;
     Scope *ks = &c->scopes[km];
