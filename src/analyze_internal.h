@@ -797,8 +797,9 @@ int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts,
 void lower_settle(Compiler *c, LowerCtx *lc);   /* the rows spans left to the program, once per step */
 
 /* ---- the host (analyze_elab.c, #9898) ----
-   A step that splices code into a body after the load stage began hands it
-   to the host, which makes it what the program's own code is at that point:
+   A step that splices code into a body after the load stage began, or makes
+   a block a class body (Class.new do..end), hands it to the host, which
+   makes it what the program's own code is at that point:
    the static class_eval text in it is grafted (analyze_desugar.c's sce),
    and its statements are lowered by the rows that have run (lower_span), at
    host_end, once the step has spliced everything. What the text graft asks
@@ -950,7 +951,7 @@ int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_readers_over_inherited_defs(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);
 int desugar_singleton_class_meta(Compiler *c);
-int desugar_class_new_blocks(Compiler *c);
+int desugar_class_new_blocks(Compiler *c, HostStep *h);
 int desugar_included_hooks(Compiler *c, HostStep *h);
 int desugar_class_body_object_acts(Compiler *c);
 int desugar_struct_block_anonymous(Compiler *c);

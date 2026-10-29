@@ -11161,12 +11161,12 @@ static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
    is a local scope of its own, but its statements are emitted into the
    top level's C function, where a local of the same name shared one C
    variable with the top level's (and with every other body's). Each body's
-   locals take a name private to the body. Runs before any pass turns a
-   block into a class body (Class.new do..end), whose locals are the
-   block's and may read the enclosing scope's. Code a later step splices
-   into the body is a scope of its own (a hook's call, a class_eval block):
-   the lowering context hands the scope's statements and the node that
-   names it, the body and its owner for the body's own. */
+   locals take a name private to the body. Code a later step splices into
+   the body is a scope of its own (a hook's call, a class_eval block), and
+   so is a block a later step makes a class body (Class.new do..end), which
+   reads no local of the enclosing scope or stays a block: the lowering
+   context hands the scope's statements and the node that names it, the
+   body and its owner for the body's own. */
 int desugar_body_local_scopes_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   BlsTag tag = { c, lc->scope, 0, "" };
@@ -18020,7 +18020,15 @@ int desugar_singleton_class_meta(Compiler *c) {
   return changed;
 }
 
-int desugar_class_new_blocks(Compiler *c) {
+/* The class body a Class.new or Module.new block became, after rows have
+   run over it as a block's code: handed to the host as one splice, which
+   grafts its class_eval text and lowers it as the class body it now is */
+static void cn_host_body(Compiler *c, HostStep *h, int cls, int body) {
+  int bn = 0;
+  nt_arr(c->nt, body, "body", &bn);
+  host_splice(c, h, cls, body, 0, bn);
+}
+int desugar_class_new_blocks(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
   int *parent = an_build_parent_index(nt, n0);
@@ -18162,6 +18170,7 @@ int desugar_class_new_blocks(Compiler *c) {
       nt_node_set_ref(nt, par, "body", body);
       nt_node_set_int(nt, par, "class_new_anonymous", 1);
       nt_node_set_int(nt, par, "block_made_body", 1);
+      cn_host_body(c, h, par, body);
       changed = 1;
       continue;
     }
@@ -18194,6 +18203,7 @@ int desugar_class_new_blocks(Compiler *c) {
       free(out);
       nt_node_reset(nt, id, "ConstantReadNode");
       nt_node_set_str(nt, id, "name", name);
+      cn_host_body(c, h, cls, body);
       changed = 1;
       continue;
     }
@@ -24823,8 +24833,8 @@ int desugar_static_class_eval(Compiler *c, HostStep *h) {
 /* The graft on reach of a splice: the statements body[at..at + n), which a step
    put into owner's body. The count the n statements become. A class or
    module body among them was grafted with the program's: a hook's body,
-   a method's, defines none, and a class_eval block the splice unwraps was
-   the program's. */
+   a method's, defines none, and a class_eval block the splice unwraps and
+   the block a Class.new body was made of were the program's. */
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
