@@ -4252,6 +4252,91 @@ static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
     }
   return 0;
 }
+/* `M.const_set(:N, v)` with a literal name sets M's constant N and answers
+   v, as `M::N = v` does; `const_set(:N, v)` or `self.const_set(:N, v)` in a
+   class or module body sets the body's own, as `N = v` there does. Written
+   so, each is the constant write every pass below names, stores, orders and
+   qualifies: beside a top-level G, `Values.const_set(:G, 13)` is Values's G
+   and leaves G alone. M is a constant naming Object or a class or module the
+   program defines, so it is a module whichever way the call runs. A program
+   that defines a const_set of its own keeps its calls. */
+int desugar_const_set_write_gate(Compiler *c, LowerCtx *lc) {
+  (void)lc;
+  return !ct_method_defined(c->nt, "const_set");
+}
+int desugar_const_set_write_left(Compiler *c, LowerCtx *lc, int id) {
+  const NodeTable *nt = c->nt;
+  int a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
+  if (!is_const_set_name(nt_str(nt, id, "name")) || nt_ref(nt, id, "block") >= 0 || ac != 2) return 0;
+  const char *n = vis_arg_name(nt, av[0]);
+  NodeKind vk = nt_kind(nt, av[1]);
+  if (!n || n[0] < 'A' || n[0] > 'Z' || !is_c_ident(n) || vk == NK_SplatNode || vk == NK_KeywordHashNode) return 0;
+  int rv = nt_ref(nt, id, "receiver");
+  if (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) {
+    /* self is the class where the body runs, not in a method, block or
+       `class << x` body in it, nor in its header */
+    const int *par = lower_parents(c, lc);
+    for (int p = id, q = par[id]; q >= 0; p = q, q = par[q]) {
+      NodeKind k = nt_kind(nt, q);
+      if (k == NK_ClassNode || k == NK_ModuleNode) return p == nt_ref(nt, q, "body");
+      if (k == NK_DefNode || k == NK_BlockNode || k == NK_LambdaNode || k == NK_SingletonClassNode) return 0;
+    }
+    return 0;
+  }
+  const char *m = nt_str(nt, rv, "name");
+  for (int p = rv; p >= 0; p = nt_kind(nt, p) == NK_ConstantPathNode ? nt_ref(nt, p, "parent") : -1)
+    if (nt_kind(nt, p) != NK_ConstantReadNode && nt_kind(nt, p) != NK_ConstantPathNode) return 0;
+  return m && (is_object_base_name(m) || qc_program_defines_class(nt, m));
+}
+/* node n stands where the call stood */
+static void cs_place(NodeTable *nt, int n, const long long *at) {
+  nt_node_set_int(nt, n, "node_line", at[0]);
+  nt_node_set_int(nt, n, "node_file", at[1]);
+  nt_node_set_int(nt, n, "node_col", at[2]);
+}
+/* the constant N, or M::N for a receiver M: a read, or a write's target */
+static int cs_const(NodeTable *nt, int m, const char *n, const long long *at) {
+  int k = nt_new_node(nt, m >= 0 ? "ConstantPathNode" : "ConstantReadNode");
+  if (k < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  nt_node_set_str(nt, k, "name", n);
+  if (m >= 0) nt_node_set_ref(nt, k, "parent", m);
+  cs_place(nt, k, at);
+  return k;
+}
+int desugar_const_set_write_at(Compiler *c, LowerCtx *lc, int id) {
+  if (!desugar_const_set_write_left(c, lc, id)) return 0;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int rv = nt_ref(nt, id, "receiver"), a = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = nt_arr(nt, a, "arguments", &ac);
+  int v = av[1], w = id;
+  char *n = strdup(vis_arg_name(nt, av[0]));
+  if (!n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (rv >= 0 && nt_kind(nt, rv) == NK_SelfNode) rv = -1;
+  long long at[3] = { nt_int(nt, id, "node_line", 0), nt_int(nt, id, "node_file", 0), nt_int(nt, id, "node_col", 0) };
+  /* used as a value, the call answers v, which the constant then holds:
+     `(M::N = v; M::N)` */
+  int used = !an_value_dropped(nt, lower_parents(c, lc), id);
+  nt_node_set_arr(nt, a, "arguments", NULL, 0);   /* the value moves to the write */
+  if (used) {
+    int s = nt_new_node(nt, "StatementsNode");
+    w = nt_new_node(nt, "ConstantWriteNode");
+    if (w < 0 || s < 0) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int b[2] = { w, cs_const(nt, rv >= 0 ? nt_clone_subtree(nt, rv) : -1, n, at) };
+    nt_node_set_arr(nt, s, "body", b, 2);
+    cs_place(nt, s, at);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", s);
+    cs_place(nt, id, at);
+  }
+  nt_node_reset(nt, w, rv >= 0 ? "ConstantPathWriteNode" : "ConstantWriteNode");
+  if (rv >= 0) nt_node_set_ref(nt, w, "target", cs_const(nt, rv, n, at));
+  else nt_node_set_str(nt, w, "name", n);
+  nt_node_set_ref(nt, w, "value", v);
+  cs_place(nt, w, at);
+  free(n);
+  return 1;
+}
 /* A top-level path write's target `A::B::NAME`, as a write of NAME under
    the module path A::B names from the top level (through an alias, `A =
    Base`) -- when each segment of it is a class or module of the program. */
@@ -45939,6 +46024,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_begin(c, &lc);
   /* `m(&nil)` is the blockless call */
   lower_run(c, &lc, LW_NIL_BLOCK_ARG);
+  lower_run(c, &lc, LW_CONST_SET_WRITE);            /* M.const_set(:N, v) -> M::N = v, a constant write to every pass */
   lower_run(c, &lc, LW_THREAD_START);               /* Thread.start / .fork -> Thread.new */
   lower_run(c, &lc, LW_MARSHAL_RESTORE);            /* Marshal.restore -> Marshal.load */
   lower_run(c, &lc, LW_SOCKET_OPEN);                /* TCPSocket.open(h, p) -> TCPSocket.new(h, p) */

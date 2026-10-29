@@ -727,13 +727,19 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
      definition inferred, so a value of another type has nowhere to go; both
      fall through to the diagnostic. CRuby returns the value (and warns about
      the reinitialization; spinel does not). #2675 */
-  if (sp_streq(name, "const_set") && recv >= 0 && argc == 2) {
+  if (is_const_set_name(name) && recv >= 0 && argc == 2) {
     NodeKind cs_ak = nt_kind(nt, argv[0]);
     const char *cs_qm = NULL;
     if (cs_ak == NK_SymbolNode) cs_qm = nt_str(nt, argv[0], "value");
     else if (cs_ak == NK_StringNode) cs_qm = nt_str(nt, argv[0], "content");
     if (cs_qm) {
-      LocalVar *cv = comp_const(c, cs_qm);
+      /* The load stage made the call on a constant naming a class or module
+         of the program a constant write (desugar_const_set_write); the call
+         plan refuses one left whose owner is not known (const_set_slot) */
+      refuse_from_plan(c, id, CRF_LIMIT, "refuse-limit");
+      const char *cs_key;
+      const_set_slot(c, id, cs_qm, &cs_key);
+      LocalVar *cv = cs_key ? comp_const(c, cs_key) : NULL;
       TyKind cs_vt = repr_of(c, argv[1]).as_ty;
       /* (one-String mode: a String of the other face, through SP_STR_HDL /
          SP_STR_B) */
@@ -741,11 +747,11 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
                           : cv->type == TY_STRBUF && cs_vt == TY_STRING ? "SP_STR_HDL("
                           : cv->type == TY_STRING && cs_vt == TY_STRBUF ? "SP_STR_B(" : NULL;
       if (cv && cv->type != TY_UNKNOWN && (cs_vt == cv->type || cs_face)) {
-        buf_printf(b, "(cst_%s = %s", cs_qm, cs_face ? cs_face : "");
+        buf_printf(b, "(cst_%s = %s", cs_key, cs_face ? cs_face : "");
         emit_expr(c, argv[1], b);
         if (cs_face) buf_puts(b, ")");
-        if (const_has_flag(cv)) buf_printf(b, ", cst_%s__set = 1", cs_qm);
-        buf_printf(b, ", cst_%s)", cs_qm);
+        if (const_has_flag(cv)) buf_printf(b, ", cst_%s__set = 1", cs_key);
+        buf_printf(b, ", cst_%s)", cs_key);
         return 1;
       }
       static char csbuf[512];
