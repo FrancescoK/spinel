@@ -181,6 +181,7 @@ src/codegen_expr.c defined_super_reaches super, by its def's name
 src/codegen_util.c ivs_super_method super, by its def's name
 src/codegen_util.c proc_form_source a proc form's source method, by its own name
 src/codegen_util.c scope_proc_form_of a scope's own proc-form clone, by its own name
+src/codegen_util.c mc_number_versions whether Object has a top-level function of a main method's own name, which would share its C name
 src/compiler.c comp_super_name super, by its def's name
 src/compiler.c comp_super_shadow super, by its def's name
 
@@ -237,6 +238,7 @@ src/compiler.c resolve_alias_side an alias's name
 
 # the tables' own queries: the chain walk call_target asks, and the facts a
 # class's method of a name has (a call asks them of the method it runs)
+src/call_plan.c ct_table call_target's table query, which the version entries' build asks too
 src/compiler.c chain_lookup the chain walk itself
 src/compiler.c cls_user_display_mi a class's method of the name
 src/compiler.c comp_arysub_name_is_array a class's method of the name

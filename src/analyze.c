@@ -636,8 +636,10 @@ void compute_reachable(Compiler *c, int typed) {
     /* The roots: the top level, a def with no name, initialize, and an
        --ext-entry. A method CRuby calls back is no root of its own: a node
        that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
-       of the program the message of an exception class. */
-    int is_root = (s == 0 || !sc->name || (!sc->replaced && is_initialize_name(sc->name)) || sc->is_ext_entry);
+       of the program the message of an exception class. (A replaced version,
+       or a version entry, is reached only by the calls bound to it.) */
+    int bound = sc->replaced || sc->entry;
+    int is_root = (s == 0 || !sc->name || (!bound && is_initialize_name(sc->name)) || sc->is_ext_entry);
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
@@ -653,7 +655,7 @@ void compute_reachable(Compiler *c, int typed) {
   for (int t = 0; t < c->nscopes; t++) {
     sn_link[t] = -1;
     const char *tn = c->scopes[t].name;
-    if (!tn) continue;
+    if (!tn || c->scopes[t].entry) continue;   /* (no name reaches an entry) */
     int k = -1;
     if (sn_set.nb)
       for (int i = sn_set.head[sp_strhash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
@@ -912,7 +914,7 @@ void compute_reachable(Compiler *c, int typed) {
       const char *proto = NULL;
       const Scope *st = &c->scopes[t];
       int live = 0;
-      if (st->reachable || !st->name || st->replaced) continue;
+      if (st->reachable || st->entry || !st->name || st->replaced) continue;
       for (int i = 0; !live && synth_stands_for(st->name, i, &proto); i++) live = cn_live(&cn_set, proto);
       if (!live) continue;
       MARK_NAME(st->name);
@@ -41762,31 +41764,6 @@ static int bam_wrapper_binds_receiver(Compiler *c, Scope *sc) {
 }
 
 
-/* Renames the receiverless and `self.` calls of `from` under node id to
-   `to`, not those in a def, class or module body
-   (rename_main_singleton_defs). */
-static void redef_rename_calls(NodeTable *nt, int id, const char *from, const char *to, int depth) {
-  if (id < 0 || id >= nt->count || depth > 400) return;
-  NodeKind k = nt_kind(nt, id);
-  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode)
-    return;
-  int crecv = k == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
-  if (k == NK_CallNode && (crecv < 0 || nt_kind(nt, crecv) == NK_SelfNode)) {
-    const char *nm = nt_str(nt, id, "name");
-    if (nm && sp_streq(nm, from)) {
-      if (!sp_streq(from, to)) nt_set_str(nt, id, "name", to);
-      /* `self.k` on main is the singleton method, which is a receiverless
-         top-level function here: drop the self (see rename_main_singleton_defs) */
-      if (crecv >= 0) nt_node_set_ref(nt, id, "receiver", -1);
-    }
-  }
-  const SpNode *nd = &nt->nodes[id];
-  for (int i = 0; i < nd->nr; i++) redef_rename_calls(nt, nd->r[i].ref, from, to, depth + 1);
-  for (int i = 0; i < nd->na; i++)
-    for (int j = 0; j < nd->a[i].n; j++)
-      redef_rename_calls(nt, nd->a[i].ids[j], from, to, depth + 1);
-}
-
 int is_descendant(Compiler *c, int k, int anc);
 /* Does a call of `name` on an object of class k already reach the method
    def node `def` as the class stood at p, ahead of a later include? Then
@@ -42535,58 +42512,6 @@ static int desugar_poly_symbol_block_arg(Compiler *c) {
     changed = 1;
   }
   return changed;
-}
-
-/* A top-level `def self.k` is a singleton method of main, and a top-level
-   `def k` a private method of Object: both can exist, and on main -- the
-   top-level statements, their blocks, and the singleton method's own body --
-   a call of `k` or `self.k` reaches the singleton, while from any other object
-   `k` is Object's. Both were emitted as sp_k and the C did not compile. The
-   singleton gets a private name, and the calls that run with main as self
-   after its `def` are renamed to it; a method body keeps `k`, since it runs
-   with whatever self it was called on. */
-static void rename_main_singleton_defs(Compiler *c) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int body = nt_ref(nt, nt->root_id, "statements");
-  int n = 0;
-  const int *st0 = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
-  if (!st0 || n < 2) return;
-  int *st = malloc(sizeof(int) * (size_t)n);
-  if (!st) return;
-  memcpy(st, st0, sizeof(int) * (size_t)n);
-  int serial = 0;
-  for (int i = 0; i < n; i++) {
-    if (nt_kind(nt, st[i]) != NK_DefNode) continue;
-    int rv = nt_ref(nt, st[i], "receiver");
-    if (rv < 0 || nt_kind(nt, rv) != NK_SelfNode) continue;
-    const char *nm0 = nt_str(nt, st[i], "name");
-    if (!nm0) continue;
-    int plain = 0;
-    for (int j = 0; j < n && !plain; j++)
-      if (nt_kind(nt, st[j]) == NK_DefNode && nt_ref(nt, st[j], "receiver") < 0 &&
-          nt_str(nt, st[j], "name") && sp_streq(nt_str(nt, st[j], "name"), nm0)) plain = 1;
-    char *nm = strdup(nm0);
-    char to[256];
-    /* alone, the singleton keeps its name and only `self.k` loses its self:
-       the dispatch on main had no arm for main's own singleton methods, and
-       `self.k` raised NoMethodError */
-    if (!plain) snprintf(to, sizeof to, "%s", nm);
-    else for (;;) {
-      snprintf(to, sizeof to, "%s__main%d", nm, ++serial);
-      int taken = 0;
-      NT_FOREACH_KIND(nt, NK_DefNode, d) {
-        const char *dn = nt_str(nt, d, "name");
-        if (dn && sp_streq(dn, to)) { taken = 1; break; }
-      }
-      if (!taken) break;
-    }
-    if (plain) nt_set_str(nt, st[i], "name", to);
-    for (int j = i + 1; j < n; j++) redef_rename_calls(nt, st[j], nm, to, 0);
-    redef_rename_calls(nt, nt_ref(nt, st[i], "body"), nm, to, 0);
-    redef_rename_calls(nt, nt_ref(nt, st[i], "parameters"), nm, to, 0);
-    free(nm);
-  }
-  free(st);
 }
 
 /* Propagate ivar types up the inheritance chain: a base-class method runs on
@@ -46593,7 +46518,6 @@ static void an_phase_desugar_register(Compiler *c) {
   AN_STEP_V("desugar_builtin_scalar_defs", desugar_builtin_scalar_defs(c));
   prog_settle_files(c);                  /* (--load-model=graph: a file no live require reaches is dropped; one a nested require places is placed) */
   prog_refuse_order(c);                  /* (--load-model=graph: what these read across files) */
-  rename_main_singleton_defs(c);         /* def self.k beside def k -> def self.k__main1 */
   lower_run(c, &lc, LW_SCOPE_NUMBERED_BLOCK_PARAMS);
   lower_run(c, &lc, LW_SINGLETON_CLASS_DEFINE_METHOD); /* singleton_class.define_method -> define_singleton_method */
   lower_run(c, &lc, LW_EMPTY_HASH_COMPARE_BY_IDENTITY); /* {}.compare_by_identity -> Hash.new.compare_by_identity */
@@ -47388,11 +47312,13 @@ static int ur_name_excluded(const char *nm) {
 }
 /* a plain String method, emitted as a function of its own under the name
    its def gives it (not a prepend's shadow, which a `super` reaches). An
-   --ext-entry is no candidate: the host reads its value. */
+   --ext-entry is no candidate: the host reads its value. Neither is a
+   version entry: the calls it answers carry the method's own name, not
+   the entry's. */
 static int ur_candidate(Compiler *c, const Scope *s) {
   return s->ret == TY_STRING && s->name && s->def_node >= 0 && nt_kind(c->nt, s->def_node) == NK_DefNode &&
          nt_str(c->nt, s->def_node, "name") && sp_streq(nt_str(c->nt, s->def_node, "name"), s->name) &&
-         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !s->is_ext_entry &&
+         s->body >= 0 && !s->yields && !s->is_proc_form && !s->cs_synth && !s->is_ext_entry && !s->entry &&
          !ur_name_excluded(s->name);
 }
 /* the builtin iterators that drop their block's value */
@@ -47952,6 +47878,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      grows. This is where comp_method_in_class / comp_cmethod_in_class are
      hottest (called per node, every fixpoint iteration). */
   elab_mark_versions(c);
+  ver_entries_build(c);
   comp_scope_index_set_frozen(1);
 
   /* The classes that can exist, before any type is derived from them (see
@@ -47959,6 +47886,7 @@ static void an_phase_pre_fixpoint(Compiler *c) {
      construction site is a call node, so both are known now. Recomputed
      after the fixpoint, when a dynamic `.new` can be told from a static one. */
   AN_STEP_V("compute_reachable", compute_reachable(c, 0));
+  ver_cells_write(c);
   compute_instantiated(c, 1);
 }
 

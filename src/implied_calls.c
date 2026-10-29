@@ -213,6 +213,16 @@ int nt_implied_calls(const NodeTable *nt, int id, NtImplied *out, int max) {
 
 /* ---- --dump-implied-calls ---- */
 
+/* The sides some row names `name` for (NTS_ bits; 0 when none does): the
+   rows' fixed names, not a name a node holds (an operator write's operator,
+   an attribute write's reader) */
+unsigned nt_implied_name_sides(const char *name) {
+  unsigned sides = 0;
+  for (int i = 0; name && i < NTI_ROWS; i++)
+    if (nti_rows[i].name && sp_streq(nti_rows[i].name, name)) sides |= nti_rows[i].side;
+  return sides;
+}
+
 static void nti_dump_operand(const NodeTable *nt, int operand, FILE *out) {
   switch (operand) {
   case NTI_NONE: fputs("none", out); break;

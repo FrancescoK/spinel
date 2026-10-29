@@ -10904,8 +10904,11 @@ static int bam_variadic_kernel(const NodeTable *nt, const Scope *m) {
    ArgumentError. One rule for the static count (emit_call_arity_check) and
    the counts a splat leaves to the run time (emit_splat_given_count,
    emit_unreached_splat_count), which judged such a scope's synthesized
-   slots as if they were arguments. */
+   slots as if they were arguments. A version entry's synthesized
+   parameters are its call's arguments one for one: it forwards them to
+   versions that all take the same count, so that count is judged here. */
 static int arity_unjudged(Compiler *c, Scope *m) {
+  if (m->entry) return 0;
   if (m->cs_synth) return 1;
   for (int i = 0; i < m->nparams; i++)
     if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_' &&

@@ -87,8 +87,8 @@ nodes:
   ImplicitRestNode:        {calls: [{name: to_ary, operand: yielded, side: inst}]}
   BlockParametersNode:     {calls: [{name: to_ary, operand: yielded, side: inst, when: multi_target}]}
   NumberedParametersNode:  {calls: [{name: to_ary, operand: yielded, side: inst, when: multi_target}]}
-  XStringNode:             {calls: [{name: "`", operand: self, side: inst}]}
-  InterpolatedXStringNode: {calls: [{name: "`", operand: self, side: inst}]}
+  XStringNode:             {calls: [{name: "`", operand: self, side: both}]}
+  InterpolatedXStringNode: {calls: [{name: "`", operand: self, side: both}]}
 
   # ---- a Hash literal hashes its keys (and compares those that meet), as
   # does a keyword argument whose key is not a symbol ----

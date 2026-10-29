@@ -1,0 +1,17 @@
+1
+2
+5
+10
+1
+2
+1
+ring main
+ring bell
+say low
+say high
+[1, 1]
+[2, 2]
+"private"
+"private"
+[1, 5]
+[2, 5]

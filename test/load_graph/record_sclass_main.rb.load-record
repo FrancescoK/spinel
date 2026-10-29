@@ -32,12 +32,12 @@ entity Dog: owner main leaf Dog
 entity Cat: owner main leaf Cat
 entity Bird: owner main leaf Bird
 const Loud: write#1
-Loud#speak: def#2 end=yes
+Loud#speak: def#2 runs=#13 end=yes
 const Plain: write#3
-Plain#speak: def#4 end=yes
+Plain#speak: def#4 runs=#13 end=yes
 const Dog: write#5
-Dog.speak: def#6 end=yes
+Dog.speak: def#6 runs=#13 end=yes
 const Cat: write#7
-Cat.speak: def#8 end=yes
+Cat.speak: def#8 runs=#13 end=yes
 const Bird: write#11
-Bird.speak: def#12 end=yes
+Bird.speak: def#12 runs=#13 end=yes

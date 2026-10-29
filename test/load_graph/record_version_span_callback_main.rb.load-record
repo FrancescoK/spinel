@@ -1,0 +1,112 @@
+load record: 59 points, 1 regions
+r0 #0 f0 ProgramNode line 11
+r0 #1 f0 ModuleNode Mix line 11
+  r0 #2 f0 DefNode append_features line 12
+r0 #3 f0 ModuleNode Shout line 18
+  r0 #4 f0 CallNode refine line 19
+    r0 #5 may f0 DefNode shout line 20
+r0 #6 f0 CallNode using line 23
+r0 #7 f0 ClassNode Matcher line 25
+  r0 #8 f0 DefNode === line 26
+r0 #9 f0 ClassNode Pt line 29
+  r0 #10 f0 DefNode deconstruct line 30
+r0 #11 f0 ClassNode Probe line 33
+  r0 #12 f0 DefNode respond_to_missing? line 34
+r0 #13 f0 ClassNode Num line 37
+  r0 #14 f0 DefNode to_f line 38
+r0 #15 f0 ClassNode Money line 41
+  r0 #16 f0 CallNode attr_reader line 42
+  r0 #17 f0 DefNode initialize line 43
+  r0 #18 f0 DefNode + line 44
+r0 #19 f0 ClassNode Err line 47
+  r0 #20 f0 DefNode exception line 48
+r0 #21 f0 ClassNode Bell line 51
+  r0 #22 f0 DefNode ring line 52
+r0 #23 f0 LocalVariableWriteNode out line 55
+r0 #24 f0 CaseNode line 56
+  r0 #25 may f0 CallNode << line 57
+r0 #26 f0 CaseMatchNode line 59
+  r0 #27 may f0 CallNode << line 60
+r0 #28 f0 CallNode << line 62
+r0 #29 f0 CallNode << line 63
+r0 #30 f0 CallNode << line 64
+r0 #31 f0 BeginNode line 65
+  r0 #32 f0 CallNode raise line 66
+  r0 #33 may f0 CallNode << line 68
+r0 #34 f0 CallNode << line 70
+r0 #35 f0 ClassNode Host line 71
+  r0 #36 f0 DefNode __spinel_civget_mixed line 71
+  r0 #37 f0 CallNode include line 72
+r0 #38 f0 CallNode << line 74
+r0 #39 f0 ClassNode Matcher line 76
+  r0 #40 f0 DefNode === line 77
+r0 #41 f0 ClassNode Pt line 80
+  r0 #42 f0 DefNode deconstruct line 81
+r0 #43 f0 ClassNode Probe line 84
+  r0 #44 f0 DefNode respond_to_missing? line 85
+r0 #45 f0 ClassNode Num line 88
+  r0 #46 f0 DefNode to_f line 89
+r0 #47 f0 ClassNode Money line 92
+  r0 #48 f0 DefNode + line 93
+r0 #49 f0 ClassNode Err line 96
+  r0 #50 f0 DefNode exception line 97
+r0 #51 f0 ClassNode Bell line 100
+  r0 #52 f0 DefNode ring line 101
+r0 #53 f0 ModuleNode Mix line 104
+  r0 #54 f0 DefNode append_features line 105
+r0 #55 f0 ModuleNode Shout line 110
+  r0 #56 f0 CallNode refine line 111
+    r0 #57 may f0 DefNode shout line 112
+r0 #58 f0 CallNode puts line 116
+class Mix: body#1 body#53
+class Shout: body#3 body#55
+class Matcher: body#7 body#39
+class Pt: body#9 body#41
+class Probe: body#11 body#43
+class Num: body#13 body#45
+class Money: body#15 body#47
+class Err: body#19 body#49
+class Bell: body#21 body#51
+class Host: body#35 include Mix#37
+entity Mix: owner main leaf Mix
+entity Shout: owner main leaf Shout
+entity Matcher: owner main leaf Matcher
+entity Pt: owner main leaf Pt
+entity Probe: owner main leaf Probe
+entity Num: owner main leaf Num
+entity Money: owner main leaf Money
+entity Err: owner main leaf Err
+entity Bell: owner main leaf Bell
+entity Host: owner main leaf Host
+const Mix: write#1
+Mix.append_features: def#2 runs=#37 def#54 runs=#37 end=yes
+const Shout: write#3
+Shout#shout: def#5 may runs=#38 def#57 may runs=#38 end=unknown open
+const Matcher: write#7
+Matcher#===: def#8 runs=#24 def#40 runs=#24 end=yes
+const Pt: write#9
+Pt#deconstruct: def#10 runs=#26 def#42 runs=#26 end=yes
+const Probe: write#11
+Probe#respond_to_missing?: def#12 runs=#28 private def#44 runs=#28 private end=yes
+const Num: write#13
+Num#to_f: def#14 runs=#29 def#46 runs=#29 end=yes
+const Money: write#15
+Money#n: reader#16 end=yes
+Money#initialize: def#17 private end=yes
+Money#+: def#18 runs=#30 def#48 runs=#30 end=yes
+const Err: write#19
+Err#exception: def#20 runs=#32 def#50 runs=#32 end=yes
+const Bell: write#21
+Bell#ring: def#22 runs=#34 def#52 runs=#34 end=yes
+const Host: write#35
+Host.__spinel_civget_mixed: def#36 end=yes
+form #37 runs code
+versions Mix.append_features: def#2..#54 seen=def#2, def#54..end seen=def#54; 2 of the name
+versions Shout#shout: def#5..?, def#57..end seen=unknown; 2 of the name
+versions Matcher#===: def#8..#40 seen=def#8, def#40..end seen=def#40; 2 of the name
+versions Pt#deconstruct: def#10..#42 seen=def#10, def#42..end seen=def#42; 2 of the name
+versions Probe#respond_to_missing?: def#12..#44 seen=def#12, def#44..end seen=def#44; 2 of the name
+versions Num#to_f: def#14..#46 seen=def#14, def#46..end seen=def#46; 2 of the name
+versions Money#+: def#18..#48 seen=def#18, def#48..end seen=def#48; 2 of the name
+versions Err#exception: def#20..#50 seen=def#20, def#50..end seen=def#50; 2 of the name
+versions Bell#ring: def#22..#52 seen=def#22, def#52..end seen=def#52; 2 of the name

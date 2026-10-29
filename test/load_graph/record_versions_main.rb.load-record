@@ -29,12 +29,12 @@ entity Shiny: owner main leaf Shiny
 entity Tally: owner main leaf Tally
 entity Box: owner main leaf Box
 const Shiny: write#3
-Shiny#get: def#4 end=yes
+Shiny#get: def#4 runs=#22 end=yes
 const Tally: write#5
-Tally.up: def#6 def#8 end=yes
-Tally.kept: def#9 def#12 end=yes
+Tally.up: def#6 runs=#13 def#8 runs=#13 end=yes
+Tally.kept: def#9 runs=#14 def#12 runs=#14 end=yes
 const Box: write#15
-Box#get: def#16 def#19 def#21 end=yes
-versions Tally.up: def#6..#8 over=def#6, def#8..end; 2 of the name
-versions Tally.kept: def#9..#12 over=def#9, def#12..end; 2 of the name, named
-versions Box#get: def#16..#19 over=unknown, def#19..#21 over=def#19, def#21..end; 4 of the name
+Box#get: def#16 runs=#22 def#19 runs=#22 def#21 runs=#22 end=yes
+versions Tally.up: def#6..#8 seen=def#6 idle, def#8..end seen=def#8; 2 of the name
+versions Tally.kept: def#9..#12 seen=def#9 idle, def#12..end seen=def#12; 2 of the name, named
+versions Box#get: def#16..#19 seen=def#16 idle, def#19..#21 seen=def#19 idle, def#21..end seen=def#21; 4 of the name

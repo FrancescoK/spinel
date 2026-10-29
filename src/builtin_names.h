@@ -160,6 +160,11 @@ int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
 int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
 int is_marshal_load(const char *recv, const char *meth); /* Marshal.load */
+int is_object_loader(const char *recv, const char *meth, int argc); /* Marshal.load/restore, YAML/Psych.load family, JSON.load, JSON.parse with options, ObjectSpace._id2ref */
+int is_method_bind_name(const char *n); /* bind bind_call */
+int is_timeout_call(const char *recv, const char *meth); /* Timeout.timeout(sec, klass) */
+int is_exception_ctor_name(const char *n); /* exception */
+int is_enumerator_maker(const char *n); /* to_enum enum_for */
 int is_allocate_name(const char *n); /* allocate */
 int is_ivar_remove_name(const char *n); /* remove_instance_variable */
 int is_ivar_presence_read(const char *n); /* instance_variables instance_variable_defined? remove_instance_variable inspect p pp */
@@ -274,7 +279,8 @@ int is_const_set_name(const char *n); /* const_set */
 int is_const_query_name(const char *n); /* const_get const_defined? const_source_location */
 int is_constants_list_name(const char *n); /* constants */
 int is_definition_hook_name(const char *n); /* inherited included extended prepended method_added singleton_method_added const_added */
-int definition_form_hooks(const char *form, int sg, const char **out); /* the hooks a definition form fires: included for include, method_added for attr_accessor, ... (up to 2) */
+int is_method_missing_name(const char *n); /* method_missing respond_to_missing?: what a call of a name an object has no method by runs */
+int definition_form_hooks(const char *form, int sg, const char **out); /* the hooks a definition form fires: included and append_features for include, method_added for attr_accessor, ... (up to 2) */
 int is_const_missing_name(const char *n); /* const_missing */
 int is_const_table_def_name(const char *n); /* __const_get__ __const_defined__ */
 int is_string_position_mutator(const char *n); /* []= clear insert setbyte slice! */
@@ -558,7 +564,6 @@ int is_using_name(const char *n);          /* using */
 int is_remove_const_name(const char *n);   /* remove_const */
 int is_const_visibility_name(const char *n);   /* private_constant public_constant deprecate_constant */
 int is_cvar_write_name(const char *n);     /* class_variable_set remove_class_variable */
-int is_runtime_callback_name(const char *n);   /* an operator, method_missing, deconstruct, to_f ...: what CRuby's core calls by itself */
 int is_hook_protocol_name(const char *n);  /* append_features extend_object prepend_features: what include, extend and prepend send before their hooks */
 int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an object makes it the port output goes to */
 

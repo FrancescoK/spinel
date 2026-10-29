@@ -1,0 +1,59 @@
+load record: 28 points, 1 regions
+r0 #0 f0 ProgramNode line 12
+r0 #1 f0 ModuleNode Chime line 12
+  r0 #2 f0 DefNode ring line 13
+r0 #3 f0 ClassNode Base line 16
+  r0 #4 f0 DefNode to_s line 17
+r0 #5 f0 ClassNode Bell line 20
+  r0 #6 f0 DefNode ring line 21
+  r0 #7 f0 ConstantWriteNode Bell__SIZES line 22
+    r0 #8 f0 CallNode * line 22
+  r0 #9 f0 CallNode include line 23
+r0 #10 f0 ClassNode Pod line 26
+  r0 #11 f0 DefNode ring line 27
+r0 #12 f0 CallNode puts line 30
+r0 #13 f0 ClassNode Drum line 32
+  r0 #14 f0 DefNode ring line 33
+  r0 #15 f0 ConstantWriteNode Drum__SIZES line 34
+    r0 #16 f0 CallNode * line 34
+  r0 #17 f0 CallNode include line 35
+r0 #18 f0 ClassNode Gong line 38
+  r0 #19 f0 DefNode ring line 39
+  r0 #20 f0 DefNode ring line 40
+r0 #21 f0 ClassNode Bell line 43
+  r0 #22 f0 DefNode ring line 44
+r0 #23 f0 ClassNode Pod line 47
+  r0 #24 f0 DefNode ring line 48
+r0 #25 f0 ClassNode Drum line 51
+  r0 #26 f0 DefNode ring line 52
+r0 #27 f0 CallNode puts line 55
+class Chime: body#1
+class Base: body#3
+class Bell: body#5 body#21 include Chime#9
+class Pod: body#10 body#23
+class Drum: body#13 body#25 include Chime#17
+class Gong: body#18
+entity Chime: owner main leaf Chime
+entity Base: owner main leaf Base
+entity Bell: owner main leaf Bell
+entity Pod: owner main leaf Pod
+entity Drum: owner main leaf Drum
+entity Gong: owner main leaf Gong
+const Chime: write#1
+Chime#ring: def#2 runs=#27 end=yes
+const Base: write#3
+Base#to_s: def#4 end=yes
+const Bell: write#5
+Bell#ring: def#6 runs=#27 def#22 runs=#27 end=yes
+const Bell::SIZES: write#7
+const Pod: write#10
+Pod#ring: def#11 runs=#12 def#24 runs=#12 end=yes
+const Drum: write#13
+Drum#ring: def#14 runs=#27 def#26 runs=#27 end=yes
+const Drum::SIZES: write#15
+const Gong: write#18
+Gong#ring: def#19 runs=#27 def#20 runs=#27 end=yes
+versions Bell#ring: def#6..#22 seen=def#6 idle, def#22..end seen=def#22; 9 of the name
+versions Pod#ring: def#11..#24 seen=def#11, def#24..end seen=def#24; 9 of the name
+versions Drum#ring: def#14..#26 seen=def#14 idle, def#26..end seen=def#26; 9 of the name
+versions Gong#ring: def#19..#20 seen=def#19 idle, def#20..end seen=def#20; 9 of the name

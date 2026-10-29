@@ -76,7 +76,7 @@
   { NK_IndexOrWriteNode, NTS_INST, NTC_NONE, NTA_SELF, NTO_PATH, 1, "[]=", NULL, { { "receiver", 0, 0, 0 } } },
   { NK_IndexTargetNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_PATH, 1, "[]=", NULL, { { "receiver", 0, 0, 0 } } },
   { NK_InstanceVariableOperatorWriteNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_NODE, 0, NULL, "binary_operator", { { NULL, 0, 0, 0 } } },
-  { NK_InterpolatedXStringNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_SELF, 0, "`", NULL, { { NULL, 0, 0, 0 } } },
+  { NK_InterpolatedXStringNode, NTS_INST | NTS_CLASS, NTC_NONE, NTA_SKIP, NTO_SELF, 0, "`", NULL, { { NULL, 0, 0, 0 } } },
   { NK_LocalVariableOperatorWriteNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_NODE, 0, NULL, "binary_operator", { { NULL, 0, 0, 0 } } },
   { NK_MatchPredicateNode, NTS_INST | NTS_CLASS, NTC_NONE, NTA_SKIP, NTO_PATH, 1, "===", NULL, { { "pattern", 0, 0, 0 } } },
   { NK_MatchRequiredNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_PATH, 1, "inspect", NULL, { { "value", 0, 0, 0 } } },
@@ -96,7 +96,7 @@
   { NK_SplatNode, NTS_INST, NTC_NONLITERAL, NTA_SKIP, NTO_PATH, 1, "to_a", NULL, { { "expression", 0, 0, 0 } } },
   { NK_UndefNode, NTS_CLASS, NTC_NONE, NTA_SKIP, NTO_NONE, 0, "method_undefined", NULL, { { NULL, 0, 0, 0 } } },
   { NK_WhenNode, NTS_INST | NTS_CLASS, NTC_NONE, NTA_SKIP, NTO_PATH, 1, "===", NULL, { { "conditions", 0, 1, 0 } } },
-  { NK_XStringNode, NTS_INST, NTC_NONE, NTA_SKIP, NTO_SELF, 0, "`", NULL, { { NULL, 0, 0, 0 } } },
+  { NK_XStringNode, NTS_INST | NTS_CLASS, NTC_NONE, NTA_SKIP, NTO_SELF, 0, "`", NULL, { { NULL, 0, 0, 0 } } },
 #elif NTI_PART == 2
   case NK_FalseNode:
   case NK_FloatNode:

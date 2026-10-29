@@ -47,7 +47,8 @@ typedef enum {
   CRF_LIMIT,       /* a documented limit (diagnose_unsupported_call) */
   CRF_EVAL,        /* Kernel#eval of a runtime string (diagnose_eval_call) */
   CRF_IO_REOPEN,   /* an IO reopening that yields (emit_io_reopen_call) */
-  CRF_BIND_CALL    /* a bind_call on a Class value with an armless class */
+  CRF_BIND_CALL,   /* a bind_call on a Class value with an armless class */
+  CRF_TOP_SELF     /* a receiverless call in a top-level def to a name main has a singleton method for (diagnose_unsupported_call) */
 } CplanRefuseFrom;
 
 typedef struct {
@@ -82,8 +83,8 @@ const CallPlan *cplan_user(Compiler *c, int id);
 /* The method scope call `id` runs when it asks for `name`: on cls's
    instance side through its chain, CT_CMETHOD on its class side, CT_OWN
    in cls's own table only, CT_TOP among the top-level functions (cls not
-   read); *def_class (when asked) the class whose table holds it; -1 for
-   none. The one place a site asks "what does this call run": it answers
+   read; main's singleton methods first for a call on main); *def_class
+   (when asked) the class whose table holds it; -1 for none. The one place a site asks "what does this call run": it answers
    from the tables by name (a redefined method's entry is its last
    definition), and binding a call to one of a method's versions (#9898)
    is decided here. `id` is -1 where a helper that serves calls is asked
@@ -99,6 +100,25 @@ enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4 };
    last version. */
 int call_node_names(const NodeTable *nt, int id, const char *out[2]);
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class);
+/* the classes a call of a versioned name (ct_version_named) may run on,
+   each handed to fn with the flags call_target is asked with */
+int ct_version_named(Compiler *c, const char *nm);
+int ct_version_marked(Compiler *c, const char *nm);
+void ver_hold_free(Compiler *c);
+void ver_chain_free(Compiler *c);
+/* the method call id reaches when it can reach only main's own method of
+   name, -1 for none (a call on main where main's method is defined) */
+int ct_main_target(Compiler *c, int id, const char *name);
+typedef void (*CtClassFn)(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg);
+void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void *arg);
+/* the version entries a call whose version is known only at run time
+   reaches, and the run-time cells they read (#9898) */
+void ver_entries_build(Compiler *c);
+void ver_cells_write(Compiler *c);
+/* the methods entry scope e's arms call, its else arm's last: at most
+   VER_MAX_ARMS + 1 */
+enum { VER_MAX_ARMS = 64 };
+int ver_entry_targets(const Compiler *c, int e, int *out);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
@@ -386,6 +406,7 @@ void cplan_poly_free(PolyPlan *p);
    dispatch. */
 /* The name index bounds a query for a native Ruby literal-block target. */
 int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n);
+int cplan_cand_target(Compiler *c, int id, const char *name, const PolyCand *pc, unsigned flags);
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method

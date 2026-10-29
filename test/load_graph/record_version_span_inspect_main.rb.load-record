@@ -1,0 +1,29 @@
+load record: 14 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 ModuleNode Chime line 5
+  r0 #2 f0 DefNode ring line 6
+r0 #3 f0 ClassNode Shown line 9
+  r0 #4 f0 DefNode inspect line 10
+r0 #5 f0 ConstantWriteNode SEED line 16
+r0 #6 f0 ClassNode Drum line 18
+  r0 #7 f0 DefNode ring line 19
+  r0 #8 f0 CallNode p line 20
+  r0 #9 f0 CallNode include line 21
+r0 #10 f0 CallNode puts line 24
+r0 #11 f0 ClassNode Drum line 26
+  r0 #12 f0 DefNode ring line 27
+r0 #13 f0 CallNode puts line 30
+class Chime: body#1
+class Shown: body#3
+class Drum: body#6 body#11 include Chime#9
+entity Chime: owner main leaf Chime
+entity Shown: owner main leaf Shown
+entity Drum: owner main leaf Drum
+const Chime: write#1
+Chime#ring: def#2 runs=#10 end=yes
+const Shown: write#3
+Shown#inspect: def#4 end=yes
+const SEED: write#5
+const Drum: write#6
+Drum#ring: def#7 runs=#10 def#12 runs=#10 end=yes
+versions Drum#ring: def#7..#12 seen=unknown, def#12..end seen=def#12; 3 of the name

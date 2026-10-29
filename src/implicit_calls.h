@@ -42,6 +42,13 @@ typedef struct {
    table and the tables. */
 int ic_node_calls(Compiler *c, int id, IcCall *out, int max);
 
+/* Whether CRuby calls a method `name` on a program's object it is handed
+   (class_side 0: a method of the object's class) or on a class object it is
+   handed (class_side 1: a singleton method), from some builtin or, for an
+   object, from some syntax. A name only the table names, whatever node or
+   builtin makes the call: for the passes that ask before knowing which. */
+int ic_core_callback(const char *name, int class_side);
+
 /* Whether the operand that receives the call may hold an object of the
    program's. Before inference, or when the types do not settle it, yes. */
 int ic_operand_may_hold(Compiler *c, const IcCall *k);

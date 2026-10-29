@@ -41,13 +41,13 @@ entity D: owner main leaf D
 const Foo: write#1
 Foo#bar: def#3 end=yes
 const A: write#4
-A#who: def#5 end=yes
+A#who: def#5 runs=#22 end=yes
 const A::Kind: write#6
-A__Kind#kind: def#7 end=yes
+A__Kind#kind: def#7 runs=#23 end=yes
 const B: write#8
-B#who: def#9 end=yes
+B#who: def#9 runs=#22 end=yes
 const B::Kind: write#10
-B__Kind#kind: def#11 end=yes
+B__Kind#kind: def#11 runs=never end=yes
 const C: write#12
 C#first_who: alias#14 (who: def#5) end=yes
 const D: write#16

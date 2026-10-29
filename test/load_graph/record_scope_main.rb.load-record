@@ -39,10 +39,10 @@ entity Thing: owner Outer leaf Thing
 entity Other: owner main leaf Other
 entity Macro: owner main leaf Macro
 const Helper: write#1
-Helper#from: def#2 end=yes
+Helper#from: def#2 runs=never end=yes
 const Outer: write#3
 const Outer::Helper: write#4
-Outer__Helper#from: def#5 end=yes
+Outer__Helper#from: def#5 runs=#23 end=yes
 const Outer::Thing: write#6
 Thing#extra: def#12 end=yes
 const Other: write#13

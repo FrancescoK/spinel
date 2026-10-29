@@ -521,6 +521,12 @@ void comp_free(Compiler *c) {
   for (int i = 0; i < c->pres_ord_n; i++) free(c->pres_ord[i]);
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
+  free(c->ver_entries); c->ver_entries = NULL; c->nver_entries = 0;
+  ver_hold_free(c);
+  ver_chain_free(c);
+  free(c->ver_ix); free(c->ver_ix_next); free(c->ver_names); free(c->ver_names_next);
+  c->ver_ix = c->ver_ix_next = c->ver_names = c->ver_names_next = NULL; c->ver_ix_nb = 0;
+  free(c->ver_pins); c->ver_pins = NULL; c->nver_pins = 0;
   for (int i = 0; i < c->nrbp_slots; i++) free(c->rbp_slot_names[i]);
   free(c->rbp_slot_names); free(c->rbp_slot_lens); c->rbp_slot_names = NULL; c->rbp_slot_lens = NULL; c->nrbp_slots = 0;
   if (c->bp_name) for (unsigned i = 0; i <= c->bp_mask; i++) free(c->bp_name[i]);
@@ -590,6 +596,12 @@ void comp_free(Compiler *c) {
   free(c->cls_value);
   for (int i = 0; i < c->ngvars; i++) free(c->gvars[i].name);
   free(c->gvars);
+  free(c->gvar_ix);
+  gvar_writes_free(c);
+  free(c->mih_head);
+  free(c->mih_first);
+  free(c->mih_nodes);
+  free(c->mih_calls);
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);
@@ -626,9 +638,8 @@ static LocalVar *lv_find(LocalVar *arr, int n, const char *name) {
   for (int i = 0; i < n; i++) if (sp_streq(arr[i].name, name)) return &arr[i];
   return NULL;
 }
-static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
-  LocalVar *lv = lv_find(*arr, *n, name);
-  if (lv) return lv;
+static LocalVar *lv_add(LocalVar **arr, int *n, int *cap, const char *name) {
+  LocalVar *lv;
   if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *arr = realloc(*arr, sizeof(LocalVar) * (size_t)*cap); }
   lv = &(*arr)[(*n)++];
   memset(lv, 0, sizeof(*lv));
@@ -638,8 +649,46 @@ static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
   comp_touch_global_r(4);    /* a new slot is a change of the table */
   return lv;
 }
-LocalVar *comp_gvar(Compiler *c, const char *name) { IMEMO_DEP_GLOBAL(); return lv_find(c->gvars, c->ngvars, name); }
-LocalVar *comp_gvar_intern(Compiler *c, const char *name) { return lv_intern(&c->gvars, &c->ngvars, &c->cgvars, name); }
+static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
+  LocalVar *lv = lv_find(*arr, *n, name);
+  return lv ? lv : lv_add(arr, n, cap, name);
+}
+/* The globals are found by name through an index of their slots: a slot in
+   the table is its name's only one (comp_gvar_intern), and none is removed. */
+static int gvar_probe(const Compiler *c, const char *name) {
+  if (!c->gvar_ix || !name) return -1;
+  unsigned mask = (unsigned)c->gvar_ix_cap - 1, j = sp_strhash(name) & mask;
+  while (c->gvar_ix[j] >= 0 && !sp_streq(c->gvars[c->gvar_ix[j]].name, name)) j = (j + 1) & mask;
+  return (int)j;
+}
+LocalVar *comp_gvar(Compiler *c, const char *name) {
+  IMEMO_DEP_GLOBAL();
+  int j = gvar_probe(c, name);
+  return j >= 0 && c->gvar_ix[j] >= 0 ? &c->gvars[c->gvar_ix[j]] : NULL;
+}
+LocalVar *comp_gvar_intern(Compiler *c, const char *name) {
+  LocalVar *lv = comp_gvar(c, name);
+  if (lv) return lv;
+  lv = lv_add(&c->gvars, &c->ngvars, &c->cgvars, name);
+  if (c->ngvars * 2 > c->gvar_ix_cap) {   /* the index grows with the table: rebuilt over every slot */
+    int cap = c->gvar_ix_cap ? c->gvar_ix_cap * 2 : 64;
+    free(c->gvar_ix);
+    if (!(c->gvar_ix = malloc(sizeof(int) * (size_t)cap))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < cap; i++) c->gvar_ix[i] = -1;
+    c->gvar_ix_cap = cap;
+    for (int i = 0; i < c->ngvars; i++) {
+      unsigned j = sp_strhash(c->gvars[i].name) & (unsigned)(cap - 1);
+      while (c->gvar_ix[j] >= 0) j = (j + 1) & (unsigned)(cap - 1);
+      c->gvar_ix[j] = i;
+    }
+  }
+  else {
+    unsigned j = sp_strhash(name) & (unsigned)(c->gvar_ix_cap - 1);
+    while (c->gvar_ix[j] >= 0) j = (j + 1) & (unsigned)(c->gvar_ix_cap - 1);
+    c->gvar_ix[j] = c->ngvars - 1;
+  }
+  return &c->gvars[c->ngvars - 1];
+}
 const char *comp_resolve_gvar(Compiler *c, const char *name) {
   for (int i = 0; i < c->ngvar_aliases; i++)
     if (sp_streq(c->gvar_alias_from[i], name)) return c->gvar_alias_to[i];
@@ -1238,14 +1287,15 @@ static int sm_moved(int s) {
   return 0;
 }
 /* scope `s` is a method of (class_id, is_cm) a lookup may answer: not while
-   it is moved */
+   it is moved, and not a version entry, which only the calls call_target
+   binds to it reach */
 static int sm_owns(const Compiler *c, int s, int class_id, int is_cm) {
   return c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
-         (!mv_n || !sm_moved(s));
+         !c->scopes[s].entry && (!mv_n || !sm_moved(s));
 }
 /* the same for a top-level method */
 static int sm_toplevel(const Compiler *c, int s) {
-  return c->scopes[s].class_id < 0 && (!mv_n || !sm_moved(s));
+  return c->scopes[s].class_id < 0 && !c->scopes[s].entry && (!mv_n || !sm_moved(s));
 }
 
 /* (class_id, name, is_cmethod) -> scope index, cached per scope count. Both
@@ -1534,6 +1584,9 @@ int comp_method_version(Compiler *c, int class_id, const char *name, int is_cm, 
     else for (; dc >= 0; dc = c->classes[dc].parent)
       if ((mi = sm_version_renamed(c, dc, is_cm, def_node)) >= 0) break;
   }
+  /* an instance chain ends at Object, whose methods the top level defines */
+  if (mi < 0 && class_id >= 0 && !is_cm && (mi = sm_version(c, -1, name, 0, def_node)) < 0)
+    mi = sm_version_renamed(c, -1, 0, def_node);
   if (mi >= 0) { IMEMO_DEP_SCOPE(mi); if (def_class) *def_class = dc; }
   return mi;
 }
@@ -4343,12 +4396,15 @@ static int comp_method_index_1(Compiler *c, const char *name) {
   }
   return -1;
 }
-static int comp_method_index_direct(Compiler *c, const char *name) {
+/* The last top-level scope named name on one side: main's singleton
+   methods (`def self.k` at the top level, main) or Object's (top-level
+   `def k`). */
+static int sm_top_last(Compiler *c, const char *name, int side) {
   if (!name) return -1;
   if (!sm_frozen) {
     /* in reverse, so a redefinition wins, matching the frozen index */
     for (int s = c->nscopes - 1; s >= 0; s--)
-      if (sm_toplevel(c, s) && c->scopes[s].name &&
+      if (sm_toplevel(c, s) && !c->scopes[s].is_cmethod == !side && c->scopes[s].name &&
           sp_streq(c->scopes[s].name, name)) return s;
     return -1;
   }
@@ -4356,8 +4412,21 @@ static int comp_method_index_direct(Compiler *c, const char *name) {
   if (!sm_buckets) return -1;
   unsigned b = sm_hash(-1, name, 0) % (unsigned)sm_buckets;
   for (int s = tm_head[b]; s >= 0; s = tm_next[s])
-    if (sm_toplevel(c, s) && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+    if (sm_toplevel(c, s) && !c->scopes[s].is_cmethod == !side && c->scopes[s].name &&
+        sp_streq(c->scopes[s].name, name)) return s;
   return -1;
+}
+/* Object's method of the name, else main's singleton method: a call that
+   is not known to run on main reaches Object's (call_target asks main's
+   first for one that does). */
+static int comp_method_index_direct(Compiler *c, const char *name) {
+  int s = sm_top_last(c, name, 0);
+  return s >= 0 ? s : sm_top_last(c, name, 1);
+}
+int comp_main_method(Compiler *c, const char *name) {
+  int s = sm_top_last(c, name, 1);
+  if (s >= 0) IMEMO_DEP_SCOPE(s);
+  return s;
 }
 
 /* Does class ci descend from an explicit `< BasicObject` (a blank slate)?

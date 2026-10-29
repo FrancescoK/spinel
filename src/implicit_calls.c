@@ -34,8 +34,8 @@ static int ic_builtin_callbacks(IcSink *s, const char *name, const char *recv_cl
   const BopCallback *cbs = NULL;
   int n = recv_class ? bop_class_callbacks(recv_class, name, &cbs) : bop_name_callbacks(name, &cbs);
   for (int i = 0; i < n; i++)
-    for (unsigned bit = 1; bit <= BCR_LOADED; bit <<= 1)   /* BCR_GVAR is the assignment's row, not a call's */
-      if ((cbs[i].roles & bit) && (roles_wanted & bit)) ic_push(s, cbs[i].name, operand, bit, recv);
+    for (unsigned bit = 1; bit <= BCR_HOOK; bit <<= 1)
+      if (bit != BCR_GVAR /* the assignment's row, not a call's */ && (cbs[i].roles & bit) && (roles_wanted & bit)) ic_push(s, cbs[i].name, operand, bit, recv);
   return n;
 }
 
@@ -156,6 +156,19 @@ int ic_node_calls(Compiler *c, int id, IcCall *out, int max) {
     ic_builtin_callbacks(&s, name, NULL, id, BCR_ALL, 0);
   }
   return s.n;
+}
+
+/* A class object is handed over in the CLASS role, or is the receiver whose
+   own hook the builtin calls (HOOK), or a node's syntax calls it on a class
+   (a class header's inherited, a constant read's const_missing, a backtick
+   in a class method); an object of the class in any other role (a program
+   subclass as the receiver, an argument, an element, a block's answer, a
+   port, a loaded object, a name asked through rb_check_funcall), or by a
+   node's syntax. */
+int ic_core_callback(const char *name, int class_side) {
+  unsigned roles = bop_callback_roles(name);
+  if (class_side) return (roles & (BCR_CLASS | BCR_HOOK)) != 0 || (nt_implied_name_sides(name) & NTS_CLASS) != 0;
+  return (roles & ~(unsigned)(BCR_CLASS | BCR_HOOK)) != 0 || (nt_implied_name_sides(name) & NTS_INST) != 0;
 }
 
 /* ---- may the operand hold an object of the program's ---- */
@@ -328,7 +341,7 @@ int ic_operand_may_hold(Compiler *c, const IcCall *k) {
     for (int i = 0; i < an; i++) if (ic_may_be_object(c, av[i], k->name)) return 1;
     return 0;
   default:
-    return 1;   /* an object the data builds, a name asked: they do not depend on a type */
+    return 1;   /* an object the data builds, a name asked, a class's own hook: they do not depend on a type */
   }
 }
 
@@ -343,7 +356,7 @@ void ic_cause(Compiler *c, int node, const IcCall *k, char *buf, size_t n) {
   }
   const char *role = k->role == BCR_ARG ? "ARG" : k->role == BCR_ELEM ? "ELEM" : k->role == BCR_BLOCK ? "BLOCK" :
                      k->role == BCR_SELF ? "SELF" : k->role == BCR_CLASS ? "CLASS" : k->role == BCR_PORT ? "PORT" :
-                     k->role == BCR_ASKED ? "ASKED" : "LOADED";
+                     k->role == BCR_ASKED ? "ASKED" : k->role == BCR_HOOK ? "HOOK" : "LOADED";
   snprintf(buf, n, "%s line %d@%s: %s of %s", k->recv ? nt_type(nt, node) : "call", line, file, k->name, role);
 }
 

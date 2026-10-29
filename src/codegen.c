@@ -4314,48 +4314,43 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
    optcarrot for 0.6% of binary size and no measurable compile time. */
 static int  g_mih_limit_override = 0;  /* the force pass raises the body budget */
 static int  g_mih_callers_override = 0;
-static int *g_mih_nodes = NULL;      /* AST nodes per scope */
-static int *g_mih_calls = NULL;      /* call sites naming the scope's method */
-static int  g_mih_nscopes = 0;
-static const NodeTable *g_mih_nt = NULL;
-static int  g_mih_ntcount = 0;
 /* the per-name call count, built once: counting the calls by walking every
    CallNode per method was a scan of the whole table per scope, and on a
    program with thousands of methods (campfire) that was 80% of the front
    end (#4662) */
-/* name -> first scope of that name; scopes sharing a name chain through
-   next. Kept with the counts, so a call node appended later is counted
-   without rebuilding it. */
-static int *g_mih_head = NULL, *g_mih_next = NULL, g_mih_cap = 0;
+/* name -> first scope of that name; each scope keeps that first scope's
+   index, where its name's calls are counted (a name every class defines is
+   one count, not one per scope per call). Kept with the counts, so a call
+   node appended later is counted without rebuilding it. */
 static void mih_count_call(Compiler *c, int id) {
   const char *nm = nt_str(c->nt, id, "name");
   if (!nm) return;
-  unsigned h = sp_strhash(nm) & (unsigned)(g_mih_cap - 1);
-  while (g_mih_head[h] >= 0 && !sp_streq(c->scopes[g_mih_head[h]].name, nm))
-    h = (h + 1) & (unsigned)(g_mih_cap - 1);
-  for (int si = g_mih_head[h]; si >= 0; si = g_mih_next[si]) g_mih_calls[si]++;
+  unsigned h = sp_strhash(nm) & (unsigned)(c->mih_cap - 1);
+  while (c->mih_head[h] >= 0 && !sp_streq(c->scopes[c->mih_head[h]].name, nm))
+    h = (h + 1) & (unsigned)(c->mih_cap - 1);
+  if (c->mih_head[h] >= 0) c->mih_calls[c->mih_head[h]]++;
 }
 static void mih_count_calls(Compiler *c) {
   const NodeTable *nt = c->nt;
   int ns = c->nscopes;
-  free(g_mih_calls);
-  g_mih_calls = (int *)calloc((size_t)(ns > 0 ? ns : 1), sizeof(int));
-  if (!g_mih_calls) return;
+  free(c->mih_calls);
+  c->mih_calls = (int *)calloc((size_t)(ns > 0 ? ns : 1), sizeof(int));
+  if (!c->mih_calls) return;
   int cap = 1; while (cap < ns * 2 + 8) cap <<= 1;
-  free(g_mih_head); free(g_mih_next);
-  int *head = g_mih_head = (int *)malloc(sizeof(int) * (size_t)cap);
-  int *next = g_mih_next = (int *)malloc(sizeof(int) * (size_t)(ns > 0 ? ns : 1));
-  g_mih_cap = cap;
-  if (!head || !next) { free(g_mih_calls); g_mih_calls = NULL; return; }
+  free(c->mih_head); free(c->mih_first);
+  int *head = c->mih_head = (int *)malloc(sizeof(int) * (size_t)cap);
+  int *first = c->mih_first = (int *)malloc(sizeof(int) * (size_t)(ns > 0 ? ns : 1));
+  c->mih_cap = cap;
+  if (!head || !first) { free(c->mih_calls); c->mih_calls = NULL; return; }
   for (int i = 0; i < cap; i++) head[i] = -1;
   for (int si = 0; si < ns; si++) {
-    next[si] = -1;
+    first[si] = -1;
     const char *nm = c->scopes[si].name;
     if (!nm) continue;
     unsigned h = sp_strhash(nm) & (unsigned)(cap - 1);
     while (head[h] >= 0 && !sp_streq(c->scopes[head[h]].name, nm)) h = (h + 1) & (unsigned)(cap - 1);
     if (head[h] < 0) head[h] = si;
-    else { int t = head[h]; while (next[t] >= 0) t = next[t]; next[t] = si; }
+    first[si] = head[h];
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) mih_count_call(c, id);
 }
@@ -4369,37 +4364,37 @@ static int method_inline_hint(Compiler *c, Scope *s) {
      both counts from the whole table: 349 rebuilds of ~277K nodes on
      lobsters. Nodes are only ever appended, so counting the new ones gives
      the same numbers. */
-  if (g_mih_nt == nt && g_mih_nscopes == c->nscopes && g_mih_nodes && g_mih_calls &&
-      g_mih_ntcount < nt->count) {
-    for (int id = g_mih_ntcount; id < nt->count; id++) {
+  if (c->mih_nt == nt && c->mih_nscopes == c->nscopes && c->mih_nodes && c->mih_calls &&
+      c->mih_ntcount < nt->count) {
+    for (int id = c->mih_ntcount; id < nt->count; id++) {
       int sc = c->nscope[id];
-      if (sc >= 0 && sc < c->nscopes) g_mih_nodes[sc]++;
+      if (sc >= 0 && sc < c->nscopes) c->mih_nodes[sc]++;
       if (nt_kind(nt, id) == NK_CallNode) mih_count_call(c, id);
     }
-    g_mih_ntcount = nt->count;
+    c->mih_ntcount = nt->count;
   }
-  if (g_mih_nt != nt || g_mih_ntcount != nt->count || g_mih_nscopes != c->nscopes) {
-    free(g_mih_nodes);
-    g_mih_nodes = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
-    g_mih_nscopes = c->nscopes; g_mih_nt = nt; g_mih_ntcount = nt->count;
-    if (!g_mih_nodes) return 0;
+  if (c->mih_nt != nt || c->mih_ntcount != nt->count || c->mih_nscopes != c->nscopes) {
+    free(c->mih_nodes);
+    c->mih_nodes = (int *)calloc((size_t)(c->nscopes > 0 ? c->nscopes : 1), sizeof(int));
+    c->mih_nscopes = c->nscopes; c->mih_nt = nt; c->mih_ntcount = nt->count;
+    if (!c->mih_nodes) return 0;
     for (int id = 0; id < nt->count; id++) {
       int sc = c->nscope[id];
-      if (sc >= 0 && sc < c->nscopes) g_mih_nodes[sc]++;
+      if (sc >= 0 && sc < c->nscopes) c->mih_nodes[sc]++;
     }
     mih_count_calls(c);
   }
-  if (!g_mih_nodes || !g_mih_calls) return 0;
+  if (!c->mih_nodes || !c->mih_calls) return 0;
   int si = (int)(s - c->scopes);
-  if (si < 0 || si >= g_mih_nscopes) return 0;
+  if (si < 0 || si >= c->mih_nscopes) return 0;
   int limit = 90;
   if (g_mih_limit_override > 0) limit = g_mih_limit_override;
   if (limit <= 0) return 0;
-  if (g_mih_nodes[si] > limit) return 0;
+  if (c->mih_nodes[si] > limit) return 0;
   /* few enough call sites that expanding it cannot multiply the program */
   int callmax = 12;
   if (g_mih_callers_override > 0) callmax = g_mih_callers_override;
-  int calls = g_mih_calls[si];
+  int calls = c->mih_first[si] >= 0 ? c->mih_calls[c->mih_first[si]] : 0;
   if (calls > callmax) return 0;
   return calls > 0;
 }
@@ -18709,6 +18704,18 @@ static void reject_binding(Compiler *c) {
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
 }
 
+/* A receiverless call in a top-level def to a name main has a singleton method
+   for: the def has no self of its own here, and which method the call finds
+   depends on the object the def runs on (the plan's CRF_TOP_SELF). A def
+   nothing names is not emitted, so its calls are not refused. */
+static void reject_top_self(Compiler *c) {
+  NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
+    const Scope *s = comp_scope_of(c, id);
+    if (s->name && !s->reachable) continue;
+    if (!defer_refusals_at(c, id)) refuse_from_plan(c, id, CRF_TOP_SELF, "refuse-top-self");
+  }
+}
+
 /* `const_get(name)` with a runtime name that the lowering could not reach:
    one with no receiver the desugar could supply (an instance method, where
    self has no const_get) or one the fixpoint never lowered. Left alone it
@@ -21480,6 +21487,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_runtime_send(c);
   reject_runtime_const_get(c);
   reject_binding(c);
+  reject_top_self(c);
   reject_time_parse(c);
   reject_define_method_early(c);
   reject_define_method_runtime_block(c);

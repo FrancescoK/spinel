@@ -461,9 +461,17 @@ typedef struct {
      class), so call_target binds a call of it to the version it runs;
      replaced, a later version replaces this one in its class's history, so
      only the calls bound to it reach it; version_n, codegen's number for a
-     replaced version in its C name (mc_method), 0 for none */
-  unsigned char versioned, replaced;
-  int version_n;
+     replaced version in its C name (mc_method), 0 for none; entry, the
+     method a call whose version is known only at run time reaches
+     (call_plan.c's version entries): it calls the version the run-time
+     cells name, one per parameter count the calls need (version_n
+     numbers the later ones in C). It has the method's name, as a replaced
+     version does; no lookup of the method by name answers it (sm_owns),
+     only the calls call_target binds to it reach it; main_n, codegen's
+     number for a method of main's own whose name Object's methods have
+     too (both are top-level functions in C) */
+  unsigned char versioned, replaced, entry;
+  int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
                                (analyze_pass.c): what its parameters hold is
@@ -1386,6 +1394,7 @@ typedef struct {
 
   LocalVar *gvars;    /* global variables ($g), name without '$' */
   int ngvars, cgvars;
+  int *gvar_ix, gvar_ix_cap;   /* open addressing over the names, by index into gvars (-1 free); a program with thousands of globals asks by name on every read */
   LocalVar *consts;   /* top-level constants (FOO) */
   int nconsts, cconsts;
 
@@ -1575,6 +1584,18 @@ typedef struct {
      (nbyref_elig scopes; NULL before it runs) */
   char *byref_elig;
   int nbyref_elig;
+  /* the names the program's global writes assign, as of the node table it
+     was made for (analyze_infer.c, gvar_has_write; NULL before the first ask) */
+  struct GvarWrites *gvar_writes;
+  /* the inline hint's call counts (codegen.c, mih_count_calls): the first
+     scope of each name, hashed (mih_head, mih_cap slots), and each scope's
+     first scope of its name (mih_first) */
+  int *mih_head, *mih_first, mih_cap;
+  /* ...and its counts: the AST nodes of each scope (mih_nodes) and the call
+     sites naming each first scope's method (mih_calls), for the node table
+     mih_nt held mih_ntcount nodes of and mih_nscopes scopes */
+  int *mih_nodes, *mih_calls, mih_nscopes, mih_ntcount;
+  const NodeTable *mih_nt;
   /* the classes a boxed receiver can be an instance of, per call, and the
      name indexes the walk that answers it reads (analyze_scope.c's
      poly_ivar_set_reaches), built on first use and freed with the compiler */
@@ -1619,6 +1640,27 @@ typedef struct {
   /* the flags of the later prepends that guard their copies
      (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
   int n_mixin_flags;
+  /* the version entries (call_plan.c, ver_entries_build): one method per
+     (class, side, name, parameter count) for the calls whose version is
+     known only at run time, and each of its arms' calls pinned to the
+     version it runs */
+  struct VerEntry { const char *name; int cls, sg, ar, scope; } *ver_entries;
+  int nver_entries;
+  struct VerChain *ver_chain;   /* how many versions a class's chain holds of a name, by (class, side, name) (call_plan.c, ver_chain_count) */
+  struct VerHold *ver_hold;   /* the holders of a name worth asking, by name (call_plan.c, ver_holders) */
+  /* ...by name: ver_ix chains the entries of one (class, side, name, parameter
+     count) and ver_names one scope-holding entry of each name (ver_entries_index) */
+  int *ver_ix, *ver_ix_next, *ver_names, *ver_names_next;
+  unsigned ver_ix_nb;
+  struct VerPin { int node, scope; } *ver_pins;
+  int nver_pins;
+  /* the entries are made (ver_entries_build) */
+  int ver_built;
+  /* the version each call asked on a class runs, once the entries are
+     made (call_plan.c, ct_version): open addressing, name NULL for a free
+     slot; dc the class it answers, -2 for the table's */
+  struct VerMemo { const char *name; int id, cls; unsigned flags; int vi, dc; } *ver_memo;
+  int ver_memo_cap, ver_memo_n;
   /* the operand-local reads splat_dispatch_on_length marked splat_view,
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
   int *splat_views;
@@ -1750,6 +1792,7 @@ int comp_sret_first(Compiler *c, int scope_idx);
 int comp_sret_next(const Compiler *c, int r);
 int comp_bare_gets_is_argf(Compiler *c);
 int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
+int    comp_main_method(Compiler *c, const char *name);  /* main's singleton method (`def self.k` at the top level); -1 if none */
 /* A receiverless call's target: the enclosing self's ancestry first, a
    top-level def (a private Object method, and so last in every ancestry) only
    as the fallback. See analyze_util.c. */

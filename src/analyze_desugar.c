@@ -5508,7 +5508,13 @@ int desugar_paren_def_body_at(Compiler *c, LowerCtx *lc, int id) {
   int *cp = malloc(sizeof(int) * (size_t)pn);
   if (!cp) return 0;
   memcpy(cp, pd, sizeof(int) * (size_t)pn);
-  nt_node_set_arr(nt, nt_ref(nt, id, "body"), "body", cp, pn);
+  int body = nt_ref(nt, id, "body"), bn = 0;
+  int pb = nt_ref(nt, nt_arr(nt, body, "body", &bn)[0], "body");
+  nt_node_set_arr(nt, body, "body", cp, pn);
+  /* The parentheses leave the tree, and their statement list must not keep
+     naming the statements: the parent map takes the last list that does, and
+     a walk up from a moved statement would end at the detached node. */
+  nt_node_set_arr(nt, pb, "body", NULL, 0);
   free(cp);
   return 1;
 }
@@ -12438,6 +12444,35 @@ int disp_raise_no_method(NodeTable *nt, const char *msg) {
   return raise;
 }
 
+/* `callee(<args>)`, a dispatcher arm's call: the dispatcher's ar required
+   parameters (__cond0, ...), or with ar -1 `*__condr, **__condk`, passed
+   on, and `&__condb` when blk */
+int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk) {
+  char pn[32];
+  int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
+  for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
+  if (ar < 0) {
+    av[0] = nt_new_node(nt, "SplatNode");
+    nt_node_set_ref(nt, av[0], "expression", cdef_local(nt, "LocalVariableReadNode", "__condr"));
+    int as = nt_new_node(nt, "AssocSplatNode");
+    nt_node_set_ref(nt, as, "value", cdef_local(nt, "LocalVariableReadNode", "__condk"));
+    av[1] = nt_new_node(nt, "KeywordHashNode");
+    nt_node_set_arr(nt, av[1], "elements", &as, 1);
+  }
+  int call = fwd_new_call(nt, -1, callee, -1);
+  if (na) {
+    int args = nt_new_node(nt, "ArgumentsNode");
+    nt_node_set_arr(nt, args, "arguments", av, na);
+    nt_node_set_ref(nt, call, "arguments", args);
+  }
+  if (blk) {
+    int ba = nt_new_node(nt, "BlockArgumentNode");
+    nt_node_set_ref(nt, ba, "expression", cdef_local(nt, "LocalVariableReadNode", "__condb"));
+    nt_node_set_ref(nt, call, "block", ba);
+  }
+  return call;
+}
+
 /* A dispatcher: a def named `name` (on self when sg) at `like`'s place,
    whose body is
 
@@ -12457,27 +12492,7 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
   int chain = nt_new_node(nt, "ElseNode");
   nt_node_set_ref(nt, chain, "statements", cdef_stmts(nt, els));
   for (int k = narm - 1; k >= 0; k--) {
-    int na = ar < 0 ? 2 : ar, av[na > 0 ? na : 1];
-    for (int a = 0; a < ar; a++) { snprintf(pn, sizeof pn, "__cond%d", a); av[a] = cdef_local(nt, "LocalVariableReadNode", pn); }
-    if (ar < 0) {
-      av[0] = nt_new_node(nt, "SplatNode");
-      nt_node_set_ref(nt, av[0], "expression", cdef_local(nt, "LocalVariableReadNode", "__condr"));
-      int as = nt_new_node(nt, "AssocSplatNode");
-      nt_node_set_ref(nt, as, "value", cdef_local(nt, "LocalVariableReadNode", "__condk"));
-      av[1] = nt_new_node(nt, "KeywordHashNode");
-      nt_node_set_arr(nt, av[1], "elements", &as, 1);
-    }
-    int call = fwd_new_call(nt, -1, arm[k].callee, -1);
-    if (na) {
-      int args = nt_new_node(nt, "ArgumentsNode");
-      nt_node_set_arr(nt, args, "arguments", av, na);
-      nt_node_set_ref(nt, call, "arguments", args);
-    }
-    if (blk) {
-      int ba = nt_new_node(nt, "BlockArgumentNode");
-      nt_node_set_ref(nt, ba, "expression", cdef_local(nt, "LocalVariableReadNode", "__condb"));
-      nt_node_set_ref(nt, call, "block", ba);
-    }
+    int call = disp_forward_call(nt, arm[k].callee, ar, blk);
     int ifn = nt_new_node(nt, "IfNode");
     nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", arm[k].sel), "==",
                                                        nt_new_int(nt, arm[k].val)));

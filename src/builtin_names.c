@@ -684,21 +684,26 @@ int is_definition_hook_name(const char *n) {
 
 /* The hooks definition form `form` (given its arguments) fires, on the
    class that receives it (sg: as its singleton's), into out[0..1]: a
-   mixin's on the module (included, extended, prepended); a form that adds a
+   mixin's on the module (included and append_features, extended and
+   extend_object, prepended and prepend_features); a form that adds a
    method or changes one's visibility, method_added (singleton_method_added
    for a singleton's; module_function both); remove_method method_removed,
    undef_method method_undefined. Answers how many. */
 int definition_form_hooks(const char *form, int sg, const char **out) {
   if (!form) return 0;
-  if (sp_streq(form, "include")) { out[0] = "included"; return 1; }
-  if (sp_streq(form, "extend")) { out[0] = "extended"; return 1; }
-  if (sp_streq(form, "prepend")) { out[0] = "prepended"; return 1; }
+  if (sp_streq(form, "include")) { out[0] = "included"; out[1] = "append_features"; return 2; }
+  if (sp_streq(form, "extend")) { out[0] = "extended"; out[1] = "extend_object"; return 2; }
+  if (sp_streq(form, "prepend")) { out[0] = "prepended"; out[1] = "prepend_features"; return 2; }
   if (sp_streq(form, "remove_method")) { out[0] = sg ? "singleton_method_removed" : "method_removed"; return 1; }
   if (sp_streq(form, "undef_method")) { out[0] = sg ? "singleton_method_undefined" : "method_undefined"; return 1; }
   if (sp_streq(form, "module_function")) { out[0] = "singleton_method_added"; out[1] = "method_added"; return 2; }
   if (sp_streq(form, "define_singleton_method")) { out[0] = "singleton_method_added"; return 1; }
   if (is_method_naming_call(form) || visibility_of_name(form)) { out[0] = sg ? "singleton_method_added" : "method_added"; return 1; }
   return 0;
+}
+
+int is_method_missing_name(const char *n) {
+  return n && (sp_streq(n, "method_missing") || sp_streq(n, "respond_to_missing?"));
 }
 
 int is_const_missing_name(const char *n) {
@@ -733,6 +738,40 @@ int is_marshal_dump(const char *recv, const char *meth) {
 /* `Marshal.load`, which builds the objects it reads without their initialize */
 int is_marshal_load(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "load") && sp_streq(recv, "Marshal");
+}
+
+/* A core call that makes objects of whatever classes its data names (or
+   finds any object): Marshal.load and restore, YAML's and Psych's load
+   family, JSON.load, JSON.parse given options (create_additions),
+   ObjectSpace._id2ref; argc its argument count */
+int is_object_loader(const char *recv, const char *meth, int argc) {
+  if (!recv || !meth) return 0;
+  if (sp_streq(recv, "Marshal")) return sp_streq(meth, "load") || sp_streq(meth, "restore");
+  if (sp_streq(recv, "YAML") || sp_streq(recv, "Psych"))
+    return sp_streq(meth, "load") || sp_streq(meth, "unsafe_load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load_file");
+  if (sp_streq(recv, "ObjectSpace")) return sp_streq(meth, "_id2ref");
+  return sp_streq(recv, "JSON") && (sp_streq(meth, "load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load") ||
+                                    ((sp_streq(meth, "parse") || sp_streq(meth, "parse!")) && argc > 1));
+}
+
+/* UnboundMethod#bind and bind_call */
+int is_method_bind_name(const char *n) {
+  return n && (sp_streq(n, "bind") || is_bind_call(n));
+}
+
+/* Timeout.timeout(sec, klass): raises klass.new when the time runs out */
+int is_timeout_call(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(recv, "Timeout") && sp_streq(meth, "timeout");
+}
+
+/* exception: Exception's class-level constructor (raise calls it) */
+int is_exception_ctor_name(const char *n) {
+  return n && sp_streq(n, "exception");
+}
+
+/* to_enum and enum_for: an Enumerator that calls the method they name */
+int is_enumerator_maker(const char *n) {
+  return n && (sp_streq(n, "to_enum") || sp_streq(n, "enum_for"));
 }
 
 /* Class#allocate, an object without its initialize run */
@@ -2163,27 +2202,6 @@ int is_const_visibility_name(const char *n) {
 }
 /* class_variable_set remove_class_variable */
 int is_cvar_write_name(const char *n) { return n && (sp_streq(n, "class_variable_set") || sp_streq(n, "remove_class_variable")); }
-/* The names CRuby's core and standard library call on an object by
-   themselves besides the runtime protocols (method_name_implicitly_invoked):
-   an operator, method_missing and respond_to_missing?, a pattern's
-   deconstruct, a conversion, a Range's endpoints and succ, an exception's
-   readers, Marshal's and dup's hooks, a Hash's default, an IO-like's
-   writer and readers, pp's and YAML's hooks, and the Numeric helpers
-   numeric core methods call on a subclass. This is the instance side of
-   is_core_callback_name (the record's reachability work), with
-   method_missing; whichever lands second keeps one predicate. */
-int is_runtime_callback_name(const char *n) {
-  static const char *const names[] = {
-    "method_missing", "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r",
-    "to_c", "to_sym", "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message",
-    "detailed_message", "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result",
-    "marshal_dump", "_dump", "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read",
-    "readpartial", "flush", "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?",
-    "nonzero?", "positive?", "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate",
-    "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
-  if (!n) return 0;
-  return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
-}
 int is_hook_protocol_name(const char *n) {
   return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
 }

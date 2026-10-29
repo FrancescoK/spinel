@@ -31,11 +31,11 @@ entity C: owner main leaf C
 const M: write#1
 M#hi: def#2 end=yes
 const P: write#3
-P#name: def#4 end=yes
+P#name: def#4 runs=#18 end=yes
 const N: write#5
 N#ho: def#6 end=yes
 const C: write#7
-C#name: def#8 end=yes
+C#name: def#8 runs=#18 end=yes
 C#x: reader#12 end=yes
 C#x=: writer#12 end=yes
 C.made: def#14 end=yes

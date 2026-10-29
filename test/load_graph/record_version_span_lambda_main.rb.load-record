@@ -1,0 +1,24 @@
+load record: 12 points, 1 regions
+r0 #0 f0 ProgramNode line 5
+r0 #1 f0 ModuleNode Chime line 5
+  r0 #2 f0 DefNode ring line 6
+r0 #3 f0 ClassNode Gong line 9
+  r0 #4 f0 DefNode ring line 10
+  r0 #5 f0 ConstantWriteNode MAKER line 11
+  r0 #6 f0 ConstantWriteNode FIRST line 12
+  r0 #7 f0 CallNode include line 13
+r0 #8 f0 CallNode puts line 16
+r0 #9 f0 ClassNode Gong line 18
+  r0 #10 f0 DefNode ring line 19
+r0 #11 f0 CallNode puts line 22
+class Chime: body#1
+class Gong: body#3 body#9 include Chime#7
+entity Chime: owner main leaf Chime
+entity Gong: owner main leaf Gong
+const Chime: write#1
+Chime#ring: def#2 runs=#8 end=yes
+const Gong: write#3
+Gong#ring: def#4 runs=#8 def#10 runs=#8 end=yes
+const Gong::MAKER: write#5
+const Gong::FIRST: write#6
+versions Gong#ring: def#4..#10 seen=unknown, def#10..end seen=def#10; 3 of the name
