@@ -3761,8 +3761,7 @@ static void alias_bind(Compiler *c, ClassInfo *cls, int cid, const char *nw, con
 static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
                                      const char *nw, const char *od, int alias_node, int cm) {
   if (!nw || !od || !cls->name) return 0;
-  int cid = comp_class_index(c, cls->name);
-  if (cid < 0) return 0;
+  int cid = (int)(cls - c->classes);
   const char *pending = alias_pending_target(c, cid, od, alias_node, cm);
   if (pending) {
     char *pt = strdup(pending);
@@ -3851,8 +3850,7 @@ static int are_enclosing_class(Compiler *c, int n) {
 static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw, int alias_node, int cm) {
   if (!nw || alias_node < 0 || !cls->name) return;
   const NodeTable *nt = c->nt;
-  int cid = comp_class_index(c, cls->name);
-  if (cid < 0) return;
+  int cid = (int)(cls - c->classes);
   int defn = -1;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
@@ -3922,7 +3920,7 @@ static void alias_mark_sg(ClassInfo *cls, int s, int singleton) {
 }
 static void alias_register(Compiler *c, ClassInfo *cls, const char *nw, const char *od, int s, int singleton) {
   alias_refuse_early_call(c, cls, nw, s, singleton);
-  int cid = cls->name ? comp_class_index(c, cls->name) : -1;
+  int cid = cls->name ? (int)(cls - c->classes) : -1;
   if (singleton && cid >= 0) {
     /* Kernel's module functions are not called through the constant as a
        builtin: a def of the name later in the module takes the aliased
