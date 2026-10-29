@@ -10505,6 +10505,14 @@ static sp_bool sp_PolyArray_include(sp_PolyArray *a, sp_RbVal v) {
   }
   return FALSE;
 }
+/* include? on a boxed array of any kind, compared with == as the general
+   Array's is: a typed array is read through a poly copy, which stays rooted
+   while a user == runs (it can allocate). */
+static sp_bool sp_poly_arr_include_eq(sp_RbVal recv, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(v);
+  sp_PolyArray *a = sp_poly_to_poly_array(recv); SP_GC_ROOT(a);
+  return sp_PolyArray_include(a, v);
+}
 
 /* Mark the embedded GC reference inside an sp_RbVal (string or obj).
    Used as the scan hook for containers that store polymorphic values. */

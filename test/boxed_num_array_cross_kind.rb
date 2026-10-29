@@ -26,3 +26,21 @@ p c[0].delete(2.5), c
 p c[0].delete(-0.0), c
 d = [[0, 3], "s"]
 p d[0].delete(-0.0), d
+
+# a needle whose own == allocates, many times over (the copy the compare
+# reads stays alive)
+class W
+  def initialize(v) = @v = v
+  def ==(o)
+    s = "x" * 100
+    [s, s].size == 2 && o == @v
+  end
+end
+e = [[1, 2, 3, 4, 5, 6, 7, 8], [1.0, 2.0, 3.0], "s"]
+n = 0
+300.times do |i|
+  w = [W.new(i % 9), 1][ARGV.size]
+  n += 1 if e[0].include?(w)
+  n += 1 if e[1].include?(w)
+end
+p n
