@@ -1637,7 +1637,8 @@ int builtin_object_method_known(const char *m) {
 }
 
 /* The names CRuby's own facts give Object, BasicObject, Kernel, Module and
-   Class (builtin_arity.inc), sorted once for builtin_self_method_known */
+   Class (builtin_arity.inc), sorted once per self kind for
+   builtin_self_method_known */
 #define BAI(c,m,...) {c,m},
 #define BAM(c,m,a) {c,m},
 #define BAS(c,m,...) {c,m},
@@ -1652,24 +1653,36 @@ static const struct { const char *cls, *m; } self_fact_rows[] = {
 #undef BAC
 #undef BAK
 static int self_fact_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
-/* Does a builtin answer `name` on any self, main or a class or module:
-   Kernel's module functions, Object's surface, or one of the facts' Object,
-   BasicObject, Kernel, Module or Class methods? A binary search over the
-   facts' names, sorted at the first ask. */
-int builtin_self_method_known(const char *name) {
+/* main's own methods, beside Object's: its singleton's (`to_s`, `inspect`
+   answer "main") and the private ones a top-level body calls as a class
+   body would (`include`, `private`, `define_method`, ...) */
+static int main_self_method(const char *m) {
+  static const char *const MAINM[] = { "to_s", "inspect", "include", "public", "private", "define_method",
+                                       "using", "ruby2_keywords", NULL };
+  return builtin_name_in(m, MAINM);
+}
+/* See builtin_names.h. Kernel's module functions and Object's surface
+   answer on every self; the facts' Object, BasicObject and Kernel methods
+   too, Module's on a module or class, Class's on a class. A binary search
+   over each kind's names, sorted at the first ask. */
+int builtin_self_method_known(const char *name, int kind) {
   enum { N = sizeof self_fact_rows / sizeof self_fact_rows[0] };
-  static const char *names[N];
-  static int n = -1;
-  if (!name) return 0;
-  if (is_kernel_module_function(name) || builtin_object_method_known(name)) return 1;
-  if (n < 0) {
-    static const char *const owners[] = { "Object", "BasicObject", "Kernel", "Module", "Class", NULL };
-    n = 0;
+  static const char *names[BSELF_N][N];
+  static int n[BSELF_N] = { -1, -1, -1 };
+  if (!name || kind < 0 || kind >= BSELF_N) return 0;
+  if (is_kernel_module_function(name) || builtin_object_method_known(name) ||
+      (kind == BSELF_MAIN && main_self_method(name))) return 1;
+  if (n[kind] < 0) {
+    static const char *const owners[BSELF_N][6] = {
+      { "Object", "BasicObject", "Kernel", NULL },
+      { "Object", "BasicObject", "Kernel", "Module", NULL },
+      { "Object", "BasicObject", "Kernel", "Module", "Class", NULL } };
+    n[kind] = 0;
     for (int i = 0; i < N; i++)
-      if (builtin_name_in(self_fact_rows[i].cls, owners)) names[n++] = self_fact_rows[i].m;
-    qsort(names, (size_t)n, sizeof names[0], self_fact_cmp);
+      if (builtin_name_in(self_fact_rows[i].cls, owners[kind])) names[kind][n[kind]++] = self_fact_rows[i].m;
+    qsort(names[kind], (size_t)n[kind], sizeof names[kind][0], self_fact_cmp);
   }
-  return bsearch(&name, names, (size_t)n, sizeof names[0], self_fact_cmp) != NULL;
+  return bsearch(&name, names[kind], (size_t)n[kind], sizeof names[kind][0], self_fact_cmp) != NULL;
 }
 
 /* the builtins whose subclass instance IS the builtin (#7449) */

@@ -399,7 +399,11 @@ int is_dir_blockless_iter(const char *n);  /* foreach each_child: an Enumerator 
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
 int builtin_object_method_known(const char *m);   /* one of Object's own methods every object answers */
-int builtin_self_method_known(const char *name);  /* a builtin answers it on any self: Kernel's, Object's, Module's, Class's */
+/* Does a builtin answer `name` on a self of the kind: main (Kernel's,
+   Object's and main's own methods), a module (also Module's) or a class
+   (also Class's)? */
+enum { BSELF_MAIN, BSELF_MODULE, BSELF_CLASS, BSELF_N };
+int builtin_self_method_known(const char *name, int kind);
 int is_builtin_module_const_name(const char *n);
 int is_untabled_native_class_name(const char *n);
 

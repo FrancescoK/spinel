@@ -42034,7 +42034,10 @@ static int bo_may_act(const NodeTable *nt, int e) {
   }
 }
 /* A copy of call `id`'s fields into a fresh node of its kind, a CallNode or a
-   SuperNode (the children are shared, not cloned). */
+   SuperNode (the children are shared, not cloned). Each caller makes `id`
+   the parentheses that run the copy as their last statement, so the copy
+   runs where the call stood, in its frame, once: node_in_place says so to
+   the load record (lr_unplaced), which places it there. */
 static int bo_shallow_copy(NodeTable *nt, int id) {
   int nc = nt_new_node(nt, nt_kind(nt, id) == NK_SuperNode ? "SuperNode" : "CallNode");
   if (nc < 0) return -1;
@@ -42042,6 +42045,7 @@ static int bo_shallow_copy(NodeTable *nt, int id) {
   for (int j = 0; j < nd->ns; j++) nt_node_set_str(nt, nc, nd->s[j].key, nd->s[j].val);
   nd = &nt->nodes[id];
   for (int j = 0; j < nd->ni; j++) nt_node_set_int(nt, nc, nd->i[j].key, nd->i[j].val);
+  nt_node_set_int(nt, nc, "node_in_place", 1);
   nd = &nt->nodes[id];
   for (int j = 0; j < nd->nr; j++) nt_node_set_ref(nt, nc, nd->r[j].key, nd->r[j].ref);
   nd = &nt->nodes[id];

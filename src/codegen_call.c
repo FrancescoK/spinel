@@ -945,34 +945,51 @@ int emit_ie_untraced(Compiler *c, int id, int recv, int blk, Buf *b) {
   return 1;
 }
 
+/* The class CRuby's TypeError names ("no implicit conversion of X into
+   Proc") for a `&fe` block argument whose type cannot become a block: X,
+   "" for a Boolean, whose value names TrueClass or FalseClass; NULL where
+   it converts or its type does not say (a Proc, Method, curried Proc,
+   Symbol, Hash, nil, an object with to_proc, a boxed or unknown value). */
+static const char *block_arg_no_proc_class(Compiler *c, int fe) {
+  if (fe < 0) return NULL;
+  Repr fr = repr_of(c, fe);
+  TyKind ft = fr.as_ty;
+  if (fr.kind == RK_BOXED || ft == TY_PROC || ft == TY_METHOD || ft == TY_SYMBOL || ft == TY_NIL ||
+      ft == TY_POLY || ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_CURRY || ty_is_hash(ft) ||
+      (ty_is_object(ft) && comp_method_in_chain(c, ty_object_class(ft), "to_proc", NULL) >= 0)) return NULL;
+  return ft == TY_BOOL ? "" : conv_cls_name_of(c, ft);
+}
+/* The TypeError of a `&fe` block argument whose type cannot become a
+   block (block_arg_no_proc_class cn), as a statement at indent after fe's
+   value is evaluated */
+static void emit_block_arg_type_error(Compiler *c, int fe, const char *cn, Buf *b, int indent) {
+  Buf fb; memset(&fb, 0, sizeof fb);
+  emit_expr(c, fe, &fb);
+  emit_indent(b, indent);
+  if (!cn[0]) {
+    int tb = ++g_tmp;
+    buf_printf(b, "sp_bool _t%d = %s; sp_raise_cls(\"TypeError\", _t%d ? \"no implicit conversion of TrueClass into Proc\" : \"no implicit conversion of FalseClass into Proc\");\n",
+               tb, fb.p ? fb.p : "0", tb);
+  }
+  else buf_printf(b, "(void)(%s); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Proc\");\n", fb.p ? fb.p : "0", cn);
+  free(fb.p);
+}
+
 int emit_ie_non_proc_block(Compiler *c, int id, int recv, int blk, Buf *b) {
   const NodeTable *nt = c->nt;
   int fe = nt_ref(nt, blk, "expression"), args = nt_ref(nt, id, "arguments"), an = 0, sv = g_n_argov;
-  Repr fr = repr_of(c, fe);
-  TyKind ft = fr.as_ty;
-  if (fe < 0 || fr.kind == RK_BOXED || ft == TY_PROC || ft == TY_METHOD || ft == TY_SYMBOL || ft == TY_NIL ||
-      ft == TY_POLY || ft == TY_UNKNOWN || ft == TY_VOID || ft == TY_CURRY || ty_is_hash(ft) ||
-      (ty_is_object(ft) && comp_method_in_chain(c, ty_object_class(ft), "to_proc", NULL) >= 0)) return 0;
-  const char *cn = ft == TY_BOOL ? NULL : conv_cls_name_of(c, ft);
-  if (ft != TY_BOOL && !cn) return 0;
+  const char *cn = block_arg_no_proc_class(c, fe);
+  if (!cn) return 0;
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-  Buf rb, fb; memset(&rb, 0, sizeof rb); memset(&fb, 0, sizeof fb);
+  Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, recv, &rb);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "(void)(%s);\n", rb.p ? rb.p : "0");
   emit_args_off_self(c, av, an, g_pre);
-  emit_expr(c, fe, &fb);
-  emit_indent(g_pre, g_indent);
-  if (ft == TY_BOOL) {
-    int tb = ++g_tmp;
-    buf_printf(g_pre, "sp_bool _t%d = %s; sp_raise_cls(\"TypeError\", _t%d ? \"no implicit conversion of TrueClass into Proc\" : \"no implicit conversion of FalseClass into Proc\");\n",
-               tb, fb.p ? fb.p : "0", tb);
-  } else {
-    buf_printf(g_pre, "(void)(%s); sp_raise_cls(\"TypeError\", \"no implicit conversion of %s into Proc\");\n", fb.p ? fb.p : "0", cn);
-  }
+  emit_block_arg_type_error(c, fe, cn, g_pre, g_indent);
   emit_ie_param_default(c, repr_of(c, id).as_ty, b);
   view_unbind(sv);
-  free(rb.p); free(fb.p);
+  free(rb.p);
   return 1;
 }
 
@@ -21827,23 +21844,68 @@ static void emit_raise_placeholder(Compiler *c, int id, Buf *b) {
   else buf_printf(b, ", %s)", dflt);
 }
 /* A call that finds no method where it runs (cplan_missing): CRuby's
-   NameError or NoMethodError, raised after its arguments are evaluated */
+   NameError or NoMethodError, raised after its arguments and its block
+   argument are evaluated, in source order (each one's prelude stays in
+   front of it), with the receiver, and a NoMethodError's positional
+   arguments, staged on the exception (#receiver, #args) */
 static int emit_missing_call(Compiler *c, int id, Buf *b) {
   char self[160], head[240];
   int anon = -1, kind = cplan_missing(c, id, self, sizeof self, &anon);
   if (kind == CM_NONE) return 0;
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
   int argc = 0; const int *argv = call_args(nt, id, &argc);
-  buf_puts(b, "(");
-  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
+  int staged = kind == CM_NOMETHOD && !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING);
+  int t0 = g_tmp + 1;
+  g_tmp += argc;
+  buf_puts(b, "(({ ");
+  for (int k = 0; k < argc; k++) {
+    Buf ap, ae; memset(&ap, 0, sizeof ap); memset(&ae, 0, sizeof ae);
+    Buf *sv = g_pre; g_pre = &ap;
+    if (staged) emit_boxed(c, argv[k], &ae); else emit_expr(c, argv[k], &ae);
+    g_pre = sv;
+    if (ap.p) buf_puts(b, ap.p);
+    if (staged) buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + k, ae.p ? ae.p : "sp_box_nil()", t0 + k);
+    else buf_printf(b, "(void)(%s); ", ae.p ? ae.p : "0");
+    free(ap.p); free(ae.p);
+  }
+  int fe = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+  if (fe >= 0) {
+    Buf ap, ae; memset(&ap, 0, sizeof ap); memset(&ae, 0, sizeof ae);
+    Buf *sv = g_pre; g_pre = &ap;
+    const char *cn = block_arg_no_proc_class(c, fe);
+    if (cn) emit_block_arg_type_error(c, fe, cn, &ae, 0);
+    else {
+      Buf pv; memset(&pv, 0, sizeof pv);
+      if (!emit_block_arg_proc(c, fe, &pv)) emit_expr(c, fe, &pv);
+      buf_printf(&ae, "(void)(%s); ", pv.p ? pv.p : "0");
+      free(pv.p);
+    }
+    g_pre = sv;
+    if (ap.p) buf_puts(b, ap.p);
+    if (ae.p) buf_puts(b, ae.p);
+    free(ap.p); free(ae.p);
+  }
   snprintf(head, sizeof head, "%s '%s' for %s ", kind == CM_NAMEERROR ? "undefined local variable or method" : "undefined method",
            name, anon >= 0 && comp_class_is_module(c, &c->classes[anon]) ? "module" : "class");
   buf_puts(b, kind == CM_NAMEERROR ? "sp_raise_cls(\"NameError\", " : "sp_raise_cls(\"NoMethodError\", ");
+  buf_puts(b, staged ? "sp_stage_recv_args_msg(" : "sp_stage_recv_msg(");
   if (anon >= 0) anon_class_text(c, anon, head, b);
   else if (kind == CM_NAMEERROR) buf_printf(b, "\"undefined local variable or method '%s' for %s\"", name, self);
   else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1])", name, self);
-  buf_puts(b, ")");
+  buf_puts(b, ", ");
+  int si = recv < 0 ? elab_self_at(c, id) : -2;
+  if (recv >= 0) emit_boxed(c, recv, b);
+  else if (si >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", si);
+  else buf_puts(b, si == -1 ? "sp_main_self()" : "sp_box_nil()");
+  if (staged) {
+    buf_printf(b, ", %d, (sp_RbVal[]){", argc);
+    for (int k = 0; k < argc; k++) buf_printf(b, "%s_t%d", k ? ", " : "", t0 + k);
+    if (argc == 0) buf_puts(b, "sp_box_nil()");
+    buf_puts(b, "}");
+  }
+  buf_puts(b, ")); })");
   emit_raise_placeholder(c, id, b);
   return 1;
 }
