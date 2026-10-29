@@ -3,7 +3,11 @@
 # receiver's class does not answer that name itself (no Integer, Float or
 # Comparable method is named select, format, rand or sleep), and the
 # program's own method when the program defines the name on that class or
-# in Comparable (putc, beside select in the same module).
+# in Comparable (putc, beside select in the same module). A name the
+# receiver answers with a method of its own is called on self: Numeric's
+# public singleton_method_added raises a TypeError for an Integer or a
+# Float, bare in a method of the reopened Integer as well as written with
+# its receiver.
 class Integer
   def int_select = select(nil, nil, nil, 0).inspect
   def int_format = format("%03d", self)
@@ -47,3 +51,13 @@ p 7.cmp_select
 p 7.cmp_format
 p 7.cmp_putc
 p 2.5.cmp_putc
+
+class Integer
+  def call_added = singleton_method_added(:x)
+end
+
+begin; 5.call_added; rescue TypeError => e; p e.message; end
+begin; 5.singleton_method_added(:x); rescue TypeError => e; p e.message; end
+begin; 1.5.singleton_method_added(:x); rescue TypeError => e; p e.message; end
+begin; 5.send(:singleton_method_added, :x); rescue TypeError => e; p e.message; end
+begin; 1.5.send(:singleton_method_added, :x); rescue TypeError => e; p e.message; end
