@@ -752,6 +752,13 @@ int hc_recv_cached(Compiler *c, int recv);
    a receiver seen as Repr.nil_cold (emit_nil_target_cold, codegen_call.c) */
 void emit_nil_cold_test(Compiler *c, int id, int r, Buf *b);
 int call_is_scalar_op(Compiler *c, int id);   /* a builtin operator over scalars */
+int scalar_op_may_raise(Compiler *c, int id);   /* ...that can raise (a zero divisor, an Integer power, a nil operand) */
+/* The operands a value runs before the call in it that finds no method
+   where it runs (cplan_missing), each a whole subtree its caller runs for
+   its effect; a growable list. */
+typedef struct { int *ids; int n, cap; } OrderRun;
+int missing_call_in_order(Compiler *c, int v, OrderRun *run);
+int missing_call_raised(Compiler *c, int v);
 /* Whether the subtree at `id` assigns the local `nm`: a write, an op-write
    or a multiple-assignment target by that name. */
 int subtree_writes_local(Compiler *c, int id, const char *nm);

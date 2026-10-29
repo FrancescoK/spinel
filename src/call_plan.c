@@ -1211,6 +1211,13 @@ int cplan_const_recv_class(Compiler *c, int id, int recv) {
   if (framed) elab_plan_leave(c);
   return ci;
 }
+/* See call_plan.h. */
+int cplan_self_class(Compiler *c, int id) {
+  int framed = elab_plan_enter(c, id);
+  int ci = elab_self_at(c, id);
+  if (framed) elab_plan_leave(c);
+  return ci;
+}
 int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
   const NodeTable *nt = c->nt;
   const char *name = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
@@ -1218,7 +1225,7 @@ int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
   NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
   int cr = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode;
   if (!name || (recv >= 0 && !cr && rk != NK_SelfNode) || an_scopes_named_first(c, name) < 0) return CM_NONE;
-  int ci = cr ? cplan_const_recv_class(c, id, recv) : elab_self_at(c, id);
+  int ci = cr ? cplan_const_recv_class(c, id, recv) : cplan_self_class(c, id);
   if (ci < -1 || ci >= c->nclasses || (cr && ci < 0)) return CM_NONE;
   /* a method the tables answer for self, which the record proves is not
      defined where the call runs: a class's class methods, main's (and a
@@ -1254,6 +1261,47 @@ int cplan_subtree_missing(Compiler *c, int id) {
   }
   return 0;
 }
+/* See call_plan.h. */
+int cplan_program_missing(Compiler *c) {
+  if (!c->missing_calls) {
+    const NodeTable *nt = c->nt;
+    char self[160];
+    c->missing_calls = 1;
+    for (int id = 0; id < nt->count && c->missing_calls == 1; id++)
+      if (nt_kind(nt, id) == NK_CallNode && cplan_missing(c, id, self, sizeof self, NULL) != CM_NONE) c->missing_calls = 2;
+  }
+  return c->missing_calls == 2;
+}
+static int cplan_missing_in_order_1(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode) return cplan_subtree_missing(c, v) ? v : -1;
+  char self[160];
+  if (cplan_missing(c, v, self, sizeof self, NULL) != CM_NONE) return v;
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (nt_safe_nav(nt, v) || nt_ref(nt, v, "block") >= 0 ||
+      nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING))
+    return cplan_subtree_missing(c, v) ? v : -1;
+  for (int i = -1; i < argc; i++) {
+    int m = cplan_missing_in_order(c, i < 0 ? nt_ref(nt, v, "receiver") : argv[i]);
+    if (m >= 0) return m;
+  }
+  return -1;
+}
+/* See call_plan.h. */
+int cplan_missing_in_order(Compiler *c, int v) {
+  if (v < 0) return -1;
+  if (v >= c->missing_order_n) {
+    int n = c->nt->count > v ? c->nt->count : v + 1;
+    int *g = realloc(c->missing_order, sizeof *g * (size_t)n);
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g + c->missing_order_n, 0, sizeof *g * (size_t)(n - c->missing_order_n));
+    c->missing_order = g;
+    c->missing_order_n = n;
+  }
+  if (!c->missing_order[v]) c->missing_order[v] = cplan_missing_in_order_1(c, v) + 2;
+  return c->missing_order[v] - 2;
+}
 int cplan_self_builtin(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");
@@ -1265,7 +1313,7 @@ int cplan_self_builtin(Compiler *c, int id) {
          call_target(c, id, ci, name, CT_CMETHOD, NULL) < 0 && is_kernel_module_function(name);
 }
 const char *cplan_self_text(Compiler *c, int id, int ci, char *buf, size_t cap) {
-  int self = id >= 0 ? elab_self_at(c, id) : -2;
+  int self = id >= 0 ? cplan_self_class(c, id) : -2;
   if (self >= 0 && self < c->nclasses) return cm_self_name(c, self, buf, cap);
   if (self == -1 || ci < 0) return cm_self_name(c, -1, buf, cap);
   if (comp_class_anonymous(c, ci)) return NULL;

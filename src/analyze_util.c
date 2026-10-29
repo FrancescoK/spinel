@@ -1035,7 +1035,7 @@ int const_class_value_only(Compiler *c, int node) {
   LocalVar *lv = comp_const(c, nm);
   const LrDef *d = NULL;
   return lv && (lv->type == TY_CLASS || lv->type == TY_POLY) && !resolve_class_alias_chain(c, nm) &&
-    elab_const_at(c, node, nm, (LoadPoint){ -1, -1 }, &d) != ELAB_NO && d && d->kind == LR_WRITE;
+    elab_const_at(c, node, nm, (LoadPoint){ -1, -1, -1 }, &d) != ELAB_NO && d && d->kind == LR_WRITE;
 }
 
 /* The class method `name` the program defines for the class a class-valued

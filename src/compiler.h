@@ -1530,6 +1530,13 @@ typedef struct {
   /* --share-strings: does the program make an Enumerator over a String
      handle (str_enum_h_made): 0 not asked yet, 1 no, 2 yes */
   unsigned char str_enum_h;
+  /* does any call find no method where it runs (cplan_program_missing):
+     0 not asked yet, 1 no, 2 yes */
+  unsigned char missing_calls;
+  /* per node, once asked: the node cplan_missing_in_order answers for it,
+     + 2 (1: none; 0: not asked yet) */
+  int *missing_order;
+  int missing_order_n;
   /* per local write node, once asked: the source lazy_alias_src_hoist
      answers for it, + 2 (1: none; 0: not asked yet) */
   int *lazy_hoist;

@@ -722,7 +722,7 @@ static const LrStmt *lr_stmt_of(const LoadRecord *r, int node) {
 LoadPoint elab_point_of(Compiler *c, int node) {
   LoadRecord *r = elab_fresh(c);
   const LrStmt *s = lr_stmt_of(r, node);
-  return s ? (LoadPoint){ s->region, (int)(s - r->st) } : (LoadPoint){ -1, -1 };
+  return s ? (LoadPoint){ s->region, (int)(s - r->st), node } : (LoadPoint){ -1, -1, -1 };
 }
 
 /* Does the registration apply an entry (LrDef, LrMixin) recorded under
@@ -745,7 +745,7 @@ static int lr_stmt_applied(const LrStmt *s, int unplaced, int may) {
 LoadPoint elab_point_from(Compiler *c, int node) {
   LoadRecord *r = elab_fresh(c);
   int e = node >= 0 && node < r->n ? r->at[node] : -1;
-  return e < 0 ? (LoadPoint){ -1, -1 } : (LoadPoint){ r->st[e].region, e };
+  return e < 0 ? (LoadPoint){ -1, -1, -1 } : (LoadPoint){ r->st[e].region, e, -1 };
 }
 
 /* The point at which node's statement completes: the last statement of
@@ -753,7 +753,7 @@ LoadPoint elab_point_from(Compiler *c, int node) {
    its own. Region -1 where elab_point_of has no point. */
 LoadPoint elab_point_done(Compiler *c, int node) {
   LoadPoint p = elab_point_of(c, node);
-  return p.region < 0 ? p : (LoadPoint){ p.region, c->lrec->st[p.seq].last };
+  return p.region < 0 ? p : (LoadPoint){ p.region, c->lrec->st[p.seq].last, -1 };
 }
 
 /* Is node in a method body, which runs only when the method is called? */
@@ -2409,6 +2409,50 @@ static int lr_may_dominates(const LoadRecord *r, const LrDef *v, LoadPoint p) {
   return 0;
 }
 
+/* Does child x of node p run before its child y? Two elements of one
+   list run in its order; other children in the walk's (node ids, as
+   elab_order orders a statement's nodes), a ref that runs after the
+   arrays (elab_ref_last) last. */
+static int lr_child_first(const NodeTable *nt, int p, int x, int y) {
+  for (int i = 0, na = nt_num_arrs(nt, p); i < na; i++) {
+    int m = 0, ix = -1, iy = -1;
+    const int *v = nt_arr_at(nt, p, i, &m);
+    for (int j = 0; j < m; j++) { if (v[j] == x) ix = j; if (v[j] == y) iy = j; }
+    if (ix >= 0 && iy >= 0) return ix < iy;
+  }
+  int lx = elab_ref_last(nt, p, x), ly = elab_ref_last(nt, p, y);
+  return lx != ly ? ly : x < y;
+}
+
+/* How node d of n's statement runs against n, as CRuby runs them: a
+   call runs after its operands, so d in n's receiver, arguments or block
+   argument runs before it, and d in n's block in it, after it; other two
+   part at a node, whose children run in their order (lr_child_first). A d
+   ahead of n on a path that may not run whenever the node where they part
+   does (elab_child's spine: a branch, the right side of `&&` or `||`, a
+   block, a lambda or a method body) may not have run. PROG_BEFORE,
+   PROG_AFTER, or PROG_UNKNOWN, as during the registration's walk, which
+   has no parents yet. */
+static int lr_run_order(Compiler *c, int d, int n) {
+  const NodeTable *nt = c->nt;
+  int np = 0;
+  const int *par = lr_parents(c, &np);
+  int may = 0;
+  for (int x = d; par && x >= 0 && x < np && par[x] >= 0; x = par[x]) {
+    int p = par[x], y = n;
+    if (p == n) {
+      if (x == nt_ref(nt, n, "block") && nt_kind(nt, x) == NK_BlockNode) return PROG_AFTER;
+      return may ? PROG_UNKNOWN : PROG_BEFORE;
+    }
+    while (y >= 0 && y < np && par[y] != p) y = par[y];
+    if (y >= 0 && y < np) return !lr_child_first(nt, p, x, y) ? PROG_AFTER : may ? PROG_UNKNOWN : PROG_BEFORE;
+    ElabPos pp = { .e = 0, .kind = EP_SPINE };
+    ElabPos q = elab_child(nt, p, x, &pp);
+    may |= q.may || q.partial || q.defer || q.kept || (q.bits & LR_LATE);
+  }
+  return PROG_UNKNOWN;
+}
+
 /* The last entry of history h before p (late: of the load phase), in *out
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
@@ -2416,17 +2460,24 @@ static int lr_may_dominates(const LoadRecord *r, const LrDef *v, LoadPoint p) {
    A may entry counts as sure at a p its branch has run it for
    (lr_may_dominates). skip_vis passes over the visibility versions of a
    method. A constant history with only uncertain writes supplies a
-   candidate in *out. */
+   candidate in *out. An entry in the statement of p's node, a method
+   body's or a block's in it too, runs as lr_run_order orders it against
+   that node, under the condition the node runs under; where that order
+   is not sure, the statement's answers. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   LoadRecord *r = c->lrec;
   int take = r->collect && h && h->a == -2 - (int)ELAB_CONST;   /* a constant's writes, for elab_class_candidates */
+  int at = !late && p.region >= 0 && p.node >= 0 && p.node < r->n && r->at[p.node] == p.seq;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if (take && v->unplaced) r->cand_bad = 1;
     if ((skip_vis && v->kind == LR_VIS) || v->unplaced) continue;
-    int o = late == 1 ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
-    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && v->may && (late == 1 || !lr_may_dominates(c->lrec, v, p)))) {
+    int in = at && v->node >= 0 && v->node < r->n && r->at[v->node] == p.seq;
+    int o = in ? lr_run_order(c, v->node, p.node) : PROG_UNKNOWN;
+    if (o == PROG_UNKNOWN)
+      o = late == 1 ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
+    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && !in && v->may && (late == 1 || !lr_may_dominates(c->lrec, v, p)))) {
       unsure = 1;
       if (out && h->a == -2 - (int)ELAB_CONST && !*out) *out = v;
       if (take) r->cand = lr_grow(r->cand, &r->ccand, r->ncand, sizeof *r->cand), r->cand[r->ncand++] = v;
@@ -2670,7 +2721,7 @@ int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, 
    singleton's when sg) stops being that history's live entry: the next
    version's point. */
 int elab_version_end(Compiler *c, int cls, const char *name, int sg, int node, LoadPoint *end) {
-  *end = (LoadPoint){ -1, -1 };
+  *end = (LoadPoint){ -1, -1, -1 };
   LoadRecord *r = c->lrec;
   const LrHist *h = r && r->recorded ? lr_hist(r, cls, sg, name, 0) : NULL;
   int i = 0;
@@ -3844,7 +3895,7 @@ static void lr_slot_index(Compiler *c) {
       }
       else {
         if (!s->other || elab_cmp(q, s->from) == PROG_BEFORE) s->from = q;
-        else if (elab_cmp(q, s->from) == PROG_UNKNOWN) s->from = (LoadPoint){ -1, -1 };
+        else if (elab_cmp(q, s->from) == PROG_UNKNOWN) s->from = (LoadPoint){ -1, -1, -1 };
         s->other = 1;
       }
     }
@@ -4758,7 +4809,7 @@ void elab_dump(Compiler *c, FILE *out) {
       else if (v->kind != LR_WRITE && v->kind != LR_OPAQUE && v->vis != SP_VIS_PUBLIC) fprintf(out, " %s", v->vis == SP_VIS_PRIVATE ? "private" : "protected");
     }
     if (h->a >= LR_MAIN)   /* what a query from a method body gets: as of the load phase's end */
-      fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
+      fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1, -1 }, NULL)]);
     if (h->open) fputs(" open", out);
     fputc('\n', out);
   }
@@ -4807,7 +4858,7 @@ void elab_check_visibility(Compiler *c) {
   for (int i = 0; i < r->nhist; i++) {
     const LrHist *h = &r->hist[i];
     if (h->a < 0 || h->b || h->a >= c->nclasses) continue;
-    int rec = elab_method_vis_at(c, h->a, h->name, 0, (LoadPoint){ -1, -1 }), now = comp_method_vis(&c->classes[h->a], h->name);
+    int rec = elab_method_vis_at(c, h->a, h->name, 0, (LoadPoint){ -1, -1, -1 }), now = comp_method_vis(&c->classes[h->a], h->name);
     if (rec < 0) continue;
     LrCheck *f = lr_family(r, "method visibility");
     f->asked++;
@@ -4825,7 +4876,7 @@ void elab_check_visibility(Compiler *c) {
       for (int i = 0; i < r->nhist; i++) {
         const LrHist *h = &r->hist[i];
         if (h->a != k->mix[j].mod || h->b || lr_hist(r, ci, 0, h->name, 0)) continue;
-        int rec = elab_method_vis_at(c, ci, h->name, 0, (LoadPoint){ -1, -1 }), now = comp_method_vis_in_chain(c, ci, h->name);
+        int rec = elab_method_vis_at(c, ci, h->name, 0, (LoadPoint){ -1, -1, -1 }), now = comp_method_vis_in_chain(c, ci, h->name);
         if (rec < 0) continue;
         LrCheck *f = lr_family(r, "method visibility through a mixin");
         f->asked++;

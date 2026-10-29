@@ -487,11 +487,28 @@ int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon);
 /* Does the subtree at id hold a call cplan_missing answers, in a block or
    an operand alike? */
 int cplan_subtree_missing(Compiler *c, int id);
+/* Does any call of the program find no method where it runs
+   (cplan_missing)? Asked once, then remembered. */
+int cplan_program_missing(Compiler *c);
+/* The node value v runs last when it holds a call cplan_missing answers,
+   walking v in CRuby's order for a call (the receiver, then the
+   arguments left to right, into nested calls; an operator is a call too):
+   that call, or the operand holding it that runs whole -- one that is no
+   call (an Array, a Hash, an interpolation), or a call whose order this
+   does not follow (`&.`, a splat, keyword, forwarded or block argument, a
+   literal block). -1 when v holds no such call. This is evaluation
+   order, which the value-position walker does not answer: it says where
+   a value comes from. Asked once per node, then remembered. */
+int cplan_missing_in_order(Compiler *c, int v);
 /* The class call id's constant receiver recv names where the call runs, as
    the load record resolves the reference there (elab_class_ref_at): -1 for
    none of the program's (Object's top level), below -1 for one it does not
    know */
 int cplan_const_recv_class(Compiler *c, int id, int recv);
+/* The self where call id runs, as the load record has it there
+   (elab_self_at), asked in the plan's frame: a program class or module,
+   -1 for main, below -1 for one it does not know */
+int cplan_self_class(Compiler *c, int id);
 /* Does the plan route call id, a class body's call on self the desugar
    spelled with the class (`rand(2)` -> `U.rand(2)`), to Kernel's module
    function of the name: the class's own method of it is not defined where
