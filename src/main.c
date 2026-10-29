@@ -19,6 +19,8 @@
  */
 #include "node_table.h"
 #include "value_pos.h"
+#include "implied_calls.h"
+#include "implicit_calls.h"
 #include "spinel_rev.h"
 #include "codegen.h"
 #include "analyze.h"
@@ -563,15 +565,18 @@ static void usage(void) {
     "              (a require that is a top-level statement, for now)\n"
     "  --dump-value-positions  Print the value positions of each method body and of\n"
     "              the program, and exit (debug)\n"
-    "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n");
+    "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n"
+    "  --dump-implied-calls  Print the methods CRuby calls for each node of the program\n"
+    "              that its text does not name, and exit (debug)\n");
 }
 
-/* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3) and
-   --dump-load-graph (4, which the parse prints as it resolves the requires)
+/* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3),
+   --dump-implied-calls (5) and --dump-load-graph (4, which the parse prints as it resolves the requires)
    work on the parsed table and stop; the mode a flag names, or 0. */
 static int table_mode_of(const char *a) {
   if (sp_streq(a, "--dump-ast")) return 1;
   if (sp_streq(a, "--dump-value-positions")) return 2;
+  if (sp_streq(a, "--dump-implied-calls")) return 5;
   if (sp_streq(a, "--dump-load-graph")) return g_dump_load_graph = 4;
   return sp_streq(a, "--check-value-pos") ? 3 : 0;
 }
@@ -597,6 +602,7 @@ static int parse_flag(const char *a) {
    when `a` is one of them. */
 static int analysis_dump_flag(const char *a) {
   if (sp_streq(a, "--dump-repr")) return g_dump_repr = 1;
+  if (sp_streq(a, "--dump-implicit")) return g_dump_implicit = 1;
   return sp_streq(a, "--dump-load-record") ? (g_dump_load_record = 1) : 0;
 }
 /* --rbs: the seed file the extractor wrote, removed however the compile
@@ -612,6 +618,7 @@ static int run_table_mode(const NodeTable *nt, int mode) {
   if (mode == 1) nt_dump(nt, stdout);
   else if (mode == 2) value_pos_dump(nt, stdout);
   else if (mode == 3) return value_pos_check();
+  else if (mode == 5) implied_calls_dump(nt, stdout);
   return 0;
 }
 
@@ -1043,6 +1050,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--check-bop-share")) return builtin_ops_share_check() ? 1 : 0;
 #endif
     else if (sp_streq(a, "--check-bop-arity")) return builtin_ops_arity_check() ? 1 : 0;
+    else if (sp_streq(a, "--check-bop-callbacks")) return builtin_ops_callbacks_check() ? 1 : 0;
     else if (sp_streq(a, "--dump-traits"))  { g_dump_traits = 1; i++; }
     else if (sp_streq(a, "--emit-symbol-map")) { emit_symbol_map = 1; i++; }
     else if (table_mode_of(a))             { dump_ast = table_mode_of(a); i++; }

@@ -1117,6 +1117,12 @@ int is_initialize_name(const char *n) {
   return sp_streq(n, "initialize");
 }
 
+/* The names CRuby's core asks a receiver through rb_check_funcall, which
+   calls method_missing when respond_to_missing? answers true */
+int is_check_funcall_name(const char *n) {
+  return n && (sp_streq(n, "respond_to?") || sp_streq(n, "respond_to_missing?") || sp_streq(n, "method_missing"));
+}
+
 /* The methods CRuby makes private wherever they are defined:
    initialize, its copy forms, and respond_to_missing? */
 int is_implicitly_private_name(const char *n) {
@@ -2064,6 +2070,11 @@ int class_method_vis_of_name(const char *n) {
   return !n ? 0 : sp_streq(n, "private_class_method") ? BVIS_PRIVATE : sp_streq(n, "public_class_method") ? BVIS_PUBLIC : 0;
 }
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+/* The compiler's own enumerable helpers, which a receiverless call names the way
+   a Kernel function is named */
+int is_enum_helper_name(const char *n) {
+  return n && (sp_streq(n, "__enum_pairs") || sp_streq(n, "__enum_count_int"));
+}
 /* The calls by which a method body changes what the load record holds:
    ones that define, undefine or set methods, constants or variables, mix
    a module in or refine, load a file, or run code it cannot follow from
@@ -2103,6 +2114,23 @@ int is_runtime_callback_name(const char *n) {
     "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
   if (!n) return 0;
   return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
+}
+int is_hook_protocol_name(const char *n) {
+  return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
+}
+
+int is_port_gvar_name(const char *n) {
+  return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
+}
+
+int synth_stands_for(const char *name, int i, const char **proto) {
+  const char *stands = NULL;
+  if (!name || i < 0) return 0;
+  if (sp_streq(name, "__noarg to_s")) stands = i == 0 ? "to_s" : NULL;
+  else if (sp_streq(name, "__noarg inspect")) stands = i == 0 ? "inspect" : NULL;
+  else if (sp_streq(name, "__enum_to_a")) stands = i == 0 ? "each" : i == 1 ? "to_a" : i == 2 ? "deconstruct" : NULL;
+  if (stands && proto) *proto = stands;
+  return stands != NULL;
 }
 int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||

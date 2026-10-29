@@ -4124,6 +4124,13 @@ static void emit_iter_collect_proc(void) {
     "  return 0;\n}\n");
 }
 
+/* Is scope `s` written out: kept by reachability, or a proc-form clone that
+   proc_form_live says emission writes? A call of a scope that is not is a name
+   with no function. */
+static int iter_scope_emitted(Compiler *c, int s) {
+  return c->scopes[s].reachable || (c->scopes[s].is_proc_form && proc_form_live(c, s));
+}
+
 /* The class's #each in a form that takes a real block, or -1. A `def each(&b)`
    already does; a `def each; ...yield...; end` has a proc-form clone (#3399). */
 static int iter_each_proc_form(Compiler *c, int k) {
@@ -4149,6 +4156,7 @@ static int iter_each_proc_form(Compiler *c, int k) {
      anything else of its own (StringIO#each(sep), with a separator) is not one
      the normalization can drive. */
   if (c->scopes[pf].nparams != 0 || c->scopes[pf].rest_idx >= 0) return -1;
+  if (!iter_scope_emitted(c, pf)) return -1;   /* nothing reaches that #each */
   return pf;
 }
 
@@ -4235,6 +4243,7 @@ void emit_poly_iter_obj_normalize(Compiler *c, int tv, Buf *b) {
     /* a to_a forwarding its block has a proc-form clone; that is the emitted
        function for a call from poly dispatch (#3399) */
     { int pfi = mi >= 0 ? scope_proc_form_of(c, mi) : -1; if (pfi >= 0) mi = pfi; }
+    if (mi >= 0 && !iter_scope_emitted(c, mi)) mi = -1;   /* a #to_a nothing reaches is not called */
     char tail[64] = "";
     if (mi < 0 || !obj_to_a_call_tail(&c->scopes[mi], tail, sizeof tail)) {
       /* No #to_a, but the class defines #each -- the ordinary way to write an
@@ -15867,6 +15876,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     }
     if (bcase && defcls != k) continue;
     Scope *m = &c->scopes[mi];
+    if (!m->reachable) continue;   /* nothing calls it: reachability keeps a `<=>` that a sort, a max or a Comparable operator can reach */
     if (m->nparams < 1 || m->rest_idx >= 0) continue;     /* need exactly the one operand */
     /* a `<=>` that answers no number (always nil) still runs: Comparable's
        == and the sorts call it and read its answer as not-comparable */
@@ -16517,6 +16527,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       continue;
     }
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    if (!m->reachable) continue;   /* no hash table op reaches it: the key hashes by identity */
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
     buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
@@ -16559,6 +16570,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     int defcls = -1;
     int mi = comp_method_in_chain(c, k, "eql?", &defcls);
     Scope *m = &c->scopes[mi];   /* signature validated in class_is_hashkey */
+    if (!m->reachable) continue;   /* nothing compares two keys with it */
     LocalVar *pp = scope_local(m, m->pnames[0]);
     TyKind pt = (pp && pp->type != TY_UNKNOWN) ? pp->type : TY_POLY;
     char argbuf[160];

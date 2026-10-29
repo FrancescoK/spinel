@@ -7289,7 +7289,8 @@ int ctor_site_on_cycle(Compiler *c, int id, int initm) {
   return s >= 0 && s < c->nscopes && c->scopes[s].ctor_cycle == c->scopes[initm].ctor_cycle;
 }
 int scope_needs_proc_form(Compiler *c, int s) {
-  return scope_proc_form_of(c, s) >= 0;
+  int pf = scope_proc_form_of(c, s);
+  return pf >= 0 && proc_form_live(c, pf);   /* a clone that is not emitted is not called */
 }
 /* A module whose instance methods a TOP-LEVEL `include` makes callable: the
    bare-call path emits a direct call to the module's own function, so that

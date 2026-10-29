@@ -36,6 +36,42 @@ int bop_name_mutates(const char *name, unsigned sites);
    how many arguments (*most, -1 for every count the builtin takes). */
 int bop_generic_entry(const char *name, int *most);
 
+/* ---- what a builtin calls back on the values it is handed ----
+   Generated from CRuby (src/builtin_callbacks.inc, tools/gen_builtin_callbacks.rb):
+   for a builtin method, the methods of the objects it is handed that it calls
+   without the program naming them, and in what role the object is handed over.
+   A role is the position the object is in when the builtin calls it. */
+enum {
+  BCR_ARG = 1u,     /* an argument */
+  BCR_ELEM = 2u,    /* an element of the receiver, or of an argument that is a collection */
+  BCR_BLOCK = 4u,   /* a value the block answers */
+  BCR_SELF = 8u,    /* the receiver, when it is a program subclass of the core class */
+  BCR_CLASS = 16u,  /* a class object handed over (raise K, K as a key) */
+  BCR_PORT = 32u,   /* an IO argument */
+  BCR_ASKED = 64u,  /* asked through rb_check_funcall: respond_to?, respond_to_missing?, method_missing */
+  BCR_LOADED = 128u,/* an object the data builds (Marshal.load, YAML.unsafe_load): any class of the program may receive it */
+  BCR_GVAR = 256u,  /* $stdout or $stderr holding the object: the assignment is a write of a port global, whose row keeps it */
+  BCR_ALL = 511u
+};
+typedef struct { const char *name; unsigned roles; } BopCallback;
+/* What any core method called `builtin` may call back, the union over its
+   receivers: the callbacks written to *out and their count, 0 for a name that
+   is no core method, -1 for a core name the table does not cover (nothing
+   was probed for it: it may call anything). For a pass that runs before
+   types exist. */
+int bop_name_callbacks(const char *builtin, const BopCallback **out);
+/* Every callback name with the roles in which some builtin calls it, sorted;
+   their number */
+int bop_callback_names(const BopCallback **out);
+/* The callbacks of `builtin` on one receiver class ("Array"; "File." for a
+   singleton method), for the typed passes. -1 means unknown, as it does for
+   bop_name_callbacks: that receiver was not probed for it, and the caller
+   treats the builtin as one that may call anything. */
+int bop_class_callbacks(const char *recv_class, const char *builtin, const BopCallback **out);
+/* --check-bop-callbacks: the generated tables' order and shape; answers the
+   number of problems */
+int builtin_ops_callbacks_check(void);
+
 /* The runtime call behind a zero-argument IO/String row. Boxed dispatch
    owns its tag and result-slot guards; it shares the call facts with the
    typed rows without borrowing their arity or return-value policy. */

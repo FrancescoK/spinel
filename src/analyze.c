@@ -3,6 +3,7 @@
 #include <limits.h>
 #include <ctype.h>
 #include "analyze_internal.h"
+#include "implicit_calls.h"
 #include "builtin_ops.h"
 #include "repr.h"
 #include "decide.h"
@@ -576,13 +577,14 @@ void compute_reachable(Compiler *c, int typed) {
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
-  ANameHash held; memset(&held, 0, sizeof held);
-  if (typed == 2) { cr_class_only_names(c, &held); g_cr_typed = &held; }
-  else { cr_class_only_names(c, &held); g_cr_untyped = &held; cr_literal_locals_build(c); }
+  ic_begin(c, typed);
+  if (typed == 2) g_cr_typed = &c->ic->class_only;
+  else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *sc = &c->scopes[s];
     int instance_self = sc->name && !sc->is_cmethod && sc->class_id >= 0 &&
                         !comp_class_is_module(c, &c->classes[sc->class_id]);
+    ic_scope(c, s);
     if (c->scopes[s].body >= 0)
       cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     /* Also scan parameter defaults (e.g. def foo(opt = bar)) -- these emit calls
@@ -593,8 +595,10 @@ void compute_reachable(Compiler *c, int typed) {
         cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
     }
   }
+  ic_scope(c, 0);
+  cr_collect_program_end(c, &scope_calls[0], &sc_n[0], &sc_cap[0]);
+  ic_scope(c, -1);
   g_cr_typed = NULL; g_cr_untyped = NULL;
-  anh_free(&held);
 
 
   /* BFS queue (scope indices). */
@@ -629,14 +633,11 @@ void compute_reachable(Compiler *c, int typed) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     { sc->reachable = 0; comp_touch_scope(sc->idx); }
-    int is_root = (s == 0 || !sc->name || (!sc->replaced && sp_streq(sc->name, "initialize")) ||
-                   (!sc->replaced && method_name_implicitly_invoked(sc->name)) || sc->is_ext_entry ||
-                   /* an exception's message: the runtime asks it where the
-                      exception is printed or inspected (sp_user_exc_message),
-                      so a private helper only the override calls (sqlite3's
-                      sql_error) is reached through it */
-                   (sp_streq(sc->name, "message") && !sc->replaced && !sc->is_cmethod && sc->class_id >= 0 &&
-                    class_is_exc_subclass(c, sc->class_id)));
+    /* The roots: the top level, a def with no name, initialize, and an
+       --ext-entry. A method CRuby calls back is no root of its own: a node
+       that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
+       of the program the message of an exception class. */
+    int is_root = (s == 0 || !sc->name || (!sc->replaced && is_initialize_name(sc->name)) || sc->is_ext_entry);
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
 
@@ -904,15 +905,25 @@ void compute_reachable(Compiler *c, int typed) {
   int changed = 1;
   while (changed) {
     changed = 0;
+    /* a name the compiler synthesized for a protocol method (`__enum_to_a`
+       for each, to_a and deconstruct, `__noarg to_s` for to_s) is as live as
+       one of the protocol names it answers for is */
+    for (int t = 0; t < c->nscopes; t++) {
+      const char *proto = NULL;
+      const Scope *st = &c->scopes[t];
+      int live = 0;
+      if (st->reachable || !st->name || st->replaced) continue;
+      for (int i = 0; !live && synth_stands_for(st->name, i, &proto); i++) live = cn_live(&cn_set, proto);
+      if (!live) continue;
+      MARK_NAME(st->name);
+      changed = 1;
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+    }
     for (int ci = 0; ci < c->nclasses; ci++) {
       ClassInfo *cls = &c->classes[ci];
       for (int i = 0; i < cls->naliases; i++) {
         const char *an = cls->alias_new[i], *ao = cls->alias_old[i];
         int an_live = (an && cn_live(&cn_set, an)), ao_live = (ao && cn_live(&cn_set, ao));
-        /* an alias under a name the runtime calls by itself (`alias inspect
-           readable_inspect`: p, interpolation) is live as a def of that name
-           is a root */
-        if (an && method_name_implicitly_invoked(an)) an_live = 1;
         /* also check reachable scope names (covers scope-backed aliases) */
         if (an) for (int t = SN_FIRST(an); t >= 0 && !an_live; t = sn_link[t]) if (c->scopes[t].reachable) an_live = 1;
         if (ao) for (int t = SN_FIRST(ao); t >= 0 && !ao_live; t = sn_link[t]) if (c->scopes[t].reachable) ao_live = 1;
@@ -977,6 +988,8 @@ void compute_reachable(Compiler *c, int typed) {
   #undef CN_ADD
   #undef MARK_NAME
   #undef SN_FIRST
+
+  ic_end(c);
 
   /* Cleanup. */
   for (int s = 0; s < c->nscopes; s++) {
@@ -52279,6 +52292,7 @@ void analyze_program(Compiler *c) {
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */
   AN_STEP_V("compute_reachable", compute_reachable(c, 2));
+  if (g_dump_implicit) { ic_dump(c, stdout); exit(0); }   /* the methods CRuby calls that the program does not name, and the defs kept */
 
   if (getenv("SP_FIXPOINT_LOG"))
     fprintf(stderr, "[fp] rounds=%d%s\n", g_fixpoint_rounds,
