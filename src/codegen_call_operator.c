@@ -1769,10 +1769,11 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
      itself (a frozen one raises FrozenError), a queue its ArgumentError (sp_poly_queue_push_n), anything else
      NoMethodError -- the dispatch with arguments covers the other counts.
      append and unshift with no argument are Array's alone: the same, with
-     no queue arm. */
+     no queue arm. A reader of the name (attr_*, Struct member) in any class
+     keeps the generic dispatch, as a def of it does. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
       (sp_streq(name, "push") || sp_streq(name, "append") || sp_streq(name, "unshift")) &&
-      !an_user_defines_method(c, name)) {
+      !an_user_defines_method(c, name) && !comp_name_reader_any(c, name)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
     if (sp_streq(name, "push")) buf_printf(b, "; if (!sp_poly_queue_push_n(_t%d, 0, (sp_RbVal[]){sp_box_nil()}) &&", t);
