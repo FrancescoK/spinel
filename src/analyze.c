@@ -8781,6 +8781,7 @@ static void enum_chain_node(Compiler *c, LowerCtx *lc, int id) {
       int call = nt_new_node(nt, "CallNode");
       nt_node_set_str(nt, call, "name", sym);
       nt_node_set_ref(nt, call, "receiver", ra);
+      enum_send_copy_take(nt, call);   /* `:tally.to_proc`'s call: the builtin's copy */
       if (is_binop) {
         int rb2 = nt_new_node(nt, "LocalVariableReadNode");
         nt_node_set_str(nt, rb2, "name", pb);
@@ -9754,6 +9755,7 @@ int desugar_sym_to_proc_call_at(Compiler *c, LowerCtx *lc, int id) {
   nt_node_set_str(nt, id, "name", sym);
   nt_node_set_ref(nt, id, "receiver", av[0]);
   nt_node_set_ref(nt, id, "arguments", an > 1 ? rest : -1);
+  enum_send_copy_take(nt, id);   /* `a.tally`: the builtin's copy, as a written call's */
   /* the `:m.to_proc` call is left in the node table, unreached; cut its
      Symbol off so the to_proc -> lambda rewrite (desugar_enum_chain_shapes,
      which visits every node id) cannot turn it into a lambda whose
