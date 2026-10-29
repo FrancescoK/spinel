@@ -194,8 +194,11 @@ that class's methods, with what it inherits from Object, Comparable, Enumerable 
 Numeric and what the program adds by reopening them; on a boxed receiver it covers
 every user class, the program's literals, and the methods of the builtin classes a
 boxed value can be: Integer, Float, String, Symbol, Array, Hash, Range and nil
-always, and Time, File, Regexp and the other builtins when some expression of the
-program has that type. The builtin arms come after the program's, so a send that
+always, and Time, File, Regexp, MatchData, Thread, Fiber and Random when some
+expression of the program has that type (the classes `builtin_class_of_type`
+names; a Proc, Rational, Complex, Exception, Queue, true or false in a boxed slot
+gets no arms of its own, so a builtin method of those raises `NoMethodError`
+there). The builtin arms come after the program's, so a send that
 would exceed the arm cap (1024) keeps the program's arms alone. A computed send
 that carries a block, splats its arguments or passes keywords takes the program's
 names alone on a boxed receiver, so a builtin's method raises `NoMethodError`
