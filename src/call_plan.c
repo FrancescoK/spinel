@@ -745,8 +745,12 @@ static int ct_def_version(Compiler *c, int rcls, const char *name, int sg, const
    with ar parameters (ver_call_arity): its index in Compiler.ver_entries,
    -1 for none asked (ver_entries_build); ...and its method, -1 for none
    made */
+static unsigned ver_key_hash(int rcls, int sg, const char *name, int ar) {
+  return sp_strhash(name) * 31u + (unsigned)(rcls + 1) * 131u + (unsigned)sg * 7u + (unsigned)ar;
+}
 static int ver_entry_ix(const Compiler *c, int rcls, int sg, const char *name, int ar) {
-  for (int i = 0; i < c->nver_entries; i++) {
+  if (!c->ver_ix_nb) return -1;
+  for (int i = c->ver_ix[ver_key_hash(rcls, sg, name, ar) % c->ver_ix_nb]; i >= 0; i = c->ver_ix_next[i]) {
     const struct VerEntry *e = &c->ver_entries[i];
     if (e->cls == rcls && e->sg == sg && e->ar == ar && sp_streq(e->name, name)) return i;
   }
@@ -1024,8 +1028,9 @@ int ct_version_named(Compiler *c, const char *nm) {
 int ct_version_marked(Compiler *c, const char *nm) {
   if (!nm) return 0;
   if (elab_method_replaced(c, nm)) return 1;
-  for (int i = 0; i < c->nver_entries; i++)
-    if (c->ver_entries[i].scope >= 0 && sp_streq(c->ver_entries[i].name, nm)) return 1;
+  if (!c->ver_ix_nb) return 0;
+  for (int i = c->ver_names[sp_strhash(nm) % c->ver_ix_nb]; i >= 0; i = c->ver_names_next[i])
+    if (sp_streq(c->ver_entries[i].name, nm)) return 1;
   return 0;
 }
 /* The classes call node id of versioned name nm may run on, each handed to
@@ -3581,7 +3586,8 @@ int ver_entry_targets(const Compiler *c, int e, int *out) {
   return n;
 }
 typedef struct { int cls, sg, mi, ar; const char *name; } VerNeed;
-typedef struct { VerNeed *v; int n; } VerNeeds;
+/* ...and, to tell the asks that repeat one, an open addressing table over them (ix holds an index into v, -1 free) */
+typedef struct { VerNeed *v; int n; int *ix; unsigned nb; } VerNeeds;
 static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   VerNeeds *o = arg;
   ElabVersion vs[VER_MAX_ARMS];
@@ -3594,24 +3600,69 @@ static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags,
   sg = (flags & CT_CMETHOD) != 0;
   ar = ver_call_arity(c, id, rcls, sg, nm, mi);
   if (ver_entry_ix(c, rcls, sg, nm, ar) >= 0) return;
-  for (int i = 0; i < o->n; i++)
-    if (o->v[i].cls == rcls && o->v[i].sg == sg && o->v[i].ar == ar && sp_streq(o->v[i].name, nm)) return;
+  unsigned at = o->nb ? ver_key_hash(rcls, sg, nm, ar) & (o->nb - 1) : 0;
+  for (; o->nb && o->ix[at] >= 0; at = (at + 1) & (o->nb - 1)) {
+    const VerNeed *w = &o->v[o->ix[at]];
+    if (w->cls == rcls && w->sg == sg && w->ar == ar && sp_streq(w->name, nm)) return;
+  }
   ct_version(c, id, k, nm, flags, mi, NULL, &n);
   if (n < 2) return;
   if (!(o->n & (o->n - 1)) && !(o->v = realloc(o->v, sizeof *o->v * (size_t)(o->n ? 2 * o->n : 1)))) {
     fprintf(stderr, "spinel: out of memory\n"); exit(1);
   }
   o->v[o->n++] = (VerNeed){ rcls, sg, mi, ar, nm };
+  if (o->n * 2 > (int)o->nb) {   /* the table grows with the asks: rebuilt over all of them */
+    o->nb = o->nb ? o->nb * 2 : 64;
+    free(o->ix);
+    if (!(o->ix = malloc(sizeof(int) * o->nb))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (unsigned b = 0; b < o->nb; b++) o->ix[b] = -1;
+    for (int i = 0; i < o->n; i++) {
+      unsigned b = ver_key_hash(o->v[i].cls, o->v[i].sg, o->v[i].name, o->v[i].ar) & (o->nb - 1);
+      while (o->ix[b] >= 0) b = (b + 1) & (o->nb - 1);
+      o->ix[b] = i;
+    }
+  }
+  else {
+    for (at = ver_key_hash(rcls, sg, nm, ar) & (o->nb - 1); o->ix[at] >= 0; at = (at + 1) & (o->nb - 1)) {}
+    o->ix[at] = o->n - 1;
+  }
 }
 /* The entries the calls need, made once the passes after the record have
    made their methods (an_phase_pre_fixpoint, before the scope index
    freezes): every call is asked first, with the record as it stands, and
    the entries are made after, as each adds nodes the record would be
    rebuilt for */
+/* The entries by name, once they are all made: ver_ix chains those of one
+   (class, side, name, parameter count), ver_names those that hold a method,
+   one to a name. Asked for every call of a versioned name, where a scan of
+   the entries was a pass over them for each. */
+static void ver_entries_index(Compiler *c) {
+  unsigned nb = 16;
+  free(c->ver_ix); free(c->ver_ix_next); free(c->ver_names); free(c->ver_names_next);
+  while (nb < 2u * (unsigned)c->nver_entries) nb *= 2;
+  c->ver_ix_nb = nb;
+  c->ver_ix = malloc(sizeof(int) * nb);
+  c->ver_names = malloc(sizeof(int) * nb);
+  c->ver_ix_next = malloc(sizeof(int) * ((size_t)c->nver_entries + 1));
+  c->ver_names_next = malloc(sizeof(int) * ((size_t)c->nver_entries + 1));
+  if (!c->ver_ix || !c->ver_names || !c->ver_ix_next || !c->ver_names_next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (unsigned b = 0; b < nb; b++) c->ver_ix[b] = c->ver_names[b] = -1;
+  for (int i = c->nver_entries - 1; i >= 0; i--) {   /* (backwards: a chain answers the first entry first) */
+    const struct VerEntry *e = &c->ver_entries[i];
+    unsigned b = ver_key_hash(e->cls, e->sg, e->name, e->ar) % nb, m = sp_strhash(e->name) % nb;
+    c->ver_ix_next[i] = c->ver_ix[b];
+    c->ver_ix[b] = i;
+    c->ver_names_next[i] = -1;
+    if (e->scope < 0) continue;
+    int dup = 0;
+    for (int j = c->ver_names[m]; j >= 0 && !dup; j = c->ver_names_next[j]) dup = sp_streq(c->ver_entries[j].name, e->name);
+    if (!dup) { c->ver_names_next[i] = c->ver_names[m]; c->ver_names[m] = i; }
+  }
+}
 void ver_entries_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   const char *names[2];
-  VerNeeds o = { NULL, 0 };
+  VerNeeds o = { NULL, 0, NULL, 0 };
   for (int id = 0, n0 = nt->count; id < n0; id++)
     for (int i = 0, nn = call_node_names(nt, id, names); i < nn; i++)
       if (ct_version_named(c, names[i])) ct_version_classes(c, id, names[i], ver_need, &o);
@@ -3623,7 +3674,8 @@ void ver_entries_build(Compiler *c) {
     }
     c->ver_entries[c->nver_entries++] = (struct VerEntry){ o.v[i].name, o.v[i].cls, o.v[i].sg, o.v[i].ar, e };
   }
-  free(o.v);
+  free(o.v); free(o.ix);
+  ver_entries_index(c);
   c->ver_built = 1;
 }
 /* `cell = v` put in statement list `list` at its statement `at` (after it
@@ -3648,7 +3700,8 @@ static int ver_cell_put(Compiler *c, const char *cell, int list, int at, int aft
   memcpy(ns + j + 1, st + j, sizeof(int) * (size_t)(n - j));
   nt_node_set_arr(nt, list, "body", ns, n + 1);
   free(ns);
-  comp_gvar_intern(c, cell + 1);
+  /* (the cell holds an Integer from the entry file's first statement on, and nothing can read it before: its seed) */
+  comp_gvar_intern(c, cell + 1)->gvar_seeded = 2;
   comp_grow_node_arrays(c);
   c->nscope[g] = c->nscope[tv] = c->nscope[at];
   return g;

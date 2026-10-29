@@ -522,6 +522,8 @@ void comp_free(Compiler *c) {
   free(c->pres_ord); c->pres_ord = NULL; c->pres_ord_n = 0;
   free(c->splat_views); c->splat_views = NULL; c->nsplat_views = 0;
   free(c->ver_entries); c->ver_entries = NULL; c->nver_entries = 0;
+  free(c->ver_ix); free(c->ver_ix_next); free(c->ver_names); free(c->ver_names_next);
+  c->ver_ix = c->ver_ix_next = c->ver_names = c->ver_names_next = NULL; c->ver_ix_nb = 0;
   free(c->ver_pins); c->ver_pins = NULL; c->nver_pins = 0;
   for (int i = 0; i < c->nrbp_slots; i++) free(c->rbp_slot_names[i]);
   free(c->rbp_slot_names); free(c->rbp_slot_lens); c->rbp_slot_names = NULL; c->rbp_slot_lens = NULL; c->nrbp_slots = 0;

@@ -1637,6 +1637,10 @@ typedef struct {
      version it runs */
   struct VerEntry { const char *name; int cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
+  /* ...by name: ver_ix chains the entries of one (class, side, name, parameter
+     count) and ver_names one scope-holding entry of each name (ver_entries_index) */
+  int *ver_ix, *ver_ix_next, *ver_names, *ver_names_next;
+  unsigned ver_ix_nb;
   struct VerPin { int node, scope; } *ver_pins;
   int nver_pins;
   /* the entries are made (ver_entries_build) */
