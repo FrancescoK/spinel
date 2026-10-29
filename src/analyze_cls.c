@@ -2981,19 +2981,26 @@ static void cf_call_any_at(CF *f, int v, const char *nm, const int *argv, int ar
        by class, each a chain walk, for every such call at every solve, this
        was half of a Rails application's kinds walk) */
     int nk = 0; const int *ks = comp_name_reader_owners(c, nm, &nk);
+    /* ("@name" formatted once: only an alias names another ivar) */
+    char ivs[256] = "";
     for (int i = 0; i < nk; i++) {
       int k = ks[i];
-      char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", comp_resolve_alias(c, k, nm));
-      cf_flow(f, cf_entry(f, f->fam[k], ivn), v);
+      const char *rn = comp_resolve_alias(c, k, nm);
+      char ivn[256];
+      const char *ivp = ivs;
+      if (rn != nm) { snprintf(ivn, sizeof ivn, "@%s", rn); ivp = ivn; }
+      else if (!ivs[0]) snprintf(ivs, sizeof ivs, "@%s", nm);
+      cf_flow(f, cf_entry(f, f->fam[k], ivp), v);
     }
   }
   if (argc > 0 && (sp_streq(nm, "resume") || sp_streq(nm, "transfer"))) cf_resume_args(f, argv, argc);
   CFByName *b = cf_byname(f, nm);
   for (int i = 0; i < b->n; i++) { cf_bind_args(f, b->mi[i], argv, argc); cf_bind_block(f, b->mi[i], blk); }
   for (int i = 0; i < b->ncm; i++) { cf_bind_args(f, b->cmi[i], argv, argc); cf_bind_block(f, b->cmi[i], blk); }
-  for (int i = 0; i < b->nwr; i++) {
+  if (b->nwr) {
     char ivn[256]; snprintf(ivn, sizeof ivn, "@%.*s", (int)strlen(nm) - 1, nm);
-    for (int a = 0; a < argc; a++) cf_flow(f, argv[a], cf_entry(f, f->fam[b->wr[i]], ivn));
+    for (int i = 0; i < b->nwr; i++)
+      for (int a = 0; a < argc; a++) cf_flow(f, argv[a], cf_entry(f, f->fam[b->wr[i]], ivn));
   }
   if (sp_streq(nm, "new")) { CFByName *ini = cf_byname(f, "initialize"); for (int q = 0; q < ini->n; q++) cf_bind_args(f, ini->mi[q], argv, argc); }
   /* the block's parameters and the arguments may go anywhere */
