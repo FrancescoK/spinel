@@ -4155,11 +4155,16 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
     switch (at) {
     case TY_INT:
       buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_IntArray_include((sp_IntArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
+      /* an Integer is == the Float of its value (`[2.0].include?(2)`) */
+      buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_PolyArray_include(sp_poly_to_poly_array(_t%d), sp_box_int(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_include((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover_i(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       break;
     case TY_FLOAT:
       buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_f((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
+      /* ...and a Float the Integer of its value (`[2].include?(2.0)`) */
+      buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %ssp_PolyArray_include(sp_poly_to_poly_array(_t%d), sp_box_float(_t%d))%s; break;", tr, ibo, tv, atmp[0], ibc);
+      buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_FloatArray_include((sp_FloatArray *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       break;
     case TY_RATIONAL: case TY_BIGINT: {
@@ -4170,6 +4175,8 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       Buf ab6; memset(&ab6, 0, sizeof ab6); emit_boxed_text(c, at, tn6, &ab6);
       buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, %s)%s; break;", tr, ibo, tv, ab6.p ? ab6.p : "sp_box_nil()", ibc);
       buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, %s)%s; break;", tr, ibo, tv, ab6.p ? ab6.p : "sp_box_nil()", ibc);
+      /* ...and is == an Integer or a Float element of its value (`[2].include?(2r)`) */
+      buf_printf(b, " case SP_BUILTIN_INT_ARRAY: case SP_BUILTIN_FLT_ARRAY: _t%d = %ssp_PolyArray_include(sp_poly_to_poly_array(_t%d), %s)%s; break;", tr, ibo, tv, ab6.p ? ab6.p : "sp_box_nil()", ibc);
       free(ab6.p);
       break;
     }
@@ -4194,12 +4201,16 @@ void emit_poly_cases_n(Compiler *c, int id, const char *name, const PolySpecials
       buf_printf(b, " case SP_BUILTIN_RANGE: _t%d = %ssp_range_cover_poly((sp_Range *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       buf_printf(b, " case SP_BUILTIN_FLOAT_RANGE: _t%d = %ssp_frange_cover_poly(*(sp_FloatRange *)_t%d.v.p, _t%d)%s; break;", tr, ibo, tv, atmp[0], ibc);
       /* a boxed nil finds the typed array's nil elements */
-      buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_NIL) &&"
-                    " sp_IntArray_include_o((sp_IntArray *)_t%d.v.p, sp_poly_as_int_or_nil(_t%d))%s; break;",
-                 tr, ibo, atmp[0], atmp[0], tv, atmp[0], ibc);
-      buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %s(_t%d.tag == SP_TAG_FLT || _t%d.tag == SP_TAG_NIL) &&"
-                    " sp_FloatArray_include_o((sp_FloatArray *)_t%d.v.p, sp_poly_as_float_or_nil(_t%d))%s; break;",
-                 tr, ibo, atmp[0], atmp[0], tv, atmp[0], ibc);
+      /* a boxed value of another kind (a Float against Integers, an
+         Integer, Rational or Bignum against Floats) compares as == does */
+      buf_printf(b, " case SP_BUILTIN_INT_ARRAY: _t%d = %s((_t%d.tag == SP_TAG_INT || _t%d.tag == SP_TAG_NIL) ?"
+                    " sp_IntArray_include_o((sp_IntArray *)_t%d.v.p, sp_poly_as_int_or_nil(_t%d)) :"
+                    " sp_PolyArray_include(sp_poly_to_poly_array(_t%d), _t%d))%s; break;",
+                 tr, ibo, atmp[0], atmp[0], tv, atmp[0], tv, atmp[0], ibc);
+      buf_printf(b, " case SP_BUILTIN_FLT_ARRAY: _t%d = %s((_t%d.tag == SP_TAG_FLT || _t%d.tag == SP_TAG_NIL) ?"
+                    " sp_FloatArray_include_o((sp_FloatArray *)_t%d.v.p, sp_poly_as_float_or_nil(_t%d)) :"
+                    " sp_PolyArray_include(sp_poly_to_poly_array(_t%d), _t%d))%s; break;",
+                 tr, ibo, atmp[0], atmp[0], tv, atmp[0], tv, atmp[0], ibc);
       /* a String handle's box (a String some name changes in place) is
          a String too: its bytes are what the elements are compared with */
       { int ts = ++g_tmp;

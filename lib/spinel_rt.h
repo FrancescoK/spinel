@@ -13026,6 +13026,13 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
           sp_IntArray_delete_nil((sp_IntArray *)recv.v.p);
           return sp_box_nil();
         }
+        /* a Float of an Integer's value is == it: `[1, 2].delete(1.0)`
+           removes 1 and answers the element */
+        if (recv.cls_id == SP_BUILTIN_INT_ARRAY && key.tag == SP_TAG_FLT &&
+            key.v.f >= (sp_float)INTPTR_MIN && key.v.f < -(sp_float)INTPTR_MIN && key.v.f == (sp_float)(sp_int)key.v.f) {
+          sp_oint r = sp_IntArray_delete_o((sp_IntArray *)recv.v.p, (sp_int)key.v.f);
+          return r.nil ? sp_box_nil() : sp_box_int(r.v);
+        }
         if (key.tag != (recv.cls_id == SP_BUILTIN_INT_ARRAY ? SP_TAG_INT : SP_TAG_SYM))
           return sp_box_nil();
         sp_oint r = sp_IntArray_delete_o((sp_IntArray *)recv.v.p, key.v.i);
