@@ -304,10 +304,11 @@ int desugar_ie_bare_object_calls(Compiler *c) {
        round. A top-level def is Object's: the builtin's own method (and
        Enumerable's, and a reopen's) comes ahead of it in the receiver's
        chain, but it wins over a name the builtin takes from Kernel
-       (frozen?, to_enum: is_arysub_kernel_name; is_a?, dup: the names
-       above), and then the bare call stays the top-level one. */
+       (frozen?, to_enum: is_arysub_kernel_name; is_a?: the names above),
+       and then the bare call stays the top-level one. An undefined name is
+       not the builtin's either. */
     int ro = nm ? comp_arysub_reopen(c, cls) : -1;
-    int own = nm && comp_arysub_name_is_array(c, cls, nm) &&
+    int own = nm && comp_arysub_name_is_array(c, cls, nm) && !comp_is_undeffed_in_chain(c, cls, nm) &&
               (!is_arysub_kernel_name(nm) || (ro >= 0 && comp_method_in_class(c, ro, nm) >= 0));
     if (nm && !own && call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
     int builtin = !hit && nm && comp_arysub_name_is_array(c, cls, nm);
