@@ -9655,7 +9655,7 @@ int poly_native_arm_fits(Compiler *c, int k, const char *name, int n, const int 
           (aw == TY_FLOAT && atmp_ty[ai] == TY_INT)))
       return -1;
   }
-  *mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
+  *mret = comp_native_ret_ty(c, nmi, k);
   return nmi;
 }
 
@@ -9738,7 +9738,7 @@ int poly_native_arm_call(Compiler *c, int k, const char *name, int n, const int 
     buf_printf(&wb, "SP_STR_BOX(%s)", cb->p ? cb->p : "");
     free(cb->p); *cb = wb;
   }
-  *mret = sp_streq(nmet->ret, "self") ? ty_object(k) : native_spec_to_ty(nmet->ret);
+  *mret = comp_native_ret_ty(c, nmi, k);
   return 1;
 }
 

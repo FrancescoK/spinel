@@ -2770,6 +2770,13 @@ TyKind native_spec_to_ty(const char *spec) {
   return TY_UNKNOWN;
 }
 
+/* The value class k's binding nmi answers: `:self` is k's object, which
+   native_spec_to_ty alone cannot name. */
+TyKind comp_native_ret_ty(Compiler *c, int nmi, int k) {
+  const char *ret = c->native_methods[nmi].ret;
+  return sp_streq(ret, "self") ? ty_object(k) : native_spec_to_ty(ret);
+}
+
 /* Find a native method binding on a class: kind 0 = instance method, 1 =
    constructor. Arity-keyed -- prefer an exact nargs==argc match, else the first
    same-name binding. Returns the index in c->native_methods, or -1. */

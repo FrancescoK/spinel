@@ -304,7 +304,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
         snprintf(nbuf, sizeof nbuf, "SP_STR_BOX(%s)", cbuf);
       else
         snprintf(nbuf, sizeof nbuf, "%s", cbuf);
-      TyKind mret = native_spec_to_ty(nmet->ret);
+      TyKind mret = comp_native_ret_ty(c, nmi, k);
       buf_printf(b, " case %d: ", k);
       int pconv = PC_SAME;
       if (mret == TY_NIL) { buf_puts(b, nbuf); pconv = PC_VOID; }
