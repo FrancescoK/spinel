@@ -57,6 +57,7 @@ class HkSetter
   end
 
   def []=(key, value)
+    key = +key   # (a Symbol's to_s is frozen in Spinel: a copy of it)
     key << "!"
     @pairs << [key, value]
     value

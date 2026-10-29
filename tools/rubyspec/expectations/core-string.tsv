@@ -229,7 +229,7 @@ chilled_string_spec__006	HARNESS-SKEW
 chilled_string_spec__007	HARNESS-SKEW
 chilled_string_spec__008	HARNESS-SKEW
 chilled_string_spec__009	HARNESS-SKEW
-chilled_string_spec__010	PASS
+chilled_string_spec__010	FAIL
 chilled_string_spec__011	PASS
 chilled_string_spec__012	PASS
 chilled_string_spec__013	HARNESS-SKEW

@@ -2,11 +2,11 @@
 # compiler cannot tell is checked when it arrives, and a value whose
 # identity Spinel does not keep raises NotImplementedError there, in the
 # words of the refusal: a Float that is no flonum in CRuby (1e300), an
-# Integer past CRuby's fixnum range, a Rational, a String Symbol#to_s
-# answers, a Regexp literal. The values beside them pass, and a refused one
-# does not join the Set. Without the flag the line is refused at compile
-# time.
-# spinel: defer-refusals: 3:refused ok ok refused refused refused refused ok ok 4 false
+# Integer past CRuby's fixnum range, a Rational, a Regexp literal. The values
+# beside them pass (a String Symbol#to_s answers among them: a new String at
+# each call, as CRuby's), and a refused one does not join the Set. Without
+# the flag the line is refused at compile time.
+# spinel: defer-refusals: 3:refused ok ok refused refused ok refused ok ok 5 false
 require "set"
 
 class Item; end

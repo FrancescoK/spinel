@@ -1,7 +1,9 @@
 # spinel: gc-minor
 # A boxed value's to_s given as a key beside a value that runs a program method is
 # hoisted ahead of the call. It is the receiver's own String when it is one, so a
-# setter that changes its key changes that String, as in CRuby.
+# setter that changes its key changes that String, as in CRuby. (A Symbol's to_s
+# is frozen in Spinel, so the setter changes a copy of a frozen key: `+key` is
+# the key itself otherwise.)
 class Name
   def initialize(n) = @n = n
   def to_s = "name:#{@n}"
@@ -13,6 +15,7 @@ class Elem
   end
 
   def []=(key, value)
+    key = +key
     key << "!"
     @pairs << [key, value]
     value

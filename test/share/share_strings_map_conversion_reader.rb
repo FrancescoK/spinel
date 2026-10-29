@@ -2,6 +2,7 @@
 # An element read from a temporary map carries the block result's handle,
 # including a boxed String's to_s and an exception's stored message.
 def append_text(text)
+  text = +text   # (a Symbol's to_s is frozen in Spinel: a copy of it)
   text << "!"
 end
 symbols = [:one, :two]
