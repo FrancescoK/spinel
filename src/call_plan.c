@@ -788,16 +788,117 @@ static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned f
   if (def_class) *def_class = dc;
   return vi;
 }
+/* Does call id run where no method of `name` is live yet, as the record
+   proves it at the call (elab_call_method): cls's chain, its class side
+   for CT_CMETHOD, main's top-level functions for CT_TOP? The method the
+   tables answer is then one a later statement defines, and the call
+   raises (cplan_missing) or reaches the builtin self answers
+   (cplan_self_builtin). Asked in the record's frame, once it is made.
+   Only for a class's class methods and main's functions: a call on an
+   instance keeps its tables' target, which its dispatch arms are built
+   on, and so does a call on an explicit receiver of a name a builtin
+   answers on any self (`U.format`, private in CRuby). */
+static int ct_undefined_at(Compiler *c, int id, int cls, const char *name, unsigned flags) {
+  if (!(flags & (CT_CMETHOD | CT_TOP)) || !elab_method_versions(c, name)) return 0;
+  int framed = elab_plan_enter(c, id);
+  int none = elab_call_method(c, id, flags & CT_TOP ? -1 : cls, name, (flags & CT_CMETHOD) != 0) == ELAB_NO;
+  if (framed) elab_plan_leave(c);
+  return none && !(nt_ref(c->nt, id, "receiver") >= 0 && !nt_int(c->nt, id, "self_call", 0) && builtin_self_method_known(name));
+}
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {
-  int mi;
+  int mi, dc0 = def_class ? *def_class : -1;
   if (flags & CT_TOP) mi = comp_method_index(c, name);
   else if (flags & CT_OWN) {
     mi = flags & CT_CMETHOD ? comp_cmethod_in_class(c, cls, name) : comp_method_in_class(c, cls, name);
     if (mi >= 0 && def_class) *def_class = cls;
   }
   else mi = flags & CT_CMETHOD ? comp_cmethod_in_chain(c, cls, name, def_class) : comp_method_in_chain(c, cls, name, def_class);
-  if (mi < 0 || id < 0 || !c->scopes[mi].versioned || !ct_calls(c, id, name)) return mi;
+  if (mi < 0 || id < 0 || !ct_calls(c, id, name)) return mi;
+  if (ct_undefined_at(c, id, cls, name, flags)) {
+    if (def_class) *def_class = dc0;
+    return -1;
+  }
+  if (!c->scopes[mi].versioned) return mi;
   return ct_version(c, id, cls, name, flags, mi, def_class);
+}
+
+/* "class U" / "module M" for program class self, "main" for -1, into buf;
+   NULL for an anonymous class, which names itself at run time */
+static const char *cm_self_name(Compiler *c, int self, char *buf, size_t cap) {
+  if (self < 0) { snprintf(buf, cap, "main"); return buf; }
+  if (comp_class_anonymous(c, self)) return NULL;
+  const char *cn = class_ruby_name(c, self);
+  snprintf(buf, cap, "%s %s", comp_class_is_module(c, &c->classes[self]) ? "module" : "class", cn ? cn : c->classes[self].name);
+  return buf;
+}
+/* See call_plan.h. */
+int cplan_const_recv_class(Compiler *c, int id, int recv) {
+  int framed = elab_plan_enter(c, id);
+  int ci = elab_class_ref_at(c, recv);
+  if (framed) elab_plan_leave(c);
+  return ci;
+}
+int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
+  const NodeTable *nt = c->nt;
+  const char *name = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+  int recv = name ? nt_ref(nt, id, "receiver") : -1;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
+  int cr = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode;
+  if (!name || (recv >= 0 && !cr && rk != NK_SelfNode) || an_scopes_named_first(c, name) < 0) return CM_NONE;
+  int ci = cr ? cplan_const_recv_class(c, id, recv) : elab_self_at(c, id);
+  if (ci < -1 || ci >= c->nclasses || (cr && ci < 0)) return CM_NONE;
+  /* a method the tables answer for self, which the record proves is not
+     defined where the call runs: a class's class methods, main's (and a
+     class body's receiverless call's) top-level functions */
+  int cm = ci >= 0 && call_target(c, -1, ci, name, CT_CMETHOD, NULL) >= 0;
+  int top = (ci < 0 || recv < 0) && call_target(c, -1, -1, name, CT_TOP, NULL) >= 0;
+  if ((!cm && !top) || (cm && call_target(c, id, ci, name, CT_CMETHOD, NULL) >= 0) ||
+      (top && call_target(c, id, -1, name, CT_TOP, NULL) >= 0))
+    return CM_NONE;
+  /* ...and no builtin answers: one on any self, a core class's own */
+  const char *cn = ci >= 0 ? c->classes[ci].name : NULL;
+  if (builtin_self_method_known(name) ||
+      (cn && builtin_class_id(cn) && (builtin_cmethod_known(cn, name) || builtin_super_cmethod_known(cn, name))))
+    return CM_NONE;
+  if (anon) *anon = cm_self_name(c, ci, self_text, cap) ? -1 : ci;
+  return nt_vcall(nt, id) ? CM_NAMEERROR : CM_NOMETHOD;
+}
+/* See call_plan.h. */
+int cplan_subtree_missing(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  char self[160];
+  if (nt_kind(nt, id) == NK_CallNode && cplan_missing(c, id, self, sizeof self, NULL) != CM_NONE) return 1;
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++)
+    if (cplan_subtree_missing(c, nt_ref_at(nt, id, i))) return 1;
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int k = 0; k < n; k++)
+      if (cplan_subtree_missing(c, ids[k])) return 1;
+  }
+  return 0;
+}
+int cplan_self_builtin(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (!name || recv < 0 || !nt_int(nt, id, "self_call", 0)) return 0;
+  NodeKind rk = nt_kind(nt, recv);
+  int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? cplan_const_recv_class(c, id, recv) : -1;
+  return ci >= 0 && call_target(c, -1, ci, name, CT_CMETHOD, NULL) >= 0 &&
+         call_target(c, id, ci, name, CT_CMETHOD, NULL) < 0 && is_kernel_module_function(name);
+}
+const char *cplan_self_text(Compiler *c, int id, int ci, char *buf, size_t cap) {
+  int self = id >= 0 ? elab_self_at(c, id) : -2;
+  if (self >= 0 && self < c->nclasses) return cm_self_name(c, self, buf, cap);
+  if (self == -1 || ci < 0) return cm_self_name(c, -1, buf, cap);
+  if (comp_class_anonymous(c, ci)) return NULL;
+  const char *cn = class_ruby_name(c, ci);
+  snprintf(buf, cap, "an instance of %s", cn ? cn : "Object");
+  return buf;
 }
 
 const CallPlan *cplan_user_in(Compiler *c, int id, int self_ci, int flags) {

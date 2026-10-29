@@ -2,6 +2,7 @@
    Each family is spelled once here; the order is the order its compares run
    in, the one most of the replaced chains used. */
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "types.h"
 #include "builtin_names.h"
@@ -1621,6 +1622,54 @@ int is_kernel_module_function(const char *m) {
     NULL
   };
   return m && builtin_name_in(m, K);
+}
+
+/* Is m one of Object's own methods every object answers? */
+int builtin_object_method_known(const char *m) {
+  static const char *const OBJM2[] = {
+    "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
+    "instance_variable_get", "instance_variable_set", "instance_variables",
+    "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+    "object_id", "public_send", "respond_to?", "send", "__send__",
+    "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
+  return m && builtin_name_in(m, OBJM2);
+}
+
+/* The names CRuby's own facts give Object, BasicObject, Kernel, Module and
+   Class (builtin_arity.inc), sorted once for builtin_self_method_known */
+#define BAI(c,m,...) {c,m},
+#define BAM(c,m,a) {c,m},
+#define BAS(c,m,...) {c,m},
+#define BAC(...)
+#define BAK(...)
+static const struct { const char *cls, *m; } self_fact_rows[] = {
+#include "builtin_arity.inc"
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+#undef BAK
+static int self_fact_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+/* Does a builtin answer `name` on any self, main or a class or module:
+   Kernel's module functions, Object's surface, or one of the facts' Object,
+   BasicObject, Kernel, Module or Class methods? A binary search over the
+   facts' names, sorted at the first ask. */
+int builtin_self_method_known(const char *name) {
+  enum { N = sizeof self_fact_rows / sizeof self_fact_rows[0] };
+  static const char *names[N];
+  static int n = -1;
+  if (!name) return 0;
+  if (is_kernel_module_function(name) || builtin_object_method_known(name)) return 1;
+  if (n < 0) {
+    static const char *const owners[] = { "Object", "BasicObject", "Kernel", "Module", "Class", NULL };
+    n = 0;
+    for (int i = 0; i < N; i++)
+      if (builtin_name_in(self_fact_rows[i].cls, owners)) names[n++] = self_fact_rows[i].m;
+    qsort(names, (size_t)n, sizeof names[0], self_fact_cmp);
+  }
+  return bsearch(&name, names, (size_t)n, sizeof names[0], self_fact_cmp) != NULL;
 }
 
 /* the builtins whose subclass instance IS the builtin (#7449) */
