@@ -4636,6 +4636,10 @@ int desugar_public_send_recv(Compiler *c) {
     nt_node_set_arr(nt, newargs, "arguments", rest, nrest);
     nt_node_set_str(nt, id, "name", namebuf);
     nt_node_set_ref(nt, id, "arguments", newargs);
+    /* `a.send(:detect)` took find's copy (desugar_builtins): the call is
+       find's, called by the name it was written with, as a written detect */
+    { const LowerRow *al = nt_int(nt, id, "enum_copy", -1) >= 0 ? lower_row_named(LR_ENUM_NAME, namebuf) : NULL;
+      if (al) { nt_node_set_str(nt, id, "orig_name", namebuf); nt_node_set_str(nt, id, "name", al->target); } }
     if (is_pub && !m_is_send) {
       nt_node_set_str(nt, id, "vis_enforce", "1");
       nt_set_ignore_visibility(nt, id, 0);
@@ -6214,9 +6218,21 @@ static int g_enum_send_copy_n = 0;
    onto the copy once the receiver's type says the builtin serves it). */
 void enum_send_copy_take(NodeTable *nt, int call) {
   if (nt_int(nt, call, "enum_copy", -1) >= 0) return;
-  int bi = builtin_enum_name_index(nt_str(nt, call, "name"));
-  if (bi >= 0 && bi < g_enum_send_copy_n && g_enum_send_copy[bi] >= 0)
-    nt_node_set_int(nt, call, "enum_copy", g_enum_send_copy[bi]);
+  const char *nm = nt_str(nt, call, "name");
+  int bi = builtin_enum_name_index(nm);
+  /* collect_concat is flat_map under another name, and detect find
+     (LR_ENUM_NAME's rows): the call takes the copy of the name the
+     definition has, under that name, as desugar_builtins renames a written
+     one -- unless the program defines the alias itself */
+  const LowerRow *alias = bi < 0 && nm ? lower_row_named(LR_ENUM_NAME, nm) : NULL;
+  if (alias && !program_defines_name(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
+  else alias = NULL;
+  if (bi < 0 || bi >= g_enum_send_copy_n || g_enum_send_copy[bi] < 0) return;
+  if (alias) {
+    nt_node_set_str(nt, call, "orig_name", nm);
+    nt_node_set_str(nt, call, "name", alias->target);
+  }
+  nt_node_set_int(nt, call, "enum_copy", g_enum_send_copy[bi]);
 }
 
 /* The closed set of method names a runtime-name send (and respond_to?)
@@ -12968,6 +12984,14 @@ static int bi_value_builds_name(const NodeTable *nt, int v) {
    be meant; 1 when only names the program spells can; 0 for neither. */
 static int bi_program_calls_late(const NodeTable *nt, int n0) {
   int late = 0;
+  /* the locals some write of which builds a name, collected once: a scan of
+     the writes per held site was a walk of the table per `&blk` forward */
+  ANameHash builds; memset(&builds, 0, sizeof builds);
+  for (int w = 0; w < n0; w++) {
+    if (nt_kind(nt, w) != NK_LocalVariableWriteNode) continue;
+    const char *wn = nt_str(nt, w, "name");
+    if (wn && !anh_has(&builds, wn) && bi_value_builds_name(nt, nt_ref(nt, w, "value"))) anh_add(&builds, wn);
+  }
   for (int id = 0; id < n0 && late < 2; id++) {
     NodeKind k = nt_kind(nt, id);
     int held = -1;   /* the expression the name is */
@@ -12987,12 +13011,10 @@ static int bi_program_calls_late(const NodeTable *nt, int n0) {
     }
     if (held < 0) continue;
     if (late < 1) late = 1;
-    if (bi_value_builds_name(nt, held)) { late = 2; break; }
     const char *vn = nt_kind(nt, held) == NK_LocalVariableReadNode ? nt_str(nt, held, "name") : NULL;
-    for (int w = 0; vn && w < n0; w++)
-      if (nt_kind(nt, w) == NK_LocalVariableWriteNode && nt_str(nt, w, "name") &&
-          sp_streq(nt_str(nt, w, "name"), vn) && bi_value_builds_name(nt, nt_ref(nt, w, "value"))) { late = 2; break; }
+    if (bi_value_builds_name(nt, held) || (vn && anh_has(&builds, vn))) late = 2;
   }
+  anh_free(&builds);
   return late;
 }
 
@@ -13181,6 +13203,8 @@ int desugar_builtins(Compiler *c) {
       if (in_generic[id]) continue;
       NodeKind k = nt_kind(nt, id);
       const char *v = k == NK_SymbolNode ? nt_str(nt, id, "value") : k == NK_StringNode ? nt_str(nt, id, "content") : NULL;
+      const LowerRow *al = v && builtin_enum_name_index(v) < 0 ? lower_row_named(LR_ENUM_NAME, v) : NULL;
+      if (al) v = al->target;   /* `:collect_concat` is flat_map's (enum_send_copy_take) */
       if (v && builtin_enum_name_index(v) >= 0 && !anh_has(&spelled, v)) anh_add(&spelled, v);
     }
   if (late)
@@ -13208,6 +13232,7 @@ int desugar_builtins(Compiler *c) {
     if (id >= nt->count) break;
     if (nt_kind(nt, id) != NK_CallNode || (id < n0 && in_generic[id]) || nt_int(nt, id, "enum_dead_arm", 0)) continue;
     const char *cn0 = nt_str(nt, id, "name");
+    int send_site = 0;   /* cn0 is a literal send's name */
     /* `enum.with_object(memo)` is renamed to each_with_object by the
        Enumerator desugar inside the fixpoint, after this pass: give it its
        copy under the name it will have. `recv.m(args).each { blk }` becomes
@@ -13236,17 +13261,24 @@ int desugar_builtins(Compiler *c) {
         nt_ref(nt, id, "receiver") >= 0) {
       int sa = nt_ref(nt, id, "arguments"), sac = 0;
       const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &sac) : NULL;
-      if (sac >= 1 && nt_kind(nt, sav[0]) == NK_SymbolNode && nt_str(nt, sav[0], "value"))
+      if (sac >= 1 && nt_kind(nt, sav[0]) == NK_SymbolNode && nt_str(nt, sav[0], "value")) {
         cn0 = nt_str(nt, sav[0], "value");
+        send_site = 1;
+      }
     }
     /* collect_concat is flat_map under another name, and detect find: the
        call takes the name the definition has (LR_ENUM_NAME's rows; a
        program that defines collect_concat or detect itself keeps its call) */
     const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
     if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name(nt, n0, alias->name)) {
-      nt_node_set_str(nt, id, "orig_name", cn0);
+      /* (a send keeps its own name until desugar_public_send_recv
+         retargets it, which renames it so: renamed here, `a.send(:detect)`
+         was a call of find with :detect for its argument) */
+      if (!send_site) {
+        nt_node_set_str(nt, id, "orig_name", cn0);
+        nt_node_set_str(nt, id, "name", alias->target);
+      }
       cn0 = alias->target;
-      nt_node_set_str(nt, id, "name", cn0);
     }
     int bi = builtin_enum_name_index(cn0);
     if (bi < 0 || gdef[bi] < 0) continue;
@@ -13448,12 +13480,14 @@ int fold_static_is_a(Compiler *c) {
     if (sub >= 0 && sub < n0 && nt_kind(nt, sub) == NK_IfNode) is_elsif[sub] = 1;
   }
   /* the call site of each builtin clone (`enum_copy`), for the omitted-
-     parameter test below */
+     parameter test below; -2 for a clone more than one call takes (the
+     copy a held name's sends share, enum_send_copy_take), whose arms one
+     call cannot decide for the others */
   int *copy_site = (int *)malloc(sizeof(int) * (size_t)(n0 ? n0 : 1));
   for (int id = 0; copy_site && id < n0; id++) copy_site[id] = -1;
   NT_FOREACH_KIND(nt, NK_CallNode, cid) {
     int cp = (int)nt_int(nt, cid, "enum_copy", -1);
-    if (copy_site && cp >= 0 && cp < n0) copy_site[cp] = cid;
+    if (copy_site && cp >= 0 && cp < n0) copy_site[cp] = copy_site[cp] == -1 ? cid : -2;
   }
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -14268,13 +14302,16 @@ int desugar_builtin_enum_calls(Compiler *c) {
        inlining, closures and all. */
     int range_arm = rt == TY_POLY && nown == 0 && !safe_nav && blk < 0 && an == 0 && is_minmax_pair(name);
     /* A boxed receiver of a method a reopening of Enumerable adds may be a
-       String or an Integer, which no Enumerable is: unlike a builtin's
-       copy, whose walk checks the value is one it can enumerate
-       (sp_poly_iter_check), the reopening's body runs on whatever it is
-       handed, and a boxed String's `special?` (`count > 1`) reached
-       String#count and raised ArgumentError. Those classes take the call
-       as written, whose answer is CRuby's NoMethodError, as a program class
-       with no Enumerable does. */
+       String, an Integer, a Regexp or a program's plain object, which no
+       Enumerable is: unlike a builtin's copy, whose walk checks the value is
+       one it can enumerate (sp_poly_iter_check), the reopening's body runs
+       on whatever it is handed, and a boxed String's `special?` (`count >
+       1`) reached String#count and raised ArgumentError. Only a value that
+       is an Enumerable -- an Array, a Hash, a Range, an Enumerator, a
+       Struct, an IO, or an instance of a program class with Enumerable
+       behind it -- takes the copy; any other takes the call as written,
+       whose answer is CRuby's NoMethodError. (`is_a?(Enumerable)` itself
+       answers false for a boxed builtin.) */
     int scal_arm = rt == TY_POLY && !safe_nav && !range_arm && !wo_arm && nt_int(nt, copy, "enum_own_def", 0);
     if (wo_arm) ndef = 0;   /* the arm as written answers every other class */
     if (ndef > 0 || safe_nav || range_arm || wo_arm || scal_arm) {
@@ -14309,15 +14346,39 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
       if (scal_arm) {
-        static const char *const scal[] = { "String", "Integer", "Float", "Symbol", "NilClass", "TrueClass",
-                                            "FalseClass", NULL };
-        for (int k = 0; scal[k]; k++) {
-          int ia = enum_is_a_named(c, rn, scal[k]);
+        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO" };
+        const int nenums = (int)(sizeof enums / sizeof enums[0]);
+        int is_enum = -1;
+        for (int k = 0; k < nenums + c->nclasses; k++) {
+          int ia;
+          if (k < nenums) ia = enum_is_a_named(c, rn, enums[k]);
+          else {
+            int ck = k - nenums;
+            ClassInfo *ci = &c->classes[ck];
+            if (ci->is_native_class || comp_class_is_module(c, ci) || !(ci->instantiated || ci->ctor_reachable) ||
+                !comp_enum_behind(c, ck)) continue;
+            int zero = 0;
+            ia = enum_is_a_chain(c, rn, &ck, &zero, 1);
+          }
           if (ia < 0) { free(chained); free(in_default); free(defcls); return changed; }
-          if (pred < 0) { pred = ia; continue; }
+          if (is_enum < 0) { is_enum = ia; continue; }
           int orn = nt_new_node(nt, "OrNode");
           if (orn < 0) { free(chained); free(in_default); free(defcls); return changed; }
-          nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", ia);
+          nt_node_set_ref(nt, orn, "left", is_enum); nt_node_set_ref(nt, orn, "right", ia);
+          is_enum = orn;
+        }
+        int par = nt_new_node(nt, "ParenthesesNode"), pst = nt_new_node(nt, "StatementsNode");
+        int notn = nt_new_node(nt, "CallNode");
+        if (par < 0 || pst < 0 || notn < 0) { free(chained); free(in_default); free(defcls); return changed; }
+        nt_node_set_arr(nt, pst, "body", &is_enum, 1);
+        nt_node_set_ref(nt, par, "body", pst);
+        nt_node_set_str(nt, notn, "name", "!");
+        nt_node_set_ref(nt, notn, "receiver", par);
+        if (pred < 0) pred = notn;
+        else {
+          int orn = nt_new_node(nt, "OrNode");
+          if (orn < 0) { free(chained); free(in_default); free(defcls); return changed; }
+          nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", notn);
           pred = orn;
         }
       }

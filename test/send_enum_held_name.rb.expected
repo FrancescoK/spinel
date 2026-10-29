@@ -33,3 +33,20 @@ true
 [3, 2]
 true
 true
+[1, 2]
+[1]
+2
+2
+[1, 2]
+:own
+:own
+{2 => 1}
+{2 => 1}
+{1 => 2}
+[true, true]
+[true, true]
+"undefined method 'special?'"
+"undefined method 'special?'"
+"undefined method 'special?'"
+"undefined method 'special?'"
+"undefined method 'special?'"
