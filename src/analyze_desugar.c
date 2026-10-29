@@ -301,11 +301,22 @@ int desugar_ie_bare_object_calls(Compiler *c) {
     /* on an Array, Hash or String subclass instance, a method its builtin
        answers (`a.instance_eval { size }`) asks the receiver too. The
        receiver's class comes from inferred types, so the pass runs each
-       round. A top-level def of the name is left alone. */
-    int builtin = !hit && call_target(c, id, -1, nm, CT_TOP, NULL) < 0 && comp_arysub_name_is_array(c, cls, nm);
+       round. A top-level def is Object's: the builtin's own method (and
+       Enumerable's, and a reopen's) comes ahead of it in the receiver's
+       chain, but it wins over a name the builtin takes from Kernel
+       (frozen?, to_enum: is_arysub_kernel_name; is_a?: the names above),
+       and then the bare call stays the top-level one. An undefined name is
+       not the builtin's either. */
+    int ro = nm ? comp_arysub_reopen(c, cls) : -1;
+    int own = nm && comp_arysub_name_is_array(c, cls, nm) && !comp_is_undeffed_in_chain(c, cls, nm) &&
+              (!is_arysub_kernel_name(nm) || (ro >= 0 && comp_method_in_class(c, ro, nm) >= 0));
+    if (nm && !own && call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
+    int builtin = !hit && nm && comp_arysub_name_is_array(c, cls, nm);
     if (!builtin && (!hit || call_target(c, id, cls, nm, 0, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
+    /* this self is the block's receiver, not main (desugar_main_self_call) */
+    nt_node_set_int(nt, sn, "ie_self", 1);
     comp_grow_node_arrays(c);
     c->nscope[sn] = c->nscope[id];
     c->node_cbody[sn] = c->node_cbody[id];
@@ -1035,8 +1046,9 @@ int desugar_body_self_call(Compiler *c) {
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     /* self in a `class << X` body is X's singleton class, not X */
     if (nt_int(nt, recv, "sclass_value", 0)) continue;
-    /* a rebindable block's self is whatever instance_exec binds */
-    if (nt_int(nt, recv, "ie_rself", 0)) continue;
+    /* a rebindable block's self is whatever instance_exec binds, and an
+       instance_eval block's self is its receiver */
+    if (nt_int(nt, recv, "ie_rself", 0) || nt_int(nt, recv, "ie_self", 0)) continue;
     int cb = self_class_body(c, recv);
     if (cb < 0 || !c->classes[cb].name) continue;
     long long line = nt_int(nt, recv, "node_line", 0), file = nt_int(nt, recv, "node_file", 0),
