@@ -630,6 +630,21 @@ int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be
 int        nt_num_arrs(const NodeTable *nt, int id);
 const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
 
+/* The frame an eval's text is parsed in (sp_parse_snippet_in, in
+   src/spinel_parse.c): the locals of the scopes around it, outermost
+   first; the line the text starts on; the path `__FILE__` answers in it
+   (NULL: "(eval at FILE:LINE)" of the site); and the site's line and file,
+   which its nodes take for `#line` and the reports (site_line 0: none). */
+typedef struct SnipScope { const char *const *names; int n; } SnipScope;
+typedef struct SnipFrame {
+  const SnipScope *scopes; int nscopes;
+  long long line;
+  const char *path;
+  long long site_line; int site_file;
+} SnipFrame;
+NodeTable *sp_parse_snippet(const char *src);   /* compiler-written text: no frame */
+NodeTable *sp_parse_snippet_in(const char *src, const SnipFrame *f);
+
 /* What the driver's flags ask of the parse, the analysis and codegen:
    src/main.c sets them, spinel_parse.c defines them. A string is a path to
    write, or NULL. */

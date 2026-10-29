@@ -18326,7 +18326,7 @@ int desugar_singleton_class_meta(Compiler *c) {
 static void cn_host_body(Compiler *c, HostStep *h, int cls, int body) {
   int bn = 0;
   nt_arr(c->nt, body, "body", &bn);
-  host_splice(c, h, cls, body, 0, bn);
+  host_splice(c, h, cls, body, 0, bn, NULL, NULL);
 }
 int desugar_class_new_blocks(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -18772,17 +18772,31 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
   }
 }
 
+/* fr, comma-joined names, with those of locals after them */
+static char *incl_frame_add(char *fr, const char *locals) {
+  size_t l = strlen(fr);
+  fr = realloc(fr, l + strlen(locals) + 2);
+  if (!fr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  snprintf(fr + l, strlen(locals) + 2, "%s%s", l ? "," : "", locals);
+  return fr;
+}
+
 /* The statements a hook statement becomes: a bare class_eval-family call
-   with a block is its block's body; anything else is itself. */
-static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *cap) {
+   with a block is its block's body; anything else is itself. *frame, when
+   asked for, gains the locals of each block unwrapped (sce_span), or
+   becomes NULL, not known, at a block that takes parameters. */
+static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *cap, char **frame) {
   if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0) {
     const char *nm = nt_str(nt, s, "name");
     int blk = nt_ref(nt, s, "block");
     if (nm && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
         is_eval_exec_family(nm)) {
+      const char *bl = nt_str(nt, blk, "locals");
+      if (frame && *frame && nt_ref(nt, blk, "parameters") >= 0) { free(*frame); *frame = NULL; }
+      else if (frame && *frame && bl && *bl) *frame = incl_frame_add(*frame, bl);
       int bb = nt_ref(nt, blk, "body");
       int bn = 0; const int *bs = bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? nt_arr(nt, bb, "body", &bn) : NULL;
-      for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap);
+      for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap, frame);
       return;
     }
   }
@@ -18917,17 +18931,23 @@ static void incl_names_build(const NodeTable *nt, int n0, int **parent_out, char
 /* What a hook splices into a body: the statements out[at[i]..at[i] + n[i])
    that were not the body's before (one call of a hook, one class_eval
    block the splice unwraps), handed to the host once the body is set. Each
-   is a scope of its own, so two that meet stay two splices. */
-typedef struct { int *at, *n, len, cap; } InclRanges;
-static void incl_range_add(InclRanges *r, int from, int to) {
-  if (to <= from) return;
+   is a scope of its own, so two that meet stay two splices. A hook call's
+   carries the frame its code runs in (frame, taken; NULL: not known) and
+   the parameter that frame does not keep (gone): the hook's base. */
+typedef struct { int *at, *n, len, cap; char **frame, **gone; } InclRanges;
+static void incl_range_add(InclRanges *r, int from, int to, char *frame, const char *gone) {
+  if (to <= from) { free(frame); return; }
   if (r->len == r->cap) {
     r->cap = r->cap ? r->cap * 2 : 8;
     r->at = realloc(r->at, sizeof(int) * (size_t)r->cap);
     r->n = realloc(r->n, sizeof(int) * (size_t)r->cap);
-    if (!r->at || !r->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    r->frame = realloc(r->frame, sizeof(char *) * (size_t)r->cap);
+    r->gone = realloc(r->gone, sizeof(char *) * (size_t)r->cap);
+    if (!r->at || !r->n || !r->frame || !r->gone) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   r->at[r->len] = from;
+  r->frame[r->len] = frame;
+  r->gone[r->len] = gone ? strdup(gone) : NULL;
   r->n[r->len++] = to - from;
 }
 int desugar_included_hooks(Compiler *c, HostStep *h) {
@@ -18975,8 +18995,8 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
     InclRanges rg = {0};
     for (int k = 0; k < n; k++) {
       int s = st[k], was = no;
-      incl_emit_stmt(nt, s, &out, &no, &cap);   /* the statement itself */
-      if (no != was + 1 || out[was] != s) incl_range_add(&rg, was, no);   /* a class_eval block, unwrapped */
+      incl_emit_stmt(nt, s, &out, &no, &cap, NULL);   /* the statement itself */
+      if (no != was + 1 || out[was] != s) incl_range_add(&rg, was, no, NULL, NULL);   /* a class_eval block, unwrapped */
       /* incl_emit_stmt only unwraps receiverless class_eval; a plain
          statement passes through, so this is the statement as written */
       if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
@@ -19002,8 +19022,8 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
         if (incl_hook_returns(nt, hb)) {
           int call = incl_hook_call(nt, s, av[j], is_ext ? "extended" : "included");
           if (call < 0) continue;
-          incl_emit_stmt(nt, call, &out, &no, &cap);
-          incl_range_add(&rg, was, no);
+          incl_emit_stmt(nt, call, &out, &no, &cap, NULL);
+          incl_range_add(&rg, was, no, NULL, NULL);
           spliced = 1;
           continue;
         }
@@ -19012,13 +19032,16 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
         InclSubst is = { param, cls, av[j], hook_mod };
         incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
-        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); incl_range_add(&rg, was, no); spliced = 1; continue; }
+        const char *hl = nt_str(nt, hook, "locals");
+        char *frame = strdup(hl ? hl : "");   /* the hook's frame, then the blocks' it unwraps */
+        if (!frame) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap, &frame); incl_range_add(&rg, was, no, frame, param); spliced = 1; continue; }
         int *hcp = hn > 0 ? malloc(sizeof(int) * (size_t)hn) : NULL;
-        if (hn > 0 && !hcp) continue;
+        if (hn > 0 && !hcp) { free(frame); continue; }
         if (hn > 0) memcpy(hcp, hs, sizeof(int) * (size_t)hn);
-        for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap);
+        for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap, &frame);
         free(hcp);
-        incl_range_add(&rg, was, no);
+        incl_range_add(&rg, was, no, frame, param);
         spliced = 1;
       }
     }
@@ -19027,9 +19050,10 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
       changed = 1;
       /* each range as the host leaves it: a graft can change its count */
       for (int i = 0, grew = 0; i < rg.len; i++)
-        grew += host_splice(c, h, cn, body, rg.at[i] + grew, rg.n[i]) - rg.n[i];
+        grew += host_splice(c, h, cn, body, rg.at[i] + grew, rg.n[i], rg.frame[i], rg.gone[i]) - rg.n[i];
     }
-    free(rg.at); free(rg.n);
+    for (int i = 0; i < rg.len; i++) { free(rg.frame[i]); free(rg.gone[i]); }
+    free(rg.at); free(rg.n); free(rg.frame); free(rg.gone);
     free(out);
   }
   if (qn) for (int m = 0; m < n0; m++) free(qn[m]);
@@ -24356,20 +24380,22 @@ int desugar_def_unless_method_defined(Compiler *c) {
      end
    is the code it spells, so the text is built per element (an
    interpolation must be the loop variable, or its to_s / upcase /
-   downcase / capitalize), parsed as a snippet and grafted into the body in
-   place of the statement. The __FILE__ / __LINE__ arguments are ignored;
-   the grafted nodes carry the site's line and file. Anything else stays a
-   runtime eval, which is refused as before. */
-NodeTable *sp_parse_snippet(const char *src);
-static int sce_is_eval_name(const char *nm) {
-  return nm && (sp_streq(nm, "class_eval") || sp_streq(nm, "module_eval"));
-}
+   downcase / capitalize), parsed as CRuby parses an eval's text
+   (sp_parse_snippet_in) and grafted into the body in place of the
+   statement (sce_graft). The text runs in the body's frame: it reads and
+   writes the body's locals, and the locals it makes are its own, named
+   apart; `__LINE__` and `__FILE__` answer the eval's line and path, as its
+   arguments give them, while the grafted nodes carry the site's line and
+   file. A class_eval of known text among the text's statements is grafted
+   in turn, in the frame the text makes. Anything else stays a runtime
+   eval, which is refused as before. */
 /* the class_eval call's string argument node, or -1 */
 static int sce_eval_string(const NodeTable *nt, int st) {
   if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "block") >= 0) return -1;
   int rcv = nt_ref(nt, st, "receiver");
   if (rcv >= 0 && nt_kind(nt, rcv) != NK_SelfNode) return -1;
-  if (!sce_is_eval_name(nt_str(nt, st, "name"))) return -1;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !is_class_eval_text_name(nm)) return -1;
   int an = 0; int args = nt_ref(nt, st, "arguments");
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an < 1 || !av) return -1;
@@ -24487,32 +24513,215 @@ static long long sce_base_line(const NodeTable *nt, int site) {
   if (a < 0 || nt_kind(nt, a) != NK_SourceLineNode) return line;
   return nt_int(nt, a, "start_line", line) + k;
 }
-/* parse `text` and graft its statements into nt: each node on its line in
-   the text counted from the eval's base line, in the site's file. The count,
-   or -1 when it does not parse (or reads differently spliced, see
-   sp_snippet_graftable) */
-static int sce_graft(Compiler *c, const char *text, int site, int **out, int *n) {
+/* The line the eval's text counts `__LINE__` from: its third argument
+   (`__LINE__`, `__LINE__ + k`, an integer), else 1 */
+static long long sce_eval_line(const NodeTable *nt, int site) {
+  int an = 0; int args = nt_ref(nt, site, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 3 || !av) return 1;
+  if (nt_kind(nt, av[2]) == NK_IntegerNode) return nt_int(nt, av[2], "value", 1);
+  return sce_base_line(nt, site);
+}
+/* The path `__FILE__` answers in the eval's text: its second argument, a
+   String or the site's `__FILE__`; NULL when it has none */
+static const char *sce_eval_path(const NodeTable *nt, int site) {
+  int an = 0; int args = nt_ref(nt, site, "arguments");
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 2 || !av) return NULL;
+  NodeKind k = nt_kind(nt, av[1]);
+  return k == NK_StringNode || k == NK_SourceFileNode ? nt_str(nt, av[1], "content") : NULL;
+}
+
+/* The frame an eval's text runs in, outermost scope first: each scope's
+   locals, and the name each takes in the body the text is grafted into
+   (to[i] NULL: a scope the graft leaves, an unrolled loop's block, or a
+   name it does not keep, a hook's parameter). A hook's code runs in the
+   hook's frame, its locals and those of the class_eval blocks the splice
+   unwraps. A frame of no scope is one not known (code spliced from a block
+   with parameters, or an includer's own block): text there may name no
+   local outside its defs, nor make a call Prism could not tell from one. */
+typedef struct SceScope { char **from, **to; int n; } SceScope;
+typedef struct SceFrame { const SceScope *s; int n; } SceFrame;
+static int sce_scope_find(const SceScope *sc, const char *nm) {
+  for (int i = 0; i < sc->n; i++) if (sp_streq(sc->from[i], nm)) return i;
+  return -1;
+}
+/* from is taken; to is from (the same name), NULL, or taken */
+static int sce_scope_add(SceScope *sc, char *from, char *to) {
+  sc->from = realloc(sc->from, sizeof(char *) * (size_t)(sc->n + 1));
+  sc->to = realloc(sc->to, sizeof(char *) * (size_t)(sc->n + 1));
+  if (!sc->from || !sc->to) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  sc->from[sc->n] = from;
+  sc->to[sc->n] = to;
+  return sc->n++;
+}
+/* a scope node's comma-joined locals, kept (reach) or not */
+static void sce_scope_of(SceScope *sc, const char *locals, int reach) {
+  for (const char *p = locals ? locals : ""; *p; ) {
+    const char *e = strchr(p, ',');
+    size_t l = e ? (size_t)(e - p) : strlen(p);
+    char *nm = strndup(p, l);
+    if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    sce_scope_add(sc, nm, reach ? nm : NULL);
+    p += l + (e ? 1 : 0);
+  }
+}
+static void sce_scope_free(SceScope *sc) {
+  for (int i = 0; i < sc->n; i++) { if (sc->to[i] != sc->from[i]) free(sc->to[i]); free(sc->from[i]); }
+  free(sc->from); free(sc->to);
+}
+
+static int sce_bare_visibility(const NodeTable *nt, int st);
+/* One text read for the graft: its frame, its own locals and whether it
+   reads what the graft cannot keep. An own local is named pfx_name; pfx is
+   made at the text's first own local, so a text with none names nothing:
+   __ev_<site>, with _<k> for element k of an unrolled list, or the text it
+   stands in's own, with _<k> for its statement k. path, line and base: the eval's path, its line and the
+   site's, which a class_eval in it counts its own from. */
+typedef struct SceText {
+  Compiler *c; const SceFrame *fr; SceScope own; int bad;
+  int site, k; struct SceText *up;
+  char pfx[96];
+  const char *path; long long line, base;
+} SceText;
+static const char *sce_text_pfx(SceText *w) {
+  if (w->pfx[0]) return w->pfx;
+  if (w->up) snprintf(w->pfx, sizeof w->pfx, "%s_%d", sce_text_pfx(w->up), w->k);
+  else if (w->k >= 0) snprintf(w->pfx, sizeof w->pfx, "__ev_%s_%d", comp_node_tag(w->c, w->site), w->k);
+  else snprintf(w->pfx, sizeof w->pfx, "__ev_%s", comp_node_tag(w->c, w->site));
+  return w->pfx;
+}
+/* a local of the text, at block depth nest outside its defs: its own one
+   takes its name apart, a frame's one the name the body gives it, at the
+   body's depth */
+static void sce_text_local(NodeTable *t, int id, int nest, SceText *w) {
+  const char *nm = nt_str(t, id, "name");
+  int r = (int)nt_int(t, id, "depth", 0) - nest;
+  if (!nm || w->fr->n == 0) { w->bad = 1; return; }
+  if (r < 0) return;   /* a block's own */
+  const char *to = NULL;
+  if (r == 0) {
+    int i = sce_scope_find(&w->own, nm);
+    if (i < 0) {
+      const char *pfx = sce_text_pfx(w);
+      size_t l = strlen(pfx) + strlen(nm) + 2;
+      char *nn = malloc(l), *from = strdup(nm);
+      if (!nn || !from) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      snprintf(nn, l, "%s_%s", pfx, nm);
+      i = sce_scope_add(&w->own, from, nn);
+    }
+    to = w->own.to[i];
+  }
+  else if (r <= w->fr->n) {
+    const SceScope *sc = &w->fr->s[w->fr->n - r];
+    int i = sce_scope_find(sc, nm);
+    to = i >= 0 ? sc->to[i] : NULL;
+  }
+  if (!to) { w->bad = 1; return; }
+  if (!sp_streq(to, nm)) nt_node_set_str(t, id, "name", to);
+  if (r > 0) nt_node_set_int(t, id, "depth", nest);
+}
+/* The subtree id of the text at block depth nest; in_def inside a def,
+   class or module of the text, whose locals are its own. A call that reads
+   the eval's frame, or (outside a def) its locals by name or the
+   visibility the eval ends with, keeps the text out. */
+static void sce_text_walk(NodeTable *t, int id, int nest, int in_def, SceText *w) {
+  if (id < 0 || w->bad) return;
+  NodeKind k = nt_kind(t, id);
+  if (dmc_local_kind(k) >= 0) {
+    if (!in_def) sce_text_local(t, id, nest, w);
+  }
+  else if (k == NK_CallNode) {
+    const char *m = nt_str(t, id, "name");
+    if (m && (is_eval_frame_reader(m) ||
+              (!in_def && (is_local_reflection(m) || sce_bare_visibility(t, id) ||
+                           (w->fr->n == 0 && nt_int(t, id, "vcall", 0)))))) {
+      w->bad = 1;
+      return;
+    }
+  }
+  /* what a def, class or module evaluates where it stands: its receiver,
+     its path and superclass, the object a singleton class opens */
+  int ins = in_def, out1 = -1, out2 = -1;
+  if (k == NK_DefNode) { ins = 1; out1 = nt_ref(t, id, "receiver"); }
+  else if (k == NK_ClassNode || k == NK_ModuleNode) {
+    ins = 1; out1 = nt_ref(t, id, "constant_path"); out2 = nt_ref(t, id, "superclass");
+  }
+  else if (k == NK_SingletonClassNode) { ins = 1; out1 = nt_ref(t, id, "expression"); }
+  int sub = k == NK_BlockNode || k == NK_LambdaNode ? nest + 1 : nest;
+  for (int i = 0; i < nt_num_refs(t, id); i++) {
+    int r = nt_ref_at(t, id, i);
+    if (r >= 0 && (r == out1 || r == out2)) sce_text_walk(t, r, nest, in_def, w);
+    else sce_text_walk(t, r, sub, ins, w);
+  }
+  for (int i = 0; i < nt_num_arrs(t, id); i++) {
+    int an = 0;
+    const int *av = nt_arr_at(t, id, i, &an);
+    for (int j = 0; j < an; j++) sce_text_walk(t, av[j], sub, ins, w);
+  }
+}
+/* Parse `text`, the eval at site, in frame fr and graft its statements into
+   nt; up and k name its own locals apart (SceText). 0, or -1 when it does
+   not parse or reads what the graft cannot keep. */
+static int sce_graft(Compiler *c, const SceFrame *fr, SceText *up, int k, const char *text, int site,
+                     int **out, int *n) {
   NodeTable *nt = (NodeTable *)c->nt;
-  NodeTable *tmp = sp_parse_snippet(text);
+  SceText w = { c, fr, { 0 }, 0, site, k, up, "", NULL, 0, 0 };
+  /* `__FILE__` in a class_eval within an eval's text: that eval's path */
+  char *dflt = NULL;
+  long long base = sce_base_line(nt, site);
+  if (up && up->path) {
+    size_t dl = strlen(up->path) + 48;
+    dflt = malloc(dl);
+    if (!dflt) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    snprintf(dflt, dl, "(eval at %s:%lld)", up->path, up->line + base - up->base);
+  }
+  SnipScope *sv = fr->n ? (SnipScope *)malloc(sizeof(SnipScope) * (size_t)fr->n) : NULL;
+  for (int i = 0; i < fr->n; i++) { sv[i].names = (const char *const *)fr->s[i].from; sv[i].n = fr->s[i].n; }
+  const char *path = sce_eval_path(nt, site);
+  SnipFrame sf = { sv, fr->n, sce_eval_line(nt, site), path ? path : dflt, base,
+                   (int)nt_int(nt, site, "node_file", -1) };
+  NodeTable *tmp = sp_parse_snippet_in(text, &sf);
+  free(sv); free(dflt);
   if (!tmp) return -1;
+  /* each node is the text's, which runs where the eval stood (node_eval):
+     the load record places it as it places the program's own code */
+  for (int i = 0; i < tmp->count; i++) nt_node_set_int(tmp, i, "node_eval", 1);
+  w.path = tmp->source_file; w.line = sf.line; w.base = base;
   int prog = tmp->root_id;
   int stmts = prog >= 0 ? nt_ref(tmp, prog, "statements") : -1;
   int sn = 0; const int *ss = stmts >= 0 ? nt_arr(tmp, stmts, "body", &sn) : NULL;
-  long long line = sce_base_line(nt, site), file = nt_int(nt, site, "node_file", -1);
-  int base = nt->count;
-  for (int i = 0; i < sn; i++) {
+  for (int i = 0; i < sn && !w.bad; i++)
+    if (sce_eval_string(tmp, ss[i]) < 0) sce_text_walk(tmp, ss[i], 0, 0, &w);
+  int ok = !w.bad;
+  /* a class_eval among the statements runs in this text's frame */
+  SceScope *in = NULL;
+  for (int i = 0; i < sn && ok; i++) {
     int id = nt_import_subtree(nt, tmp, ss[i]);
-    if (id < 0) { nt_free(tmp); return -1; }
-    xc_push(out, n, id);
-  }
-  if (line >= 0)
-    for (int id = base; id < nt->count; id++) {
-      long long rel = nt_int(nt, id, "node_line", 1);
-      nt_node_set_int(nt, id, "node_line", line + (rel > 0 ? rel - 1 : 0));
-      if (file >= 0) nt_node_set_int(nt, id, "node_file", file);
+    int str = id >= 0 ? sce_eval_string(nt, id) : -1;
+    if (id < 0) ok = 0;
+    else if (str < 0) xc_push(out, n, id);
+    else {
+      SceFrame inf = *fr;   /* a frame not known stays one not known */
+      if (fr->n) {
+        if (!in) {
+          in = (SceScope *)malloc(sizeof(SceScope) * (size_t)(fr->n + 1));
+          if (!in) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          memcpy(in, fr->s, sizeof(SceScope) * (size_t)fr->n);
+        }
+        in[fr->n] = w.own;   /* as the text has it so far */
+        inf.s = in;
+        inf.n = fr->n + 1;
+      }
+      char *itext = sce_text(nt, str, NULL, NULL);
+      ok = itext && sce_graft(c, &inf, &w, i, itext, id, out, n) >= 0;
+      free(itext);
     }
+  }
+  free(in);
+  sce_scope_free(&w.own);
   nt_free(tmp);
-  return sn;
+  return ok ? 0 : -1;
 }
 /* What the program does with each constant name, for sce_const_unmutated:
    its reads, its path reads (`A::NAME`), and the calls on a read of it that
@@ -25037,11 +25246,15 @@ void sce_facts_free(struct SceFacts *f) {
 }
 
 /* The statements body[at..at + n) of a class or module body (owner's): a
-   class_eval of text known now becomes the text's statements, in place. A
-   bare `private` before them, in the body as written (not one a graft
-   brought in), keeps every graft out. The count the n statements become;
-   *changed when the body changed. */
-static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, int *changed) {
+   class_eval of text known now becomes the text's statements, in place,
+   run in the frame whose locals are `locals` (comma-joined; NULL: a frame
+   not known), of which the frame does not keep `gone`: the owner's for its
+   own code, a hook's for the code a hook spliced. A bare `private` before
+   them, in the body as written (not one a graft brought in), keeps every
+   graft out. The count the n statements become; *changed when the body
+   changed. */
+static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals,
+                    const char *gone, int *changed) {
   NodeTable *nt = (NodeTable *)c->nt;
   struct SceFacts *f = sce_facts(h);
   int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
@@ -25053,6 +25266,8 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
   if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(bb, bb0 + at, sizeof(int) * (size_t)n);
   int *nb = NULL, nbn = 0, any = 0;
+  SceScope scope = { 0 };   /* the frame, read at the first graft */
+  int framed = 0, known = locals != NULL;
   for (int i = at; i < at + n; i++) {
     int st = bb[i - at];
     int *ins = NULL, nins = 0, ok = 0;
@@ -25062,9 +25277,16 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
                is_each_name(nt_str(nt, st, "name")) && nt_ref(nt, st, "arguments") < 0;
     if ((str >= 0 || each) && f->gate < 0) f->gate = sce_program_reflects_scoped(nt, &f->scoped);
     if (f->gate > 0 || ((str >= 0 || each) && f->scoped.n > 0 && sce_scoped_reaches(nt, &f->scoped, owner, 0))) { str = -1; each = 0; }
+    if ((str >= 0 || each) && known && !framed) {
+      sce_scope_of(&scope, locals, 1);
+      int g = gone ? sce_scope_find(&scope, gone) : -1;
+      if (g >= 0) scope.to[g] = NULL;
+    }
+    framed |= str >= 0 || each;
+    SceFrame fr = { &scope, known };
     if (str >= 0) {
       char *text = sce_text(nt, str, NULL, NULL);
-      if (text) { ok = sce_graft(c, text, st, &ins, &nins) >= 0; free(text); }
+      if (text) { ok = sce_graft(c, &fr, NULL, -1, text, st, &ins, &nins) >= 0; free(text); }
     }
     else if (each) {
       /* CONST.each do |v| class_eval "..." end, or %w(a b).each */
@@ -25082,12 +25304,17 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
       int ne = cname ? sce_const_elems(nt, &f->consts, body, i, cname, 0, &elems)
              : recv >= 0 ? sce_array_elems(nt, recv, &elems) : -1;
       if (var && estr >= 0 && ne >= 0) {
+        /* the block's locals, which the graft outside it leaves */
+        SceScope bs[2] = { scope, { 0 } };
+        if (known) sce_scope_of(&bs[1], nt_str(nt, blk, "locals"), 0);
+        SceFrame bfr = { bs, known ? 2 : 0 };
         ok = 1;
         for (int e = 0; e < ne && ok; e++) {
           char *text = sce_text(nt, estr, var, elems[e]);
-          if (!text || sce_graft(c, text, ss[0], &ins, &nins) < 0) ok = 0;
+          if (!text || sce_graft(c, &bfr, NULL, e, text, ss[0], &ins, &nins) < 0) ok = 0;
           free(text);
         }
+        sce_scope_free(&bs[1]);
       }
       free(elems);
     }
@@ -25111,6 +25338,7 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
   f->vis_body = body;
   f->vis_upto = at + n;
   f->vis = vis;
+  sce_scope_free(&scope);
   free(nb); free(bb);
   return n;
 }
@@ -25124,22 +25352,24 @@ int desugar_static_class_eval(Compiler *c, HostStep *h) {
     int body = nt_ref(nt, id, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int bn = 0; nt_arr(nt, body, "body", &bn);
-    sce_body(c, h, id, body, 0, bn, &changed);
+    const char *ls = nt_str(nt, id, "locals");
+    sce_body(c, h, id, body, 0, bn, ls ? ls : "", NULL, &changed);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
 
 /* The graft on reach of a splice: the statements body[at..at + n), which a step
-   put into owner's body. The count the n statements become. A class or
+   put into owner's body, run in a frame of the locals `locals` but `gone`
+   (NULL: not known). The count the n statements become. A class or
    module body among them was grafted with the program's: a hook's body,
    a method's, defines none, and a class_eval block the splice unwraps and
    the block a Class.new body was made of were the program's. */
-int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   NodeKind ok = nt_kind(nt, owner);
-  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, &changed);
+  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, locals, gone, &changed);
   if (changed) comp_grow_node_arrays(c);
   return n;
 }

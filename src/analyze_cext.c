@@ -6,7 +6,6 @@
 #include "cext_bridge.h"
 #include <ctype.h>
 #include "builtin_ops.h"
-NodeTable *sp_parse_snippet(const char *src);
 
 static const char *text(Compiler *c, int site, int n) {
   if (nt_kind(c->nt, n) != NK_StringNode)

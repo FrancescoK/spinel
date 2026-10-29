@@ -818,10 +818,10 @@ typedef struct HostStep {
   int nspans, cspans;
 } HostStep;
 void host_begin(HostStep *h, LowerCtx *lc);
-int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* the n statements at body[at]: the count they become */
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* the n statements at body[at], in a frame of locals but gone (NULL: not known): the count they become */
 void host_end(Compiler *c, HostStep *h);
 int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
-int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* ... over spliced statements */
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
