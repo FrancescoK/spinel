@@ -6200,16 +6200,15 @@ static int gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
   free(ts.v); free(ts.h);
   if (peak == 0 && np == 0) { free(nb.p); return 0; }
   if (!decide_fn("root-frame", site, NULL)) { free(nb.p); return 0; }
-  Buf out; memset(&out, 0, sizeof out);
-  buf_putn(&out, p, ins);
-  buf_puts(&out, "    struct { sp_gc_frame_hdr h;");
-  if (peak) buf_printf(&out, " sp_RbVal v[%d];", peak);
-  if (np) buf_printf(&out, " void **p[%d];", np);
-  buf_printf(&out, " } _gcf = {{%d, %d}}; SP_GC_ROOT_FRAME(_gcf);\n", peak, np);
-  buf_putn(&out, nb.p ? nb.p : "", nb.len);
+  /* b is the whole program's text so far, the function its tail: the
+     frame replaces the tail in place, not by copying the program */
+  b->len = ins;
+  buf_puts(b, "    struct { sp_gc_frame_hdr h;");
+  if (peak) buf_printf(b, " sp_RbVal v[%d];", peak);
+  if (np) buf_printf(b, " void **p[%d];", np);
+  buf_printf(b, " } _gcf = {{%d, %d}}; SP_GC_ROOT_FRAME(_gcf);\n", peak, np);
+  buf_putn(b, nb.p ? nb.p : "", nb.len);
   free(nb.p);
-  free(b->p);
-  *b = out;
   return 1;
 }
 
