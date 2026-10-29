@@ -620,6 +620,9 @@ static inline int nt_def_receiver(const NodeTable *nt, int recv) {
   }
   return nt_paren_single(nt, recv);
 }
+static inline int nt_kind_is_constant(NodeKind k) {
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode;
+}
 int nt_pred_const(const NodeTable *nt, int pred);   /* a predicate's constant truth: 1, 0, -1 not constant */
 const char *nt_content(const NodeTable *nt, int id);
 

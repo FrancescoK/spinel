@@ -115,6 +115,10 @@ void an_nil_facts(Compiler *c);
    (analyze_const.c). Runs once the constants are registered, ahead of the
    folds that decide `defined?(K)`. */
 void an_const_presence(Compiler *c);
+int const_has_flag(const LocalVar *lv);
+LocalVar *an_const_read_effect(Compiler *c, int id);
+int an_const_read_keeps_class(Compiler *c, int id);
+int an_const_read_is_value(Compiler *c, int id);
 /* The program's files under --load-model=graph (analyze_program.c, #9898):
    their top-level scopes and roots, and what the model refuses for now. */
 void prog_file_scopes(Compiler *c);

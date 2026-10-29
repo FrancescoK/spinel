@@ -3148,6 +3148,7 @@ void emit_boxed_operand(Compiler *c, const int *argv, int argc, int k, Buf *b) {
 static void emit_boxed_string(Compiler *c, int node, Buf *b);
 void emit_boxed(Compiler *c, int node, Buf *b) {
   if (b == g_pre) { emit_into_pre_line(c, emit_boxed, node); return; }
+  if (emit_const_class_call_wrap(c, node, b, emit_boxed)) return;
   if (g_idset_marks && emit_idset_checked(c, node, b, 1)) return;
   int frame = g_repr_check ? repr_channel_begin(c, node) : -1;
   if (c->n_cext_extensions && ran_first_handle(node) >= 0) {

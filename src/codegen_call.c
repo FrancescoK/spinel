@@ -23937,6 +23937,7 @@ static int emit_operands_before_unbound(Compiler *c, int id, const int *operand,
   if (!literal && (first_arg == 0 || !ty_runs_no_code(comp_ntype(c, operand[0])))) return 0;
   int last = -1;
   for (int i = literal ? 0 : first_arg; i < u; i++) {
+    if (nt_kind_is_constant(nt_kind(nt, operand[i])) && subtree_has_side_effect(c, operand[i])) { last = i; continue; }
     if (!literal && nt_kind(nt, operand[i]) != NK_LocalVariableReadNode) continue;
     for (int j = u; j < nop && last < i; j++)
       if (operand_local_rebound_by(c, operand[i], operand[j])) last = i;
@@ -24240,6 +24241,9 @@ static void operands_held_for_later(Compiler *c, const int *operand, int nop, in
     Repr r = repr_of(c, v);
     int ran = r.head_held || arg_ran_first(v, 0);
     held[i] = 0;
+    /* A class argument a fold discards still runs its read effect,
+       even when no later operand allocates. */
+    if (i >= has_recv && !ran && an_const_read_keeps_class(c, v) && subtree_has_side_effect(c, v)) held[i] = 1;
     /* (a read of a shared String slot is no new value: its copy is taken
        last, after every other operand, by the copy-at-risk binding) */
     if (i >= has_recv && later && !ran && operand_binds_as_value(nt_kind(c->nt, v)) && !strbuf_read_copies(c, v) &&
@@ -24416,7 +24420,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
        and the hold converting g's boxed answer ran g ahead of f) */
     /* (...and so is a variable's write, which runs its value and answers
        it: left unbound, `(s = "k#{t}") + g.call` ran g ahead of t, #9258) */
-    int bindable = !route_op && (k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
+    int bindable = !route_op && (an_const_read_effect(c, operand[i]) != NULL ||
+                    an_const_read_keeps_class(c, operand[i]) ||
+                    k == NK_CallNode || k == NK_SuperNode || k == NK_IfNode || k == NK_UnlessNode ||
                     k == NK_ForwardingSuperNode || k == NK_YieldNode || k == NK_InterpolatedStringNode ||
                     k == NK_LocalVariableWriteNode || k == NK_InstanceVariableWriteNode ||
                     k == NK_GlobalVariableWriteNode || k == NK_ClassVariableWriteNode ||
@@ -24469,7 +24475,7 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
     node[nb] = operand[i]; ty[nb] = t; fresh[nb] = fr; copy[nb] = 0; sh[nb] = bsh; fb[nb] = bfb;
     /* an Integer / Float producer whose nil rides beside the value */
     oo[nb] = !fr && operand[i] != harg && oint_kind(t) &&
-             (node_is_oint(c, operand[i]) || poly_index_key_oint(c, id, operand[i]));
+             (repr_of(c, operand[i]).kind == RK_OPT || poly_index_key_oint(c, id, operand[i]));
     nb++;
   }
   /* A shared String slot's read is no effect, but its copy is at risk
@@ -24637,7 +24643,8 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
                   text_uses_tmp(g_pre->p + pre_mark, th[i]))) ok = 0;
         continue;
       }
-      if (!text_uses_tmp(ob.p, tmp[i]) || text_assigns_tmp(ob.p, tmp[i])) ok = 0;
+      if ((!text_uses_tmp(ob.p, tmp[i]) && !an_const_read_keeps_class(c, node[i])) ||
+          text_assigns_tmp(ob.p, tmp[i])) ok = 0;
       else if (g_pre->p && g_pre->len > pre_mark &&
                text_uses_tmp(g_pre->p + pre_mark, tmp[i])) ok = 0;
     }
@@ -27854,6 +27861,7 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
 
 static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  if (emit_const_class_call_wrap(c, id, b, emit_call)) return;
   if (emit_missing_in_operand(c, id, b)) return;
   int fm = frange_index_view(c, id);
   if (fm >= 0) {
@@ -28404,15 +28412,18 @@ static void emit_call_held(Compiler *c, int id, Buf *b) {
     } }
   int rrecv = recv_read_before_args(c, id);
   if (rrecv >= 0) {
-    TyKind rt = repr_of(c, rrecv).as_ty;
-    Buf rb = expr_buf(c, rrecv);
+    Repr rr = repr_of(c, rrecv);
+    TyKind rt = rr.as_ty;
+    int opt = rr.kind == RK_OPT;
+    Buf rb = {0};
+    if (opt) emit_oint_expr(c, rrecv, rt, &rb); else emit_expr(c, rrecv, &rb);
     int t = ++g_tmp;
     emit_indent(g_pre, g_indent);
-    emit_ctype(c, rt, g_pre);
+    if (opt) buf_puts(g_pre, oint_ctype(rt)); else emit_ctype(c, rt, g_pre);
     buf_printf(g_pre, " _t%d = %s;\n", t, rb.p ? rb.p : "");
     free(rb.p);
     emit_pre_root(c, rt, t);
-    int slot = view_bind(rrecv, "_t%d", t);
+    if (opt) view_bind_o(rrecv, "_t%d", t); else view_bind(rrecv, "_t%d", t);
     emit_call_held(c, id, b);
     view_unbind(g_n_argov - 1);
     return;

@@ -77,6 +77,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     const char *arg_nm = nt_str(c->nt, arg, "name");
     if (arg_nm && comp_class_index(c, arg_nm) >= 0 && !comp_const(c, arg_nm)) {
       emit_indent(b, indent);
+      emit_const_read_stmt(c, arg, b, 0);
       /* (a class method to_s of the class's own prints it) */
       if (cls_user_display_mi(c, comp_class_index(c, arg_nm), "to_s") >= 0)
         buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", comp_class_index(c, arg_nm));
@@ -274,6 +275,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
            nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
     /* `puts SomeClass` -- a bare class constant renders its name, or what
        its own class method to_s answers */
+    emit_const_read_stmt(c, arg, b, 0);
     int pci = comp_class_index(c, nt_str(c->nt, arg, "name"));
     if (cls_user_display_mi(c, pci, "to_s") >= 0)
       buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", pci);
@@ -7275,10 +7277,33 @@ void emit_class_val_when(const char *cn, int t, Buf *b) {
                     sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) ? "1" : "0");
 }
 
+static int emit_poly_class_when_value(Compiler *c, int cond_id, const char *tmp, Buf *b);
+static int emit_pm_cond_value(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b);
+/* Both class-condition routes retain a read under a view. A declined
+   condition must also discard its prefix, so its caller can refuse it.
+   A non-NULL tmp is the poly when caller's named boxed scrutinee; the
+   pattern caller instead supplies its typed slot (t, pt, subj). Only the
+   value test differs: this wrapper owns their shared prefix/view rollback. */
+static int emit_class_condition(Compiler *c, int id, const char *tmp, int t, TyKind pt, int subj, Buf *b) {
+  int read = nt_kind_is_constant(nt_kind(c->nt, id)) ? id : nt_ref(c->nt, id, "constant");
+  size_t mark = b->len;
+  int effect = emit_const_read_prefix(c, read, b);
+  int view = effect ? view_push_const_read(c, read) : -1;
+  int result = tmp ? emit_poly_class_when_value(c, id, tmp, b) : emit_pm_cond_value(c, id, t, pt, subj, b);
+  if (effect) {
+    view_pop(c, view);
+    if (result) buf_puts(b, ")");
+    else buf_erase(b, mark, b->len - mark);
+  }
+  return result;
+}
 int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
+  return emit_class_condition(c, cond_id, tmp, 0, TY_UNKNOWN, -1, b);
+}
+static int emit_poly_class_when_value(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind ck = nt_kind(nt, cond_id);
-  if (ck != NK_ConstantReadNode && ck != NK_ConstantPathNode) return 0;
+  if (!nt_kind_is_constant(ck)) return 0;
   const char *cn = nt_str(nt, cond_id, "name");
   if (!cn) return 0;
   /* a qualified path naming a known builtin (exception) class matches by its
@@ -8072,6 +8097,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   return emit_pm_cond_subj(c, pat, t, pt, -1, b);
 }
 static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b) {
+  return emit_class_condition(c, pat, NULL, t, pt, subj, b);
+}
+static int emit_pm_cond_value(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
   NodeKind pk = nt_kind(nt, pat);
@@ -11058,7 +11086,8 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         /* ...and so is a builtin's value constant (`Socket::AF_INET`,
            `File::SEPARATOR`): typed a number or a String, not a class */
         if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
-          if (cn2 && pt == TY_POLY) {
+        int effect = cn2 && pt != TY_POLY ? emit_const_read_prefix(c, conds[j], b) : 0;
+        if (cn2 && pt == TY_POLY) {
             char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
             if (!emit_poly_class_when(c, conds[j], tmp, b))
               buf_puts(b, "0");
@@ -11140,6 +11169,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             else emit_case_obj_eq(c, conds[j], t, pt, b);
           }
           } /* close non-ConstantReadNode else */
+          if (effect) buf_puts(b, ")");
           } /* close else { int reidx... } */
         }
       }
@@ -11494,6 +11524,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         /* ...and so is a builtin's value constant (`Socket::AF_INET`,
            `File::SEPARATOR`): typed a number or a String, not a class */
         if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
+        int effect = cn2 && pt != TY_POLY ? emit_const_read_prefix(c, conds[j], b) : 0;
         if (cn2 && pt == TY_POLY) {
           char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
           if (!emit_poly_class_when(c, conds[j], tmp, b)) buf_puts(b, "0");
@@ -11551,6 +11582,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
         else emit_case_obj_eq(c, conds[j], t, pt, b);
         } /* close non-ConstantReadNode else */
+        if (effect) buf_puts(b, ")");
       }
       else {
         buf_puts(b, "(");
@@ -13967,6 +13999,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   if (g_repr_check) repr_channel_end(c, frame);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
+  if (emit_const_class_call_wrap(c, node, b, emit_tail_value_1)) return;
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
@@ -14805,6 +14838,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       }
       if (en_k != NK_ConstantReadNode && en_k != NK_ConstantPathNode) continue;
       if (!first) buf_puts(b, " || ");
+      int effect = emit_const_read_prefix(c, exc[i], b);
       first = 0;
       const char *ename = nt_str(nt, exc[i], "name");
       /* A builtin namespaced exception (e.g. StringScanner::Error) is raised
@@ -14911,6 +14945,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
         }
         buf_puts(b, ")");
       }
+      if (effect) buf_puts(b, ")");
     }
     if (first) buf_puts(b, "1");  /* no usable type -> always */
     }
@@ -20274,6 +20309,9 @@ static void emit_cpath_recv_name(Compiler *c, const char *name, int t, Buf *b, i
 static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, id, "constant_path");
+  int reads[] = { nt_ref(nt, cp, "parent"), nt_ref(nt, id, "superclass") };
+  for (int i = 0; i < 2; i++)
+    if (emit_const_read_stmt(c, reads[i], b, indent)) buf_puts(b, "\n");
   const char *name = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
   int ci = name ? elab_header_class(c, id, NULL, NULL) : g_class_body_id;
   emit_class_body_stmts(c, ci, nt_ref(nt, id, "body"), b, indent);
@@ -20920,7 +20958,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* the read it starts with raises while the constant is unset */
     if (const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_read_close(c, tgt, cv, b); buf_puts(b, ";\n");
     }
     emit_indent(b, indent);
     char cslot[256]; snprintf(cslot, sizeof cslot, "cst_%s", nm);
@@ -20949,17 +20987,20 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
-  if (sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode")) {
-    int is_or = sp_streq(ty, "ConstantPathOrWriteNode");
+  if (nt_kind(nt, id) == NK_ConstantPathOrWriteNode || nt_kind(nt, id) == NK_ConstantPathAndWriteNode) {
+    int is_or = nt_kind(nt, id) == NK_ConstantPathOrWriteNode;
     int tgt = nt_ref(nt, id, "target");
     const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     if (!cv) { unsupported(c, id, "constant path or/and write"); return 1; }
     int v = nt_ref(nt, id, "value");
+    /* Both assignments resolve the parent before testing the child's slot
+       or running the right-hand side, even when ||= finds no child. */
+    if (emit_const_read_stmt(c, nt_ref(nt, tgt, "parent"), b, indent)) buf_puts(b, "\n");
     /* `&&=` reads the constant first: an unset one raises */
     if (!is_or && const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_read_close(c, tgt, cv, b); buf_puts(b, ";\n");
     }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
@@ -20989,7 +21030,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* `&&=` reads the constant first: an unset one raises */
     if (!is_or && const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, id, cv, b); buf_puts(b, "0"); emit_const_check_close(c, id, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, id, cv, b); buf_puts(b, "0"); emit_const_read_close(c, id, cv, b); buf_puts(b, ";\n");
     }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
@@ -21522,6 +21563,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       class_self = cn && comp_class_index(c, cn) >= 0;
     }
     if (class_self || nt_int(nt, nt_ref(nt, id, "body"), "singleton_body", 0)) {
+      if (emit_const_read_stmt(c, sexpr, b, indent)) buf_puts(b, "\n");
       /* ... but the rest of the body runs here, top to bottom, like a class
          body: a constant it assigns is read by the singleton methods beside
          it (#5996), and a statement like `p 5` has its effect where it
