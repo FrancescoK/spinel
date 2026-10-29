@@ -3118,6 +3118,33 @@ else {
   if (argc == 1 && rt == TY_STR_ARRAY && a0 != TY_STRING && a0 != TY_NIL && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
       a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
+  /* ... except a number of another kind that == can still find: a Rational
+     in either array (`[1, 2].include?(2r)` is true), a Bignum in a Float
+     one (`[2.0**70].include?(2**70)`). Integer#== and Float#== compare
+     those by value, so the needle goes boxed into the general Array's
+     scan, which does. */
+  int num_needle = argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
+                   (a0 == TY_RATIONAL || (a0 == TY_BIGINT && rt == TY_FLOAT_ARRAY));
+  if (num_needle && (is_index_query(name) || is_membership_alias(name))) {
+    /* the receiver held across the needle, which may allocate */
+    int ta = ++g_tmp, tv = ++g_tmp;
+    buf_printf(b, "({ sp_%sArray *_t%d = ", k, ta); emit_recv_rooted(c, recv, ta, "SP_GC_ROOT", b);
+    buf_printf(b, "sp_RbVal _t%d = ", tv); emit_boxed(c, argv[0], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%da = sp_box_nullable_obj((void *)_t%d, %s);",
+               tv, ta, ta, rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : "SP_BUILTIN_FLT_ARRAY");
+    if (is_membership_alias(name)) buf_printf(b, " sp_poly_arr_include_eq(_t%da, _t%d); })", ta, tv);
+    else buf_printf(b, " sp_box_oint(sp_poly_arr_index_val(_t%da, _t%d, %d)); })", ta, tv, sp_streq(name, "rindex") ? 1 : 0);
+    { *out = 1; return 1; }
+  }
+  /* ... and a user object whose class defines ==: Integer#== hands the
+     compare to the object's own ==, which the typed scan cannot call. The
+     delete and count arms refuse it the same way. */
+  if (elem_mismatch && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
+      (is_index_query(name) || is_membership_alias(name)) && value_obj_compares(c, argv[0])) {
+    unsupported_feature(c, id, is_index_query(name) ? "Array#index of a user object defining == in a typed Array"
+                                                    : "Array#include? of a user object defining == in a typed Array");
+    { *out = 0; return 1; }
+  }
   if (is_index_query(name) && argc == 1 &&
       (rt == TY_INT_ARRAY || rt == TY_STR_ARRAY || rt == TY_FLOAT_ARRAY)) {
     if (elem_mismatch) {
