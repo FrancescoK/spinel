@@ -14777,9 +14777,12 @@ int desugar_builtin_scalar_defs(Compiler *c) {
      under --load-model=graph a builtins/ file, loaded at boot, ahead of the
      program), so a generic's own sites take their copies before a call
      clones the generic, and the clone carries them (bx_copy). A site in a
-     copy that has none takes a copy of its own as the walk reaches it, after
-     the program's. (An own reopen's clones, between n0 and site_lo, are no
-     sites.) */
+     copy that has none, a call in the copy of an own reopen's method among
+     them (to another method the program adds, `zork` or `self.zork`), takes
+     a copy of its own as the walk reaches it, after the program's; a call
+     back to the method a copy it sits in serves (a recursion) calls that
+     copy, as desugar_builtins has it. (An own reopen's clones, between n0
+     and site_lo, are no sites: only their copies run.) */
   int site_lo = nt->count, nfirst = 0;
   int *first = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
   if (!first) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -14789,7 +14792,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     int id = q < nfirst ? first[q] : site_lo + (q - nfirst);
     if (id >= nt->count) break;
     if (nt_kind(nt, id) != NK_CallNode) continue;
-    if (id >= site_lo && (nt_int(nt, id, "bx_copy", -1) >= 0 || !nt_int(nt, id, "node_bi", 0))) continue;
+    if (id >= site_lo && (nt_int(nt, id, "bx_copy", -1) >= 0 || nt_int(nt, id, "bx_in_copy", -1) < 0)) continue;
     const char *cn0 = nt_str(nt, id, "name");
     int bx = -1, gd = -1;
     for (int k = 0; k < SP_BX_N && gd < 0; k++) {
@@ -14800,8 +14803,24 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         if (sp_streq(odef_name[k][m], cn0) && odef_def[k][m] >= 0) { bx = k; gd = odef_def[k][m]; break; }
     }
     if (gd < 0) continue;
+    int in_copy = (int)nt_int(nt, id, "bx_in_copy", -1), rec = -1;
+    for (int a = in_copy; a >= 0 && rec < 0; a = (int)nt_int(nt, a, "bx_in_copy", -1))
+      if ((int)nt_int(nt, a, "bx_def", -1) == gd) rec = a;
+    if (rec >= 0) {
+      nt_node_set_int(nt, id, "bx_copy", rec);
+      nt_node_set_int(nt, id, "bx_container", bx);
+      continue;
+    }
+    int cbase = nt->count;
     int copy = nt_clone_subtree(nt, gd);
     if (copy < 0) break;
+    /* the calls in the copy the clone did not bring a copy for are its
+       sites, the walk reaches them below */
+    nt_node_set_int(nt, copy, "bx_def", gd);
+    nt_node_set_int(nt, copy, "bx_in_copy", in_copy);
+    for (int j = cbase; j < nt->count; j++)
+      if (j != copy && nt_kind(nt, j) == NK_CallNode && nt_int(nt, j, "bx_copy", -1) < 0)
+        nt_node_set_int(nt, j, "bx_in_copy", copy);
     /* numbered per method in source order, as desugar_builtins numbers its
        copies, not by the call's node id */
     char base[224]; snprintf(base, sizeof base, "%s%s", sp_bx_prefix[bx], cn0);

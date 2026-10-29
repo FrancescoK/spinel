@@ -15,7 +15,10 @@
 # still raises NoMethodError). A method a `private` (`protected`,
 # `module_function`) section above it or a `private :m` after it hides,
 # in Enumerable or a module it includes, is reached from a method of the
-# module only.
+# module only. A method the program adds to Comparable calls another it
+# adds there (putc, zork, self.zork, a recursion, two methods calling each
+# other) on an Integer and a Float, Integer's own method of a name ahead of
+# Comparable's.
 module Enumerable
   def call_open = open
   def open = 42
@@ -181,3 +184,27 @@ class Integer
   def open = self * 10
 end
 p 4.call_open
+
+module Comparable
+  def putc = :comparable_putc
+  def cmp_putc = putc
+  def zork = :comparable_zork
+  def cmp_zork = zork
+  def cmp_self_zork = self.zork
+  def countdown(n) = n <= 0 ? [] : [n] + countdown(n - 1)
+  def ping(n) = n <= 0 ? :ping : pong(n - 1)
+  def pong(n) = n <= 0 ? :pong : ping(n - 1)
+  def both = :comparable_both
+  def call_both = both
+end
+class Integer
+  def both = :integer_both
+  def int_zork = zork
+end
+p 5.cmp_putc, 1.5.cmp_putc
+p 5.cmp_zork, 2.5.cmp_zork
+p 5.cmp_self_zork, 0.5.cmp_self_zork
+p 5.countdown(3), 1.5.countdown(2)
+p 5.ping(3), 5.ping(4), 2.0.ping(1)
+p 5.call_both, 5.both
+p 5.int_zork

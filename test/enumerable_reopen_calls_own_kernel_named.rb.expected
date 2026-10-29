@@ -46,3 +46,17 @@ private method 'gets' called for an instance of Array
 private method 'sleep' called for an instance of Range
 NoMethodError
 40
+:comparable_putc
+:comparable_putc
+:comparable_zork
+:comparable_zork
+:comparable_zork
+:comparable_zork
+[3, 2, 1]
+[2, 1]
+:pong
+:ping
+:pong
+:integer_both
+:integer_both
+:comparable_zork
