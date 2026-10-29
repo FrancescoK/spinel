@@ -10463,16 +10463,30 @@ TyKind builtin_value_kind(const char *n) {
   return TY_UNKNOWN;
 }
 
+/* The global names the program writes, as gvar_has_write last read them */
+struct GvarWrites { const NodeTable *nt; int count; char **names; int nnames; ANameHash set; };
+static void gvar_writes_clear(struct GvarWrites *g) {
+  for (int i = 0; i < g->nnames; i++) free(g->names[i]);
+  free(g->names);
+  g->names = NULL; g->nnames = 0;
+  anh_free(&g->set);
+  memset(&g->set, 0, sizeof g->set);
+}
+void gvar_writes_free(Compiler *c) {
+  if (!c->gvar_writes) return;
+  gvar_writes_clear(c->gvar_writes);
+  free(c->gvar_writes);
+  c->gvar_writes = NULL;
+}
 /* Is global `name` (resolved, without the `$`) assigned anywhere -- a write,
    an op-write, a multiple-assignment target, an alias of it? */
 int gvar_has_write(Compiler *c, const char *name) {
-  static const NodeTable *cnt = NULL; static int ccount = -1;
-  static char **names = NULL; static int nnames = 0;
   const NodeTable *nt = c->nt;
   if (!name) return 1;
-  if (cnt != nt || ccount != nt->count) {
-    for (int i = 0; i < nnames; i++) free(names[i]);
-    free(names); names = NULL; nnames = 0;
+  if (!c->gvar_writes && !(c->gvar_writes = calloc(1, sizeof *c->gvar_writes))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  struct GvarWrites *g = c->gvar_writes;
+  if (g->nt != nt || g->count != nt->count) {
+    gvar_writes_clear(g);
     int cap = 0;
     static const NodeKind WK[] = { NK_GlobalVariableWriteNode, NK_GlobalVariableOperatorWriteNode,
                                    NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode,
@@ -10483,13 +10497,13 @@ int gvar_has_write(Compiler *c, const char *name) {
         if (!wn || wn[0] != '$') continue;
         const char *rn = comp_resolve_gvar(c, wn + 1);
         if (!rn) continue;
-        if (nnames == cap) { cap = cap ? cap * 2 : 16; names = realloc(names, sizeof(char *) * (size_t)cap); }
-        names[nnames++] = strdup(rn);
+        if (g->nnames == cap) { cap = cap ? cap * 2 : 16; g->names = realloc(g->names, sizeof(char *) * (size_t)cap); }
+        g->names[g->nnames++] = strdup(rn);
+        anh_add(&g->set, g->names[g->nnames - 1]);
       }
-    cnt = nt; ccount = nt->count;
+    g->nt = nt; g->count = nt->count;
   }
-  for (int i = 0; i < nnames; i++) if (sp_streq(names[i], name)) return 1;
-  return 0;
+  return anh_has(&g->set, name);
 }
 
 /* Does the program store something other than an IO into $stdout / $stderr

@@ -1394,6 +1394,7 @@ typedef struct {
 
   LocalVar *gvars;    /* global variables ($g), name without '$' */
   int ngvars, cgvars;
+  int *gvar_ix, gvar_ix_cap;   /* open addressing over the names, by index into gvars (-1 free); a program with thousands of globals asks by name on every read */
   LocalVar *consts;   /* top-level constants (FOO) */
   int nconsts, cconsts;
 
@@ -1583,6 +1584,9 @@ typedef struct {
      (nbyref_elig scopes; NULL before it runs) */
   char *byref_elig;
   int nbyref_elig;
+  /* the names the program's global writes assign, as of the node table it
+     was made for (analyze_infer.c, gvar_has_write; NULL before the first ask) */
+  struct GvarWrites *gvar_writes;
   /* the classes a boxed receiver can be an instance of, per call, and the
      name indexes the walk that answers it reads (analyze_scope.c's
      poly_ivar_set_reaches), built on first use and freed with the compiler */

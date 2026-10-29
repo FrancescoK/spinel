@@ -592,6 +592,8 @@ void comp_free(Compiler *c) {
   free(c->cls_value);
   for (int i = 0; i < c->ngvars; i++) free(c->gvars[i].name);
   free(c->gvars);
+  free(c->gvar_ix);
+  gvar_writes_free(c);
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);
@@ -628,9 +630,8 @@ static LocalVar *lv_find(LocalVar *arr, int n, const char *name) {
   for (int i = 0; i < n; i++) if (sp_streq(arr[i].name, name)) return &arr[i];
   return NULL;
 }
-static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
-  LocalVar *lv = lv_find(*arr, *n, name);
-  if (lv) return lv;
+static LocalVar *lv_add(LocalVar **arr, int *n, int *cap, const char *name) {
+  LocalVar *lv;
   if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *arr = realloc(*arr, sizeof(LocalVar) * (size_t)*cap); }
   lv = &(*arr)[(*n)++];
   memset(lv, 0, sizeof(*lv));
@@ -640,8 +641,46 @@ static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
   comp_touch_global_r(4);    /* a new slot is a change of the table */
   return lv;
 }
-LocalVar *comp_gvar(Compiler *c, const char *name) { IMEMO_DEP_GLOBAL(); return lv_find(c->gvars, c->ngvars, name); }
-LocalVar *comp_gvar_intern(Compiler *c, const char *name) { return lv_intern(&c->gvars, &c->ngvars, &c->cgvars, name); }
+static LocalVar *lv_intern(LocalVar **arr, int *n, int *cap, const char *name) {
+  LocalVar *lv = lv_find(*arr, *n, name);
+  return lv ? lv : lv_add(arr, n, cap, name);
+}
+/* The globals are found by name through an index of their slots: a slot in
+   the table is its name's only one (comp_gvar_intern), and none is removed. */
+static int gvar_probe(const Compiler *c, const char *name) {
+  if (!c->gvar_ix || !name) return -1;
+  unsigned mask = (unsigned)c->gvar_ix_cap - 1, j = sp_strhash(name) & mask;
+  while (c->gvar_ix[j] >= 0 && !sp_streq(c->gvars[c->gvar_ix[j]].name, name)) j = (j + 1) & mask;
+  return (int)j;
+}
+LocalVar *comp_gvar(Compiler *c, const char *name) {
+  IMEMO_DEP_GLOBAL();
+  int j = gvar_probe(c, name);
+  return j >= 0 && c->gvar_ix[j] >= 0 ? &c->gvars[c->gvar_ix[j]] : NULL;
+}
+LocalVar *comp_gvar_intern(Compiler *c, const char *name) {
+  LocalVar *lv = comp_gvar(c, name);
+  if (lv) return lv;
+  lv = lv_add(&c->gvars, &c->ngvars, &c->cgvars, name);
+  if (c->ngvars * 2 > c->gvar_ix_cap) {   /* the index grows with the table: rebuilt over every slot */
+    int cap = c->gvar_ix_cap ? c->gvar_ix_cap * 2 : 64;
+    free(c->gvar_ix);
+    if (!(c->gvar_ix = malloc(sizeof(int) * (size_t)cap))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < cap; i++) c->gvar_ix[i] = -1;
+    c->gvar_ix_cap = cap;
+    for (int i = 0; i < c->ngvars; i++) {
+      unsigned j = sp_strhash(c->gvars[i].name) & (unsigned)(cap - 1);
+      while (c->gvar_ix[j] >= 0) j = (j + 1) & (unsigned)(cap - 1);
+      c->gvar_ix[j] = i;
+    }
+  }
+  else {
+    unsigned j = sp_strhash(name) & (unsigned)(c->gvar_ix_cap - 1);
+    while (c->gvar_ix[j] >= 0) j = (j + 1) & (unsigned)(c->gvar_ix_cap - 1);
+    c->gvar_ix[j] = c->ngvars - 1;
+  }
+  return &c->gvars[c->ngvars - 1];
+}
 const char *comp_resolve_gvar(Compiler *c, const char *name) {
   for (int i = 0; i < c->ngvar_aliases; i++)
     if (sp_streq(c->gvar_alias_from[i], name)) return c->gvar_alias_to[i];

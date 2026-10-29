@@ -418,6 +418,7 @@ int elab_const_own_at(Compiler *c, int owner, const char *name, LoadPoint p, con
    ConstantPathNode) names where it stands, as the record resolves it
    there; -1 for Object (main's), below -1 for one it does not know */
 int elab_class_ref_at(Compiler *c, int node);
+void gvar_writes_free(Compiler *c);   /* the names gvar_has_write kept (analyze_infer.c) */
 int elab_class_candidates(Compiler *c, int node, int **out);   /* the classes a constant read the record cannot settle may name, in a buffer *out the caller frees; -1 for no bounded answer */
 /* the node -> class map: the class class or module header `node` opens,
    as registration decided it there (below -1: none); *owner and *leaf,
