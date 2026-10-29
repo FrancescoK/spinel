@@ -1154,12 +1154,14 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
 /* Does the program hold one of its classes as a value -- a constant naming
    a class of the program that is not a call's receiver (`K.new`), a
    namespace (`K::X`) or a class or module's name or superclass? Asked once
-   per program. */
-static int g_bcv_n = -1, g_bcv = 0;
+   per program: keyed by the node count, the nodes emission adds rebuilt the
+   parent map of the whole program at every dispatch. */
+static const NodeTable *g_bcv_nt = NULL;
+static int g_bcv = 0;
 static int program_boxes_class_values(Compiler *c) {
   const NodeTable *nt = c->nt;
-  if (g_bcv_n == nt->count) return g_bcv;
-  g_bcv_n = nt->count; g_bcv = 0;
+  if (g_bcv_nt == nt) return g_bcv;
+  g_bcv_nt = nt; g_bcv = 0;
   int *parent = an_parent_map((NodeTable *)nt);
   if (!parent) { g_bcv = 1; return 1; }
   for (int id = 0; id < nt->count && !g_bcv; id++) {
