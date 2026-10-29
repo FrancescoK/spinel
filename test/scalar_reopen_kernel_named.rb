@@ -124,7 +124,7 @@ end
 p $sn
 
 $trace = []
-def boxed_num = ($trace << :receiver; [5, 1.5][$trace.size % 2])
+def boxed_num = ($trace << :receiver; [5, 1.5][$trace.size / 2])
 def sym_arg = ($trace << :argument; :x)
 begin; boxed_num.singleton_method_added(sym_arg); rescue TypeError => e; p e.message; end
 begin; boxed_num.singleton_method_added(sym_arg); rescue TypeError => e; p e.message; end
