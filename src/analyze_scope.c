@@ -1071,6 +1071,11 @@ static const char *const class_reopen_mod = "Class__reopen";
 
 int class_reopen_class(Compiler *c) { return comp_class_index(c, class_reopen_mod); }
 
+/* The class that holds the program's methods of Object (`class Object`, and
+   Kernel's, which the plan asks there): every lookup but BasicObject's ends
+   in it. -1 for none. */
+int object_reopen_class(Compiler *c) { return comp_class_index(c, "Object"); }
+
 int is_class_const(const NodeTable *nt, int id) {
   return id >= 0 && nt_kind(nt, id) == NK_ConstantReadNode &&
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
