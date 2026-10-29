@@ -12535,6 +12535,7 @@ int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, in
     int ifn = nt_new_node(nt, "IfNode");
     nt_node_set_ref(nt, ifn, "predicate", fwd_new_call(nt, cdef_local(nt, "GlobalVariableReadNode", arm[k].sel), "==",
                                                        nt_new_int(nt, arm[k].val)));
+    if (arm[k].hist) nt_node_set_int(nt, nt_ref(nt, ifn, "predicate"), "ver_hist", arm[k].hist);
     nt_node_set_ref(nt, ifn, "statements", cdef_stmts(nt, call));
     nt_node_set_ref(nt, ifn, "subsequent", chain);
     chain = ifn;
@@ -12626,7 +12627,7 @@ int desugar_conditional_defs(Compiler *c) {
     for (int k = ng - 1; k >= 0; k--) {
       /* register_module_functions finds the arms by this name */
       snprintf(nm[k], sizeof nm[k], "%s#__cond%d", base, serial + k + 1);
-      arm[k] = (DispArm){ sel, k + 1, nm[k] };
+      arm[k] = (DispArm){ sel, k + 1, nm[k], 0 };
       nt_set_str(nt, g[k].def, "name", nm[k]);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "parameters"), base);
       cdef_method_name(nt, nt_ref(nt, g[k].def, "body"), base);

@@ -791,6 +791,9 @@ static int ct_entry_of(const Compiler *c, int guard, int rcls, int sg, const cha
   int i = ver_entry_ix(c, guard, rcls, sg, name, ar);
   return i >= 0 ? c->ver_entries[i].scope : -1;
 }
+static void ver_cell_name(int hist, char out[32]) {
+  snprintf(out, 32, "$__spinel_ver_%d", hist + 1);
+}
 /* The name of the cell a later prepend's statement sets (Scope.mixin_guarded) */
 void ver_prepend_cell_name(int cell, char out[32]) {
   snprintf(out, 32, "$__spinel_ver_p%d", cell);
@@ -871,7 +874,7 @@ static int guard_chain(Compiler *c, int mi, int *to, DispArm *arm, char sel[][32
   while (n < VER_MAX_ARMS && c->scopes[mi].mixin_guarded && c->scopes[mi].guard_behind >= 0) {
     if (arm) {
       ver_prepend_cell_name(c->scopes[mi].mixin_guarded, sel[n]);
-      arm[n] = (DispArm){ sel[n], 1, c->scopes[mi].name };
+      arm[n] = (DispArm){ sel[n], 1, c->scopes[mi].name, 0 };
     }
     to[n++] = mi;
     mi = c->scopes[mi].guard_behind;
@@ -892,8 +895,8 @@ static int guard_chain(Compiler *c, int mi, int *to, DispArm *arm, char sel[][32
          pre-prepend fallback selected by a module definition's cell. */
       if (c->scopes[s].mixin_guarded) continue;
       if (arm) {
-        snprintf(sel[n], sizeof sel[n], "$__spinel_ver_%d", vs[i].hist + 1);
-        arm[n] = (DispArm){ sel[n], vs[i].n, name };
+        ver_cell_name(vs[i].hist, sel[n]);
+        arm[n] = (DispArm){ sel[n], vs[i].n, name, vs[i].hist + 1 };
       }
       to[n++] = s;
     }
@@ -3850,8 +3853,8 @@ static int ver_entry_make(Compiler *c, int rcls, int sg, const char *name, int m
       return -1;
     blk |= c->scopes[s].blk_param || c->scopes[s].yields;
     spliced &= c->scopes[s].yields;
-    snprintf(sel[na], sizeof sel[na], "$__spinel_ver_%d", vs[i].hist + 1);
-    arm[na] = (DispArm){ sel[na], vs[i].n, name };
+    ver_cell_name(vs[i].hist, sel[na]);
+    arm[na] = (DispArm){ sel[na], vs[i].n, name, vs[i].hist + 1 };
     to[na++] = s;
     same &= ver_same_source(c->nt, c->scopes[s].def_node, c->scopes[mi].def_node);
   }
@@ -4105,12 +4108,9 @@ void ver_cells_write(Compiler *c) {
     int nv = elab_chain_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS);
     for (int j = 0; j < nv; j++) {
       if (e->guard) {
-        char cell[32]; int reads = 0;
-        snprintf(cell, sizeof cell, "$__spinel_ver_%d", vs[j].hist + 1);
-        for (int k = 0; k < na; k++) {
-          const char *name = nt_str(nt, nt_ref(nt, tests[k], "receiver"), "name");
-          reads |= name && sp_streq(name, cell);
-        }
+        int reads = 0;
+        for (int k = 0; k < na; k++)
+          reads |= nt_int(nt, tests[k], "ver_hist", 0) == vs[j].hist + 1;
         if (!reads) continue;   /* prepend cells are written at their statements */
       }
       int node = vs[j].v->node, st = node, dup = 0;
@@ -4125,7 +4125,7 @@ void ver_cells_write(Compiler *c) {
   for (int k = 0; k < nw; k++) {
     char cell[32];
     int z = at0 >= 0;
-    snprintf(cell, sizeof cell, "$__spinel_ver_%d", w[k].hist + 1);
+    ver_cell_name(w[k].hist, cell);
     for (int j = 0; j < nw && z; j++)   /* (one per cell; none where the first statement writes it) */
       z = w[j].hist != w[k].hist || (j >= k && w[j].stmt != at0);
     if (z) made[nw + nz++] = ver_cell_put(c, cell, top, at0, 0, 0);

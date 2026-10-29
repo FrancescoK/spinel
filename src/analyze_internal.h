@@ -915,7 +915,7 @@ int desugar_conditional_defs(Compiler *c);
 /* A dispatcher def over arms `<sel> == <val>` calling `callee` with the
    def's parameters passed on, and an else arm (disp_def_build,
    analyze_desugar.c); `raise NoMethodError, msg` for that arm */
-typedef struct { const char *sel; int val; const char *callee; } DispArm;
+typedef struct { const char *sel; int val; const char *callee; int hist; } DispArm;
 int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
                    const DispArm *arm, int narm, int els);
 int disp_raise_no_method(NodeTable *nt, const char *msg);
