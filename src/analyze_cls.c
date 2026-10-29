@@ -243,7 +243,7 @@ static void cf_load_at(CF *f, int c, int v, int line);
 /* ---- the pool of sets ---- */
 
 static unsigned cf_set_hash(const ClsSet *s) {
-  unsigned h = ((2166136261u ^ (unsigned)s->all) * 16777619u ^ (unsigned)s->bv) * 16777619u ^ (unsigned)s->os;
+  unsigned h = (((2166136261u ^ (unsigned)s->all) * 16777619u ^ (unsigned)s->bv) * 16777619u ^ (unsigned)s->os) * 16777619u ^ (unsigned)s->pr;
   for (int i = 0; i < s->nw; i++) {
     unsigned long long x = s->w[i];
     h = (h ^ (unsigned)s->wi[i]) * 16777619u;
@@ -253,7 +253,7 @@ static unsigned cf_set_hash(const ClsSet *s) {
   return h;
 }
 static int cf_set_eq(const ClsSet *a, const ClsSet *b) {
-  if (a->all != b->all || a->n != b->n || a->bv != b->bv || a->os != b->os || a->nw != b->nw) return 0;
+  if (a->all != b->all || a->n != b->n || a->bv != b->bv || a->os != b->os || a->pr != b->pr || a->nw != b->nw) return 0;
   return !memcmp(a->wi, b->wi, sizeof *a->wi * (size_t)a->nw) && !memcmp(a->w, b->w, sizeof *a->w * (size_t)a->nw);
 }
 /* s's words, copied into one block of their own (w first, wi after it) */
@@ -354,7 +354,8 @@ static int cf_union_set(CF *f, int a, int b) {
   const ClsSet *x = &f->pool[a], *y = &f->pool[b];
   /* the merge, noting whether it is one of the two (as it is along most
      edges once a set has grown: no lookup then) */
-  int x_has_y = (x->bv | !y->bv) & (x->os | !y->os), y_has_x = (y->bv | !x->bv) & (y->os | !x->os);
+  int x_has_y = (x->bv | !y->bv) & (x->os | !y->os) & (x->pr | !y->pr),
+      y_has_x = (y->bv | !x->bv) & (y->os | !x->os) & (y->pr | !x->pr);
   int i = 0, j = 0, n = 0;
   while (i < x->nw || j < y->nw) {
     if (j >= y->nw || (i < x->nw && x->wi[i] < y->wi[j])) { f->swi[n] = x->wi[i]; f->sw[n++] = x->w[i++]; y_has_x = 0; }
@@ -369,7 +370,7 @@ static int cf_union_set(CF *f, int a, int b) {
   if (x_has_y) return a;
   if (y_has_x) return b;
   ClsSet s; memset(&s, 0, sizeof s);
-  s.bv = (unsigned char)(x->bv | y->bv); s.os = (unsigned char)(x->os | y->os);
+  s.bv = (unsigned char)(x->bv | y->bv); s.os = (unsigned char)(x->os | y->os); s.pr = (unsigned char)(x->pr | y->pr);
   s.nw = n; s.w = f->sw; s.wi = f->swi;
   return cf_pool(f, &s);
 }
@@ -384,6 +385,12 @@ static int cf_single(CF *f, int cls) {
 static int cf_bv_set(CF *f) {
   ClsSet s; memset(&s, 0, sizeof s);
   s.bv = 1;
+  return cf_pool(f, &s);
+}
+/* the set of a Proc: a builtin whose `[]` is its call */
+static int cf_proc_set(CF *f) {
+  ClsSet s; memset(&s, 0, sizeof s);
+  s.bv = 1; s.pr = 1;
   return cf_pool(f, &s);
 }
 /* the set of an OpenStruct (OpenStruct.new) */
@@ -2275,6 +2282,14 @@ static void cf_resume_args(CF *f, const int *argv, int argc) {
 }
 static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc, int blk, const char *nm) {
   const NodeTable *nt = f->nt;
+  /* a builtin that answers a Proc: a conversion, a currying, a Hash's
+     default proc, and a composition of a Proc */
+  if (v >= 0 && nm) {
+    int rs = recv_el >= 0 ? cf_set_of(f, recv_el) : CF_EMPTY;
+    if (sp_streq(nm, "to_proc") || sp_streq(nm, "curry") || sp_streq(nm, "default_proc") ||
+        ((sp_streq(nm, ">>") || sp_streq(nm, "<<")) && rs != CF_EMPTY && (rs == CF_ALL || f->pool[rs].pr)))
+      cf_add_set(f, v, cf_proc_set(f));
+  }
   /* what a builtin is handed, the runtime has seen: it may hand it to a
      method it calls back (rvis, a protocol method's parameters) */
   if (f->rvis >= 0) {
@@ -2304,9 +2319,20 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
     }
     if (cf_element_answer(nm)) {
       cf_load(f, recv_el, v);
-      /* (a Proc's [] is its call: its set is its value's) */
+      /* (a Proc's [] is its call: its set is its value's, and a pair a
+         Hash's iteration answers is its key and its value, whose `[1]` is
+         one of them. A receiver that is only a builtin and no Proc is a
+         container: its read answers its elements, not itself, or every
+         container read out of another was the container itself, and a store
+         into a row reached every read of the table, #10520. Its answer may
+         still be a run of them, `a[0, 2]` or `a[1..]`, a container of its
+         own holding the receiver's, as `last(2)` below) */
       if (sp_streq(nm, "[]")) {
-        if (cf_kskip(f, v, recv_el)) cf_krecv_edge(f, recv_el, v); else cf_flow(f, recv_el, v);
+        int rs = recv_el >= 0 ? cf_set_of(f, recv_el) : CF_ALL;
+        if (rs == CF_ALL || (rs != CF_EMPTY && (f->pool[rs].pr || f->pool[rs].n > 0))) {
+          if (cf_kskip(f, v, recv_el)) cf_krecv_edge(f, recv_el, v); else cf_flow(f, recv_el, v);
+        }
+        else cf_share(f, v, recv_el);
       }
       /* no other element read answers its receiver (the receiver flowing
          on made the container one of its own elements, and a store into
@@ -2502,7 +2528,16 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
   if (kelem && has_blk) kelem = cf_kskip(f, v, recv_el);
   if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) {
     /* (a row said what becomes of the block's value) */
-    if (!known && !cf_drops_block_value(nm)) { cf_flow(f, blk, v); cf_store(f, v, blk); }
+    /* (Array.new answers a new Array holding the block's values: the
+       values are its elements, not it, or a table built of rows is each of
+       its rows, #10520) */
+    if (!known && !cf_drops_block_value(nm)) {
+      int nr = v >= 0 && v < f->nnodes ? nt_ref(nt, v, "receiver") : -1;
+      NodeKind nrk = nr >= 0 ? nt_kind(nt, nr) : NK_NONE;
+      int arr_new = (nrk == NK_ConstantReadNode || nrk == NK_ConstantPathNode) && is_array_new(nt_str(nt, nr, "name"), nm);
+      if (!arr_new) cf_flow(f, blk, v);
+      cf_store(f, v, blk);
+    }
     int body = nt_ref(nt, blk, "body");
     const char *names[64];
     int n = cf_all_param_names(f, blk, names, 64);
@@ -3220,7 +3255,7 @@ static int cf_proto_wake(CF *f) {
     }
     if (!now) { f->proto_pend[keep++] = mi; continue; }
     for (int j = 0; j < s->nparams; j++) cf_edge(f, f->rvis, cf_param_el(f, mi, j));
-    if (s->blk_param && s->blk_param[0]) cf_add_set(f, cf_lv_in(f, mi, s->blk_param), cf_bv_set(f));
+    if (s->blk_param && s->blk_param[0]) cf_add_set(f, cf_lv_in(f, mi, s->blk_param), cf_proc_set(f));
     cf_edge(f, f->ret_el[mi], f->rvis);
     woke = 1;
   }
@@ -3584,6 +3619,7 @@ static void cf_call(CF *f, int v) {
     if (sp_streq(nm, "lambda") || sp_streq(nm, "proc") || sp_streq(nm, "define_method")) {
       if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode) cf_all_block_params(f, blk);
     }
+    if (v >= 0 && (sp_streq(nm, "lambda") || sp_streq(nm, "proc"))) cf_add_set(f, v, cf_proc_set(f));
     /* Kernel's conversions answer their kind whatever they are handed:
        Integer(x) an Integer (to_int / to_i must answer one, else it
        raises), Float, String, Rational and Complex likewise; Array(x) and
@@ -3687,6 +3723,7 @@ static void cf_call(CF *f, int v) {
     /* a Proc's parameters take what its calls pass; an Enumerator's yielder,
        a Hash's default block's hash and the rest are the builtin's own */
     if (blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && sp_streq(nm, "new") && key && sp_streq(key, "Proc")) cf_all_block_params(f, blk);
+    if (v >= 0 && sp_streq(nm, "new") && key && sp_streq(key, "Proc")) cf_add_set(f, v, cf_proc_set(f));
     /* an OpenStruct, whose members (its arguments' values, which the
        builtin rule below brings in) answer names a container answers too:
        a call on a value it reaches has the member read beside the classes'
@@ -4330,7 +4367,7 @@ static void cf_node(CF *f, int v) {
     return;
   }
   case NK_LambdaNode: {
-    cf_add_set(f, v, cf_bv_set(f));
+    cf_add_set(f, v, cf_proc_set(f));
     cf_unite(f, v, cf_tail(f, nt_ref(nt, v, "body")));
     cf_dyn_block_params(f, v);
     return;
@@ -4812,7 +4849,7 @@ static void cf_dump_facts(Compiler *c) {
       int p = c->cls_fact && id < c->cls_fact_n ? c->cls_fact[id] : -1;
       const char *fp = nt_file_path(nt, (int)nt_int(nt, id, "node_file", 0));
       fprintf(stderr, "cls-val: %s:%d %s node %d value:%s", fp && *fp ? fp : "?", (int)nt_int(nt, id, "node_line", 0), nt_str(nt, id, "name") ? nt_str(nt, id, "name") : "?", id, p == 0 ? " ANY" : !s ? " ?" : s->n == 0 && !s->bv ? " none" : "");
-      if (s) { for (int i = cls_set_next(s, -1); i >= 0; i = cls_set_next(s, i)) fprintf(stderr, " %d", i); if (s->bv) fprintf(stderr, " +builtin"); if (s->os) fprintf(stderr, " +ostruct"); }
+      if (s) { for (int i = cls_set_next(s, -1); i >= 0; i = cls_set_next(s, i)) fprintf(stderr, " %d", i); if (s->bv) fprintf(stderr, " +builtin"); if (s->os) fprintf(stderr, " +ostruct"); if (s->pr) fprintf(stderr, " +proc"); }
       fprintf(stderr, "\n");
     }
     return;
@@ -5345,7 +5382,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
          receivers' calls are; only a top-level helper by its name) */
       if (s->class_id < 0) { f.byname[mi] = 1; f.modfn_any = 1; }
       for (int i = 0; i < s->nparams; i++) cf_edge(&f, f.rtc, cf_param_el(&f, mi, i));
-      if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_bv_set(&f));
+      if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_proc_set(&f));
       cf_escape(&f, f.ret_el[mi]);
       sd_prelude = 0;
     }
@@ -5394,7 +5431,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
         else {
           if (why == 90004 && f.dynarg >= 0 && (!cf_opaque_name(s->name) || CF_CLOSED(&f)) && !sd_proto && !sd_prelude && !sd_modfn) {
             for (int i = 0; i < s->nparams; i++) cf_edge(&f, f.dynarg, cf_param_el(&f, mi, i));
-            if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_bv_set(&f));
+            if (s->blk_param && s->blk_param[0]) cf_add_set(&f, cf_lv_in(&f, mi, s->blk_param), cf_proc_set(&f));
             cf_edge(&f, f.ret_el[mi], f.dynarg);   /* (a memo handed back, a value sent on) */
           }
           else cf_all_params_at(&f, mi, why);
@@ -5404,7 +5441,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     if (s->blk_param && s->blk_param[0]) {
       int be = cf_lv_in(&f, mi, s->blk_param);
       cf_unite(&f, be, f.yval_el[mi]);
-      cf_add_set(&f, be, cf_bv_set(&f));   /* a Proc: its own methods answer */
+      cf_add_set(&f, be, cf_proc_set(&f));   /* a Proc: its own methods answer */
       cf_kmark(&f, be, CK_UNSAFE);           /* (and the kinds, cf_kskip) */
     }
   }
@@ -5612,7 +5649,7 @@ static void cf_meet(Compiler *c, const int *df, const ClsSet *dp, int dn, int **
       const ClsSet *o = u == CF_ALL ? ds : us;
       m.nw = o->nw;
       memcpy(mw, o->w, sizeof *mw * (size_t)o->nw); memcpy(mwi, o->wi, sizeof *mwi * (size_t)o->nw);
-      m.bv = o->bv; m.os = o->os;
+      m.bv = o->bv; m.os = o->os; m.pr = o->pr;
     }
     else {
       for (int i = 0, j = 0; i < us->nw && j < ds->nw; ) {
@@ -5622,6 +5659,7 @@ static void cf_meet(Compiler *c, const int *df, const ClsSet *dp, int dn, int **
       }
       m.bv = (unsigned char)(us->bv && ds->bv);
       m.os = (unsigned char)(us->os && ds->os);
+      m.pr = (unsigned char)(us->pr && ds->pr);
     }
     for (int i = 0; i < m.nw; i++) m.n += __builtin_popcountll(mw[i]);
     if (m.n == 0 && !m.bv && !m.os) { fact[v] = CF_EMPTY; continue; }
