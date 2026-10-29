@@ -7109,6 +7109,26 @@ void register_includes(Compiler *c) {
     if (base >= 0 && base != ci && !c->classes[base].is_struct)
       include_module_methods(c, ci, base);
   }
+  /* A reopening of Struct in a program with no Struct.new class (activesupport's
+     core_ext/object/json gives Struct an #as_json): a Struct value is always a
+     record class's instance, so nothing can receive what the reopening
+     defines, and Struct itself has no C representation (each record class has
+     its own; the other reopenable builtins are runtime typedefs). Its methods
+     are copied away with no copy left, as a module's shadowed method is, so
+     that neither a definition typed on an undeclared `sp_Struct` nor a
+     dispatch arm of a dynamic send reaching it is emitted. */
+  int sbase = comp_class_index(c, "Struct");
+  if (sbase >= 0 && !c->classes[sbase].is_struct) {
+    int any_record = 0;
+    for (int ci = 0; ci < c->nclasses && !any_record; ci++)
+      any_record = c->classes[ci].is_struct && !c->classes[ci].is_data;
+    if (!any_record)
+      for (int s = 1; s < c->nscopes; s++) {
+        Scope *sc = &c->scopes[s];
+        if (sc->class_id != sbase || !sc->name || sc->is_cmethod) continue;
+        sc->is_transplanted_source = 1;
+      }
+  }
   if (g_inc_did_clone) register_locals(c);
 }
 
