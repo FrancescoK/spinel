@@ -3154,6 +3154,9 @@ static void lr_rta_node(LrRta *t, int id) {
   if (!lr_call_on_literals(t->c, id)) lr_rta_all(t, 1);
   if (by != nm) lr_rta_call(t, nm, RQ_INST | RQ_CLASS);   /* send itself, which the program may define */
   if (rk == NK_SymbolNode && is_proc_conversion_name(nm)) lr_rta_call(t, nt_str(nt, recv, "value"), RQ_INST | RQ_CLASS);
+  /* inject(:op) and inject(init, :op) call the method the Symbol names on the elements, as `&:op` does */
+  if (is_reduce_alias(nm) && ac >= 1 && ac <= 2 && nt_kind(nt, av[ac - 1]) == NK_SymbolNode && nt_str(nt, av[ac - 1], "value"))
+    lr_rta_call(t, nt_str(nt, av[ac - 1], "value"), RQ_INST | RQ_CLASS);
   if (is_refine_name(nm)) {   /* a refinement's methods: the refining module's, live from here */
     int m = id;
     while (m >= 0 && nt_kind(nt, m) != NK_ModuleNode) m = comp_parent_map(t->c)[m];
