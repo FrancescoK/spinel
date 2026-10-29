@@ -6201,6 +6201,24 @@ static int dsend_defined_arity_excludes(Compiler *c, const char *name, int argc)
    point into its answer, valid until the caller frees that). */
 static ANameHash g_dsend_lits;
 
+/* The copy of each builtin (or own Enumerable) method that a call a pass
+   writes after desugar_builtins takes, made there: one per name, shared by
+   every such call, -1 where none was made */
+static int *g_enum_send_copy = NULL;
+static int g_enum_send_copy_n = 0;
+
+/* A call written after desugar_builtins -- a dynamic send's arm, a Symbol's
+   to_proc made into its call -- of a builtin Enumerable method's name, or
+   of one a reopening of Enumerable adds, takes that name's shared copy, as
+   a written call takes its site's (desugar_builtin_enum_calls rewrites it
+   onto the copy once the receiver's type says the builtin serves it). */
+void enum_send_copy_take(NodeTable *nt, int call) {
+  if (nt_int(nt, call, "enum_copy", -1) >= 0) return;
+  int bi = builtin_enum_name_index(nt_str(nt, call, "name"));
+  if (bi >= 0 && bi < g_enum_send_copy_n && g_enum_send_copy[bi] >= 0)
+    nt_node_set_int(nt, call, "enum_copy", g_enum_send_copy[bi]);
+}
+
 /* The closed set of method names a runtime-name send (and respond_to?)
    dispatches over: the symbol and string literals the program spells, and
    the methods it defines, ranked so the names that can be meant survive the
@@ -6515,7 +6533,9 @@ static int dsend_recv_rebound(Compiler *c, const NodeTable *nt, int recv, const 
    the modules it includes -- which a name the program computes reaches as
    well (`s.public_send("#{q}?")` with q "frozen", `a.public_send("#{q}_by")`
    with q "min") -- and the program's own methods there: a reopen of the
-   class (`class String; def shout? ...`), of Object, of Numeric. */
+   class (`class String; def shout? ...`), of Object, of Numeric, of
+   Enumerable for a class that includes it (`module Enumerable; def
+   special?` is an Array's, answered through its copy). */
 static void dsend_add_builtin_names(Compiler *c, const char *bcls, char ***own, int *nown, int *cap,
                                     ANameHash *seen) {
   static const char *const enumerable_methods[] = { "all?", "any?", "chain", "chunk",
@@ -6543,8 +6563,8 @@ static void dsend_add_builtin_names(Compiler *c, const char *bcls, char ***own, 
   for (int k = 0; is_enum && enumerable_methods[k]; k++) dsend_add_name(own, nown, cap, seen, enumerable_methods[k]);
   for (int k = 0; is_cmp && comparable_methods[k]; k++) dsend_add_name(own, nown, cap, seen, comparable_methods[k]);
   for (int k = 0; is_num && numeric_methods[k]; k++) dsend_add_name(own, nown, cap, seen, numeric_methods[k]);
-  const char *pcls[] = { bcls, "Object", is_num ? "Numeric" : NULL };
-  for (int r = 0; r < 3; r++) {
+  const char *pcls[] = { bcls, "Object", is_num ? "Numeric" : NULL, is_enum ? "Enumerable" : NULL };
+  for (int r = 0; r < 4; r++) {
     int pci = pcls[r] ? comp_class_index(c, pcls[r]) : -1;
     if (pci < 0) continue;
     char **kn = NULL; int nk = dsend_receiver_names(c, pci, 0, &kn);
@@ -6981,6 +7001,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          unreachable and the send raises. Mark them as owned. */
       nt_node_set_int(nt, call, "dyn_arm", 1);
       nt_node_set_str(nt, call, "dyn_name", use[k]);
+      enum_send_copy_take(nt, call);
       if (na >= 0) nt_node_set_ref(nt, call, "arguments", na);
       if (computed && nt_ref(nt, id, "block") >= 0) nt_node_set_ref(nt, call, "block", nt_ref(nt, id, "block"));
       /* public_send arms enforce visibility at the dispatch site */
@@ -12921,6 +12942,59 @@ static void bi_flag_dead_else(NodeTable *nt, int copy) {
   if (els >= 0 && nt_kind(nt, els) == NK_ElseNode) bi_flag_calls(nt, els);
 }
 
+/* Is `v` a name the program builds rather than spells: an interpolation
+   (`"#{q}_by"`, `:"on_#{t}"`), a `to_sym` / `intern` / `+` of anything? */
+static int bi_value_builds_name(const NodeTable *nt, int v) {
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_InterpolatedStringNode || k == NK_InterpolatedSymbolNode) return 1;
+  if (k == NK_ParenthesesNode) {
+    int b = nt_ref(nt, v, "body"), bn = 0;
+    const int *bb = b >= 0 ? nt_arr(nt, b, "body", &bn) : NULL;
+    return bn > 0 && bi_value_builds_name(nt, bb[bn - 1]);
+  }
+  if (k != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, v, "name");
+  return nm && (sp_streq(nm, "to_sym") || sp_streq(nm, "intern") || sp_streq(nm, "+"));
+}
+
+/* Does the program call a method whose call a later pass writes: a send of
+   a name it holds rather than spells (`send(m)`, `public_send("#{q}_by")`,
+   `map(&m)`), whose arms desugar_dynamic_send makes inside the fixpoint, or
+   a Symbol's to_proc (`:tally.to_proc.call(a)`, `m.to_proc`), which becomes
+   `a.tally` or a lambda calling it after this pass? No site walk below
+   reaches those calls. 2 when such a name may be built (an interpolation at
+   the send, or a local some write of which builds one), so any method can
+   be meant; 1 when only names the program spells can; 0 for neither. */
+static int bi_program_calls_late(const NodeTable *nt, int n0) {
+  int late = 0;
+  for (int id = 0; id < n0 && late < 2; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int held = -1;   /* the expression the name is */
+    if (k == NK_BlockArgumentNode) {
+      int ex = nt_ref(nt, id, "expression");
+      if (ex >= 0 && nt_kind(nt, ex) != NK_SymbolNode) held = ex;
+    }
+    else if (k == NK_CallNode) {
+      const char *nm = nt_str(nt, id, "name");
+      if (!nm) continue;
+      if (sp_streq(nm, "to_proc")) held = nt_ref(nt, id, "receiver");
+      else if (sp_streq(nm, "send") || sp_streq(nm, "public_send") || sp_streq(nm, "__send__")) {
+        int sa = nt_ref(nt, id, "arguments"), sac = 0;
+        const int *sav = sa >= 0 ? nt_arr(nt, sa, "arguments", &sac) : NULL;
+        if (sac >= 1 && nt_kind(nt, sav[0]) != NK_SymbolNode && nt_kind(nt, sav[0]) != NK_StringNode) held = sav[0];
+      }
+    }
+    if (held < 0) continue;
+    if (late < 1) late = 1;
+    if (bi_value_builds_name(nt, held)) { late = 2; break; }
+    const char *vn = nt_kind(nt, held) == NK_LocalVariableReadNode ? nt_str(nt, held, "name") : NULL;
+    for (int w = 0; vn && w < n0; w++)
+      if (nt_kind(nt, w) == NK_LocalVariableWriteNode && nt_str(nt, w, "name") &&
+          sp_streq(nt_str(nt, w, "name"), vn) && bi_value_builds_name(nt, nt_ref(nt, w, "value"))) { late = 2; break; }
+  }
+  return late;
+}
+
 int desugar_builtins(Compiler *c) {
   if (sp_builtin_enum_names_n == 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
@@ -13080,6 +13154,54 @@ int desugar_builtins(Compiler *c) {
   if (!in_generic) { free(gdef); free(nb); return 0; }
   for (int i = 0; i < sp_builtin_enum_names_n; i++)
     if (gdef[i] >= 0 && gdef[i] < own_lo) bi_mark_subtree(nt, gdef[i], in_generic, n0);
+  /* A send of a name the program holds rather than spells gets its arms in
+     the fixpoint, long after this pass, and a Symbol's to_proc becomes its
+     call after it too: `m = :tally; a.public_send(m)` had a `tally` arm with
+     no copy to be rewritten onto, and raised NoMethodError for an Array's
+     own tally, as did `:tally.to_proc.call(a)` and a method a `module
+     Enumerable` reopening adds. Each name gets one copy more here, shared
+     by every such call of its name (enum_send_copy_take); like a site's, it
+     is unreachable unless one ends up calling it, and its own calls are
+     sites the walk below reaches. */
+  if (g_enum_send_copy_n < sp_builtin_enum_names_n) {
+    int *g = (int *)realloc(g_enum_send_copy, sizeof(int) * (size_t)sp_builtin_enum_names_n);
+    if (!g) { free(in_generic); free(gdef); free(nb); return 0; }
+    for (int i = g_enum_send_copy_n; i < sp_builtin_enum_names_n; i++) g[i] = -1;
+    g_enum_send_copy = g; g_enum_send_copy_n = sp_builtin_enum_names_n;
+  }
+  /* Only for a name such a call can have: one the program spells as a
+     Symbol or a String, a reopening's own method, or any name where a send
+     builds one. An unreachable copy reaches no C, but its block parameters
+     still put their names in the symbol table (rename_shadowing_block_params). */
+  int late = bi_program_calls_late(nt, n0);
+  ANameHash spelled; memset(&spelled, 0, sizeof spelled);
+  if (late == 1)
+    for (int id = 0; id < own_lo; id++) {
+      if (in_generic[id]) continue;
+      NodeKind k = nt_kind(nt, id);
+      const char *v = k == NK_SymbolNode ? nt_str(nt, id, "value") : k == NK_StringNode ? nt_str(nt, id, "content") : NULL;
+      if (v && builtin_enum_name_index(v) >= 0 && !anh_has(&spelled, v)) anh_add(&spelled, v);
+    }
+  if (late)
+    for (int bi = 0; bi < sp_builtin_enum_names_n; bi++) {
+      if (gdef[bi] < 0 || g_enum_send_copy[bi] >= 0) continue;
+      if (late == 1 && bi < nbuiltin && !anh_has(&spelled, sp_builtin_enum_names[bi])) continue;
+      int cbase = nt->count;
+      int copy = nt_clone_subtree(nt, gdef[bi]);
+      if (copy < 0) break;
+      char cn[256]; snprintf(cn, sizeof cn, "__enum_%s__send", sp_builtin_enum_names[bi]);
+      nt_node_set_str(nt, copy, "name", cn);
+      nt_node_set_int(nt, copy, "private_helper", 1);
+      nt_node_set_int(nt, copy, "enum_bi", bi);
+      nt_node_set_int(nt, copy, "enum_in_copy", -1);
+      if (bi >= nbuiltin) nt_node_set_int(nt, copy, "enum_own_def", 1);   /* a reopening's method (desugar_builtin_enum_calls) */
+      for (int j = cbase; j < nt->count; j++)
+        if (j != copy && nt_kind(nt, j) == NK_CallNode) nt_node_set_int(nt, j, "enum_in_copy", copy);
+      if (nbn >= cap) { cap *= 2; int *g = (int *)realloc(nb, sizeof(int) * (size_t)cap); if (!g) break; nb = g; }
+      nb[nbn++] = copy;
+      g_enum_send_copy[bi] = copy;
+    }
+  anh_free(&spelled);
   for (int id = 0; id < nt->count; id++) {
     if (id == own_lo) id = n0;
     if (id >= nt->count) break;
@@ -13139,6 +13261,7 @@ int desugar_builtins(Compiler *c) {
     nt_node_set_str(nt, copy, "name", cn);
     nt_node_set_int(nt, copy, "private_helper", 1);   /* no Ruby method (comp_scope_is_private_helper) */
     nt_node_set_int(nt, copy, "enum_site", id);   /* the call it serves (enum_copy_site) */
+    if (bi >= nbuiltin) nt_node_set_int(nt, copy, "enum_own_def", 1);   /* a reopening's method (desugar_builtin_enum_calls) */
     nt_node_set_int(nt, id, "enum_copy", copy);
     /* the calls in the copy are its sites, the walk reaches them below */
     nt_node_set_int(nt, copy, "enum_bi", bi);
@@ -14090,6 +14213,17 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) continue; }
     int base = nt->count;
     int encl = c->nscope[id];
+    /* A dynamic send's arms share one receiver node; rewritten here it
+       becomes a value (a local's or the copy's first argument), and the
+       dispatch's other arms read it there: a String mutator arm's write
+       back to its variable landed on that read and the C did not compile.
+       This arm takes a copy of its own, read where the arm runs as before. */
+    if (nt_int(nt, id, "dyn_arm", 0) && recv >= 0) {
+      int rc = nt_clone_subtree(nt, recv);
+      if (rc < 0) continue;
+      nt_node_set_ref(nt, id, "receiver", rc);
+      recv = rc;
+    }
     /* A receiver known only at run time may be an instance of a class that
        defines the name itself, which keeps its own method: the call becomes
          (__r = recv; __r.is_a?(K) ? __r.m(args) { } : __enum_m(__r, args) { })
@@ -14132,8 +14266,17 @@ int desugar_builtin_enum_calls(Compiler *c) {
        owners). In the definition itself the test cost every copy its
        inlining, closures and all. */
     int range_arm = rt == TY_POLY && nown == 0 && !safe_nav && blk < 0 && an == 0 && is_minmax_pair(name);
+    /* A boxed receiver of a method a reopening of Enumerable adds may be a
+       String or an Integer, which no Enumerable is: unlike a builtin's
+       copy, whose walk checks the value is one it can enumerate
+       (sp_poly_iter_check), the reopening's body runs on whatever it is
+       handed, and a boxed String's `special?` (`count > 1`) reached
+       String#count and raised ArgumentError. Those classes take the call
+       as written, whose answer is CRuby's NoMethodError, as a program class
+       with no Enumerable does. */
+    int scal_arm = rt == TY_POLY && !safe_nav && !range_arm && !wo_arm && nt_int(nt, copy, "enum_own_def", 0);
     if (wo_arm) ndef = 0;   /* the arm as written answers every other class */
-    if (ndef > 0 || safe_nav || range_arm || wo_arm) {
+    if (ndef > 0 || safe_nav || range_arm || wo_arm || scal_arm) {
       char rn[64]; snprintf(rn, sizeof rn, "__enumrecv_%s", comp_node_tag(c, id));
       int w = nt_new_node(nt, "LocalVariableWriteNode");
       int own = nt_new_node(nt, "CallNode");
@@ -14164,6 +14307,19 @@ int desugar_builtin_enum_calls(Compiler *c) {
       }
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
+      if (scal_arm) {
+        static const char *const scal[] = { "String", "Integer", "Float", "Symbol", "NilClass", "TrueClass",
+                                            "FalseClass", NULL };
+        for (int k = 0; scal[k]; k++) {
+          int ia = enum_is_a_named(c, rn, scal[k]);
+          if (ia < 0) { free(chained); free(in_default); free(defcls); return changed; }
+          if (pred < 0) { pred = ia; continue; }
+          int orn = nt_new_node(nt, "OrNode");
+          if (orn < 0) { free(chained); free(in_default); free(defcls); return changed; }
+          nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", ia);
+          pred = orn;
+        }
+      }
       /* a class with no Enumerable joins the Range arm, whose call raises
          its NoMethodError */
       if (range_arm && ndef > 0 && pred >= 0) {

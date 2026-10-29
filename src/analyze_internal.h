@@ -683,6 +683,7 @@ int nested_row_iter_call(Compiler *c, int id);
 int fold_static_is_a(Compiler *c);
 int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
+void enum_send_copy_take(NodeTable *nt, int call);
 int an_class_includes_enumerable(Compiler *c, int ci);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
