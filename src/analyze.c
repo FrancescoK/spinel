@@ -42051,6 +42051,23 @@ static int bo_may_act(const NodeTable *nt, int e) {
   }
 }
 static int rr_writes_var(const NodeTable *nt, int n, const char *pfx, const char *name);
+/* Does `e` read a local in its own evaluation (`s`, `[s]`, `{k: s}`)? A
+   block, a lambda or a def reads its locals when it runs. */
+static int bo_reads_local(const NodeTable *nt, int e) {
+  if (e < 0) return 0;
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_LocalVariableReadNode) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_BlockNode) return 0;
+  int nr = nt_num_refs(nt, e);
+  for (int i = 0; i < nr; i++)
+    if (bo_reads_local(nt, nt_ref_at(nt, e, i))) return 1;
+  int na = nt_num_arrs(nt, e);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, e, i, &m);
+    for (int j = 0; j < m; j++) if (bo_reads_local(nt, ids[j])) return 1;
+  }
+  return 0;
+}
 /* A copy of call `id`'s fields into a fresh node of its kind, a CallNode or a
    SuperNode (the children are shared, not cloned). Each caller makes `id`
    the parentheses that run the copy as their last statement, so the copy
@@ -42131,7 +42148,7 @@ static void desugar_block_arg_order(Compiler *c) {
     char tn[64];
     /* one `__bo_<id>_<k> = e` statement; answers the read that replaces e */
     #define BO_HOIST(E) ({ int _e = (E), _r = _e; if (ns < 255 && _e >= 0 && (seq || bo_may_act(nt, _e) || \
-        (lread && nt_kind(nt, _e) == NK_LocalVariableReadNode))) { \
+        (lread && bo_reads_local(nt, _e)))) { \
         snprintf(tn, sizeof tn, "__bo_%s_%d", comp_node_tag(c, id), serial++); \
         int _w = nt_new_node(nt, "LocalVariableWriteNode"); \
         int _rd = nt_new_node(nt, "LocalVariableReadNode"); \
@@ -42139,7 +42156,8 @@ static void desugar_block_arg_order(Compiler *c) {
         nt_node_set_str(nt, _rd, "name", tn); \
         stm[ns++] = _w; scope_local_intern(sc, tn); _r = _rd; } _r; })
     /* A sequence can reassign even a plain read, and so can an operand
-       that rebinds `&s`'s s (a literal it cannot). Capture the receiver and
+       that rebinds `&s`'s s, under an operand that reads it (`[s]`; a
+       literal with no read it cannot). Capture the receiver and
        arguments before it, inside the call's own evaluation site. */
     int nrecv = BO_HOIST(recv);
     for (int k = 0; k < an; k++) {

@@ -56,3 +56,8 @@ x = :upcase
 p m3(x, (x = :downcase), &x)
 y = :upcase
 p m3(y, [y = :swapcase][0], &y)
+# and an Array or a Hash ahead of it holds what s was then
+z = :upcase
+p m3([z], (z = :downcase), &z)
+h = :upcase
+p m3({k: h}, (h = :swapcase), &h)
