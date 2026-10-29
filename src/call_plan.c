@@ -2007,7 +2007,7 @@ int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
 /* The user-class arms of a zero-argument poly dispatch, in emission order.
    The plan supplies each class's method, reader, native binding or refusal. */
 static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p) {
-  int cap = 0;
+  int cap = 0, slot_oint = -1;
   int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
   int nks = cpoly_arm_classes(c, id, name, ks);
   for (int ki = 0; ki < nks; ki++) {
@@ -2106,7 +2106,8 @@ static void cpoly_user_arms0(Compiler *c, int id, const char *name, TyKind ret, 
          arm emitter writes it; one without a nil bit holds no nil, and
          a boxed result takes its plain box */
       int nilbit = ivx >= 0 && oint_kind(ivt) && ivar_has_nilbit(c, rdcls, ivx);
-      int slot_oint = is_scalar_ret(ret) && oint_kind(ret) && node_is_oint(c, id);
+      /* (the call's result slot, one for every arm: asked once) */
+      if (slot_oint < 0) slot_oint = is_scalar_ret(ret) && oint_kind(ret) && node_is_oint(c, id);
       int conv = nilbit && (ret == TY_POLY || slot_oint) ? PC_BOX_OR_NIL
                : ivt == TY_STRBUF && ret == TY_STRING && cpoly_conv(ret, ivt) == PC_SAME ? PC_COPY
                : cpoly_conv(ret, ivt);

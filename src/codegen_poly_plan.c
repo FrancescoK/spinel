@@ -273,10 +273,11 @@ static int plan_slot_oint(Compiler *c, int id, TyKind ret) { return is_scalar_re
 static void plan_put_plain(int so, TyKind ret, const char *text, Buf *b) { if (so) buf_printf(b, "%s(%s)", oint_of(ret), text); else buf_puts(b, text); }
 static void plan_put_boxed(Compiler *c, int so, TyKind slotty, const char *text, Buf *b) { if (so) buf_printf(b, "%s(%s)", oint_unbox(slotty), text); else emit_unbox_text(c, slotty, text, b); }
 
+/* so: the call's result slot is an oint (plan_slot_oint), one slot for
+   every arm */
 static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind ret, int tv, int tr,
-                                int blk_tmp0, const PolyArm *a, Buf *b) {
+                                int blk_tmp0, int so, const PolyArm *a, Buf *b) {
   int k = a->key, mi = a->mi;
-  int so = plan_slot_oint(c, id, ret);
   if (a->kind == PA_NATIVE || (a->kind == PA_ARITY && mi < 0)) {
     int nk = comp_native_binding_class(c, k, name);
     int nmi = comp_native_method_find(c, nk >= 0 ? nk : k, name, 0, 0);
@@ -709,9 +710,10 @@ void emit_poly_user_arms0(Compiler *c, int id, const char *name, int argc, TyKin
     if (p->arm[i].key >= 0 && p->arm[i].key < c->nclasses) arms[n++] = p->arm[i];
   if (g_plan_check) cplan_served("poly-user0");
   ArmText *at = calloc((size_t)(n > 0 ? n : 1), sizeof *at);
+  int so = n > 0 && plan_slot_oint(c, id, ret);
   for (int i = 0; i < n; i++) {
     if (at) at[i].k = arms[i].key;
-    emit_poly_user_arm0(c, id, name, ret, tv, tr, blk_tmp0, &arms[i], at ? &at[i].t : b);
+    emit_poly_user_arm0(c, id, name, ret, tv, tr, blk_tmp0, so, &arms[i], at ? &at[i].t : b);
   }
   if (at) arm_texts_flush(at, n, b);
   free(at);
