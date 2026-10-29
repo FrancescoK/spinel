@@ -13300,12 +13300,14 @@ int fold_static_is_a(Compiler *c) {
     if (sub >= 0 && sub < n0 && nt_kind(nt, sub) == NK_IfNode) is_elsif[sub] = 1;
   }
   /* the call site of each builtin clone (`enum_copy`), for the omitted-
-     parameter test below */
+     parameter test below; -2 for a clone more than one call takes (the
+     copy a held name's sends share, enum_send_copy_take), whose arms one
+     call cannot decide for the others */
   int *copy_site = (int *)malloc(sizeof(int) * (size_t)(n0 ? n0 : 1));
   for (int id = 0; copy_site && id < n0; id++) copy_site[id] = -1;
   NT_FOREACH_KIND(nt, NK_CallNode, cid) {
     int cp = (int)nt_int(nt, cid, "enum_copy", -1);
-    if (copy_site && cp >= 0 && cp < n0) copy_site[cp] = cid;
+    if (copy_site && cp >= 0 && cp < n0) copy_site[cp] = copy_site[cp] == -1 ? cid : -2;
   }
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
@@ -14120,13 +14122,16 @@ int desugar_builtin_enum_calls(Compiler *c) {
        inlining, closures and all. */
     int range_arm = rt == TY_POLY && nown == 0 && !safe_nav && blk < 0 && an == 0 && is_minmax_pair(name);
     /* A boxed receiver of a method a reopening of Enumerable adds may be a
-       String or an Integer, which no Enumerable is: unlike a builtin's
-       copy, whose walk checks the value is one it can enumerate
-       (sp_poly_iter_check), the reopening's body runs on whatever it is
-       handed, and a boxed String's `special?` (`count > 1`) reached
-       String#count and raised ArgumentError. Those classes take the call
-       as written, whose answer is CRuby's NoMethodError, as a program class
-       with no Enumerable does. */
+       String, an Integer, a Regexp or a program's plain object, which no
+       Enumerable is: unlike a builtin's copy, whose walk checks the value is
+       one it can enumerate (sp_poly_iter_check), the reopening's body runs
+       on whatever it is handed, and a boxed String's `special?` (`count >
+       1`) reached String#count and raised ArgumentError. Only a value that
+       is an Enumerable -- an Array, a Hash, a Range, an Enumerator, a
+       Struct, an IO, or an instance of a program class with Enumerable
+       behind it -- takes the copy; any other takes the call as written,
+       whose answer is CRuby's NoMethodError. (`is_a?(Enumerable)` itself
+       answers false for a boxed builtin.) */
     int scal_arm = rt == TY_POLY && !safe_nav && !range_arm && !wo_arm && nt_int(nt, copy, "enum_own_def", 0);
     if (wo_arm) ndef = 0;   /* the arm as written answers every other class */
     if (ndef > 0 || safe_nav || range_arm || wo_arm || scal_arm) {
@@ -14161,15 +14166,39 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
       if (scal_arm) {
-        static const char *const scal[] = { "String", "Integer", "Float", "Symbol", "NilClass", "TrueClass",
-                                            "FalseClass", NULL };
-        for (int k = 0; scal[k]; k++) {
-          int ia = enum_is_a_named(c, rn, scal[k]);
+        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO" };
+        const int nenums = (int)(sizeof enums / sizeof enums[0]);
+        int is_enum = -1;
+        for (int k = 0; k < nenums + c->nclasses; k++) {
+          int ia;
+          if (k < nenums) ia = enum_is_a_named(c, rn, enums[k]);
+          else {
+            int ck = k - nenums;
+            ClassInfo *ci = &c->classes[ck];
+            if (ci->is_native_class || comp_class_is_module(c, ci) || !(ci->instantiated || ci->ctor_reachable) ||
+                !comp_enum_behind(c, ck)) continue;
+            int zero = 0;
+            ia = enum_is_a_chain(c, rn, &ck, &zero, 1);
+          }
           if (ia < 0) { free(chained); free(in_default); free(defcls); return changed; }
-          if (pred < 0) { pred = ia; continue; }
+          if (is_enum < 0) { is_enum = ia; continue; }
           int orn = nt_new_node(nt, "OrNode");
           if (orn < 0) { free(chained); free(in_default); free(defcls); return changed; }
-          nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", ia);
+          nt_node_set_ref(nt, orn, "left", is_enum); nt_node_set_ref(nt, orn, "right", ia);
+          is_enum = orn;
+        }
+        int par = nt_new_node(nt, "ParenthesesNode"), pst = nt_new_node(nt, "StatementsNode");
+        int notn = nt_new_node(nt, "CallNode");
+        if (par < 0 || pst < 0 || notn < 0) { free(chained); free(in_default); free(defcls); return changed; }
+        nt_node_set_arr(nt, pst, "body", &is_enum, 1);
+        nt_node_set_ref(nt, par, "body", pst);
+        nt_node_set_str(nt, notn, "name", "!");
+        nt_node_set_ref(nt, notn, "receiver", par);
+        if (pred < 0) pred = notn;
+        else {
+          int orn = nt_new_node(nt, "OrNode");
+          if (orn < 0) { free(chained); free(in_default); free(defcls); return changed; }
+          nt_node_set_ref(nt, orn, "left", pred); nt_node_set_ref(nt, orn, "right", notn);
           pred = orn;
         }
       }

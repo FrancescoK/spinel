@@ -88,3 +88,21 @@ class Det
   def detect = :own
 end
 p Det.new.public_send(dt), Det.new.send(:detect)
+
+# a copy several held sends share keeps the arm that reads an argument one
+# of them passes and another omits
+h = {}
+p [2].public_send(t, h), h, [1, 1].public_send(t)
+
+# on a boxed value, only an Enumerable takes the reopening's method:
+# a Struct and a program class with Enumerable do, a plain object, a
+# Regexp, a Rational, a Time or a lambda raises NoMethodError, written or sent
+class Plain
+  def initialize = @v = 1
+end
+Pair = Struct.new(:a, :b)
+[Pair.new(1, 2), Bag.new, Plain.new, /a/, 1.5r, Time.at(0), -> {}].each do |r|
+  p [r.special?, r.public_send(m)]
+rescue NoMethodError => e
+  p e.message.sub(/ for .*/, "")
+end
