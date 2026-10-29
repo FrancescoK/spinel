@@ -1991,12 +1991,10 @@ static int mf_chain_covers(const NodeTable *nt, int node, const char *base, int 
 
 /* The module ModuleNode `dn` opens, or -1. */
 static int mf_module_of(Compiler *c, int dn) {
-  const NodeTable *nt = c->nt;
   for (int k = 0; k < c->nclasses; k++) if (c->classes[k].def_node == dn) return k;
   /* a ModuleNode names its module through constant_path, not a "name" */
-  int cp = nt_ref(nt, dn, "constant_path");
-  const char *mnm = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, dn, "name");
-  return mnm ? comp_class_index(c, mnm) : -1;
+  int ci = elab_header_class(c, dn, NULL, NULL);
+  return ci >= 0 ? ci : -1;
 }
 
 /* Does module body code at `node` (not the defs, classes and modules in
@@ -2625,9 +2623,8 @@ static int sg_body_class(Compiler *c, int n) {
       continue;
     if (best < 0 || sg_contains_in(nt, nt_ref(nt, best, "body"), k, 0, 1)) best = k;
   }
-  int cp = best >= 0 ? nt_ref(nt, best, "constant_path") : -1;
-  const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-  return cn ? comp_class_index(c, cn) : -1;
+  int ci = elab_header_class(c, best, NULL, NULL);
+  return ci >= 0 ? ci : -1;
 }
 
 /* Does call w write instance variable `name` (with its '@'), of an object a
@@ -3409,9 +3406,7 @@ static void stamp_const_write_encl(Compiler *c, int id, int ci) {
   NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return;
   if (ty_k == NK_ClassNode || ty_k == NK_ModuleNode) {
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    int mci = mn ? comp_class_index(c, mn) : -1;
+    int mci = elab_header_class(c, id, NULL, NULL);
     if (mci >= 0) ci = mci;
   }
   else if (ty_k == NK_ConstantWriteNode && ci >= 0)
@@ -3503,9 +3498,7 @@ void register_structs(Compiler *c) {
     else if (ty_k == NK_ClassNode) {
       int sup = nt_ref(nt, id, "superclass");
       if (!is_struct_call(c, sup)) continue;
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      int ci = cname ? comp_class_index(c, cname) : -1;
+      int ci = elab_header_class(c, id, NULL, NULL);
       if (ci >= 0) register_struct_members(c, &c->classes[ci], sup);
     }
   }
@@ -3874,9 +3867,7 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
        same name in another class's body, or at the top level of a flattened
        program, is no call of this class's method */
     int ec = are_enclosing_class(c, n);
-    int ecp = ec >= 0 ? nt_ref(nt, ec, "constant_path") : -1;
-    const char *ecn = ecp >= 0 ? nt_str(nt, ecp, "name") : NULL;
-    if (!ecn || comp_class_index(c, ecn) != cid) continue;
+    if (elab_header_class(c, ec, NULL, NULL) != cid) continue;
     char msg[300];
     snprintf(msg, sizeof msg, "`%s` is called in the class body before an alias rebinds it: an alias binds for the "
              "whole program here, so the call would run the aliased body, not the `def %s` Ruby runs at that point. "
@@ -8218,9 +8209,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     for (int i = 0; i < node_count; i++) body_cls[i] = -1;
     for (int cn = 0; cn < node_count; cn++) {
       if (nt_kind(nt, cn) != NK_ClassNode && nt_kind(nt, cn) != NK_ModuleNode) continue;
-      int cp = nt_ref(nt, cn, "constant_path");
-      const char *cnm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      int bci = cnm ? comp_class_index(c, cnm) : -1;
+      int bci = elab_header_class(c, cn, NULL, NULL);
       if (bci < 0) continue;
       int bd = nt_ref(nt, cn, "body");
       int bn = 0;

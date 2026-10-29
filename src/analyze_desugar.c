@@ -2708,7 +2708,7 @@ static void cg_cands_collect(Compiler *c, int n0, CgCands *cs) {
       if (!rn) rn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, id, "name");
       const char *rl = rn ? strrchr(rn, ':') : NULL;
       v = rl ? rl + 1 : rn;
-      int ci = cp >= 0 && nt_str(nt, cp, "name") ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+      int ci = elab_header_class(c, id, NULL, NULL);
       if (ci >= 0) owner = c->classes[ci].enclosing_class;
     }
     cg_cand_add(cs, v, owner, 0);
@@ -22973,13 +22973,10 @@ int desugar_method_added_hook(Compiler *c) {
     int n = 0; const int *stmts = nt_arr(nt, body, "body", &n);
     if (n <= 0) continue;
     /* the class this body belongs to, as the analysis placed it (nested
-       `module M; class C` included), else by its written name */
+       `module M; class C` included), else by its written name. The fallback
+       reads the class recorded for that header. */
     int ci = c->node_cbody ? c->node_cbody[stmts[0]] : -1;
-    if (ci < 0) {
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *cname = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      ci = cname ? comp_class_index(c, cname) : -1;
-    }
+    if (ci < 0) ci = elab_header_class(c, id, NULL, NULL);
     if (ci < 0 || ci >= c->nclasses) continue;
     if (comp_cmethod_in_chain(c, ci, "method_added", NULL) < 0) continue;
     int *out = malloc(sizeof(int) * (size_t)(2 * n));
@@ -24128,9 +24125,7 @@ static int ffi_sclass_defines(Compiler *c, int ci, const char *name) {
   for (int m = 0; m < nt->count; m++) {
     NodeKind mk = nt_kind(nt, m);
     if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, m, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cn || comp_class_index(c, cn) != ci) continue;
+    if (elab_header_class(c, m, NULL, NULL) != ci) continue;
     int body = nt_ref(nt, m, "body");
     int bn = 0; const int *bs = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn; k++) {
@@ -24181,8 +24176,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
         continue;
       }
       if (mk != NK_ClassNode && mk != NK_ModuleNode) continue;
-      int cp = nt_ref(nt, m, "constant_path");
-      int ci = cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+      int ci = elab_header_class(c, m, NULL, NULL);
       if (ci < 0) continue;
       ffi_mark_body(nt, nt_ref(nt, m, "body"), ci, body_cls, n0);
     }

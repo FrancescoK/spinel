@@ -5704,8 +5704,7 @@ int class_value_escapes(Compiler *c, int cid) {
     if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) {
       int owner = -2;   /* a singleton class body's self: any class */
       if (k != NK_SingletonClassNode) {
-        int cp = nt_ref(nt, u, "constant_path");
-        owner = cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1;
+        owner = elab_header_class(c, u, NULL, NULL);
         if (owner < 0) owner = -2;
       }
       mark_body_self(nt, nt_ref(nt, u, "body"), owner, body_self, 0);

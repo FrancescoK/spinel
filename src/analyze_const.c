@@ -298,7 +298,7 @@ static int cw_cref_at(ConstWalk *w, int id) {
       if (nt_int(nt, a, "class_new_anonymous", 0)) continue;
       int cp = nt_ref(nt, a, "constant_path");
       const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      int ci = nm ? comp_class_index(w->c, nm) : -1;
+      int ci = elab_header_class(w->c, a, NULL, NULL);
       const char *q = ci >= 0 ? class_ruby_name(w->c, ci) : nm;
       if (!q) continue;
       snprintf(buf, sizeof buf, "%s", q);

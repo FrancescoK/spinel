@@ -20274,7 +20274,7 @@ static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, id, "constant_path");
   const char *name = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-  int ci = name ? comp_class_index(c, name) : g_class_body_id;
+  int ci = name ? elab_header_class(c, id, NULL, NULL) : g_class_body_id;
   emit_class_body_stmts(c, ci, nt_ref(nt, id, "body"), b, indent);
   if (nt_int(nt, id, "class_new_anonymous", 0) == 1)
     emit_class_assign_name(c, ci, class_ruby_name(c, ci), b, indent);
