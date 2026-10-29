@@ -10,8 +10,9 @@
 # The methods of a module included into or prepended to Enumerable reach an
 # Array, a Hash and a Range too, directly and from a copy (trap), behind
 # Enumerable's own def of a name when included and ahead of it when
-# prepended, the last included first; a module method that calls super is
-# not reached (a call of it still raises NoMethodError).
+# prepended, the last included first and of `include A, B` (or `prepend
+# A, B`) A; a module method that calls super is not reached (a call of it
+# still raises NoMethodError).
 module Enumerable
   def call_open = open
   def open = 42
@@ -105,6 +106,15 @@ module First; def order = :first; end
 module Second; def order = :second; end
 module Enumerable; include First; include Second; end
 p [1].order
+
+module ArgA; def arg_order = :arg_a; end
+module ArgB; def arg_order = :arg_b; end
+module Enumerable; include ArgA, ArgB; end
+p [1].arg_order
+module PreA; def pre_order = :pre_a; end
+module PreB; def pre_order = :pre_b; end
+module Enumerable; prepend PreA, PreB; def pre_order = :enumerable_pre; end
+p [1].pre_order
 
 module UpCall; def up_call = super; end
 module Enumerable; include UpCall; end

@@ -29,5 +29,7 @@ private method 'warn' called for an instance of Array
 :ahead
 :secret
 :second
+:arg_a
+:pre_a
 NoMethodError
 40

@@ -12872,10 +12872,12 @@ static int bi_def_calls_super(const NodeTable *nt, int d) {
    ns (bi_opens) whose methods a builtin receiver takes through Enumerable,
    lowest precedence first, as a later entry of a name replaces an earlier
    one: part 0 the chains of the modules its bodies include (the first
-   included lowest), part 1 its own defs (bare or wrapped in a visibility
-   call), part 2 the chains of the modules they prepend (the last prepended
-   highest). A module the walk has reached already is left out, and so is
-   a module's method that calls super (bi_def_calls_super). */
+   included lowest, and of one `include A, B` the last argument), part 1
+   its own defs (bare or wrapped in a visibility call), part 2 the chains
+   of the modules they prepend (the last prepended highest, and of one
+   `prepend A, B` the first argument). A module the walk has reached
+   already is left out, and so is a module's method that calls super
+   (bi_def_calls_super). */
 static void own_enum_mixin_defs(const NodeTable *nt, const char *ns, const char *leaf, int part, BiSeen *seen,
                                 int **own, int *nown) {
   for (int id = 0; id < nt->count; id++) {
@@ -12892,7 +12894,7 @@ static void own_enum_mixin_defs(const NodeTable *nt, const char *ns, const char 
         continue;
       }
       const int *av; int an = bi_mixin_args(nt, bb[j], part == 2, &av);
-      for (int a = 0; a < an; a++) {
+      for (int a = an - 1; a >= 0; a--) {
         const char *ml = bi_mixin_module(nt, av[a], key, at, sizeof at);
         if (!ml || bi_seen(seen, at, ml)) continue;
         for (int p = 0; p < 3; p++) own_enum_mixin_defs(nt, at, ml, p, seen, own, nown);
