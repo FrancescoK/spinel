@@ -1,0 +1,72 @@
+name: Windows
+
+# The native Windows build, as docs/windows.md sets it up: MSYS2's UCRT64
+# gcc on a Windows runner builds the compiler and the runtime, and the
+# compiler then builds and runs a small program. It was a cross-build on
+# Linux, which stopped linking when ubuntu-latest moved to 26.04 (its
+# mingw-w64 13 builds its own libraries against msvcrt, and it has no
+# UCRT-targeting toolchain) and which could not see a build step that only
+# fails on Windows (a generator requiring pty).
+# Native Windows is community-maintained and nothing waits on it, so this
+# never blocks a push or a merge: it is a workflow of its own, not a
+# required check, and `continue-on-error` keeps a failure from failing the
+# run -- it only marks the job, for whoever maintains lib/win32/ to see.
+# It runs on master pushes, and on pull requests that touch the Windows
+# build, so it adds nothing to the queue of the other pull requests.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+    paths:
+      - 'lib/win32/**'
+      - 'win32.mk'
+      - 'common.mk'
+      - 'docs/windows.md'
+      - '.github/workflows/windows.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  native:
+    name: MSYS2 UCRT64
+    runs-on: windows-latest
+    continue-on-error: true
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      # The generated headers are compared byte for byte; CRLF checkouts
+      # would differ from what the generators write.
+      - run: git config --global core.autocrlf false
+        shell: bash
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      # The packages docs/windows.md lists.
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: false
+          install: make diffutils curl tar git mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-ruby
+
+      - name: Fetch libprism sources
+        run: make deps
+
+      - name: Build the compiler and the runtime
+        run: make -j$(nproc) bin/spinel lib/libspinel_rt.a lib/libspinel_rt_mt.a
+
+      - name: Compile and run a program
+        run: |
+          printf 'puts [1, 2, 3].map { |x| x * 2 }.sum\nputs "%%s-%%d" %% ["ok", 42]\nh = {a: 1}; h[:b] = 2; p h\n' > smoke.rb
+          bin/spinel smoke.rb -o smoke.exe
+          test "$(./smoke.exe)" = "$(printf '12\nok-42\n{a: 1, b: 2}')"

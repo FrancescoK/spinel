@@ -2,9 +2,9 @@
 
 **Community-maintained, best effort.** The native Windows build is kept
 working by its users, not by Spinel's maintainers: it may lag behind
-`master`, and nothing in CI waits on it (the one check is a compile-only
-cross-build of the compiler and the runtime with `x86_64-w64-mingw32-gcc`
-on Linux, which does not block a push). [WSL](https://learn.microsoft.com/windows/wsl/)
+`master`, and nothing in CI waits on it (the one check builds the compiler
+and the runtime with MSYS2's UCRT64 gcc on a Windows runner and runs a small
+program, and does not block a push). [WSL](https://learn.microsoft.com/windows/wsl/)
 is the dependable way to run Spinel on Windows: there it builds and runs as
 the Linux toolchain. Everything Windows needs lives in `lib/win32/` and
 `win32.mk`, so that if it ever stands in the way of a POSIX change and is
@@ -13,6 +13,8 @@ not fixed promptly, a maintainer can remove it cheaply.
 ```sh
 # in RubyInstaller's Devkit shell (`ridk enable`), or an MSYS2 UCRT64 shell
 pacman -S --needed make diffutils curl tar git mingw-w64-ucrt-x86_64-gcc
+# MSYS2 only (the Devkit has RubyInstaller's): the build runs Ruby generators
+pacman -S --needed mingw-w64-ucrt-x86_64-ruby
 make deps && make
 bin/spinel app.rb          # -> app.exe
 ./app.exe
