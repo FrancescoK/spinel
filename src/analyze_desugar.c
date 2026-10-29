@@ -9506,6 +9506,23 @@ static int recv_may_reach_program_method(Compiler *c, int call, TyKind rt, const
   return program_defines_object_method_named(c, name);
 }
 
+/* The in-place Array iterators have no blockless form yet (CRuby's
+   Enumerator). A method's own block forwarded to one, where the method is
+   also called without a block, stays an `&` and is refused: split on
+   block_given?, the blockless arm raised NoMethodError at run time. */
+static int fwd_own_block_to_inplace_iter(Compiler *c, int id, int anon, int ex, TyKind rt, const char *name) {
+  static const char *const inplace[] = { "map!", "collect!", "select!", "filter!", "reject!",
+    "keep_if", "delete_if", "sort_by!", NULL };
+  const NodeTable *nt = c->nt;
+  int hit = 0;
+  for (int k = 0; inplace[k] && !hit; k++) hit = sp_streq(name, inplace[k]);
+  if (!hit || !ty_is_array(rt)) return 0;
+  Scope *ms = comp_scope_of(c, id);
+  int own = anon || (ex >= 0 && nt_kind(nt, ex) == NK_LocalVariableReadNode && ms && ms->blk_param &&
+                     nt_str(nt, ex, "name") && sp_streq(nt_str(nt, ex, "name"), ms->blk_param));
+  return own && fwd_method_called_blockless(c, ms);
+}
+
 int desugar_value_callable_forwards(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -9724,6 +9741,7 @@ int desugar_value_callable_forwards(Compiler *c) {
     else {
       arity = ty_block_yield(rt, name, pty, 4);
       if (arity < 1) continue;  /* not a context-free iterator (or recv unresolved) */
+      if (fwd_own_block_to_inplace_iter(c, id, anon, ex, rt, name)) continue;
     }
 
     /* Hash forwarding. Hash's own select, filter, reject and to_h yield the

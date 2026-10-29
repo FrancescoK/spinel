@@ -3651,10 +3651,9 @@ static const BopShareRow bop_share_rows[] = {
      comparators (sort, sort!, min, max, minmax, bsearch, slice_when,
      chunk_while), cycle, find, detect, min_by and max_by with an argument,
      the seedless inject, product without an argument or zip with other
-     than one. ty_block_yield reads none of the in-place filters and
-     maps, uniq, uniq!, sort_by!, inject, each_with_object, the
-     comparators, cycle, or the run and tuple iterators but
-     each_slice and each_cons. Neither reads slice_before or slice_after:
+     than one. ty_block_yield reads none of uniq, uniq!, inject,
+     each_with_object, the comparators, cycle, or the run and tuple
+     iterators but each_slice and each_cons. Neither reads slice_before or slice_after:
      only the share analysis does.
    - Hash. The share analysis does not read each_entry, reverse_each,
      collect_concat, find_all, filter!, find_index, one?, take_while,
@@ -3705,17 +3704,17 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "flat_map",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, 0 },
   { BOP_ANY_ARRAY, "collect_concat",  0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, IRF_GAP_SHARE },
   { BOP_ANY_ARRAY, "filter_map",      0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, 0 },
-  { BOP_ANY_ARRAY, "map!",            0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
-  { BOP_ANY_ARRAY, "collect!",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "map!",            0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "collect!",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_SHAPE_BOXED },
   { BOP_ANY_ARRAY, "select",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "filter",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "reject",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "find_all",        0, 0, 1, { YS_ELEM }, IA_SOME, IRF_GAP_SHARE | IRF_GAP_SHAPE },
-  { BOP_ANY_ARRAY, "select!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "filter!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "reject!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "keep_if",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "delete_if",       0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "select!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "filter!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "reject!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "keep_if",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "delete_if",       0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
   { BOP_ANY_ARRAY, "find",            0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
   { BOP_ANY_ARRAY, "find",            1, 1, 1, { YS_ELEM }, IA_ONE, IRF_GAP_SHAPE },
   { BOP_ANY_ARRAY, "detect",          0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
@@ -3726,7 +3725,7 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "max_by",          0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
   { BOP_ANY_ARRAY, "max_by",          1, 1, 1, { YS_ELEM }, IA_SOME, IRF_GAP_SHAPE },
   { BOP_ANY_ARRAY, "sort_by",         0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
-  { BOP_ANY_ARRAY, "sort_by!",        0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "sort_by!",        0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
   { BOP_ANY_ARRAY, "group_by",        0, 0, 1, { YS_ELEM }, IA_GROUPS, 0 },
   { BOP_ANY_ARRAY, "partition",       0, 0, 1, { YS_ELEM }, IA_PARTS, 0 },
   { BOP_ANY_ARRAY, "sum",             0, 1, 1, { YS_ELEM }, IA_OTHER, 0 },
