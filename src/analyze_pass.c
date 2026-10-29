@@ -1842,7 +1842,7 @@ static int alias_side(Compiler *c, int n, AliasSide *out) {
     out->slot = &ci->ivar_types[iv]; out->cid = dc; out->iv = iv; out->reader = 1;
     return 1;
   }
-  if (!holder_of_node(c, n, &h)) return 0;
+  if (!holder_of_node_slot(c, n, &h)) return 0;
   switch (h.kind) {
     case HK_LOCAL:
       if (h.lv->is_param || h.lv->is_block_param) return 0;

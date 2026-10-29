@@ -52,6 +52,7 @@ int holder_cvar_owner(const Compiler *c, int node, const char *nm, int body) {
   return k >= 0 ? comp_cvar_owner(c, k, nm) : -1;
 }
 
+static int g_holder_bare;   /* (holder_of_node_slot) */
 void holder_ivar(const Compiler *c, int node, int cid, int cls_slot, HolderRef *out) {
   memset(out, 0, sizeof *out);
   out->kind = HK_IVAR;
@@ -60,11 +61,21 @@ void holder_ivar(const Compiler *c, int node, int cid, int cls_slot, HolderRef *
   out->cid = cid;
   out->cls_slot = (unsigned char)(cls_slot != 0);
   out->idx = cid >= 0 && out->name ? comp_ivar_index(&c->classes[cid], out->name) : -1;
-  out->r = repr_of_holder(c, out);
+  if (!g_holder_bare) out->r = repr_of_holder(c, out);
 }
 
 int holder_of_node(const Compiler *c, int node, HolderRef *out) {
   return holder_of_node_in(c, node, holder_cbody(c, node), out);
+}
+/* The holder alone, its representation left zero: for a caller that wants
+   the slot and not how it is stored (the alias widening asks it of every
+   aliasing write in every round, and the ivar's nil-byte family walk
+   behind each Repr was most of its time) */
+int holder_of_node_slot(const Compiler *c, int node, HolderRef *out) {
+  g_holder_bare = 1;
+  int r = holder_of_node(c, node, out);
+  g_holder_bare = 0;
+  return r;
 }
 
 int holder_of_node_in(const Compiler *c, int node, int body, HolderRef *out) {
@@ -123,7 +134,7 @@ int holder_of_node_in(const Compiler *c, int node, int body, HolderRef *out) {
   default:
     return 0;
   }
-  out->r = repr_of_holder(c, out);
+  if (!g_holder_bare) out->r = repr_of_holder(c, out);
   return 1;
 }
 
