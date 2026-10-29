@@ -6,7 +6,7 @@ class Box
 end
 
 m = ("si" + "ze").to_sym
-p [1, "ab"].map(&m)
+p [:abc, "ab"].map(&m)   # (Integer#size is the word size: 8, or 4 on a 32-bit target)
 x = [1, "ab"][1]
 p x.send(m)
 p({a: 1}.map(&m))
