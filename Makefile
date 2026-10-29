@@ -4570,6 +4570,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  $(SPINEL) $$flags test/poly_operator_param_held_classes.rb -c --no-line-map -o "$$tmp/pph.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_operator_param_held_classes: -c)"; ok=0; }; \
 	  $(SPINEL) $$flags packages/csv/test/csv_parse_struct_members_typed.rb -c --no-line-map -o "$$tmp/cps.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (csv_parse_struct_members_typed: -c)"; ok=0; }; \
 	  [ "$$(awk '/^struct sp_Point_s \{/,/^\}/' "$$tmp/cps.c" | grep -c 'sp_float iv_[xy];')" = 2 ] || { echo "infer-test: FAIL (a store in a method no call reaches typed every Struct's members, #10489)"; ok=0; }; \
+	  $(SPINEL) $$flags test/class_facts_row_of_table.rb -c --no-line-map -o "$$tmp/crt.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (class_facts_row_of_table: -c)"; ok=0; }; \
+	  [ "$$(awk '/^struct sp_Cell_s \{/,/^\}/' "$$tmp/crt.c" | grep -c 'sp_int iv_[xy];')" = 2 ] || { echo "infer-test: FAIL (a key stored into a row of a table reached the table's every read and typed a Struct's members, #10520)"; ok=0; }; \
 	  grep -q 'sp_Vec__plus(sp_Vec \*self, sp_Vec \* lv_o)' "$$tmp/pph.c" || { echo "infer-test: FAIL (an operator on a boxed value that holds no Vec boxed Vec#+'s parameter)"; ok=0; }; \
 	  grep -q 'sp_Money__plus(sp_Money \*self, sp_RbVal lv_other)' "$$tmp/pph.c" || { echo "infer-test: FAIL (an operator on a boxed value that can be a Money left Money#+'s parameter narrow, #3511)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_array_element_receiver.rb -c --no-line-map -o "$$tmp/oer.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_element_receiver: -c)"; ok=0; }; \
