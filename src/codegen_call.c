@@ -2444,12 +2444,57 @@ int poly_ostruct_member_call(Compiler *c, int id, const char *name, int recv, in
          ostruct_member_name(name) && !sp_streq(name, "count") && cls_fact_may_ostruct(c, recv);
 }
 
-int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
-  if (g_poly_builtin_arm) return 0;
+static int poly_name_user_claimed_walk(Compiler *c, const char *name, int argc) {
   for (int k = 0; k < c->nclasses; k++)
     if (comp_poly_arm_defines_n(c, k, name, argc) ||
         (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
   return 0;
+}
+/* The answer per name and arity, kept as user_defines_or_reads keeps its
+   own: while the scope index is frozen and neither the class shape nor the
+   counts move. Each ask walked every class, and the poly emitters ask it
+   at each boxed call, so a program of many classes paid classes x calls
+   (#10546). */
+static char **pnuc_key; static unsigned char *pnuc_ans; static int pnuc_cap, pnuc_n;
+static unsigned pnuc_gen, pnuc_shape; static int pnuc_nscopes = -1, pnuc_nclasses = -1;
+int poly_name_user_claimed(Compiler *c, const char *name, int argc) {
+  if (g_poly_builtin_arm) return 0;
+  if (!name || !comp_scope_index_is_frozen()) return poly_name_user_claimed_walk(c, name, argc);
+  if (pnuc_gen != comp_scope_index_gen() || pnuc_shape != comp_class_shape_gen() ||
+      pnuc_nscopes != c->nscopes || pnuc_nclasses != c->nclasses) {
+    for (int i = 0; i < pnuc_cap; i++) free(pnuc_key ? pnuc_key[i] : NULL);
+    free(pnuc_key); free(pnuc_ans);
+    pnuc_key = NULL; pnuc_ans = NULL; pnuc_cap = pnuc_n = 0;
+    pnuc_gen = comp_scope_index_gen(); pnuc_shape = comp_class_shape_gen();
+    pnuc_nscopes = c->nscopes; pnuc_nclasses = c->nclasses;
+  }
+  if (pnuc_n * 2 >= pnuc_cap) {
+    int ocap = pnuc_cap; char **ok = pnuc_key; unsigned char *oa = pnuc_ans;
+    pnuc_cap = ocap ? ocap * 2 : 256;
+    pnuc_key = calloc((size_t)pnuc_cap, sizeof(char *));
+    pnuc_ans = calloc((size_t)pnuc_cap, 1);
+    if (!pnuc_key || !pnuc_ans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!ok[i]) continue;
+      unsigned j = sp_strhash(ok[i]) & (unsigned)(pnuc_cap - 1);
+      while (pnuc_key[j]) j = (j + 1) & (unsigned)(pnuc_cap - 1);
+      pnuc_key[j] = ok[i]; pnuc_ans[j] = oa[i];
+    }
+    free(ok); free(oa);
+  }
+  /* the key is the arity, a space and the name */
+  char key[300];
+  snprintf(key, sizeof key, "%d %s", argc, name);
+  unsigned j = sp_strhash(key) & (unsigned)(pnuc_cap - 1);
+  while (pnuc_key[j]) {
+    if (sp_streq(pnuc_key[j], key)) return pnuc_ans[j];
+    j = (j + 1) & (unsigned)(pnuc_cap - 1);
+  }
+  int ans = poly_name_user_claimed_walk(c, name, argc);
+  pnuc_key[j] = strdup(key);
+  if (!pnuc_key[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  pnuc_ans[j] = (unsigned char)ans; pnuc_n++;
+  return ans;
 }
 
 /* 1 iff a class of the program's own has a class method `name`: a Class or
