@@ -42184,8 +42184,9 @@ static void desugar_block_arg_order(Compiler *c) {
     nt_node_set_int(nt, id, "node_col", col);
     nt_node_set_ref(nt, id, "body", stmts);
     comp_grow_node_arrays(c);
+    /* the new nodes run in the call's scope and class body */
     int encl = c->nscope[id];
-    for (int j = first; j < nt->count; j++) c->nscope[j] = encl;
+    for (int j = first; j < nt->count; j++) { c->nscope[j] = encl; c->node_cbody[j] = c->node_cbody[id]; }
   }
 }
 

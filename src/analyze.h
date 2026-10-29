@@ -151,8 +151,11 @@ int prog_cmp_run(Compiler *c, int a, int b, int at, const char *reader);   /* pr
    the load graph places, each other region one file it does not place;
    seq is the order statements run in. region -1: no point (a method body,
    a lambda or a block run later). elab_cmp answers PROG_BEFORE / AFTER /
-   SAME, or PROG_UNKNOWN across regions or without a point. */
-typedef struct { int region, seq; } LoadPoint;
+   SAME, or PROG_UNKNOWN across regions or without a point. node: the node
+   whose point it is (elab_point_of), against which a query orders the
+   entries of its own statement as they run (lr_run_order); -1 for a
+   statement's point. */
+typedef struct { int region, seq, node; } LoadPoint;
 typedef struct LoadRecord LoadRecord;
 LoadPoint elab_point_of(Compiler *c, int node);
 int elab_point_may(Compiler *c, int node);

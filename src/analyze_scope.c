@@ -5480,7 +5480,7 @@ static LoadPoint gvar_first_read(Compiler *c, const char *gname) {
   static const NodeKind rk[] = { NK_GlobalVariableReadNode, NK_GlobalVariableOperatorWriteNode,
                                  NK_GlobalVariableOrWriteNode, NK_GlobalVariableAndWriteNode };
   const NodeTable *nt = c->nt;
-  LoadPoint best = { -1, -1 };
+  LoadPoint best = { -1, -1, -1 };
   for (int q = 0; q < 4; q++)
     NT_FOREACH_KIND(nt, rk[q], n) {
       const char *nm = nt_str(nt, n, "name");
