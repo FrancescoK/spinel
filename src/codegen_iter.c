@@ -3856,11 +3856,11 @@ static int emit_poly_recv_block_dispatch_x(Compiler *c, int id, Buf *b, int inde
   int recv = nt_ref(nt, id, "receiver");
   int block = nt_ref(nt, id, "block");
   if (g_prbd_skip == id) return 0;
-  int cand[64];
+  int cand[CPB_MAX_CANDS];
   const PolyPlan *plan = cplan_poly_block(c, id);
   int nc = 0;
   for (int i = 0; i < plan->n; i++)
-    if (plan->arm[i].kind == PA_USER && nc < 64) cand[nc++] = plan->arm[i].key;
+    if (plan->arm[i].kind == PA_USER && nc < CPB_MAX_CANDS) cand[nc++] = plan->arm[i].key;
   if (nc == 0) return 0;
   int trecv = ++g_tmp;
   /* Build the whole switch into a scratch buffer first. `emit_inline_call`
