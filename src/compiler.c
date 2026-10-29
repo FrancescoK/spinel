@@ -598,6 +598,10 @@ void comp_free(Compiler *c) {
   free(c->gvars);
   free(c->gvar_ix);
   gvar_writes_free(c);
+  free(c->mih_head);
+  free(c->mih_first);
+  free(c->mih_nodes);
+  free(c->mih_calls);
   for (int i = 0; i < c->nconsts; i++) free(c->consts[i].name);
   free(c->consts);
   free(c->toplevel_includes);

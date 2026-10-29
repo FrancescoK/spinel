@@ -1587,6 +1587,15 @@ typedef struct {
   /* the names the program's global writes assign, as of the node table it
      was made for (analyze_infer.c, gvar_has_write; NULL before the first ask) */
   struct GvarWrites *gvar_writes;
+  /* the inline hint's call counts (codegen.c, mih_count_calls): the first
+     scope of each name, hashed (mih_head, mih_cap slots), and each scope's
+     first scope of its name (mih_first) */
+  int *mih_head, *mih_first, mih_cap;
+  /* ...and its counts: the AST nodes of each scope (mih_nodes) and the call
+     sites naming each first scope's method (mih_calls), for the node table
+     mih_nt held mih_ntcount nodes of and mih_nscopes scopes */
+  int *mih_nodes, *mih_calls, mih_nscopes, mih_ntcount;
+  const NodeTable *mih_nt;
   /* the classes a boxed receiver can be an instance of, per call, and the
      name indexes the walk that answers it reads (analyze_scope.c's
      poly_ivar_set_reaches), built on first use and freed with the compiler */
