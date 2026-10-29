@@ -505,6 +505,10 @@ int cplan_missing_in_order(Compiler *c, int v);
    none of the program's (Object's top level), below -1 for one it does not
    know */
 int cplan_const_recv_class(Compiler *c, int id, int recv);
+/* The self where call id runs, as the load record has it there
+   (elab_self_at), asked in the plan's frame: a program class or module,
+   -1 for main, below -1 for one it does not know */
+int cplan_self_class(Compiler *c, int id);
 /* Does the plan route call id, a class body's call on self the desugar
    spelled with the class (`rand(2)` -> `U.rand(2)`), to Kernel's module
    function of the name: the class's own method of it is not defined where

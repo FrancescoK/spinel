@@ -1211,6 +1211,13 @@ int cplan_const_recv_class(Compiler *c, int id, int recv) {
   if (framed) elab_plan_leave(c);
   return ci;
 }
+/* See call_plan.h. */
+int cplan_self_class(Compiler *c, int id) {
+  int framed = elab_plan_enter(c, id);
+  int ci = elab_self_at(c, id);
+  if (framed) elab_plan_leave(c);
+  return ci;
+}
 int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
   const NodeTable *nt = c->nt;
   const char *name = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
@@ -1218,7 +1225,7 @@ int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
   NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
   int cr = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode;
   if (!name || (recv >= 0 && !cr && rk != NK_SelfNode) || an_scopes_named_first(c, name) < 0) return CM_NONE;
-  int ci = cr ? cplan_const_recv_class(c, id, recv) : elab_self_at(c, id);
+  int ci = cr ? cplan_const_recv_class(c, id, recv) : cplan_self_class(c, id);
   if (ci < -1 || ci >= c->nclasses || (cr && ci < 0)) return CM_NONE;
   /* a method the tables answer for self, which the record proves is not
      defined where the call runs: a class's class methods, main's (and a
@@ -1306,7 +1313,7 @@ int cplan_self_builtin(Compiler *c, int id) {
          call_target(c, id, ci, name, CT_CMETHOD, NULL) < 0 && is_kernel_module_function(name);
 }
 const char *cplan_self_text(Compiler *c, int id, int ci, char *buf, size_t cap) {
-  int self = id >= 0 ? elab_self_at(c, id) : -2;
+  int self = id >= 0 ? cplan_self_class(c, id) : -2;
   if (self >= 0 && self < c->nclasses) return cm_self_name(c, self, buf, cap);
   if (self == -1 || ci < 0) return cm_self_name(c, -1, buf, cap);
   if (comp_class_anonymous(c, ci)) return NULL;

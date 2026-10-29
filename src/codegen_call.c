@@ -21999,7 +21999,7 @@ static void emit_missing_raise(Compiler *c, int m, int kind, const char *self, i
   else if (kind == CM_NAMEERROR) buf_printf(b, "\"undefined local variable or method '%s' for %s\"", name, self);
   else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1])", name, self);
   buf_puts(b, ", ");
-  int si = recv < 0 ? elab_self_at(c, m) : -2;
+  int si = recv < 0 ? cplan_self_class(c, m) : -2;
   if (recv >= 0) emit_boxed(c, recv, b);
   else if (si >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", si);
   else buf_puts(b, si == -1 ? "sp_main_self()" : "sp_box_nil()");
