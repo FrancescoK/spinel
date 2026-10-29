@@ -764,6 +764,12 @@ int yield_target_push(int block, int saved_block, const char *owner, int nren,
                       const char *brk, int brk_ebase);   /* codegen_iter.c */
 void yield_target_pop(int pushed, int saved_cur);
 int yield_target_cur(void);
+/* Where a literal block's `return` goes, recorded while the call holding
+   the block is spliced (codegen_iter.c): enter when the splice makes the
+   block current, leave with what enter answered when it is done. */
+typedef struct { const char *label, *var; TyKind rt; int ro, exc, ens, set; } BlockRetHome;
+BlockRetHome block_ret_home_enter(int block, int saved_block);
+void block_ret_home_leave(int block, BlockRetHome old);
 extern const char *g_yield_self_fallback;        /* see codegen_util.c */
 extern const char *g_yield_self_fallback2;
 extern const char *g_yield_self_deref_fallback2;

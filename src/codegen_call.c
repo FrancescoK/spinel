@@ -307,6 +307,9 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   g_block_id = fwd_block ? saved_block : block;
   g_block_nren = fwd_block ? saved_bnren : saved_nren;
   g_block_param_name = m->blk_param;
+  /* a literal block's `return` leaves the method it is written in, which
+     may itself be spliced into its caller (its `_yretN` funnel) */
+  BlockRetHome saved_brh = block_ret_home_enter(g_block_id, saved_block);
 
   int st = ++g_tmp;
   buf_puts(b, "({\n");
@@ -517,6 +520,7 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, Buf *b) {
   buf_printf(b, "_t%d;\n", st);
   emit_indent(b, g_indent); buf_puts(b, "})");
 
+  block_ret_home_leave(fwd_block ? saved_block : block, saved_brh);
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_block_nren = saved_bnren;

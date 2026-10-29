@@ -289,7 +289,6 @@ static void yield_target_enter(int fe) {
    the inline's `_yretN`, not the real function's. Recorded per block node
    while the call holding the block is spliced, and given back after (the
    splices nest, so the recording does too). */
-typedef struct { const char *label, *var; TyKind rt; int ro, exc, ens, set; } BlockRetHome;
 static BlockRetHome *g_blk_ret_home; static int g_blk_ret_cap;
 
 BlockRetHome block_ret_home_enter(int block, int saved_block) {
