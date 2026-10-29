@@ -4495,11 +4495,30 @@ int io_reopen_class(Compiler *c, const char *name) {
 }
 /* The IO-family reopenings that define `name` themselves (public ones only
    when asked), in class order, into ks[]; their count. */
+/* The IO-family reopenings (io_family_class) in class order, kept while the
+   class count and shape hold: io_reopen_defs asked every class's name at
+   each call it serves, a boxed call's visibility check among them, which a
+   program of many classes paid at every site (#10546). */
+static int *iofc_ids, iofc_n, iofc_nclasses = -1;
+static unsigned iofc_shape;
+static const Compiler *iofc_c;
+static const int *io_family_classes(Compiler *c, int *n) {
+  if (iofc_c != c || iofc_nclasses != c->nclasses || iofc_shape != comp_class_shape_gen()) {
+    free(iofc_ids);
+    iofc_ids = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+    if (!iofc_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    iofc_n = 0;
+    for (int k = 0; k < c->nclasses; k++) if (io_family_class(c, k)) iofc_ids[iofc_n++] = k;
+    iofc_c = c; iofc_nclasses = c->nclasses; iofc_shape = comp_class_shape_gen();
+  }
+  *n = iofc_n;
+  return iofc_ids;
+}
 int io_reopen_defs(Compiler *c, const char *name, int public_only, int *ks, int max) {
-  int n = 0;
-  for (int k = 0; k < c->nclasses && n < max; k++) {
-    int def = -1;
-    if (!io_family_class(c, k)) continue;
+  int n = 0, nf = 0;
+  const int *fam = io_family_classes(c, &nf);
+  for (int i = 0; i < nf && n < max; i++) {
+    int k = fam[i], def = -1;
     if (comp_method_in_chain(c, k, name, &def) < 0 || def != k) continue;
     if (public_only && comp_method_vis_in_chain(c, k, name) != SP_VIS_PUBLIC) continue;
     ks[n++] = k;
