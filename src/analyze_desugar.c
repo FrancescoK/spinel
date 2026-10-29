@@ -10894,8 +10894,9 @@ static int fwd_new_node_like(NodeTable *nt, int like, const char *ty) {
    none and for a `...` forwarder's own def (which takes its target's
    shape), and only the first is a callee no def describes */
 static int def_exists_by_name(const NodeTable *nt, const char *name) {
-  for (int id = 0; id < nt->count; id++) {
-    if (!fwd_node_is(nt, id, "DefNode")) continue;
+  /* the defs from the kind index: the iter-block-shape pass asks this of
+     each block call on a boxed receiver, every round of the fixpoint */
+  NT_FOREACH_KIND(nt, NK_DefNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (nm && sp_streq(nm, name)) return 1;
   }
