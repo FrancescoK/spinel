@@ -1989,6 +1989,17 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       nt_ref(nt, id, "receiver") >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_ref(nt, id, "arguments") >= 0 && ty_is_array(comp_ntype(c, nt_ref(nt, id, "receiver"))))
     return 1;
+  /* ...and `a.clear` / `a&.clear` on an Array, `h.store(k, v)` on a Hash
+     and `x[k] = v` on either: the statement form empties or stores in a
+     compound, while the call answers the receiver or the value (`t { x.clear }` on a general Array
+     did not build) */
+  { int r = nt_ref(nt, id, "receiver");
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (r >= 0 && nt_ref(nt, id, "block") < 0 &&
+        ((sp_streq(nm, "clear") && nt_ref(nt, id, "arguments") < 0 && ty_is_array(rt)) ||
+         (sp_streq(nm, "store") && ty_is_hash(rt)) ||
+         (sp_streq(nm, "[]=") && (ty_is_hash(rt) || ty_is_array(rt)))))
+      return 1; }
   /* and a String mutator on a String held as the sp_String buffer (a block
      parameter that is the shared handle): the statement form appends
      through a void C call, while the call answers the String */
