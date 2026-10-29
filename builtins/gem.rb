@@ -13,6 +13,8 @@ module Gem
   def self.java_platform? = false
   def self.ruby_version = Version.new(RUBY_VERSION)
   def self.platforms = []
+  # no gem can provide a path: a compiled program has no gem to activate
+  def self.try_activate(path) = false
 
   # Gem::Version: the runs of digits and of letters ("1.0.rc10" is
   # 1, 0, "rc", 10), numeric ones compared as numbers, a string segment (a
