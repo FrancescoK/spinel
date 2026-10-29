@@ -1735,7 +1735,10 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        method's answer into a slot typed for the others. Asked of a
        candidate it can drop; the walk is memoized per call. */
     if (!poly_cls_value_reaches(c, id, k)) continue;
-    int kmi = cc8[ki].mi;
+    /* the method the call runs on k (cplan_cand_target): for a name with
+       versions or a later prepend's copy, the one the plan binds, as the
+       analysis bound the call's arguments to it */
+    int kmi = cplan_cand_target(c, id, name, &cc8[ki], CT_CMETHOD);
     /* nor a module's own `def self.x` when no box can hold the module, one
        the program only calls by name (comp_class_may_be_value), or no box
        reaches the method (share_target_reachable): the analysis leaves its
@@ -18039,13 +18042,13 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
     Scope *s = &c->scopes[si];
     if (s->class_id != ci || s->is_cmethod || !s->name || !s->name[0]) continue;
     /* A prepended module that defines a method the class defines too renames
-       the class's own body to `__prep_<n>_<name>`, so the module's copy can
+       the class's own body to `__prep <n> <name>`, so the module's copy can
        super into it. The class still defines <name>: list it under that name,
        with the visibility the rename carried to the body's own name (the
        name itself answers the module's copy). A renamed module copy (a second
        prepend over the first) stays out. */
     const char *nm = s->name;
-    if (strncmp(nm, "__prep_", 7) == 0) {
+    if (comp_name_is_prep_shadow(nm)) {
       if (s->origin_module_ci > 0) continue;
       nm = comp_prep_user_name(nm);
       if (nm == s->name) continue;

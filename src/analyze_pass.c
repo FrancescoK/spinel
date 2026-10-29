@@ -8378,10 +8378,15 @@ static int param_seed_holds_arg(Compiler *c, LocalVar *p, int anode, TyKind at) 
 /* Type method mi's parameters from the arguments `argv` of call_id. */
 /* A module method an include copied away never runs as itself: each copy
    binds its own calls, typed against its class. The original, whose ivars
-   nothing writes, sent its arguments to every method of the name. */
-static int call_in_transplanted_source(Compiler *c, int call_id) {
+   nothing writes, sent its arguments to every method of the name.
+   An unbound entry likewise supplies no arguments to its arms. */
+static int call_in_inactive_scope(Compiler *c, int call_id) {
   Scope *cs = comp_scope_of(c, call_id);
-  return cs && cs->is_transplanted_source;
+  if (cs && cs->is_proc_form) {
+    int s = proc_form_source(c, cs->idx);
+    if (s >= 0 && c->scopes[s].entry != ENTRY_NONE) cs = &c->scopes[s];
+  }
+  return cs && (cs->is_transplanted_source || (cs->entry != ENTRY_NONE && !cs->reachable));
 }
 
 /* 1 when class `cls` writes instance variable `ivn` somewhere, and every
@@ -8805,7 +8810,7 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
      changes before it returns, ends the shared generation
      (widen_boxed_array_sources) */
   if (wbas_shared && wbas_share_changed) wbas_share_step(wbas_share_changed, wbas_share_any);
-  if (call_in_transplanted_source(c, call_id)) return 0;
+  if (call_in_inactive_scope(c, call_id)) return 0;
   /* `callee(...)`: the arg list is a single ForwardingArgumentsNode. Bind the
      callee's params from the enclosing `def foo(...)` method's synthesized
      __fwd_* params, positionally, so the callee's return type resolves (#1288).
@@ -10717,9 +10722,8 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
         changed |= struct_super_types_members(c, id, s);
         continue;
       }
-      int p = comp_super_parent(c, s->class_id, 0);
-      if (p < 0) continue;
-      int pmi = comp_method_in_chain(c, p, s->name, NULL);
+      if (s->is_proc_form) continue;
+      int pmi = cplan_user(c, id)->mi;
       if (pmi < 0) continue;
       if (ty_k == NK_ForwardingSuperNode) changed |= bind_zsuper_params(c, id, s, &c->scopes[pmi]);
       else changed |= bind_call_params(c, id, pmi);
@@ -11271,7 +11275,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
        argument may still settle, and this is not reversible -- and the flag
        carries it through the re-narrow reset, which clears poly parameters. */
     if (g_final_bind_pass && (rt == TY_UNKNOWN || rt == TY_POLY) && name &&
-        !call_in_transplanted_source(c, id)) {
+        !call_in_inactive_scope(c, id)) {
       int uargs = nt_ref(nt, id, "arguments");
       int uac = 0; const int *uav = uargs >= 0 ? nt_arr(nt, uargs, "arguments", &uac) : NULL;
       for (int a4 = 0; a4 < uac; a4++) {
@@ -15665,7 +15669,7 @@ static int block_bind_plan(Compiler *c, int id, int block, int mi, int ym, int y
   /* a yielding method with no site in its own scope binds no values:
      every parameter nil or its default. A version entry's block is bound
      where the methods its arms call bind it. */
-  int ys[VER_MAX_ARMS + 1], ny = c->scopes[ym].entry ? ver_entry_targets(c, ym, ys) : (ys[0] = ym, 1);
+  int ys[VER_MAX_ARMS + 1], ny = c->scopes[ym].entry ? ver_entry_targets(c, ym, ys, NULL) : (ys[0] = ym, 1);
   for (int j = 0; j < ny; j++) {
     int y = ys[j];
     ns = y != ym ? block_sites(c, y, &sites) : ns;
@@ -19272,6 +19276,7 @@ static int cr_literal_local(Compiler *c, const NodeTable *nt, int r) {
 typedef struct { char ***out; int *n, *cap; } CrMarks;
 static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   CrMarks *m = arg;
+  if (nt_kind(c->nt, id) == NK_CallNode && is_method_object_maker(nt_str(c->nt, id, "name"))) flags |= CT_CAPTURE;
   int mi = call_target(c, id, k, nm, flags, NULL);
   char mark[24];
   if (mi < 0) return;
@@ -19281,7 +19286,15 @@ static void cr_mark_version(Compiler *c, int id, const char *nm, int k, unsigned
 static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
   const char *names[2];
   CrMarks m = { out, n, cap };
-  for (int i = 0, nn = call_node_names(nt, id, names); i < nn; i++)
+  if (ct_version_marked(c, "initialize")) {
+    int init[CPT_MAX], ni = cplan_initializers(c, id, init, CPT_MAX);
+    for (int i = 0; i < ni; i++) {
+      char mark[24];
+      snprintf(mark, sizeof mark, "\x01%d", init[i]);
+      cr_add_name(out, n, cap, mark);
+    }
+  }
+  for (int i = 0, nn = call_node_names(c, id, names); i < nn; i++)
     if (ct_version_marked(c, names[i])) ct_version_classes(c, id, names[i], cr_mark_version, &m);
 }
 
@@ -19297,6 +19310,17 @@ static void cr_mark_implied(Compiler *c, char ***out, int *n, int *cap, const ch
   /* by bare name, whatever the side: a def on one object (`def obj.to_a`) is a
      class method of the class registered for it, and an instance call reaches it */
   if (cr_add_name(out, n, cap, name) && cause) ic_record(c, name, cause);
+  /* A callback resolves the table answer, not an argument-specific entry. */
+  if (c->ver_ix_nb)
+    for (int i = c->ver_names[sp_strhash(name) % c->ver_ix_nb]; i >= 0; i = c->ver_names_next[i]) {
+      const struct VerEntry *e = &c->ver_entries[i];
+      if (!e->guard || !sp_streq(e->name, name)) continue;
+      int mi = e->sg ? comp_cmethod_in_chain(c, e->cls, name, NULL) : comp_method_in_chain(c, e->cls, name, NULL);
+      if (mi < 0 || c->scopes[mi].entry != ENTRY_TABLE) continue;
+      char mark[24];
+      snprintf(mark, sizeof mark, "\x01%d", mi);
+      cr_add_name(out, n, cap, mark);
+    }
 }
 
 static void cr_collect_implied(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
@@ -19380,6 +19404,18 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   NodeKind ty_k = nt_kind(nt, id);
   if (!ty) return;
   if (ty_k == NK_DefNode) return;          /* don't enter nested methods */
+  /* An entry reaches exactly the pinned arms that calls and captures emit,
+     including a replaced copy whose hidden name has no version history. */
+  const Scope *sc = comp_scope_of(c, id);
+  if (sc && sc->entry != ENTRY_NONE && id == sc->body) {
+    int targets[VER_MAX_ARMS + 1], nn = ver_entry_targets(c, sc->idx, targets, NULL);
+    for (int i = 0; i < nn; i++) {
+      char mark[24];
+      if (targets[i] < 0) continue;
+      snprintf(mark, sizeof mark, "\x01%d", targets[i]);
+      cr_add_name(out, n, cap, mark);
+    }
+  }
   /* `if defined?(UnknownConst) ... end`: the then-branch is compile-time dead
      (and never emitted -- see emit_if), so collecting its calls would mark
      genuinely unemittable methods live. Only walk the live side. */

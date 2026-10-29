@@ -2334,7 +2334,8 @@ void elab_mark_versions(Compiler *c) {
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (sc->versioned || sc->replaced) { sc->versioned = sc->replaced = 0; comp_touch_scope(sc->idx); }
-    const LrVers *x = sc->name && sc->def_node >= 0 ? lr_vers(r, sc->name) : NULL;
+    const char *name = sc->mixin_guarded ? comp_prep_user_name(sc->name) : sc->name;
+    const LrVers *x = name && sc->def_node >= 0 ? lr_vers(r, name) : NULL;
     if (!x || x->nver < 2) continue;
     { sc->versioned = 1; comp_touch_scope(sc->idx); }
     int def = nt_kind(c->nt, sc->def_node) == NK_DefNode;
@@ -2342,7 +2343,7 @@ void elab_mark_versions(Compiler *c) {
     if (!(nk & (nk - 1)) && !(keys = realloc(keys, sizeof *keys * (size_t)(nk ? 2 * nk : 1)))) {
       fprintf(stderr, "spinel: out of memory\n"); exit(1);
     }
-    keys[nk++] = (LrScopeKey){ sc->name, sc->class_id < 0 ? -1 : sc->class_id, sc->class_id < 0 ? 0 : sc->is_cmethod, def ? s : -1 - s };
+    keys[nk++] = (LrScopeKey){ name, sc->class_id < 0 ? -1 : sc->class_id, sc->class_id < 0 ? 0 : sc->is_cmethod, def ? s : -1 - s };
   }
   if (nk > 1) qsort(keys, (size_t)nk, sizeof *keys, lr_scope_key_cmp);
   for (int i = 0; i + 1 < nk; i++)

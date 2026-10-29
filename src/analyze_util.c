@@ -910,7 +910,7 @@ int class_coerce_emittable(Compiler *c, int k) {
   if (!m->reachable || m->yields || scope_is_shadowed(c, mi) || m->is_transplanted_source)
     return 0;
   if (m->nparams != 1 || m->rest_idx >= 0) return 0;
-  if (!ty_is_array(m->ret) && m->ret != TY_POLY_ARRAY) return 0;
+  if (!ty_is_array(m->ret) && !ty_is_obj_array(m->ret)) return 0;
   return 1;
 }
 /* 1 if class k defines a #to_str whose SHAPE a String comparison can convert
@@ -2095,7 +2095,7 @@ static int yvt_call_forwards_block(const NodeTable *nt, int cid) {
    cannot, and the resolution -- a receiver type inference per call -- is
    skipped for it. Every yielding method used to resolve every block call in
    the program, methods x calls per round (#4847). An aliased name, and a
-   prepend shadow (named `__prep_N_m`), are left to the full resolution. */
+   prepend shadow (named `__prep N m`), are left to the full resolution. */
 static int *yvt_nm_head = NULL, *yvt_nm_next = NULL, *yvt_always = NULL;
 static int yvt_nb = 0, yvt_always_n = 0;
 /* the alias-named entries by the names their alias may stand for: name t's
@@ -2132,7 +2132,7 @@ static int yvt_may_reach(Compiler *c, int ii, int mi) {
   if (!mn || !cn) return 1;
   if (sp_streq(cn, mn)) return 1;
   if (sp_streq(cn, "new") && sp_streq(mn, "initialize")) return 1;
-  if (strncmp(mn, "__prep_", 7) == 0) return 1;
+  if (comp_name_is_prep_shadow(mn)) return 1;
   return yvt_alias_name && yvt_alias_name[ii];
 }
 static void yvt_build(Compiler *c) {
@@ -2304,7 +2304,7 @@ static void yvt_tg_build(Compiler *c) {
 typedef struct { int s[3]; int ai; int tp, te; int all; int next_all; int last; } YvtIt;
 static void yvt_it_init(Compiler *c, YvtIt *it, int mi) {
   const char *mn = c->scopes[mi].name;
-  it->all = !mn || strncmp(mn, "__prep_", 7) == 0 || !yvt_nm_head;
+  it->all = !mn || comp_name_is_prep_shadow(mn) || !yvt_nm_head;
   it->next_all = 0; it->last = -1; it->ai = 0; it->tp = it->te = 0;
   it->s[0] = it->s[1] = -1;
   if (it->all) return;
@@ -3678,6 +3678,7 @@ int name_is_synth_method(Compiler *c, const char *m) {
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
      so an override can reach it through super (#3738) */
   if (strncmp(m, "__inc ", 6) == 0) return 1;
+  if (comp_name_is_prep_shadow(m)) return 1;
   /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
      Ruby method name */
   if (strchr(m, '#')) return 1;
@@ -3827,18 +3828,23 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
                                       nt_kind(nt, recv) == NK_ConstantPathNode))
                        ? nt_str(nt, recv, "name") : NULL;
       int ci = rn ? comp_class_index(c, rn) : -1;
-      return ci >= 0 ? comp_method_in_chain(c, ci, sym, NULL) : -1;
+      return ci >= 0 ? call_target(c, node, ci, sym, CT_CAPTURE, NULL) : -1;
     }
   }
   /* a bare `method(:m)` names what a bare `m` would call: inside a class
      method self is the class, so its class methods come first (Ruby's
      method lookup, comp_self_call_mi) */
-  if (recv < 0) return comp_self_call_mi(c, node, sym);
+  if (recv < 0) {
+    int mi = comp_self_call_mi(c, node, sym);
+    if (mi < 0) return mi;
+    Scope *s = &c->scopes[mi];
+    return call_target(c, node, s->class_id, sym, CT_CAPTURE | (s->class_id < 0 ? CT_TOP : s->is_cmethod ? CT_CMETHOD : 0), NULL);
+  }
   /* `self.method(:m)` in a class method: self is the class */
   if (nt_kind(nt, recv) == NK_SelfNode) {
     Scope *ss = comp_scope_of(c, node);
     if (ss && ss->is_cmethod && ss->class_id >= 0)
-      return comp_cmethod_in_chain(c, ss->class_id, sym, NULL);
+      return call_target(c, node, ss->class_id, sym, CT_CAPTURE | CT_CMETHOD, NULL);
   }
   TyKind rt = infer_type(c, recv);
   /* a receiver whose method() was retargeted at a synthesized __bam_* wrapper
@@ -3846,7 +3852,7 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
      TOP-LEVEL def, not in the object's own class chain, so resolve it there. */
   if (sym[0] == '_' && sym[1] == '_' && sym[2] == 'b' && sym[3] == 'a' && sym[4] == 'm')
     return comp_method_index(c, sym);
-  if (ty_is_object(rt)) return comp_method_in_chain(c, ty_object_class(rt), sym, NULL);
+  if (ty_is_object(rt)) return call_target(c, node, ty_object_class(rt), sym, CT_CAPTURE, NULL);
   /* Klass.method(:cmeth) / Module.method(:mf): the class-side method */
   if (rt == TY_CLASS && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                          nt_kind(nt, recv) == NK_ConstantPathNode)) {
@@ -3854,13 +3860,13 @@ static int method_obj_target_mi_raw(Compiler *c, int node) {
        other constant receiver resolves */
     const char *rn2 = nt_str(nt, recv, "name");
     int ci2 = rn2 ? comp_class_index(c, rn2) : -1;
-    if (ci2 >= 0) return comp_cmethod_in_chain(c, ci2, sym, NULL);
+    if (ci2 >= 0) return call_target(c, node, ci2, sym, CT_CAPTURE | CT_CMETHOD, NULL);
   }
   /* `self.class.method(:cmeth)` in an instance method of a class nothing
      inherits from: that class's class-side method */
   if (rt == TY_CLASS) {
     int ci3 = self_class_static_ci(c, recv);
-    if (ci3 >= 0) return comp_cmethod_in_chain(c, ci3, sym, NULL);
+    if (ci3 >= 0) return call_target(c, node, ci3, sym, CT_CAPTURE | CT_CMETHOD, NULL);
   }
   return -1;
 }

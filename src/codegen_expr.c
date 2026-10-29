@@ -5714,6 +5714,19 @@ static int masgn_hold_target_parts(Compiler *c, int id) {
   }
   return held;
 }
+/* A forwarded block call has the node's representation, including its nil
+   bit. The proc ABI returns a box; the optional conversion preserves nil
+   until the consuming operation unwraps the value. */
+static void emit_forwarded_block_value(Compiler *c, int id, Buf *b) {
+  TyKind ty = repr_of(c, id).as_ty;
+  int optional = oint_kind(ty) && node_is_oint(c, id);
+  if (optional) buf_printf(b, "%s(", oint_unbox(ty));
+  emit_yield_proc_call(c, nt_ref(c->nt, id, "arguments"),
+                       optional ? TY_POLY : ty != TY_UNKNOWN ? ty : g_yield_slot_ty,
+                       b, 0, 1);
+  if (optional) buf_puts(b, ")");
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -6246,15 +6259,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       { /* the node's OWN type is what this expression position wants -- the
            inline's return slot is only the right answer when the yield IS the
            tail (a yield nested in a literal wants the element type, #3688) */
-        TyKind yt = repr_of(c, id).as_ty;
         /* A POLY node type is an answer, not an absence: the inline's return
            slot is only right when the call IS the tail, and a `&blk` forwarded
            into a map wants the element (boxed) form -- unboxing to the
            method's array type did not build (#3886). */
-        emit_yield_proc_call(c, nt_ref(nt, id, "arguments"),
-                             yt != TY_UNKNOWN
-                               ? yt : g_yield_slot_ty,
-                             b, 0, 1); }
+        emit_forwarded_block_value(c, id, b); }
     else if (nt_safe_nav(nt, id)) {
       /* `blk&.call`: the nil parameter answers nil instead of raising (an
          Integer / Float answer is the node's oint, as `&.` always is) */

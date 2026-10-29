@@ -73,7 +73,7 @@ typedef struct {
 } CallPlan;
 
 int cplan_accessor_classes(Compiler *c, int id, int *out, int cap);
-int cplan_super_chain_mi(Compiler *c, Scope *s, int par, const char *name);
+int cplan_super_chain_mi(Compiler *c, int id, Scope *s, int par, const char *name);
 /* A conversion performed by a helper, separately from the enclosing call. */
 CallPlan cplan_conversion(Compiler *c, int ci, const char *name);
 CallPlan cplan_method_call(Compiler *c, int id);
@@ -91,14 +91,19 @@ const CallPlan *cplan_user(Compiler *c, int id);
    with no call (class_reopen_cmethod for a respond_to? test): the name's
    last definition. A question about a name rather than one call (is it
    defined, which classes answer it) and a method the language calls by a
-   fixed name (`initialize`, `<=>`) ask the tables directly. */
-enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4 };
+   fixed name (`initialize`, `<=>`) ask the tables directly. A later
+   prepend's general guard is that table answer; the copy has a shadow
+   name reached only by arms and captures. */
+/* CT_REACH asks the same lookup for an explicit route such as super.
+   CT_CAPTURE selects the definition live at construction, or its entry
+   when the constructor must select an arm at run time. */
+enum { CT_CMETHOD = 1, CT_OWN = 2, CT_TOP = 4, CT_REACH = 8, CT_CAPTURE = 16 };
 /* The names call node id itself calls, into out: a call's or an attribute
    target's name, a `recv.m op= v`'s reader and writer; how many (0 for any
    other node). call_target binds a call of one of them to the method
    version it runs; a method the language calls for the node keeps the
-   last version. */
-int call_node_names(const NodeTable *nt, int id, const char *out[2]);
+   last version. Super contributes the enclosing method's original name. */
+int call_node_names(Compiler *c, int id, const char *out[2]);
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class);
 /* the classes a call of a versioned name (ct_version_named) may run on,
    each handed to fn with the flags call_target is asked with */
@@ -114,11 +119,15 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
 /* the version entries a call whose version is known only at run time
    reaches, and the run-time cells they read (#9898) */
 void ver_entries_build(Compiler *c);
+void ver_prepend_cell_name(int cell, char out[32]);
+/* `cell = v` put in statement list `list` at its statement `at` (after it
+   when after): the write, for the caller to record (elab_record_write) */
+int ver_cell_put(Compiler *c, const char *cell, int list, int at, int after, int v);
 void ver_cells_write(Compiler *c);
 /* the methods entry scope e's arms call, its else arm's last: at most
    VER_MAX_ARMS + 1 */
 enum { VER_MAX_ARMS = 64 };
-int ver_entry_targets(const Compiler *c, int e, int *out);
+int ver_entry_targets(const Compiler *c, int e, int *out, int *tests);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in

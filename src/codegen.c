@@ -14686,7 +14686,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     int omi = shadow ? (s->is_cmethod ? comp_cmethod_in_class(c, s->class_id, shadow)
                                       : comp_method_in_class(c, s->class_id, shadow))
             : p < 0 ? -1
-            : cplan_super_chain_mi(c, s, p, own);
+            : cplan_super_chain_mi(c, id, s, p, own);
     if (!shadow && omi >= 0) odef = c->scopes[omi].class_id;
     if (mi < 0) {
       if (g_plan_check && omi >= 0)
@@ -15224,13 +15224,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     if (g_plan_check && served) cplan_served("super");
     cplan_check_missing(c, id, smi, s->class_id, shadow, 0, "super");
     if (g_plan_check && smi >= 0) ucall_observe(c, id, smi, s->class_id, 0);
+    /* A replaced shadow has its own versioned C name, as the entry's arms do. */
+    if (smi >= 0) buf_puts(b, mc_method(c, &c->scopes[smi]));
+    else buf_printf(b, "sp_%s_%s", c->classes[s->class_id].c_name, mc(shadow));
+    buf_puts(b, "(");
     if (repr_self_handle(c, smi) || repr_self_handle(c, (int)(s - c->scopes))) {
-      buf_printf(b, "sp_%s_%s(", c->classes[s->class_id].c_name, mc(shadow));
       emit_reopen_self_arg(c, id, smi, b);
     }
-    else buf_printf(b, "sp_%s_%s((sp_%s *)%s",
-                    c->classes[s->class_id].c_name, mc(shadow),
-                    c->classes[s->class_id].c_name, g_self);
+    else buf_printf(b, "(sp_%s *)%s", c->classes[s->class_id].c_name, g_self);
     if (ty_k == NK_ForwardingSuperNode && smi >= 0) {
       /* laid out over the shadow's parameters as any bare super is: passed
          slot by slot, a `**` went into the shadow's first keyword */
@@ -15246,7 +15247,7 @@ void emit_super(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     return;
   }
-  /* Strip __prep_N_ prefix to get the user method name for parent chain lookup. */
+  /* Strip __prep N prefix to get the user method name for parent chain lookup. */
   int p = comp_super_parent(c, s->class_id, s->is_cmethod);
   const char *uname = comp_super_name(c, p, comp_scope_def_name(c, s), s->is_cmethod);
   /* super inside a class method: resolve through the parent's CLASS-method

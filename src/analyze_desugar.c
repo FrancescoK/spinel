@@ -6976,6 +6976,7 @@ static int desugar_dynamic_send_inner(Compiler *c) {
          call of that name does.) On a receiver of a known class it is the
          method that class reaches: ThreadGroup's `__remove` is a helper
          where a program's own `Box#__remove` is not. */
+      if (comp_name_is_prep_shadow(use[k])) continue;
       if (computed && (name_is_synth_method(c, use[k]) || dsend_name_is_helper(c, obj_recv, use[k]))) continue;
       /* A method the program defines takes only the arities its definitions
          take: with a fixed argument list, a name no definition accepts at
