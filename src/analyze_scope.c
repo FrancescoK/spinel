@@ -3511,22 +3511,31 @@ void register_structs(Compiler *c) {
   }
 }
 
+/* The body of a class's opening that is a Struct.new / Data.define block
+   (`Name = Struct.new(...) do ... end`, a local's too), else -1 */
+static int struct_block_body(const NodeTable *nt, const LrOpen *o) {
+  NodeKind k = nt_kind(nt, o->node);
+  return k == NK_ConstantWriteNode || k == NK_LocalVariableWriteNode ? o->body : -1;
+}
+
 /* Mark the nodes of a Struct.new / Data.define block as the body of class
    `ci` (node_cbody), as walk_scope marks a class's: self there is the class
-   (self_class_body), not main. A nested class or module keeps its own. */
-static void struct_block_cbody(Compiler *c, int node, int ci) {
+   (self_class_body), not main nor a class the block is written in. A nested
+   class or module keeps its own, and so does a nested struct block: `blk`
+   maps each struct block's body to its class. */
+static void struct_block_cbody(Compiler *c, int node, int ci, const int *blk) {
   const NodeTable *nt = c->nt;
   if (node < 0 || node >= c->node_cap) return;
   NodeKind k = nt_kind(nt, node);
-  if (k == NK_ClassNode || k == NK_ModuleNode) return;
-  if (c->node_cbody[node] < 0) c->node_cbody[node] = ci;
+  if (k == NK_ClassNode || k == NK_ModuleNode || (blk[node] >= 0 && blk[node] != ci)) return;
+  c->node_cbody[node] = ci;
   int nr = nt_num_refs(nt, node);
-  for (int i = 0; i < nr; i++) struct_block_cbody(c, nt_ref_at(nt, node, i), ci);
+  for (int i = 0; i < nr; i++) struct_block_cbody(c, nt_ref_at(nt, node, i), ci, blk);
   int na = nt_num_arrs(nt, node);
   for (int i = 0; i < na; i++) {
     int cnt = 0;
     const int *ids = nt_arr_at(nt, node, i, &cnt);
-    for (int j = 0; j < cnt; j++) struct_block_cbody(c, ids[j], ci);
+    for (int j = 0; j < cnt; j++) struct_block_cbody(c, ids[j], ci, blk);
   }
 }
 
@@ -3542,7 +3551,7 @@ static void struct_cond_dm_refuse(Compiler *c, int ci) {
     Scope *sc = &c->scopes[s];
     int dn = sc->def_node;
     if (sc->is_cmethod || dn < 0 || c->node_cbody[dn] != ci) continue;
-    if (nt_kind(nt, dn) != NK_CallNode || !sp_streq(nt_str(nt, dn, "name"), "define_method")) continue;
+    if (nt_kind(nt, dn) != NK_CallNode || !is_define_method_name(nt_str(nt, dn, "name"))) continue;
     if (sc->class_id >= 0 && elab_def_applied(c, dn)) continue;
     if (nt_int(nt, dn, "dm_host", 0)) continue;  /* in a method's body */
     nt_node_set_int(nt, dn, "struct_cond_dm", 1);
@@ -3557,20 +3566,34 @@ static void struct_cond_dm_refuse(Compiler *c, int ci) {
    has made it, beyond the classes its methods take from the load record
    (lr_def_owners): its nodes' class body, and the refusal of a
    define_method left under a condition. The record names the class each
-   block is a body of (elab_class_bodies). */
+   block is a body of (elab_class_bodies); a node takes the innermost
+   struct block it is in, and the refusal reads that once every block is
+   marked. */
 void fix_struct_block_scopes(Compiler *c) {
   const NodeTable *nt = c->nt;
+  int *blk = malloc(sizeof(int) * (size_t)(c->node_cap > 0 ? c->node_cap : 1));
+  if (!blk) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = 0; i < c->node_cap; i++) blk[i] = -1;
   for (int ci = 0; ci < c->nclasses; ci++) {
-    int nb = 0, block = 0;
+    int nb = 0;
     const LrOpen *o = elab_class_bodies(c, ci, &nb);
     for (int i = 0; i < nb; i++) {
-      NodeKind k = nt_kind(nt, o[i].node);
-      if ((k != NK_ConstantWriteNode && k != NK_LocalVariableWriteNode) || o[i].body < 0) continue;
-      struct_block_cbody(c, o[i].body, ci);
-      block = 1;
+      int b = struct_block_body(nt, &o[i]);
+      if (b >= 0 && b < c->node_cap) blk[b] = ci;
     }
-    if (block) struct_cond_dm_refuse(c, ci);
   }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int nb = 0;
+    const LrOpen *o = elab_class_bodies(c, ci, &nb);
+    for (int i = 0; i < nb; i++) struct_block_cbody(c, struct_block_body(nt, &o[i]), ci, blk);
+  }
+  for (int ci = 0; ci < c->nclasses; ci++) {
+    int nb = 0;
+    const LrOpen *o = elab_class_bodies(c, ci, &nb);
+    for (int i = 0; i < nb; i++)
+      if (struct_block_body(nt, &o[i]) >= 0) { struct_cond_dm_refuse(c, ci); break; }
+  }
+  free(blk);
 }
 
 /* A body statement that is, or holds under an if / unless, a write of `ivname` */
