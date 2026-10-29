@@ -1,6 +1,7 @@
 # A call before its method's def raises after its operands run, in source
 # order: its arguments (an Array's or a Hash's elements too), then its
-# block argument, whose conversion to a block can raise first. The error
+# block argument, whose conversion to a block can raise first, also where
+# the arguments are bound to temporaries ahead of the block's. The error
 # carries its receiver and arguments. A constant whose value holds such a
 # call runs the operands ahead of it in order. A builtin method answers
 # only on a self that has it: Module has no superclass, main no name.
@@ -19,6 +20,11 @@ class U
   end
   begin
     missing(4, &(puts("block"); nil))
+  rescue NoMethodError => e
+    puts e.message
+  end
+  begin
+    missing(mark(11), &(puts("block3"); nil))
   rescue NoMethodError => e
     puts e.message
   end
@@ -46,6 +52,7 @@ class U
 
   def self.missing(*a) = 9
   def self.zz = 5
+  p missing(mark(12), &(puts("block4"); nil))
 end
 
 module M

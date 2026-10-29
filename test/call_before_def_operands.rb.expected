@@ -6,6 +6,9 @@ U
 [1, [2], {a: 3}]
 block
 undefined method 'missing' for class U
+mark 11
+block3
+undefined method 'missing' for class U
 no implicit conversion of TrueClass into Proc
 :zz
 U
@@ -16,6 +19,9 @@ mark 8
 mark 9
 mark 10
 undefined local variable or method 'zz' for class U
+mark 12
+block4
+9
 undefined method 'superclass' for module M
 undefined method 'allocate' for module M
 "M"
