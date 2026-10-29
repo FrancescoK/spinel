@@ -29,5 +29,34 @@ private method 'warn' called for an instance of Array
 :ahead
 :secret
 :second
+:arg_a
+:pre_a
+NoMethodError
+:hidden
+NoMethodError
+:prot
+NoMethodError
+:late
+:re
+NoMethodError
+:mf
+:own_gets
+:own_sleep
+private method 'gets' called for an instance of Array
+private method 'sleep' called for an instance of Range
 NoMethodError
 40
+:comparable_putc
+:comparable_putc
+:comparable_zork
+:comparable_zork
+:comparable_zork
+:comparable_zork
+[3, 2, 1]
+[2, 1]
+:pong
+:ping
+:pong
+:integer_both
+:integer_both
+:comparable_zork
