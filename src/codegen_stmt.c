@@ -20674,8 +20674,16 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       else if (!isg && v >= 0) {
         OrderRun run = { NULL, 0, 0 };
         int m = missing_call_in_order(c, v, &run);
+        /* each operand's prelude goes in front of it, not in front of the
+           statement: an earlier operand runs before a later one's */
         for (int i = 0; m >= 0 && i <= run.n; i++) {
-          emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, i < run.n ? run.ids[i] : m, b); buf_puts(b, ");\n");
+          Buf op, oe; memset(&op, 0, sizeof op); memset(&oe, 0, sizeof oe);
+          Buf *sv = g_pre; g_pre = &op;
+          emit_expr(c, i < run.n ? run.ids[i] : m, &oe);
+          g_pre = sv;
+          if (op.p) buf_puts(b, op.p);
+          emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", oe.p ? oe.p : "0");
+          free(op.p); free(oe.p);
         }
         free(run.ids);
       }

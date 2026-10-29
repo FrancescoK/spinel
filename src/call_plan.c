@@ -788,6 +788,11 @@ static int ct_version(Compiler *c, int id, int cls, const char *name, unsigned f
   if (def_class) *def_class = dc;
   return vi;
 }
+/* The builtin self kind (BSELF_*) of program class self, main for -1 */
+static int cm_self_kind(Compiler *c, int self) {
+  if (self < 0) return BSELF_MAIN;
+  return comp_class_is_module(c, &c->classes[self]) ? BSELF_MODULE : BSELF_CLASS;
+}
 /* Does call id run where no method of `name` is live yet, as the record
    proves it at the call (elab_call_method): cls's chain, its class side
    for CT_CMETHOD, main's top-level functions for CT_TOP? The method the
@@ -803,7 +808,8 @@ static int ct_undefined_at(Compiler *c, int id, int cls, const char *name, unsig
   int framed = elab_plan_enter(c, id);
   int none = elab_call_method(c, id, flags & CT_TOP ? -1 : cls, name, (flags & CT_CMETHOD) != 0) == ELAB_NO;
   if (framed) elab_plan_leave(c);
-  return none && !(nt_ref(c->nt, id, "receiver") >= 0 && !nt_int(c->nt, id, "self_call", 0) && builtin_self_method_known(name));
+  return none && !(nt_ref(c->nt, id, "receiver") >= 0 && !nt_int(c->nt, id, "self_call", 0) &&
+                   builtin_self_method_known(name, cm_self_kind(c, flags & CT_TOP ? -1 : cls)));
 }
 int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, int *def_class) {
   int mi, dc0 = def_class ? *def_class : -1;
@@ -857,7 +863,7 @@ int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon) {
     return CM_NONE;
   /* ...and no builtin answers: one on any self, a core class's own */
   const char *cn = ci >= 0 ? c->classes[ci].name : NULL;
-  if (builtin_self_method_known(name) ||
+  if (builtin_self_method_known(name, cm_self_kind(c, ci)) ||
       (cn && builtin_class_id(cn) && (builtin_cmethod_known(cn, name) || builtin_super_cmethod_known(cn, name))))
     return CM_NONE;
   if (anon) *anon = cm_self_name(c, ci, self_text, cap) ? -1 : ci;
