@@ -15,16 +15,9 @@ int sp_str_ascii_only(const char *s);
 
 /* `binary` is the ASCII-8BIT tag, kept on the HANDLE: sp_fd_setup zeroes the
    payload header on every grow, so the tag has to be re-stamped after each
-   mutation rather than living only in the bytes. `chilled` is nonzero for a
-   handle made from a chilled String (sp_str_is_chilled: what Symbol#to_s
-   answers): that symbol's id + 1, so sp_String_uplus can tell whether the
-   bytes are still its name -- +@ copies it then, as it copies a frozen one,
-   and a mutated one is an ordinary String, as CRuby's is. A GC allocation is
+   mutation rather than living only in the bytes. A GC allocation is
    zeroed, so every other handle starts at 0 with no store. */
 typedef struct sp_String_s sp_String;   /* the struct is in sp_types.h, beside sp_strelem */
-/* sp_fd_publish reads `binary` and `chilled` as one word */
-_Static_assert(offsetof(sp_String, chilled) == offsetof(sp_String, binary) + 4 && sizeof(unsigned) == 4,
-               "sp_String.binary and .chilled are adjacent 32-bit fields");
 
 /* A generated frozen literal owns its handle slot. The tagged header link
    distinguishes that slot from the aligned links in the string heap. */
@@ -90,15 +83,7 @@ static inline void sp_fd_publish(sp_String *s){
   sp_str_hdr *h = (sp_str_hdr *)sp_fd_base(s->data);
   h->len = (uint32_t)s->len; h->hash = 0;
   h->size &= ~SP_STR_SIZE_ASCII7;   /* the bytes just changed */
-  /* Both flags are rare and read as one word, so a plain handle pays the one
-     load and branch the binary tag alone did. A mutation makes a chilled
-     handle plain for good, as CRuby's str_modify does, even one that leaves
-     the bytes the symbol's name again (`m << "!"; m.chop!`). */
-  uint64_t fl; memcpy(&fl, &s->binary, sizeof fl);
-  if (SP_EXPECT(fl != 0, 0)) {
-    if (s->binary) h->size |= SP_STR_SIZE_BINARY;
-    s->chilled = 0;
-  }
+  if (SP_EXPECT(s->binary != 0, 0)) h->size |= SP_STR_SIZE_BINARY;
   sp_str_lcache_drop(s->data);
 }
 /* A handle whose payload sits inside its own GC object, right after the
@@ -155,7 +140,7 @@ static inline void sp_String_init_embedded(sp_String*r){
   int64_t cap=16;
   char*raw=(char*)malloc(SP_FD_OVH+cap);
   if(!raw)sp_oom_die();
-  r->data=sp_fd_setup(raw);r->data[0]=0;r->len=0;r->cap=cap;r->binary=0;r->chilled=0;sp_fd_own(r);
+  r->data=sp_fd_setup(raw);r->data[0]=0;r->len=0;r->cap=cap;r->binary=0;sp_fd_own(r);
   {sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->size+=r->cap+SP_FD_OVH;sp_gc_bytes_add(r->cap+SP_FD_OVH);}
   sp_fd_publish(r);
 }
@@ -243,14 +228,8 @@ static inline void sp_String_append_bin(sp_String*s,const char*t){
    callers pass bare C literals with NO marker -- they must use the plain
    sp_String_new above (reading s[-1] there is OOB and, under clang's rodata
    layout, misreads as frozen; cf. the #282 marker-probe lesson). */
-/* Chilled Strings (sp_str_is_chilled), compiled once in lib/sp_string.c and
-   kept off the inlined constructors and +@: sp_String_chill names the symbol
-   a new handle came from (a 0xfb static is rare, a chilled one rarer),
-   sp_String_chilled_now asks whether a handle is still that symbol's name,
-   and sp_sym_to_s_chilled is Symbol#to_s. */
-SP_COLD void sp_String_chill(sp_String*r,const char*s);
-int sp_String_chilled_now(sp_String*h);
-const char*sp_sym_to_s_chilled(sp_sym id);
+/* Symbol#to_s and #id2name: the symbol's name, frozen (lib/sp_string.c) */
+const char*sp_sym_to_s_frozen(sp_sym id);
 /* With literal slots, the handle a literal or a live payload already has is
    found inline, and only a String that needs a new handle calls the
    constructor below: its frame (six saved registers and the stack guard)
@@ -287,8 +266,8 @@ static inline sp_String*sp_String_adopt(const char*s,sp_String*o){
 static SP_NOINLINE sp_String*sp_String_new_static1(unsigned char c){
   enum{CAP=1*2+16};
   sp_String*r=(sp_String*)sp_gc_alloc_sized(sizeof(sp_String)+SP_FD_OVH+CAP,NULL);
-  /* the object comes zeroed: the header's hash, the binary and chilled
-     words and the NUL need no store */
+  /* the object comes zeroed: the header's hash, the binary word and
+     the NUL need no store */
   sp_str_hdr*h=(sp_str_hdr*)(void*)(r+1);
   char*data=(char*)(h+1)+1;
   h->next=(sp_str_hdr*)(void*)r;h->len=c!=0;
@@ -369,7 +348,6 @@ static inline sp_String*sp_String_new_shared(const char*s){
 #endif
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
-  if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
 #ifdef SP_ONE_STRING
@@ -412,7 +390,6 @@ static inline sp_String*sp_String_new_fresh(const char*s){
   sp_String*r=sp_String_new_inline_len(s,len);
   if(bin){r->binary=1;sp_fd_publish(r);}
   if(frozen){sp_gc_hdr*h=(sp_gc_hdr*)((char*)r-sizeof(sp_gc_hdr));h->frozen=1;}
-  if(SP_UNLIKELY(mk==0xfb))sp_String_chill(r,s);   /* a static: still there after the allocation */
   return r;
 }
 /* ...and for `+"lit"`: a mutable copy of a literal, which is frozen itself */

@@ -1323,6 +1323,14 @@ whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
 
+**`Symbol#to_s` answers a frozen String.** CRuby 4.0 answers a chilled
+String (not frozen; its first mutation warns, under `-W:deprecated`, that
+it "will be frozen in the future"); Spinel answers it frozen, as it does
+literals: `:a.to_s.frozen?`, `:a.id2name.frozen?` and `String(:a).frozen?`
+are `true`, `:a.to_s << "x"` raises FrozenError, and a mutable copy comes
+from `+:a.to_s` or `dup`. Each call still answers its own object
+(`:a.to_s.equal?(:a.to_s)` is `false`), as in CRuby.
+
 **Strings are UTF-8, whatever the source encoding.** An `# encoding:` (or
 `coding:`) magic comment naming another encoding warns at compile time,
 naming the file and line, in the entry file and in every required file.

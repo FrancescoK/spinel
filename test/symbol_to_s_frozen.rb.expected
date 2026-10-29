@@ -1,0 +1,8 @@
+["abc", true, true, true]
+[true, [true, true], true]
+["abc", "abc!", "abc?", false, false, false]
+[FrozenError, "can't modify frozen String: \"abc\""]
+[FrozenError, "can't modify frozen String: \"abc\""]
+[FrozenError, "can't modify frozen String: \"abc\""]
+[FrozenError, "can't modify frozen String: \"abc\""]
+["abc", "abc+", "abcabc", "ABC"]

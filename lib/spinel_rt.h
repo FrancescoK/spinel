@@ -4329,7 +4329,7 @@ static SP_UNUSED sp_int sp_poly_cmp_ans(sp_RbVal r, sp_RbVal a, sp_RbVal b) {
    to_s answers it; a value of any other kind has no id2name. */
 static const char *sp_poly_sym_id2name(sp_RbVal v) {
   if (v.tag != SP_TAG_SYM) sp_raise_nomethod(sp_nomethod_msg("id2name", v));
-  return sp_sym_to_s_chilled((sp_sym)v.v.i);
+  return sp_sym_to_s_frozen((sp_sym)v.v.i);
 }
 static SP_UNUSED sp_RbVal sp_poly_nil_no_method(const char *m, sp_RbVal v) { sp_raise_nomethod(sp_nomethod_msg(m, v)); return sp_box_nil(); }
 /* The receiver of an operation on a String Array of handles that can be nil
@@ -7660,22 +7660,21 @@ static sp_RbVal sp_poly_bxor(sp_RbVal a, sp_RbVal b) {
    Complex, so `[Rational(1,10)].map { |r| -r }` answered [0] with nothing
    said (#4299). Each kind negates through its own helper, the way sp_poly_mul
    dispatches its tower one line at a time. */
-/* +h on a shared String handle: h itself unless it is frozen or chilled
-   (one made from Symbol#to_s), else a new, plain handle with the same
-   contents */
+/* +h on a shared String handle: h itself unless it is frozen, else a new,
+   plain handle with the same contents */
 static inline sp_String *sp_String_uplus(sp_String *h) {
-  if (SP_UNLIKELY(!h)) sp_nil_recv("+@"); if (!(sp_String_is_frozen(h) || (h->chilled && sp_String_chilled_now(h)))) return h;
+  if (SP_UNLIKELY(!h)) sp_nil_recv("+@"); if (!sp_String_is_frozen(h)) return h;
   return sp_String_new_shared(sp_str_dup(sp_String_cstr(h)));
 }
-/* +s: s itself unless it is frozen or chilled, else a plain copy (CRuby) */
+/* +s: s itself unless it is frozen, else a plain copy (CRuby) */
 static inline const char *sp_str_uplus(const char *s) {
   if (SP_UNLIKELY(!s)) sp_nil_recv("+@");
-  return sp_str_is_frozen_val(s) || sp_str_is_chilled(s) ? sp_str_dup(s) : s;
+  return sp_str_is_frozen_val(s) ? sp_str_dup(s) : s;
 }
 /* +v on a boxed value: the same for a String, whether it is boxed as a
    plain value or as a shared handle; anything else is itself */
 static sp_RbVal sp_poly_uplus(sp_RbVal v) {
-  if (v.tag == SP_TAG_STR && v.v.s && (sp_str_is_frozen_val(v.v.s) || sp_str_is_chilled(v.v.s)))
+  if (v.tag == SP_TAG_STR && v.v.s && sp_str_is_frozen_val(v.v.s))
     return sp_box_str_new(sp_str_dup(v.v.s));
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_STRBUF && v.v.p) {
     sp_String *h = (sp_String *)v.v.p;
@@ -13740,7 +13739,7 @@ static inline int sp_idset_flt_ok(sp_float f) {
 }
 static inline int sp_idset_str_ok(const char *s) {
   if (!s) return 1;
-  if (sp_str_is_chilled(s)) return 0;
+  if (sp_str_is_sym_name(s)) return 0;   /* CRuby's Symbol#to_s is a new String each time */
   if (((const unsigned char *)s)[-1] == 0xf1 && !sp_String_literal_slot(s)) {
     SP_HEAP_LOCK();
     const char *hit = sp_fstr_lookup(s);
@@ -13748,9 +13747,6 @@ static inline int sp_idset_str_ok(const char *s) {
     if (hit == s) return 0;
   }
   return 1;
-}
-static inline int sp_idset_strh_ok(sp_String *h) {
-  return !h || !h->chilled || !sp_String_chilled_now(h);
 }
 static inline int sp_idset_box_ok(sp_RbVal v) {
   v = sp_poly_literal_identity(v);
@@ -13765,7 +13761,7 @@ static inline int sp_idset_box_ok(sp_RbVal v) {
         case SP_BUILTIN_RANGE: case SP_BUILTIN_FLOAT_RANGE: case SP_BUILTIN_STR_RANGE:
         case SP_BUILTIN_TIME: case SP_BUILTIN_TMS: return 0;
         case SP_BUILTIN_REGEX: return !sp_re_noted_literal_p(v.v.p);
-        case SP_BUILTIN_STRBUF: return sp_idset_strh_ok((sp_String *)v.v.p);
+        case SP_BUILTIN_STRBUF: return 1;
         default: return 1;
       }
     default: return 1;
@@ -13779,7 +13775,7 @@ static inline void sp_idset_check_flt(sp_float v, const char *msg) { if (!sp_ids
 static inline void sp_idset_check_ofloat(sp_ofloat v, const char *msg) { if (!v.nil && !sp_idset_flt_ok(v.v)) sp_idset_refuse(msg); }
 static inline void sp_idset_check_str(const char *v, const char *msg) { if (!sp_idset_str_ok(v)) sp_idset_refuse(msg); }
 static inline void sp_idset_check_strh(sp_String *v, const char *msg) {
-  if (!sp_idset_strh_ok(v) || (v && !sp_idset_str_ok(v->data))) sp_idset_refuse(msg);
+  if (v && !sp_idset_str_ok(v->data)) sp_idset_refuse(msg);
 }
 static inline void sp_idset_check_big(sp_Bigint *v, const char *msg) { if (v) sp_idset_refuse(msg); }
 /* the value as the emitter rendered it: a box, an Integer (with nil out of

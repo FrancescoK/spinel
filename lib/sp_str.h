@@ -345,10 +345,8 @@ static inline uint64_t sp_str_hash(const char*s){
      against NULL, so the probe walks past every occupied slot. */
   if(!s)return 14695981039346656037ULL;
   unsigned char m=((const unsigned char*)s)[-1];
-  /* (0xfb, a static String with a header -- Symbol#to_s's chilled one, a
-     one-byte slice -- is never changed in place, so its hash is kept too:
-     a Hash keyed by `sym.to_s` hashed the name byte by byte each lookup,
-     #10548) */
+  /* (0xfb, a static String with a header -- a one-byte slice of a BINARY
+     String -- is never changed in place, so its hash is kept too, #10548) */
   if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8||m==0xfb){
     uint64_t cached=(((sp_str_hdr*)(s-1))-1)->hash;
     if(cached)return cached;

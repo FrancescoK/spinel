@@ -123,22 +123,15 @@ extern const char sp_str_empty_data[];
 extern const char *const sp_str_frozen_empty;
 extern const char *const sp_str_frozen_true;
 extern const char *const sp_str_frozen_false;
-/* A chilled String is what CRuby's Symbol#to_s answers: not frozen (frozen?
-   is false, and a mutation goes through), but +@ copies it as it copies a
-   frozen one. Spinel keeps one per symbol (sp_sym_to_s_chilled): static
-   storage with a header, the 0xfb marker, whose `next` link names
-   sp_str_chilled_tag. A static string is on no sweep list, so the link is
-   free to carry the mark, and no marker test -- the collector's included --
-   has to learn a new byte. The symbol rides ahead of the header, so a String
-   handle made from one can name it (sp_String.chilled). */
-extern const sp_str_hdr sp_str_chilled_tag;
-typedef struct { sp_int sym; sp_str_hdr h; unsigned char m; char d[]; } sp_str_chilled_obj;
-static inline int sp_str_is_chilled(const char *s) {
-  return s && ((const unsigned char *)s)[-1] == 0xfb &&
-         (((const sp_str_hdr *)(s - 1)) - 1)->next == &sp_str_chilled_tag;
-}
-static inline sp_int sp_str_chilled_sym(const char *s) {
-  return ((const sp_str_chilled_obj *)(s - offsetof(sp_str_chilled_obj, d)))->sym;
+/* Symbol#to_s's String (sp_sym_to_s_frozen): frozen static storage with a
+   header, 0xf1, whose `next` link names sp_sym_str_tag. The link is free to
+   carry the mark: the String is on no sweep list and has no literal slot
+   (an even link is none). A Hash compared by identity asks it, as CRuby
+   answers a new String at each to_s. */
+extern const sp_str_hdr sp_sym_str_tag;
+static inline int sp_str_is_sym_name(const char *s) {
+  return s && ((const unsigned char *)s)[-1] == 0xf1 &&
+         (((const sp_str_hdr *)(s - 1)) - 1)->next == &sp_sym_str_tag;
 }
 /* a nullable string (NULL) as the empty string, the standard C spelling of
    GNU's `s ?: sp_str_empty` */
@@ -301,7 +294,7 @@ static inline char *sp_str_alloc_born(size_t len, int nogc) {
   char *body = (char *)(h + 1);
   body[0] = (char)0xfe;
   body[1 + len] = 0;
-  r->data = body + 1; r->len = (int64_t)len; r->cap = (int64_t)len; r->binary = 0; r->chilled = 0;
+  r->data = body + 1; r->len = (int64_t)len; r->cap = (int64_t)len; r->binary = 0;
   if (sp_alloc_report_on) sp_alloc_report_str(len);
   return body + 1;
 }

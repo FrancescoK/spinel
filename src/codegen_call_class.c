@@ -709,7 +709,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       }
       else if (recv >= 0) emit_expr(c, recv, b);
       else buf_puts(b, self_cls);
-      buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_chilled(" : ", (");
+      buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_frozen(" : ", (");
       emit_expr(c, argv[0], b);
       buf_printf(b, "), %d, %d)", mask, inherit_lit);
       return 1;
@@ -5434,7 +5434,7 @@ int emit_refl_im_params_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && infer_type(c, recv) == TY_POLY) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, recv, b); buf_puts(b, ")"); }
   else if (recv >= 0) emit_expr(c, recv, b);
   else buf_puts(b, self_cls);
-  buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_chilled(" : ", (");
+  buf_puts(b, nty == TY_SYMBOL ? ", sp_sym_to_s_frozen(" : ", (");
   emit_expr(c, av[0], b);
   buf_puts(b, "))");
   return 1;
