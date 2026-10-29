@@ -35,22 +35,6 @@ loop do
 end
 p ran
 
-# a block kept to run later that yields runs its method's caller's block
-# then: that block is kept too
-class Hook
-  def keep = @cb = proc { yield }
-  def fire = @cb.call
-end
-src2 = [5].each
-hook = Hook.new
-hook.keep { src2.next }
-fired = 0
-loop do
-  fired += 1
-  hook.fire
-end
-p fired
-
 i = 0
 loop do
   i += 1

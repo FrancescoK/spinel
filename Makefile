@@ -4576,7 +4576,9 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  [ "$$(awk '/^static inline sp_int sp_(count_to|halvings)\(sp_int lv_n\) \{/,/^\}/' "$$tmp/lss.c" | grep -c 'setjmp')" = 0 ] || { echo "infer-test: FAIL (a loop whose body cannot raise StopIteration opened a handler)"; ok=0; }; \
 	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lss.c")" = 7 ] || { echo "infer-test: FAIL (a loop whose body can raise StopIteration lost its handler)"; ok=0; }; \
 	  $(SPINEL) $$flags test/loop_stop_iteration_kept_blocks.rb -c --no-line-map -o "$$tmp/lsk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_blocks: -c)"; ok=0; }; \
-	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lsk.c")" = 5 ] || { echo "infer-test: FAIL (a kept block that may raise StopIteration left a loop without its handler)"; ok=0; }; \
+	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lsk.c")" = 4 ] || { echo "infer-test: FAIL (a kept block that may raise StopIteration left a loop without its handler)"; ok=0; }; \
+	  $(SPINEL) $$flags test/loop_stop_iteration_kept_yield.rb -c --no-line-map -o "$$tmp/lky.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_yield: -c)"; ok=0; }; \
+	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lky.c")" = 1 ] || { echo "infer-test: FAIL (a block a kept proc yields to left a loop without its handler)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_array_element_receiver.rb -c --no-line-map -o "$$tmp/oer.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_element_receiver: -c)"; ok=0; }; \
 	  grep -q 'sp_Body_step(sp_Body \*self, sp_PtrArray \* lv_bodies, sp_float lv_dt)' "$$tmp/oer.c" || { echo "infer-test: FAIL (a table handed to a method of its own element stayed boxed)"; ok=0; }; \
 	  grep -q 'sp_Rod_advance(sp_Rod \*self, sp_PolyArray \* lv_rods)' "$$tmp/oer.c" || { echo "infer-test: FAIL (a call on a reassigned block parameter narrowed the table it was handed)"; ok=0; }; \
