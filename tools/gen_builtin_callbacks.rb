@@ -173,6 +173,11 @@ CANDIDATE_NAMES = CANDIDATES.keys.map(&:to_s).freeze
 # `eql?` depend on where the objects happen to live)
 STRUCTURAL = %w[respond_to? respond_to_missing? method_missing initialize_copy initialize_dup
                 initialize_clone each each_pair hash].freeze
+# What a class object answers by its candidate body and not by Module's: `hash`
+# (two probes in a table collide), and `<=>`, which Module answers nil for two
+# unrelated classes, so a Range of two class objects could not be made and
+# `(A..B).each` never reached `A.succ`
+CLASS_OWN_ANSWER = %i[hash <=>].freeze
 CLASS_ONLY = {   # singleton methods only a class object has
   _load: ->(_s) { Object.new }, const_missing: ->(_n) { raise NameError }, inherited: ->(_k) { nil },
 }.freeze
@@ -250,7 +255,7 @@ module Probe
         next if omit.include?(n.to_s)
         k.define_singleton_method(n) do |*a, **kw, &b|
           ic_log(n, role)
-          defined?(super) && n != :hash ? super(*a, **kw, &b) : ic_answer(self, body, a, kw)
+          defined?(super) && !CLASS_OWN_ANSWER.include?(n) ? super(*a, **kw, &b) : ic_answer(self, body, a, kw)
         end
       end
       CLASS_ONLY.each do |n, body|
@@ -334,7 +339,11 @@ class Maker
 
   # `without`: candidates this object leaves out besides the peeled ones
   def call(role, base: nil, without: NONE)
-    omit = without.empty? ? @omit.fetch(role, NONE) : (@omit.fetch(role, NONE) | without).sort.freeze
+    omit = @omit.fetch(role, NONE) | without
+    # a class object is logged as a :class however it is handed over, so the
+    # names its calls peeled are under that role
+    omit |= @omit.fetch(:class, NONE) if @kind == :klass
+    omit = omit.sort.freeze
     Probe.make(@kind, role, omit, (@n += 1) - 1, base)
   end
 end
