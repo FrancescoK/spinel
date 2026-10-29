@@ -9,8 +9,8 @@
 
 CC       ?= cc
 # A native Windows build (MinGW-w64 gcc, as MSYS2 and RubyInstaller ship it),
-# or a cross-build for Windows from another host (CC=x86_64-w64-mingw32-gcc:
-# the compile-only check), sets its toolchain and the lib/win32 shim up in
+# or a cross-build for Windows from another host (CC=x86_64-w64-mingw32-gcc),
+# sets its toolchain and the lib/win32 shim up in
 # win32.mk; elsewhere every PLATFORM_ variable is empty.
 ifneq ($(filter Windows_NT,$(OS))$(findstring -w64-mingw32-,$(CC)),)
 include $(dir $(lastword $(MAKEFILE_LIST)))win32.mk

@@ -1,8 +1,8 @@
 # win32.mk -- the native Windows build: MinGW-w64 gcc against the UCRT, as
 # MSYS2 and RubyInstaller's Devkit ship it. common.mk includes this file when
-# $(OS) is Windows_NT, or when CC is a *-w64-mingw32-* cross compiler (the
-# compile-only check: `make CC=x86_64-w64-mingw32-gcc bin/spinel
-# lib/libspinel_rt.a` on Linux); on every other host the PLATFORM_ variables
+# $(OS) is Windows_NT, or when CC is a *-w64-mingw32-* cross compiler
+# (`make CC=x86_64-w64-mingw32-gcc bin/spinel lib/libspinel_rt.a` on Linux);
+# on every other host the PLATFORM_ variables
 # it sets are empty and none of it is read.
 #
 # The runtime is written against POSIX. lib/win32 holds the POSIX surface
