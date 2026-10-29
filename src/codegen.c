@@ -20999,8 +20999,6 @@ static void emit_user_exc_dispatch(Compiler *c, Buf *b) {
   }
 }
 
-extern const Compiler *g_tmc_c;
-
 static void emit_runtime_include(Compiler *c, Buf *b, int blank) {
   buf_puts(b, "#define SP_SHARE_STRING_LITERALS 1\n#define SP_SHARE_BOX_HANDLES 1\n");
   /* the one-representation String: the runtime's headers lay the typed
@@ -21392,7 +21390,6 @@ char *codegen_program(const NodeTable *nt) {
   size_t isa_ext_at = 0;
   Compiler *c = comp_new(nt);
   plain_note_parsed(c);   /* ahead of the analysis's desugars */
-  g_tmc_c = c;
   analyze_program(c);
   double tcg = sp_timing_now();
   if (g_dump_traits) { ty_traits_dump(c); exit(0); }

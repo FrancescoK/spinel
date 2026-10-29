@@ -7457,10 +7457,6 @@ int eq_family(TyKind t) {
   if (t == TY_STR_RANGE) return 7;
   return 0;
 }
-/* The program the class tests below read its reopenings from (set by
-   codegen_program): ty_matches_class takes no Compiler, and is asked in
-   emitters all through the code generator. */
-const Compiler *g_tmc_c = NULL;
 /* Does class index k include program module `mod`, directly or through a
    module it includes? */
 /* The modules class index k includes, by the `include` statements of its
@@ -7512,11 +7508,10 @@ static int tmc_includes(const Compiler *c, int k, int mod, int depth) {
    by way of a program reopening of it or of a builtin ancestor (`class Hash;
    include DeepMergeable; end`, `class Numeric; include M; end`, `module
    Enumerable; include M; end`)? */
-static int tmc_prog_module_in_builtin(const char *self_cls, const char *cn) {
-  const Compiler *c = g_tmc_c;
-  if (!c || !cn) return 0;
-  int mod = comp_class_index((Compiler *)c, cn);
-  if (mod < 0 || !comp_class_is_module((Compiler *)c, &c->classes[mod])) return 0;
+static int tmc_prog_module_in_builtin(Compiler *c, const char *self_cls, const char *cn) {
+  if (!cn) return 0;
+  int mod = comp_class_index(c, cn);
+  if (mod < 0 || !comp_class_is_module(c, &c->classes[mod])) return 0;
   const char *chain[8]; int n = 0;
   chain[n++] = self_cls;
   if (sp_streq(self_cls, "Integer") || sp_streq(self_cls, "Float") ||
@@ -7528,7 +7523,7 @@ static int tmc_prog_module_in_builtin(const char *self_cls, const char *cn) {
   chain[n++] = "Object";
   chain[n++] = "Kernel";
   for (int i = 0; i < n; i++) {
-    int k = comp_class_index((Compiler *)c, chain[i]);
+    int k = comp_class_index(c, chain[i]);
     if (k >= 0 && tmc_includes(c, k, mod, 0)) return 1;
   }
   return 0;
@@ -7544,7 +7539,7 @@ int builtin_reopen_includes_module(Compiler *c, int mod) {
   }
   return 0;
 }
-int ty_matches_class(TyKind t, const char *cn, int exact) {
+int ty_matches_class(Compiler *c, TyKind t, const char *cn, int exact) {
   const char *self_cls = NULL;
   switch (t) {
   case TY_STRING: case TY_STRBUF: self_cls = "String"; break;
@@ -7586,7 +7581,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE ||
                                      t == TY_ENUMERATOR)) return 1;
   /* a program module the program mixed into this builtin by reopening it */
-  if (tmc_prog_module_in_builtin(self_cls, cn)) return 1;
+  if (tmc_prog_module_in_builtin(c, self_cls, cn)) return 1;
   return 0;
 }
 

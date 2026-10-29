@@ -6107,7 +6107,7 @@ int emit_scalar_class_test(Compiler *c, int node, TyKind t, const char *cn, int 
   if ((t != TY_INT && t != TY_FLOAT && t != TY_STRING && !ptr) || !cn) return 0;
   NodeKind nk = nt_kind(nt, node);
   if (nk == NK_IntegerNode || nk == NK_FloatNode || nk == NK_StringNode) return 0;
-  int yes = ty_matches_class(t, cn, exact);
+  int yes = ty_matches_class(c, t, cn, exact);
   if (yes < 0) return 0;
   int nilcls = sp_streq(cn, "NilClass");
   int univ = !exact && is_object_root(cn);

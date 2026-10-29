@@ -557,7 +557,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(b, ", \"%s\")", cn);
         return 1;
       }
-      int yes = ty_matches_class(at2, cn, 0);
+      int yes = ty_matches_class(c, at2, cn, 0);
       if (yes >= 0) {
         buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
         return 1;
