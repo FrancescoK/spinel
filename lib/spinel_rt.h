@@ -10505,6 +10505,17 @@ static sp_bool sp_PolyArray_include(sp_PolyArray *a, sp_RbVal v) {
   }
   return FALSE;
 }
+/* include? on a boxed array of any kind, compared with == as the general
+   Array's is. It reads the array itself at each step, not a copy, so a
+   user == that changes the array (it can also allocate) is seen as in
+   CRuby. */
+static sp_bool sp_poly_arr_include_eq(sp_RbVal recv, sp_RbVal v) {
+  SP_GC_ROOT_RBVAL(recv); SP_GC_ROOT_RBVAL(v);
+  if (SP_UNLIKELY(recv.tag == SP_TAG_OBJ && !recv.v.p)) sp_nil_recv("include?");
+  for (sp_int i = 0; i < sp_poly_arr_len(recv); i++)
+    if (sp_poly_rb_equal(sp_poly_arr_get(recv, i), v)) return TRUE;
+  return FALSE;
+}
 
 /* Mark the embedded GC reference inside an sp_RbVal (string or obj).
    Used as the scan hook for containers that store polymorphic values. */
@@ -13025,6 +13036,13 @@ static sp_RbVal sp_poly_delete_key(sp_RbVal recv, sp_RbVal key) {
         if (recv.cls_id == SP_BUILTIN_INT_ARRAY && key.tag == SP_TAG_NIL) {
           sp_IntArray_delete_nil((sp_IntArray *)recv.v.p);
           return sp_box_nil();
+        }
+        /* a Float of an Integer's value is == it: `[1, 2].delete(1.0)`
+           removes 1 and answers the element */
+        if (recv.cls_id == SP_BUILTIN_INT_ARRAY && key.tag == SP_TAG_FLT &&
+            key.v.f >= (sp_float)INTPTR_MIN && key.v.f < -(sp_float)INTPTR_MIN && key.v.f == (sp_float)(sp_int)key.v.f) {
+          sp_oint r = sp_IntArray_delete_o((sp_IntArray *)recv.v.p, (sp_int)key.v.f);
+          return r.nil ? sp_box_nil() : sp_box_int(r.v);
         }
         if (key.tag != (recv.cls_id == SP_BUILTIN_INT_ARRAY ? SP_TAG_INT : SP_TAG_SYM))
           return sp_box_nil();
