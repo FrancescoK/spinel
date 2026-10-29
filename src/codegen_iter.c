@@ -5087,6 +5087,14 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
   g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
+  /* The loop may be the builtin arm of a poly dispatch, beside a class's
+     own reject!, which reads its receiver as no object of the program's
+     (g_poly_builtin_arm). The block's own calls are not that receiver's:
+     under the reading, `v.zero?` on a poly value took the builtin for a
+     program class's instance in the block, and where the call's slot was
+     a box the C did not build. Drop it for the step, as the step helpers
+     do (step_arm_begin). */
+  int arm = step_arm_begin();
   /* the step's setup: locals fresh, and a redo's label after them */
   if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
   int rd_lbl = emit_iter_step_stmts(c, body, b, indent + 1, NULL);
@@ -5105,6 +5113,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
     buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
     free(cexpr.p);
   }
+  step_arm_end(c, arm);
   if (rd_lbl) g_redo_depth--;
   g_c_loop_depth--;
   g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;

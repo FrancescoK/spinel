@@ -2075,6 +2075,11 @@ int emit_block_cond_next(Compiler *c, int block, int indent, Buf *out);
 int fold_body_has_next(Compiler *c, int node);  /* a `next` of the body's own, not a nested block's */
 int iter_step_needs_frame(Compiler *c, int block);
 int emit_iter_step_stmts(Compiler *c, int body, Buf *b, int indent, const char *sep);
+/* Drop a dispatch's builtin-arm reading (g_poly_builtin_arm) for a block
+   body emitted inside that arm, and restore it: a user class owns the
+   body's own calls' names there as anywhere. */
+int step_arm_begin(void);
+void step_arm_end(Compiler *c, int tok);
 void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent);
 void emit_iter_loop_stmts(Compiler *c, int body, Buf *b, int indent);
 /* One step of a builtin iterator's block (emit_iter_step_open). */

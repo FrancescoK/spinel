@@ -1,0 +1,10 @@
+{a: 1, d: Scalar(2.5), f: Amount(nil)}
+{b: 0, c: Scalar(0), e: Amount(0), g: 0.0}
+{b: Scalar(2.5)}
+{a: Scalar(0)}
+[1, Scalar(2.5), Amount(nil)]
+[0, Scalar(0), Amount(0), 0.0]
+[1, Scalar(2.5), Amount(nil)]
+[0, Scalar(0), Amount(0), 0.0]
+:bag_reject
+:bag_select
