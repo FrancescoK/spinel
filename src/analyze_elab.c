@@ -2760,9 +2760,12 @@ static const char *lr_const_slot_name(const NodeTable *nt, int node) {
   NodeKind k = nt_kind(nt, node);
   if (k == NK_ClassNode || k == NK_ModuleNode) return NULL;
   if (k == NK_CallNode) {
-    int a = nt_ref(nt, node, "arguments"), n = 0;
+    /* a const_set the load stage left a call (desugar_const_set_write):
+       Object's sets the top-level slot; any other's slot is not known */
+    int a = nt_ref(nt, node, "arguments"), n = 0, rv = nt_ref(nt, node, "receiver");
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &n) : NULL;
-    return n ? vis_arg_name(nt, av[0]) : NULL;
+    return n && rv >= 0 && nt_kind(nt, rv) == NK_ConstantReadNode && is_object_base_name(nt_str(nt, rv, "name")) ?
+      vis_arg_name(nt, av[0]) : NULL;
   }
   int target = nt_ref(nt, node, "target");
   return nt_str(nt, target >= 0 ? target : node, "name");

@@ -718,6 +718,7 @@ int desugar_fiber_prepended_init(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
 int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
+int ct_method_defined(const NodeTable *nt, const char *meth);   /* the program defines `meth` anywhere (analyze_ct.c) */
 
 /* ---- the lowering table (analyze_lower.c, #9898) ----
    The rewrites the load stage makes are the rows of one table, run by one
@@ -728,7 +729,7 @@ int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 
 /* the rows, in the order the stage runs them */
 enum {
-  LW_NIL_BLOCK_ARG, LW_THREAD_START, LW_MARSHAL_RESTORE, LW_SOCKET_OPEN, LW_SYSTEM_OPTIONS, LW_IO_POPEN_BLOCK,
+  LW_NIL_BLOCK_ARG, LW_CONST_SET_WRITE, LW_THREAD_START, LW_MARSHAL_RESTORE, LW_SOCKET_OPEN, LW_SYSTEM_OPTIONS, LW_IO_POPEN_BLOCK,
   LW_USER_BACKTICK, LW_LITERAL_UNDEF_METHOD, LW_EXPLICIT_INITIALIZE_CALLS, LW_NOARG_DISPLAY_WRAPPERS,
   LW_PAREN_BLOCK_ARG, LW_PAREN_OPERANDS, LW_SEND_CLASS_MAKERS, LW_SELF_SUPERCLASS, LW_STRUCT_SUBCLASS_NEW_WRITE,
   LW_REFUSE_SUPERCLASS_EXPRS, LW_RESCUE_BLOCK_BODIES,
@@ -826,6 +827,8 @@ LowerFn desugar_system_options_at, desugar_system_options_left;
 LowerFn desugar_io_popen_block_at, desugar_io_popen_block_left;
 LowerGate desugar_itself_receiver_gate, desugar_builtin_kwsplat_gate;
 LowerFn desugar_itself_receiver_at, desugar_itself_receiver_left;
+LowerGate desugar_const_set_write_gate;
+LowerFn desugar_const_set_write_at, desugar_const_set_write_left;
 LowerFn desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_left;
 LowerFn refuse_superclass_exprs_at, desugar_sym_to_proc_call_at, desugar_builtin_kwsplat_at;
 LowerGate desugar_user_backtick_gate;

@@ -12,7 +12,7 @@ r0 #9 f0 ConstantPathWriteNode line 12
 r0 #10 f0 ConstantPathOrWriteNode line 13
 r0 #11 f0 ConstantPathAndWriteNode line 14
 r0 #12 f0 ConstantPathOperatorWriteNode line 15
-r0 #13 f0 CallNode const_set line 16
+r0 #13 f0 ConstantPathWriteNode line 16
 r0 #14 f0 CallNode p line 17
 r0 #15 f0 DefNode run line 20
 r0 #16 f0 CallNode p line 21

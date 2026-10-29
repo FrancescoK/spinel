@@ -75,6 +75,9 @@ typedef struct {
 static const Lowering lowerings[LW__COUNT] = {
   [LW_NIL_BLOCK_ARG] = { "desugar_nil_block_arg", 0, { NK_CallNode },
     desugar_nil_block_arg_at, desugar_nil_block_arg_left, "`m(&nil)`" },
+  [LW_CONST_SET_WRITE] = { "desugar_const_set_write", 0, { NK_CallNode },
+    desugar_const_set_write_at, desugar_const_set_write_left, "`M.const_set(:N, v)` with a literal name",
+    desugar_const_set_write_gate },
   [LW_THREAD_START] = { "desugar_thread_start", 0, { NK_CallNode },
     desugar_thread_start_at, desugar_thread_start_left, "`Thread.start`, `Thread.fork`", desugar_thread_start_gate },
   [LW_MARSHAL_RESTORE] = { "desugar_marshal_restore", 0, { NK_CallNode },

@@ -1703,6 +1703,51 @@ const char *const_get_recv_name(Compiler *c, int call, int recv) {
   }
   return NULL;
 }
+/* The class or module a `recv.const_set` sets its constant in, when the
+   analysis knows it: a constant naming one, a local holding one class,
+   `self.class` of a class with no subclass, or self in a class method of a
+   class with none (or of a module); -1 otherwise. */
+static int const_set_recv_ci(Compiler *c, int call, int recv) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, recv) == NK_SelfNode) {
+    Scope *s = comp_scope_of(c, call);
+    int cid = s && s->is_cmethod ? s->class_id : -1;
+    if (cid < 0 || cid >= c->nclasses) return -1;
+    for (int j = 0; j < c->nclasses; j++) if (c->classes[j].parent == cid) return -1;
+    return cid;
+  }
+  int ci = class_recv_static_ci(c, recv);
+  return ci >= 0 ? ci : self_class_static_ci(c, recv);
+}
+/* Where `recv.const_set(:N, v)`, N a literal, stores when it is left a call
+   (desugar_const_set_write lowers the ones on a constant naming a class or
+   module of the program, unless the program defines a const_set of its
+   own). Object's sets the top-level N. A receiver whose class the analysis
+   knows sets that class's own N: CS_SLOT with its key in *key, or CS_NONE
+   when the class holds none (a new constant has no storage). A receiver
+   known only at run time keeps the one slot of N when N is one owner's
+   (CS_SLOT), and is CS_AMBIG when constants of more than one owner share N
+   (the constant qualifier keyed them apart). */
+int const_set_slot(Compiler *c, int call, const char *n, const char **key) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, call, "receiver");
+  *key = NULL;
+  if (recv < 0 || !n) return CS_NONE;
+  NodeKind rk = nt_kind(nt, recv);
+  const char *rn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL;
+  int ci = rn && is_object_base_name(rn) ? -1 : const_set_recv_ci(c, call, recv);
+  const char *cn = ci >= 0 ? c->classes[ci].name : NULL;
+  if ((rn && is_object_base_name(rn)) || (cn && is_object_base_name(cn))) {
+    *key = comp_const(c, n) ? n : NULL;
+  } else if (cn) {
+    *key = const_value_owned_key(c, cn, n);
+  } else if (qc_leaf_qualified(n)) {
+    return CS_AMBIG;
+  } else {
+    *key = comp_const(c, n) ? n : NULL;
+  }
+  return *key ? CS_SLOT : CS_NONE;
+}
 /* What `R.const_get(:N)` reads. Like Ruby, R first and then each superclass,
    taking at each the value constant or the class it holds under N; past them
    the top-level constant or the class keyed N. Answers the value's key (N, or

@@ -325,7 +325,7 @@ static int ct_core_method_changed(const NodeTable *nt, const int *parent, const 
    that run whatever class the receiver is: a hook CRuby calls (inherited,
    const_added) or a method a module of the program may override for itself
    (const_set, instance_variable_set). */
-static int ct_method_defined(const NodeTable *nt, const char *meth) {
+int ct_method_defined(const NodeTable *nt, const char *meth) {
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_DefNode && ct_eq(nt_str(nt, id, "name"), meth)) return 1;

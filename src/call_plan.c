@@ -1478,6 +1478,21 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
              "object for the anonymous class", anon_reflect == 1 ? "superclass" : "ancestors");
     return buf;
   }
+  /* a const_set on a receiver known only at run time, of a name constants
+     of more than one module share (const_set_slot): constants are C
+     globals, one per owner, and which owner's this sets is the receiver's */
+  int cs_an = nt_ref(nt, id, "arguments"), cs_ac = 0;
+  const int *cs_av = is_const_set_name(name) && cs_an >= 0 ? nt_arr(nt, cs_an, "arguments", &cs_ac) : NULL;
+  const char *cs_n = cs_ac == 2 ? vis_arg_name(nt, cs_av[0]) : NULL, *cs_key;
+  if (cs_n && const_set_slot(c, id, cs_n, &cs_key) == CS_AMBIG && cplan_reachable(c, id)) {
+    *lx = LX_BINDING;
+    snprintf(buf, cap, "const_set(:%s, ...) on a receiver whose class or module is known only at run "
+             "time is not supported when more than one module holds a constant %s: constants are "
+             "compile-time globals, and which module's %s this sets is not known at compile time. "
+             "Write `Mod.const_set(:%s, v)` or `Mod::%s = v` (see docs/limitations.md)",
+             cs_n, cs_n, cs_n, cs_n, cs_n);
+    return buf;
+  }
 
   int recv = nt_ref(nt, id, "receiver");
   if (is_then_alias(name)) {

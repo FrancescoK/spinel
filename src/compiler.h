@@ -1943,6 +1943,8 @@ TyKind     hash_default_value_ty(Compiler *c, int dn);      /* the value type a 
 int        hash_new_blockless(Compiler *c, int recv);  /* blockless Hash.new / {} literal */
 int        const_owned_by_class(Compiler *c, const char *clsname, const char *constname);
 const char *const_get_recv_name(Compiler *c, int call, int recv);
+enum { CS_NONE, CS_SLOT, CS_AMBIG };            /* const_set_slot's answers */
+int        const_set_slot(Compiler *c, int call, const char *n, const char **key);
 int        const_get_takes_value(Compiler *c, const char *rnm, const char *cgn);
 const char *const_get_value_key(Compiler *c, const char *rnm, const char *cgn);
 int        const_get_class_index(Compiler *c, const char *rnm, const char *cgn);
