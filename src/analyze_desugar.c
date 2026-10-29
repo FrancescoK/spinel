@@ -12759,9 +12759,15 @@ static const char *bi_receiver_class(int i) {
   static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
   return recvs[i];
 }
-static int bi_receiver_answers(const char *nm) {
+static int bi_enum_receivers_answer(const char *nm) {
   for (int i = 0; bi_receiver_class(i); i++) if (builtin_instance_method_known(bi_receiver_class(i), nm)) return 1;
   return 0;
+}
+/* the same for a copy of a method of the class or module cls: Enumerable's
+   receivers above, else cls's own builtin methods (an Integer's, a
+   Float's, Comparable's, Monitor's) */
+static int bi_receiver_answers(const char *cls, const char *nm) {
+  return is_enumerable_module_name(cls) ? bi_enum_receivers_answer(nm) : builtin_instance_method_known(cls, nm);
 }
 
 /* the classes and modules a walk over includes has reached, by full key */
@@ -12875,18 +12881,19 @@ static int bi_def_visibility(const NodeTable *nt, int st) {
                             nt_str(nt, fwd_body_def(nt, st), "name"));
 }
 
-/* the receiverless calls a builtin body may make that are NOT methods of
-   the receiver: Kernel's functions, and the public methods of Object. In a
-   copy of the program's own method (cls the class or module it sits in,
-   NULL for a builtins/ body), a private Kernel name the program defines on the
-   receiver's chain is its method, which CRuby's lookup finds through self
-   ahead of Kernel's function. */
-static int bi_keeps_receiverless(const NodeTable *nt, const char *cls, const char *nm) {
+/* the receiverless calls a body copied for a method of the class or
+   module cls may make that are NOT methods of the receiver: Kernel's
+   functions that the receiver does not answer itself (bi_receiver_answers),
+   and the public methods of Object. In a copy of the program's own method
+   (own; not a builtins/ body), a private Kernel name the program defines on
+   the receiver's chain is its method, which CRuby's lookup finds through
+   self ahead of Kernel's function. */
+static int bi_keeps_receiverless(const NodeTable *nt, const char *cls, int own, const char *nm) {
   if (is_enum_helper_name(nm)) return 1;
   if (!object_instance_method_name(nm)) return 0;
   if (object_public_method_name(nm)) return 1;
-  if (cls && own_chain_defines(nt, cls, nm)) return 0;
-  return !bi_receiver_answers(nm);
+  if (own && own_chain_defines(nt, cls, nm)) return 0;
+  return !bi_receiver_answers(cls, nm);
 }
 
 /* does any DefNode among the program's own nodes carry this name? (the
@@ -12899,8 +12906,8 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
 
 /* `self` in nodes [lo, hi] reads the `__self` parameter, and the
    receiverless calls there (Kernel's aside) take it as their receiver; cls
-   as bi_keeps_receiverless takes it */
-static void bi_self_to_local(NodeTable *nt, int lo, int hi, const char *cls) {
+   and own as bi_keeps_receiverless takes them */
+static void bi_self_to_local(NodeTable *nt, int lo, int hi, const char *cls, int own) {
   for (int id = lo; id <= hi; id++) {
     NodeKind kind = nt_kind(nt, id);
     if (kind == NK_SelfNode) {
@@ -12910,7 +12917,7 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi, const char *cls) {
     }
     else if (kind == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || bi_keeps_receiverless(nt, cls, nm)) continue;
+      if (!nm || bi_keeps_receiverless(nt, cls, own, nm)) continue;
       int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return;
       nt_node_set_str(nt, rd, "name", "__self");
       nt_node_set_int(nt, rd, "depth", 0);
@@ -12929,7 +12936,7 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi, const char *cls) {
    beside the builtins', and each call takes its copy the same way. */
 static int own_enum_name_routable(const char *nm) {
   if (!nm || builtin_enum_name_index(nm) >= 0 || is_enum_helper_name(nm) || object_public_method_name(nm)) return 0;
-  return !bi_receiver_answers(nm);
+  return !bi_enum_receivers_answer(nm);
 }
 
 /* does def d call super anywhere in its subtree (ids are pre-order, so
@@ -12984,7 +12991,7 @@ static void own_enum_mixin_defs(const NodeTable *nt, const char *ns, const char 
 static int own_enum_generic(NodeTable *nt, int def, const char *cls) {
   int copy = nt_clone_subtree(nt, def);
   if (copy < 0) return -1;
-  bi_self_to_local(nt, copy, nt->count - 1, cls);
+  bi_self_to_local(nt, copy, nt->count - 1, cls, 1);
   int pn = nt_ref(nt, copy, "parameters");
   if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) return -1; nt_node_set_ref(nt, copy, "parameters", pn); }
   int sp = nt_new_node(nt, "RequiredParameterNode"); if (sp < 0) return -1;
@@ -13156,7 +13163,7 @@ int desugar_builtins(Compiler *c) {
       /* `self` and the receiverless calls in the body */
       int dbody = nt_ref(nt, def, "body");
       int lo = dbody >= 0 ? dbody : def;
-      bi_self_to_local(nt, lo, hi, NULL);
+      bi_self_to_local(nt, lo, hi, mn, 0);
       /* the generic definition itself stays out of the program: the copies
          below are what the call sites use. It keeps a name of its own so
          that, orphaned in the node table, it cannot be mistaken for a
@@ -14668,7 +14675,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
           nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr); }
         int dbody = nt_ref(nt, def, "body");
         int lo = dbody >= 0 ? dbody : def;
-        bi_self_to_local(nt, lo, hi, NULL);
+        bi_self_to_local(nt, lo, hi, mn, 0);
         { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, def, "name", gn); }
         if (bi >= 0) gdef[bx][bi] = def;
       }
@@ -14727,7 +14734,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         nr[0] = spself; for (int j = 0; j < rn; j++) nr[j + 1] = reqs[j];
         nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr); }
       int lo = clone;
-      bi_self_to_local(nt, lo, hi, mn);
+      bi_self_to_local(nt, lo, hi, mn, 1);
       { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, clone, "name", gn); }
       int bi = sp_builtin_extra_name_index(bx, name);
       if (bi >= 0) {
