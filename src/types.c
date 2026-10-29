@@ -783,6 +783,23 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
     *out = r; if (row) *row = op;
     return 1;
   }
+  /* flatten's generic-fallback row below is BOPR_SELF (the receiver's own
+     kind) -- right for a plain or Hash receiver (K-034), but WRONG for a
+     nested array receiver (TY_INT_ARRAY_ARRAY/TY_FLOAT_ARRAY_ARRAY):
+     flattening one level produces the ELEMENT kind (ty_array_elem), not
+     the still-nested receiver kind. Confirmed against spinel's own direct
+     (non-yield) call, which already answers mk.flatten(1) correctly where
+     mk returns a nested array -- this table must not disagree with it.
+     A yield's own forward inference never widens a literal
+     array-of-arrays to this concrete nested kind on its own (confirmed
+     empirically via --emit-types: it answers poly_array there instead),
+     but a value flowing in from a method's own post-fixpoint narrowed
+     return can still carry it to a yield site, so this is answered
+     explicitly ahead of the generic fallback rather than trusted to it. */
+  if (!strcmp(name, "flatten") && (recv == TY_INT_ARRAY_ARRAY || recv == TY_FLOAT_ARRAY_ARRAY)) {
+    *out = ty_array_elem(recv);
+    return 1;
+  }
   /* Every name above answers from its own hand-written rule, several of
      them mode-gated (succ/sum) or needing more than the receiver's kind
      to answer (clamp). Below is a generic fallback, delegating to
