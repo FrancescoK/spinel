@@ -321,7 +321,8 @@ int desugar_ie_bare_object_calls(Compiler *c) {
        a method of the program's Enumerable come ahead of it too. An
        undefined name is not the builtin's either. */
     int ro = nm ? comp_arysub_reopen(c, cls) : -1;
-    int enumr = nm && !hit && !is_arysub_kernel_name(nm) && ie_enum_reopen_answers(c, cls, nm);
+    int enumr = nm && !hit && !is_arysub_kernel_name(nm) && ie_enum_reopen_answers(c, cls, nm) &&
+                !comp_is_undeffed_in_chain(c, cls, nm);
     int own = nm && (comp_arysub_name_is_array(c, cls, nm) || enumr ||
                      (comp_ary_is_str(c, cls) && sp_streq(nm, "dup"))) &&
               !comp_is_undeffed_in_chain(c, cls, nm) &&
