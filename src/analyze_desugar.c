@@ -1248,6 +1248,7 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
   return sc;
 }
 static int program_defines_name(const NodeTable *nt, int n0, const char *name);
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name);
 /* The paths the program writes, for the receiver of an instance_eval:
    each class or module header's full path ("A::B"), each value constant's,
    and the lexical scopes (the full paths of the bodies around it,
@@ -6224,9 +6225,11 @@ void enum_send_copy_take(NodeTable *nt, int call) {
      (LR_ENUM_NAME's rows): the call takes the copy of the name the
      definition has, under that name, as desugar_builtins renames a written
      one; a class with its own method of the alias keeps it, answered by
-     the name the call was written with (desugar_builtin_enum_calls) */
+     the name the call was written with (desugar_builtin_enum_calls); a
+     class method or a top-level one keeps the call as written */
   const LowerRow *alias = bi < 0 && nm ? lower_row_named(LR_ENUM_NAME, nm) : NULL;
-  if (alias) bi = builtin_enum_name_index(alias->target);
+  if (alias && !program_defines_name_off_class(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
+  else alias = NULL;
   if (bi < 0 || bi >= g_enum_send_copy_n || g_enum_send_copy[bi] < 0) return;
   if (alias) {
     nt_node_set_str(nt, call, "orig_name", nm);
@@ -12897,6 +12900,20 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
   return 0;
 }
 
+/* does the program define name other than as an instance method in a
+   class body? A call that reaches such a method -- a class's or module's
+   own (`C.detect`), a top-level one (a receiverless `detect`) -- is
+   resolved by the name it carries, never by orig_name, so renaming it to
+   the builtin's left it no method. */
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name) {
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode || !nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), name)) continue;
+    int ct = nt_ref(nt, id, "receiver") < 0 ? fwd_lex_parent(nt, id) : -1;
+    if (ct < 0 || !fwd_node_is(nt, ct, "ClassNode")) return 1;
+  }
+  return 0;
+}
+
 /* `self` in nodes [lo, hi] reads the `__self` parameter, and the
    receiverless calls there (Kernel's aside) take it as their receiver; cls
    as bi_keeps_receiverless takes it */
@@ -13348,9 +13365,11 @@ int desugar_builtins(Compiler *c) {
        of the program with its own method of the alias keeps it: the rewrite
        answers a receiver of that class by the name the call was written
        with (orig_name), where a program-wide test left an Array's
-       collect_concat no method at all. */
+       collect_concat no method at all. A class method or a top-level
+       method of the alias keeps every call of it as written
+       (program_defines_name_off_class). */
     const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
-    if (alias && builtin_enum_name_index(alias->target) >= 0) {
+    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name_off_class(nt, n0, alias->name)) {
       /* (a send keeps its own name until desugar_public_send_recv
          retargets it, which renames it so: renamed here, `a.send(:detect)`
          was a call of find with :detect for its argument) */
