@@ -1139,19 +1139,23 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         if (bt == TY_POLY) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT_RBVAL(_t%d);\n", t); }
         else if (comp_ty_value_obj(c, bt)) { emit_indent(g_pre, g_indent); emit_gc_root_tmp_refs(c, bt, t, g_pre); buf_puts(g_pre, "\n"); }
         else if (needs_root(bt)) { emit_indent(g_pre, g_indent); buf_printf(g_pre, "SP_GC_ROOT(_t%d);\n", t); }
-        /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp. */
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_check_depth();\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
-        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "for (;;) {\n");
+        /* Kernel#loop rescues StopIteration to terminate; wrap in a setjmp,
+           unless nothing in the body can raise one (loop_may_stop) */
+        int frame = loop_may_stop(c, id), ind = g_indent + (frame ? 1 : 0);
+        if (frame) {
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_check_depth();\n");
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_rootmark[sp_exc_top] = sp_gc_nroots;\n");
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;\n");
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "if (setjmp(sp_exc_stack[sp_exc_top-1]) == 0) {\n");
+        }
+        emit_indent(g_pre, ind); buf_puts(g_pre, "for (;;) {\n");
         const char *sv_lb = g_loop_break_var;
         /* The frame this loop opened is live for its body: a `return` from
            inside must pop it (see the statement-form loop). The break base is
            taken AFTER the bump -- a `break` leaves through the code below the
            loop, which pops that frame itself. */
         int sv_lexc = g_loop_exc_base, sv_lexc_rb = g_loop_rescue_base;
-        g_exc_frame_depth++;
+        if (frame) g_exc_frame_depth++;
         g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth;
         /* a C loop like the statement form's (emit_loop_body): a break or
            next crossing an ensure opened in the body runs it, then leaves */
@@ -1163,28 +1167,30 @@ int emit_call_kernel_flow_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         char lb_buf[32]; snprintf(lb_buf, sizeof lb_buf, "_t%d", t);
         g_loop_break_var = lb_buf;
         int lbody = nt_ref(nt, blk, "body");
-        emit_stmts(c, lbody, g_pre, g_indent + 2);
-        g_exc_frame_depth--;
+        emit_stmts(c, lbody, g_pre, ind + 1);
+        if (frame) g_exc_frame_depth--;
         g_c_loop_depth--;
         g_loop_ensure_base = sv_lens;
         g_loop_break_var = sv_lb;
         g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb;
         g_ie_res_poly = sv_iep;
         g_brk_ser_var = sv_bj;
-        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "}\n");
-        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
-        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
-        emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n");
-        emit_indent(g_pre, g_indent + 1);
-        buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) { sp_pending_exc_obj = sp_exc_obj[sp_exc_top]; sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]); }\n");
-        /* the loop's value is the exhausted iteration's result (#3588) */
-        if (bt == TY_POLY) {
+        emit_indent(g_pre, ind); buf_puts(g_pre, "}\n");
+        if (frame) {
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "else {\n");
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_exc_top--;\n");
+          emit_indent(g_pre, g_indent + 1); buf_puts(g_pre, "sp_gc_nroots = sp_exc_rootmark[sp_exc_top];\n");
           emit_indent(g_pre, g_indent + 1);
-          buf_printf(g_pre, "if (sp_exc_obj[sp_exc_top]) _t%d = ((sp_Exception *)sp_exc_obj[sp_exc_top])->result;\n", t);
+          buf_puts(g_pre, "if (!sp_exc_cls_matches((const char *)sp_last_exc_cls, \"StopIteration\")) { sp_pending_exc_obj = sp_exc_obj[sp_exc_top]; sp_raise_cls(sp_exc_cls[sp_exc_top], sp_exc_msg[sp_exc_top]); }\n");
+          /* the loop's value is the exhausted iteration's result (#3588) */
+          if (bt == TY_POLY) {
+            emit_indent(g_pre, g_indent + 1);
+            buf_printf(g_pre, "if (sp_exc_obj[sp_exc_top]) _t%d = ((sp_Exception *)sp_exc_obj[sp_exc_top])->result;\n", t);
+          }
+          emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         }
-        emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
         buf_printf(b, "_t%d", t);
         return 1;
       }

@@ -3513,14 +3513,15 @@ void declare_local_named(Compiler *c, Buf *b, LocalVar *lv, const char *name, in
 
 /* A `loop { }` call emits a setjmp (to rescue StopIteration and terminate), so
    for the volatile analysis it behaves like a begin: a local written in its body
-   and read after must survive the longjmp. */
+   and read after must survive the longjmp. One whose body cannot raise
+   StopIteration emits none (loop_may_stop). */
 static int is_stopiter_loop(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, id);
   if (k != NK_CallNode) return 0;
   if (nt_ref(nt, id, "receiver") >= 0) return 0;
   const char *nm = nt_str(nt, id, "name");
-  return nm && sp_streq(nm, "loop") && nt_ref(nt, id, "block") >= 0;
+  return nm && sp_streq(nm, "loop") && nt_ref(nt, id, "block") >= 0 && loop_may_stop(c, id);
 }
 
 /* A break-carrying block call whose break cannot be delivered by a
@@ -3538,8 +3539,21 @@ static int is_heavy_brk_call(Compiler *c, int id) {
   return call_breaks(c, id) && !brk_wrapper_surely_light(c, id);
 }
 
+/* A `catch(:tag) { }` emits a setjmp (emit_call_kernel's catch arm), which a
+   throw from anywhere in its block longjmps to: a local written in the block
+   and read after is as indeterminate as one a begin writes. */
+static int is_catch_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") < 0) return 0;
+  const char *nm = nt_str(nt, id, "name");
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &argc);
+  return nm && sp_streq(nm, "catch") && argc <= 1 && !bare_call_class_owned(c, id);
+}
+
 /* A node that emits a setjmp around its own subtree: a begin, an
-   `x rescue y` modifier, a `loop {}`, or a heavy break-carrying call. */
+   `x rescue y` modifier, a `loop {}`, a `catch {}`, or a heavy
+   break-carrying call. */
 /* A `begin` with no rescue, else or ensure -- the `begin ... end while`
    do-while -- emits no handler frame (emit_begin), so no setjmp */
 static int begin_has_handler(const NodeTable *nt, int id) {
@@ -3551,7 +3565,7 @@ static int begin_has_handler(const NodeTable *nt, int id) {
 static int is_setjmp_construct(Compiler *c, int id) {
   NodeKind k = nt_kind(c->nt, id);
   return (k == NK_BeginNode && begin_has_handler(c->nt, id)) || k == NK_RescueModifierNode ||
-         is_stopiter_loop(c, id) || is_heavy_brk_call(c, id);
+         is_stopiter_loop(c, id) || is_catch_call(c, id) || is_heavy_brk_call(c, id);
 }
 
 /* Does scope `si` itself emit a setjmp: one of the constructs above, or a
@@ -3580,7 +3594,7 @@ static int is_rescuing_yield_call(Compiler *c, int id) {
 }
 
 /* Does scope index `si` contain a begin/rescue, a rescue modifier, a
-   `loop {}`, a heavy (real-setjmp) break-carrying call, or a block spliced
+   `loop {}`, a `catch {}`, a heavy (real-setjmp) break-carrying call, or a block spliced
    under an inlined method's rescue (so its locals need volatile across the
    setjmp it emits)? */
 int scope_has_begin(Compiler *c, int si) {

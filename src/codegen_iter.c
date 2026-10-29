@@ -7845,6 +7845,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* loop { ... } -- infinite loop, exited by break */
   if (recv < 0 && sp_streq(name, "loop")) {
     int lbody = nt_ref(nt, block, "body");
+    /* a body nothing in which can raise StopIteration is a plain C loop: no
+       handler to open, and its locals stay out of memory */
+    if (!loop_may_stop(c, id)) {
+      emit_indent(b, indent); buf_puts(b, "for (;;) {\n");
+      g_loop_uncounted = 1;
+      emit_loop_body(c, lbody, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     /* Kernel#loop rescues StopIteration to terminate normally (e.g. an external
        Enumerator's #next at the end). Wrap the loop in a setjmp handler; a
        StopIteration falls through, any other exception re-raises. */

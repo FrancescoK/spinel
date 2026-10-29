@@ -4865,3 +4865,286 @@ int lower_rows_check(const NodeTable *nt) {
   fprintf(stderr, "lower-rows-check: %d calls, %d disagreements\n", calls, bad);
   return bad;
 }
+
+/* ---- may a `loop { }` body raise StopIteration? ----
+   Kernel#loop rescues StopIteration, so its emitters open a setjmp frame,
+   and every local the body writes and reads after is volatile. A body
+   nothing in which can raise StopIteration needs neither. What raises it:
+   an external iteration (`e.next`, peek, next_values, peek_values), a push
+   to a closed Queue (ClosedQueueError is one), a `raise` of such a class or
+   of one the program does not name, a send whose name is computed, and a
+   method of the program whose body does (si_facts), reached as emission
+   reaches it: the class of a typed receiver, a reopened builtin's, or, on a
+   boxed one, every method of the name. A block given to a call that runs
+   it there is part of the code it sits in. One the call keeps to run later
+   (a lambda, `proc`, `Hash.new { }`, a thread's, a method's `&blk`) may run
+   inside any loop: when one such can raise StopIteration (or a Method
+   object may run any method), no body is known not to, and when none can,
+   a Proc call cannot either. A yield in a loop's body runs the caller's
+   block, which may be neither, so it counts as raising. */
+static const char *const si_iter_names[] = { "next", "peek", "next_values", "peek_values", NULL };
+static const char *const si_queue_names[] = { "push", "<<", "enq", NULL };
+static const char *const si_dyn_names[] = { "send", "__send__", "public_send", "eval", "define_method", NULL };
+static const char *const si_callable_names[] = { "method", "public_method", "instance_method", "to_proc", "curry", NULL };
+/* calls that keep their block to run later */
+static const char *const si_keep_names[] = {
+  "new", "proc", "lambda", "define_method", "define_singleton_method", "at_exit", "trap", "start", "fork",
+  "default_proc=", "define_finalizer", "to_enum", "enum_for", NULL };
+/* methods the runtime calls on an object of the program's (to_s for
+   interpolation, <=> for sort, each for Enumerable, ...): when one of a
+   program class's raises StopIteration, no body is known not to */
+static const char *const si_protocol_names[] = {
+  "to_s", "inspect", "==", "!=", "eql?", "equal?", "hash", "<=>", "===", "=~", "each", "coerce",
+  "to_ary", "to_a", "to_str", "to_proc", "to_h", "to_hash", "to_int", "to_i", "to_f", "to_sym",
+  "method_missing", "respond_to?", "respond_to_missing?", "initialize_copy", "initialize_dup",
+  "initialize_clone", "succ", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "**", NULL };
+
+/* May a `raise` of class name nm raise a StopIteration? */
+static int si_class_may_stop(Compiler *c, const char *nm, int depth) {
+  if (!nm || depth > 64) return 1;
+  if (sp_streq(nm, "StopIteration") || sp_streq(nm, "ClosedQueueError")) return 1;
+  int k = comp_class_index(c, nm);
+  if (k < 0) return !is_builtin_exception_name(nm);
+  for (int d = 0; k >= 0 && d < 64; d++) {
+    ClassInfo *ci = &c->classes[k];
+    if (ci->name && (sp_streq(ci->name, "StopIteration") || sp_streq(ci->name, "ClosedQueueError"))) return 1;
+    if (ci->parent >= 0) { k = ci->parent; continue; }
+    int sup = ci->def_node >= 0 ? nt_ref(c->nt, ci->def_node, "superclass") : -1;
+    if (sup < 0) return 0;
+    NodeKind sk = nt_kind(c->nt, sup);
+    if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return 1;
+    return si_class_may_stop(c, nt_str(c->nt, sup, "name"), depth + 1);
+  }
+  return 1;
+}
+/* May `raise` call id raise one? Only a class literal (or its `.new`) or a
+   message String says it cannot. */
+static int si_raise_may_stop(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments"), argc = 0;
+  const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
+  if (argc == 0) return 1;   /* re-raises what is being handled */
+  int a = argv[0];
+  NodeKind ak = nt_kind(nt, a);
+  if (ak == NK_StringNode || ak == NK_InterpolatedStringNode) return 0;
+  if (ak == NK_CallNode && nt_ref(nt, a, "receiver") >= 0 && nt_str(nt, a, "name") &&
+      (sp_streq(nt_str(nt, a, "name"), "new") || sp_streq(nt_str(nt, a, "name"), "exception")))
+    a = nt_ref(nt, a, "receiver"), ak = nt_kind(nt, a);
+  if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) return 1;
+  return si_class_may_stop(c, nt_str(nt, a, "name"), 0);
+}
+
+/* The per-compile facts: per scope, whether its body may raise
+   StopIteration (raises), and the program's methods by name. */
+typedef struct {
+  const Compiler *c; int nscopes, count;
+  char *raises;              /* per scope: 1 may raise, 0 not (built), -1 not asked */
+  ANameHash names; int *head, *next;   /* method scopes by name */
+  int *reopen, nreopen;      /* the program's reopened builtin classes */
+  signed char *loop_memo;    /* per node: a loop's answer, -1 until asked */
+  int **tg; int *ntg, *ctg;  /* per scope, the method scopes its body may call */
+  int all, queues, lazy, in_loop, probe;
+} SiFacts;
+static SiFacts g_si;
+
+/* Walk subtree id: 1 when it may raise StopIteration itself. A call of a
+   method of the program goes to `targets` of scope `from` when building
+   (from >= 0), and counts as raising when that method does otherwise. */
+static void si_target(SiFacts *f, int from, int mi, int *hit) {
+  if (mi < 0 || mi >= f->nscopes) { *hit = 1; return; }
+  /* (probing: a target that captures the block as `&blk`) */
+  if (f->probe) { const char *bp = g_si.c->scopes[mi].blk_param; if (bp && bp[0]) *hit = 1; return; }
+  if (from < 0) { if (f->raises[mi]) *hit = 1; return; }
+  if (f->ntg[from] == f->ctg[from]) {
+    f->ctg[from] = f->ctg[from] ? f->ctg[from] * 2 : 8;
+    f->tg[from] = (int *)realloc(f->tg[from], sizeof(int) * (size_t)f->ctg[from]);
+    if (!f->tg[from]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  f->tg[from][f->ntg[from]++] = mi;
+}
+static void si_by_name(SiFacts *f, int from, const char *nm, int *hit) {
+  int e = nm ? anh_find(&f->names, nm) : -1;
+  for (int s = e >= 0 ? f->head[e] : -1; s >= 0 && !*hit; s = f->next[s]) si_target(f, from, s, hit);
+}
+static void si_call_targets(Compiler *c, SiFacts *f, int from, int id, const char *nm, int r, TyKind rt, int *hit) {
+  const NodeTable *nt = c->nt;
+  if (r >= 0 && sp_streq(nm, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
+    int k = comp_class_index(c, nt_str(nt, r, "name"));
+    if (k >= 0) {
+      int mi = comp_method_in_chain(c, k, "initialize", NULL);
+      if (mi >= 0) si_target(f, from, mi, hit);
+      return;
+    }
+  }
+  if (r < 0) {
+    int mi = comp_self_call_mi(c, id, nm);
+    if (mi >= 0) si_target(f, from, mi, hit);
+    return;
+  }
+  if (ty_is_object(rt)) {
+    /* the class's own (or inherited) method, and a subclass's override,
+       which a value of the class may be: among the methods of the name, not
+       a scan of every class per call */
+    int k = ty_object_class(rt);
+    int mi = call_target(c, id, k, nm, 0, NULL);
+    if (mi >= 0) si_target(f, from, mi, hit);
+    int e = anh_find(&f->names, nm);
+    for (int s = e >= 0 ? f->head[e] : -1; s >= 0 && !*hit; s = f->next[s]) {
+      int sk = c->scopes[s].class_id;
+      if (s != mi && sk >= 0 && sk != k && is_descendant(c, sk, k)) si_target(f, from, s, hit);
+    }
+    return;
+  }
+  if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_NIL) { si_by_name(f, from, nm, hit); return; }
+  for (int i = 0; i < f->nreopen && !*hit; i++) {
+    int mi = call_target(c, id, f->reopen[i], nm, 0, NULL);
+    if (mi >= 0) si_target(f, from, mi, hit);
+  }
+}
+static int si_walk(Compiler *c, SiFacts *f, int from, int id, int depth) {
+  const NodeTable *nt = c->nt;
+  if (id < 0 || id >= nt->count) return 0;
+  if (depth > 2000) return 1;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  if (k == NK_YieldNode && f->in_loop) return 1;
+  int hit = 0;
+  if (k == NK_SuperNode || k == NK_ForwardingSuperNode) {
+    Scope *sc = comp_scope_of(c, id);
+    if (!sc) return 1;
+    si_by_name(f, from, sc->name, &hit);
+  }
+  else if (k == NK_BlockArgumentNode) {
+    int e = nt_ref(nt, id, "expression");
+    const char *sym = e >= 0 && nt_kind(nt, e) == NK_SymbolNode ? nt_str(nt, e, "value") : NULL;
+    if (sym && str_in(sym, si_iter_names)) return 1;
+    if (sym) si_by_name(f, from, sym, &hit);
+  }
+  else if (k == NK_CallNode) {
+    const char *nm = nt_str(nt, id, "name");
+    int r = nt_ref(nt, id, "receiver");
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (!nm || str_in(nm, si_dyn_names)) return 1;
+    if (str_in(nm, si_iter_names) && !(rt == TY_INT || rt == TY_FLOAT || rt == TY_STRING || rt == TY_STRBUF)) return 1;
+    if (str_in(nm, si_queue_names) && (rt == TY_QUEUE || (f->queues && (rt == TY_POLY || rt == TY_UNKNOWN)))) return 1;
+    if (r < 0 && is_raise_alias(nm) && si_raise_may_stop(c, id)) return 1;
+    si_call_targets(c, f, from, id, nm, r, rt, &hit);
+  }
+  if (hit) return 1;
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) if (si_walk(c, f, from, nd->r[j].ref, depth + 1)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int i = 0; i < nd->a[j].n; i++) if (si_walk(c, f, from, nd->a[j].ids[i], depth + 1)) return 1;
+  return 0;
+}
+
+static int si_prelude_scope(Compiler *c, const Scope *sc) {
+  const char *path = nt_file_path(c->nt, (int)nt_int(c->nt, sc->def_node, "node_file", 0));
+  return path && strstr(path, "/builtins/") != NULL;
+}
+
+/* Once per compile, at the first ask (emission: the types have settled). */
+static void si_facts(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  SiFacts *f = &g_si;
+  if (f->c == c && f->nscopes == c->nscopes && f->count == nt->count) return;
+  for (int s = 0; s < f->nscopes; s++) free(f->tg ? f->tg[s] : NULL);
+  free(f->tg); free(f->ntg); free(f->ctg); free(f->raises); free(f->head); free(f->next); free(f->reopen); free(f->loop_memo);
+  anh_free(&f->names);
+  memset(f, 0, sizeof *f);
+  int ns = c->nscopes;
+  f->c = c; f->nscopes = ns; f->count = nt->count;
+  f->raises = (char *)malloc((size_t)ns + 1);
+  f->next = (int *)malloc(sizeof(int) * ((size_t)ns + 1));
+  f->head = (int *)malloc(sizeof(int) * ((size_t)ns + 1));
+  f->reopen = (int *)malloc(sizeof(int) * ((size_t)c->nclasses + 1));
+  f->tg = (int **)calloc((size_t)ns + 1, sizeof(int *));
+  f->ntg = (int *)calloc((size_t)ns + 1, sizeof(int));
+  f->ctg = (int *)calloc((size_t)ns + 1, sizeof(int));
+  f->loop_memo = (signed char *)malloc((size_t)nt->count + 1);
+  if (f->loop_memo) memset(f->loop_memo, -1, (size_t)nt->count + 1);
+  if (!f->loop_memo || !f->raises || !f->next || !f->head || !f->reopen || !f->tg || !f->ntg || !f->ctg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0; s < ns; s++) {
+    Scope *sc = &c->scopes[s];
+    f->raises[s] = 0; f->next[s] = -1;
+    if (!sc->name || sc->def_node < 0) continue;
+    int e = anh_find(&f->names, sc->name);
+    if (e < 0) { anh_add(&f->names, sc->name); e = anh_find(&f->names, sc->name); f->head[e] = -1; }
+    f->next[s] = f->head[e]; f->head[e] = s;
+  }
+  for (int k = 0; k < c->nclasses; k++)
+    if (c->classes[k].name && c->classes[k].def_node >= 0 && is_builtin_class_name(c->classes[k].name)) f->reopen[f->nreopen++] = k;
+  for (int id = 0; id < nt->count; id++) {
+    NodeKind k = nt_kind(nt, id);
+    const char *nm = (k == NK_ConstantReadNode || k == NK_ConstantPathNode) ? nt_str(nt, id, "name") : NULL;
+    if (nm && (sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") || sp_streq(nm, "ClosedQueueError"))) f->queues = 1;
+    if (k == NK_CallNode && nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "lazy")) f->lazy = 1;
+  }
+  /* each method's own verdict and the methods it may call, then its callers,
+     back along those edges */
+  int *work = (int *)malloc(sizeof(int) * ((size_t)ns + 1)), nw = 0;
+  if (!work) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0; s < ns; s++) {
+    Scope *sc = &c->scopes[s];
+    if (!sc->name || sc->def_node < 0) continue;
+    if (si_walk(c, f, s, nt_ref(nt, sc->def_node, "body"), 0)) { f->raises[s] = 1; work[nw++] = s; }
+  }
+  int *rhead = (int *)malloc(sizeof(int) * ((size_t)ns + 1)), nedge = 0;
+  for (int s = 0; s < ns; s++) { rhead[s] = -1; nedge += f->ntg[s]; }
+  int *rfrom = (int *)malloc(sizeof(int) * ((size_t)nedge + 1)), *rnext = (int *)malloc(sizeof(int) * ((size_t)nedge + 1));
+  if (!rhead || !rfrom || !rnext) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int s = 0, x = 0; s < ns; s++)
+    for (int i = 0; i < f->ntg[s]; i++, x++) {
+      int t = f->tg[s][i];
+      rfrom[x] = s; rnext[x] = rhead[t]; rhead[t] = x;
+    }
+  while (nw > 0) {
+    int t = work[--nw];
+    for (int x = rhead[t]; x >= 0; x = rnext[x])
+      if (!f->raises[rfrom[x]]) { f->raises[rfrom[x]] = 1; work[nw++] = rfrom[x]; }
+  }
+  free(work); free(rhead); free(rfrom); free(rnext);
+  /* a program class's method the runtime calls back */
+  for (int s = 0; s < ns && !f->all; s++) {
+    Scope *sc = &c->scopes[s];
+    if (f->raises[s] && sc->name && str_in(sc->name, si_protocol_names) && !si_prelude_scope(c, sc)) f->all = 1;
+  }
+  /* a block kept to run later, or a lambda, or a Method object, which may
+     run any method. Every block is kept in a program that makes a lazy
+     chain, and every block a method the call may reach captures as `&blk`. */
+  for (int id = 0; id < nt->count && !f->all; id++) {
+    NodeKind k = nt_kind(nt, id);
+    int body = -1;
+    if (k == NK_LambdaNode) body = nt_ref(nt, id, "body");
+    else if (k == NK_CallNode) {
+      const char *nm = nt_str(nt, id, "name");
+      if (nm && str_in(nm, si_callable_names)) { f->all = 1; break; }
+      int blk = nt_ref(nt, id, "block");
+      if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
+      if (!f->lazy && nm && !str_in(nm, si_keep_names)) {
+        int r = nt_ref(nt, id, "receiver"), capt = 0;
+        f->probe = 1;
+        si_call_targets(c, f, -1, id, nm, r, r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN, &capt);
+        f->probe = 0;
+        if (!capt) continue;
+      }
+      body = nt_ref(nt, blk, "body");
+    }
+    if (body >= 0 && si_walk(c, f, -1, body, 0)) f->all = 1;
+  }
+}
+
+/* See analyze.h. */
+int loop_may_stop(Compiler *c, int loop_call) {
+  int blk = nt_ref(c->nt, loop_call, "block");
+  if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return 1;
+  si_facts(c);
+  if (g_si.all) return 1;
+  /* (asked per scope by the volatile analysis and again by the emitters) */
+  if (loop_call < g_si.count && g_si.loop_memo[loop_call] >= 0) return g_si.loop_memo[loop_call];
+  g_si.in_loop = 1;
+  int r = si_walk(c, &g_si, -1, nt_ref(c->nt, blk, "body"), 0);
+  g_si.in_loop = 0;
+  if (loop_call < g_si.count) g_si.loop_memo[loop_call] = (signed char)r;
+  return r;
+}

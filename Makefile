@@ -4572,6 +4572,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  [ "$$(awk '/^struct sp_Point_s \{/,/^\}/' "$$tmp/cps.c" | grep -c 'sp_float iv_[xy];')" = 2 ] || { echo "infer-test: FAIL (a store in a method no call reaches typed every Struct's members, #10489)"; ok=0; }; \
 	  grep -q 'sp_Vec__plus(sp_Vec \*self, sp_Vec \* lv_o)' "$$tmp/pph.c" || { echo "infer-test: FAIL (an operator on a boxed value that holds no Vec boxed Vec#+'s parameter)"; ok=0; }; \
 	  grep -q 'sp_Money__plus(sp_Money \*self, sp_RbVal lv_other)' "$$tmp/pph.c" || { echo "infer-test: FAIL (an operator on a boxed value that can be a Money left Money#+'s parameter narrow, #3511)"; ok=0; }; \
+	  $(SPINEL) $$flags test/loop_stop_iteration_sources.rb -c --no-line-map -o "$$tmp/lss.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_sources: -c)"; ok=0; }; \
+	  [ "$$(awk '/^static inline sp_int sp_(count_to|halvings)\(sp_int lv_n\) \{/,/^\}/' "$$tmp/lss.c" | grep -c 'setjmp')" = 0 ] || { echo "infer-test: FAIL (a loop whose body cannot raise StopIteration opened a handler)"; ok=0; }; \
+	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lss.c")" = 7 ] || { echo "infer-test: FAIL (a loop whose body can raise StopIteration lost its handler)"; ok=0; }; \
+	  $(SPINEL) $$flags test/loop_stop_iteration_kept_blocks.rb -c --no-line-map -o "$$tmp/lsk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_blocks: -c)"; ok=0; }; \
+	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lsk.c")" = 4 ] || { echo "infer-test: FAIL (a kept block that may raise StopIteration left a loop without its handler)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_receiver_cmethod_kwarg_unbound.rb -c --no-line-map -o "$$tmp/pck.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_receiver_cmethod_kwarg_unbound: -c)"; ok=0; }; \
 	  grep -q 'sp_StrArray \* sp_Restore_s_apply(sp_Table \* lv_table, sp_StrArray \* lv_names)' "$$tmp/pck.c" || { echo "infer-test: FAIL (a keyword-only call bound a keyword hash into a keyword method's positional parameter)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_receiver_cmethod_kwarg_name_unbound.rb -c --no-line-map -o "$$tmp/pcn.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_receiver_cmethod_kwarg_name_unbound: -c)"; ok=0; }; \
