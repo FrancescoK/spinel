@@ -387,7 +387,7 @@ static int cf_bv_set(CF *f) {
   s.bv = 1;
   return cf_pool(f, &s);
 }
-/* the set of a Proc or a Method: a builtin whose `[]` is its call */
+/* the set of a Proc: a builtin whose `[]` is its call */
 static int cf_proc_set(CF *f) {
   ClsSet s; memset(&s, 0, sizeof s);
   s.bv = 1; s.pr = 1;

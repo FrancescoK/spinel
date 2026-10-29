@@ -105,8 +105,7 @@ static inline void comp_touch_key(int key) {
    A member at or past nclasses is the Class object of (member - nclasses),
    which a call dispatches to class methods. `bv`: the value may also be a
    builtin (a container, a Proc), whose own methods then answer too; `os`
-   an OpenStruct; `pr` (with bv) a Proc or a Method, whose `[]` is its
-   call. Read with cls_set_has and cls_set_next. */
+   an OpenStruct; `pr` (with bv) a Proc, whose `[]` is its call. Read with cls_set_has and cls_set_next. */
 typedef struct { unsigned char all, bv, os, pr; int n, nw; unsigned long long *w; int *wi; } ClsSet;
 /* the position of the first word at word index q or past it */
 static inline int cls_set_word_from(const ClsSet *s, int q) {
