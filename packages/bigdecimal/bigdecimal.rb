@@ -267,6 +267,17 @@ class BigDecimal < Numeric
     end
   end
 
+  # The place count as CRuby's NUM2INT reads it: an Integer, a Float
+  # truncated, anything else through to_int; nil and the rest are a
+  # TypeError, before any value is looked at.
+  def self.__precision(n)
+    return n if n.is_a?(Integer)
+    return n.to_i if n.is_a?(Float)
+    raise TypeError, "no implicit conversion from nil to integer" if n.nil?
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
+    n.to_int
+  end
+
   # round(), round(n) and round(n, mode). No argument, or a single n < 1,
   # answers an Integer (CRuby's rule); a positive n, or any explicit mode,
   # answers a BigDecimal. `n` counts decimal places, so a negative n rounds
@@ -284,14 +295,13 @@ class BigDecimal < Numeric
       n = 0
       to_int = true
     elsif args.length == 1
-      n = args[0]
+      n = BigDecimal.__precision(args[0])
       to_int = n < 1
     else
-      n = args[0]
+      n = BigDecimal.__precision(args[0])
       mode = BigDecimal.__round_mode(args[1])
       to_int = false
     end
-    n = n.to_i if n.is_a?(Float)  # CRuby's NUM2INT truncates a Float
     return to_int ? 0 : BigDecimal.new(0, [], 0) if @sign == 0
     # CRuby rounds from a base-1e9 digit array, so when the rounding
     # position falls left of the first stored group -- the value is far

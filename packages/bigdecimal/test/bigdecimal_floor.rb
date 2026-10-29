@@ -17,3 +17,20 @@ end
 
 p (BigDecimal("0.0123") * 65535).floor
 p [65535 - (BigDecimal("0.5") * 65535).floor].pack("n").bytes
+
+# The place count as CRuby reads it: to_int, a truncated Float, and a
+# TypeError for nil or a String, on a zero receiver too.
+class Places
+  def to_int = 1
+end
+p [BigDecimal("12.345").floor(Places.new), BigDecimal("12.345").ceil(1.9), BigDecimal("12.345").round(Places.new)]
+[nil, "1"].each do |bad|
+  ["0", "12.345"].each do |s|
+    begin
+      BigDecimal(s).floor(bad)
+      p :no_error
+    rescue TypeError => e
+      p e.message
+    end
+  end
+end
