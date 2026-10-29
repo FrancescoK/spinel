@@ -63,6 +63,10 @@ typedef struct {
                           magic comment turns its refusals into raises where they
                           run (nt_put_file_defers); nfile_defers its length */
   int nfile_defers;
+  unsigned char *file_tier;   /* FILE id -> the resolver's SP_LIB_* tier of a
+                          library file (nt_put_file_tier); 0 (SP_LIB_NONE) for
+                          the program's own; nfile_tier its length */
+  int nfile_tier;
   /* Under --load-model=graph (#9898) each file the program loads is a root:
      its ProgramNode, by graph id (0 is the entry, the table's root). None
      under the inline model, whose one root is root_id (nt_root). */
@@ -328,6 +332,13 @@ const char *nt_file_path(const NodeTable *nt, int fid);
 /* The file's `# spinel: defer-refusals` magic comment: set, and asked */
 void nt_put_file_defers(NodeTable *nt, int fid);
 int nt_file_defers(const NodeTable *nt, int fid);
+/* Where `require` found a file (the parser's sp_lib_lookup): lib/, a `-I`
+   root, builtins/ or a pre-installed package; SP_LIB_NONE for a file of
+   the program's own (the entry, a require_relative, a load). */
+enum { SP_LIB_NONE, SP_LIB_LIB, SP_LIB_ROOT, SP_LIB_BUILTIN, SP_LIB_PACKAGE };
+/* The file's tier: set, and asked */
+void nt_put_file_tier(NodeTable *nt, int fid, int tier);
+int nt_file_tier(const NodeTable *nt, int fid);
 
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 static inline const char *nt_str(const NodeTable *nt, int id, const char *key) {

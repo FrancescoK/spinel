@@ -283,6 +283,10 @@ int is_array_push_family(const char *n); /* << append prepend push unshift */
 int is_io_class_name(const char *n); /* File IO */
 int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
 int is_object_base_name(const char *n); /* BasicObject Object */
+/* The classes a class's singleton chain ends in, which the load record
+   holds by the header that reopens each (builtin_core_class_slot) */
+enum { CORE_OBJECT, CORE_BASIC_OBJECT, CORE_MODULE, CORE_KERNEL, CORE_N };
+int builtin_core_class_slot(const char *n);  /* CORE_* for Object BasicObject Module Kernel, -1 for any other */
 int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
 int is_numeric_literal_tag(const char *n); /* Float Int */

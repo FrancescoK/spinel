@@ -1174,6 +1174,13 @@ int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
 }
 
+int builtin_core_class_slot(const char *n) {
+  static const char *const CORE[CORE_N] = { "Object", "BasicObject", "Module", "Kernel" };
+  for (int i = 0; n && i < CORE_N; i++)
+    if (sp_streq(n, CORE[i])) return i;
+  return -1;
+}
+
 /* A class or module besides the builtin classes (is_builtin_reopen) whose
    methods every builtin value may run: Object, BasicObject, Kernel,
    Comparable, Enumerable, Module. */
