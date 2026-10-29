@@ -12651,18 +12651,115 @@ int builtin_enum_name_index(const char *name) {
    private Kernel function it also answers (`select`) is reached through the
    receiver, which is a method of its class ahead of Kernel's. */
 int builtin_instance_method_known(const char *cls, const char *m);
-static int bi_receiver_answers(const char *nm) {
+static const char *bi_receiver_class(int i) {
   static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
-  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 1;
+  return recvs[i];
+}
+static int bi_receiver_answers(const char *nm) {
+  for (int i = 0; bi_receiver_class(i); i++) if (builtin_instance_method_known(bi_receiver_class(i), nm)) return 1;
   return 0;
 }
 
+/* the classes and modules a walk over includes has reached, by full key */
+typedef struct { char **keys; int n; } BiSeen;
+
+/* has the walk reached the class or module `leaf` in namespace ns (as
+   fwd_ns_key spells it, "" for the top level)? If not, it now has. */
+static int bi_seen(BiSeen *seen, const char *ns, const char *leaf) {
+  char full[512];
+  snprintf(full, sizeof full, "%s%s::", ns, leaf);
+  for (int i = 0; i < seen->n; i++) if (sp_streq(seen->keys[i], full)) return 1;
+  char **g = (char **)realloc(seen->keys, sizeof(char *) * (size_t)(seen->n + 1));
+  if (!g) return 1;
+  seen->keys = g; seen->keys[seen->n++] = strdup(full);
+  return 0;
+}
+static void bi_seen_free(BiSeen *seen) {
+  for (int i = 0; i < seen->n; i++) free(seen->keys[i]);
+  free(seen->keys);
+}
+
+/* is node id a class or module body that opens `leaf` in namespace ns?
+   key gets the namespace its body reads constants in */
+static int bi_opens(const NodeTable *nt, int id, const char *ns, const char *leaf, char *key, size_t cap) {
+  NodeKind k = nt_kind(nt, id);
+  const char *cn = k == NK_ClassNode || k == NK_ModuleNode ? nt_str(nt, nt_ref(nt, id, "constant_path"), "name") : NULL;
+  if (!cn || !sp_streq(cn, leaf)) return 0;
+  key[0] = '\0';
+  fwd_ns_key(nt, id, key, cap);
+  if (!sp_streq(key, ns)) return 0;
+  fwd_key_add(key, cap, cn);
+  return 1;
+}
+
+/* the arguments of a body's `include` statement st (`prepend` with
+   want_prepend): their count, 0 for another statement */
+static int bi_mixin_args(const NodeTable *nt, int st, int want_prepend, const int **av) {
+  const char *mx = nt_kind(nt, st) == NK_CallNode && nt_ref(nt, st, "receiver") < 0 ? nt_str(nt, st, "name") : NULL;
+  int an = 0;
+  *av = mx && (want_prepend ? is_prepend_name(mx) : is_include_name(mx))
+        ? nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an) : NULL;
+  return *av ? an : 0;
+}
+/* the module such an argument names, read in a body's namespace key: its
+   name, *at its namespace; NULL when it names no module of the program */
+static const char *bi_mixin_module(const NodeTable *nt, int arg, const char *key, char *at, size_t cap) {
+  int is_mod = 0;
+  at[0] = '\0';
+  return fwd_resolve_const(nt, key, arg, NULL, FWD_MODULES | FWD_EXACT, at, cap, &is_mod) && is_mod
+         ? nt_str(nt, arg, "name") : NULL;
+}
+
+/* does a class or module the program opens as `leaf` in namespace ns
+   define a method nm, wrapped in a visibility call or not, or does a module
+   one of its bodies includes or prepends? A class or module the walk has
+   reached already answers no (a cycle of includes). */
+static int bi_body_defines(const NodeTable *nt, const char *ns, const char *leaf, const char *nm, BiSeen *seen) {
+  if (bi_seen(seen, ns, leaf)) return 0;
+  for (int id = 0; id < nt->count; id++) {
+    char key[512], at[512];
+    if (!bi_opens(nt, id, ns, leaf, key, sizeof key)) continue;
+    int bn = 0; const int *bb = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int j = 0; j < bn; j++) {
+      int d = fwd_body_def(nt, bb[j]);
+      if (d >= 0 && nt_ref(nt, d, "receiver") < 0 && sp_streq(nt_str(nt, d, "name"), nm)) return 1;
+      for (int pp = 0; pp < 2; pp++) {
+        const int *av; int an = bi_mixin_args(nt, bb[j], pp, &av);
+        for (int a = 0; a < an; a++) {
+          const char *ml = bi_mixin_module(nt, av[a], key, at, sizeof at);
+          if (ml && bi_body_defines(nt, at, ml, nm, seen)) return 1;
+        }
+      }
+    }
+  }
+  return 0;
+}
+
+/* is nm defined on the chain of the receivers a copy of a method of the
+   top-level class or module cls serves: by cls (and the modules it takes
+   in) and, for Enumerable, by the builtin receivers its copies are made
+   for (bi_body_defines) */
+static int own_chain_defines(const NodeTable *nt, const char *cls, const char *nm) {
+  BiSeen seen = { NULL, 0 };
+  int o = bi_body_defines(nt, "", cls, nm, &seen);
+  for (int i = 0; !o && is_enumerable_module_name(cls) && bi_receiver_class(i); i++)
+    o = bi_body_defines(nt, "", bi_receiver_class(i), nm, &seen);
+  bi_seen_free(&seen);
+  return o;
+}
+
 /* the receiverless calls a builtin body may make that are NOT methods of
-   the receiver: Kernel's functions, and the public methods of Object */
-static int bi_keeps_receiverless(const char *nm) {
+   the receiver: Kernel's functions, and the public methods of Object. In a
+   copy of the program's own method (cls the class or module it sits in,
+   NULL for a builtins/ body), a private Kernel name the program defines on the
+   receiver's chain is its method, which CRuby's lookup finds through self
+   ahead of Kernel's function. */
+static int bi_keeps_receiverless(const NodeTable *nt, const char *cls, const char *nm) {
   if (is_enum_helper_name(nm)) return 1;
   if (!object_instance_method_name(nm)) return 0;
-  return object_public_method_name(nm) || !bi_receiver_answers(nm);
+  if (object_public_method_name(nm)) return 1;
+  if (cls && own_chain_defines(nt, cls, nm)) return 0;
+  return !bi_receiver_answers(nm);
 }
 
 /* does any DefNode among the program's own nodes carry this name? (the
@@ -12674,8 +12771,9 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
 }
 
 /* `self` in nodes [lo, hi] reads the `__self` parameter, and the
-   receiverless calls there (Kernel's aside) take it as their receiver */
-static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
+   receiverless calls there (Kernel's aside) take it as their receiver; cls
+   as bi_keeps_receiverless takes it */
+static void bi_self_to_local(NodeTable *nt, int lo, int hi, const char *cls) {
   for (int id = lo; id <= hi; id++) {
     NodeKind kind = nt_kind(nt, id);
     if (kind == NK_SelfNode) {
@@ -12685,11 +12783,11 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
     }
     else if (kind == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || bi_keeps_receiverless(nm)) continue;
+      if (!nm || bi_keeps_receiverless(nt, cls, nm)) continue;
       int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return;
       nt_node_set_str(nt, rd, "name", "__self");
       nt_node_set_int(nt, rd, "depth", 0);
-      nt_node_set_ref(nt, id, "receiver", rd);
+      nt_set_self_receiver(nt, id, rd);
     }
   }
 }
@@ -12707,13 +12805,57 @@ static int own_enum_name_routable(const char *nm) {
   return !bi_receiver_answers(nm);
 }
 
+/* does def d call super anywhere in its subtree (ids are pre-order, so
+   [d, fwd_subtree_max(d)] is the subtree)? A copy has no method above it
+   for super to reach. */
+static int bi_def_calls_super(const NodeTable *nt, int d) {
+  int hi = fwd_subtree_max(nt, d);
+  for (int id = d; id <= hi; id++)
+    if (nt_kind(nt, id) == NK_SuperNode || nt_kind(nt, id) == NK_ForwardingSuperNode) return 1;
+  return 0;
+}
+
+/* Push onto own[] the body statements of the class or module `leaf` in
+   ns (bi_opens) whose methods a builtin receiver takes through Enumerable,
+   lowest precedence first, as a later entry of a name replaces an earlier
+   one: part 0 the chains of the modules its bodies include (the first
+   included lowest), part 1 its own defs (bare or wrapped in a visibility
+   call), part 2 the chains of the modules they prepend (the last prepended
+   highest). A module the walk has reached already is left out, and so is
+   a module's method that calls super (bi_def_calls_super). */
+static void own_enum_mixin_defs(const NodeTable *nt, const char *ns, const char *leaf, int part, BiSeen *seen,
+                                int **own, int *nown) {
+  for (int id = 0; id < nt->count; id++) {
+    char key[512], at[512];
+    if (!bi_opens(nt, id, ns, leaf, key, sizeof key)) continue;
+    int bn = 0; const int *bb = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
+    for (int j = 0; j < bn; j++) {
+      int d = fwd_body_def(nt, bb[j]);
+      if (part == 1 && (d < 0 || nt_ref(nt, d, "receiver") >= 0 || !own_enum_name_routable(nt_str(nt, d, "name")) ||
+                        bi_def_calls_super(nt, d))) continue;
+      if (part == 1) {
+        int *g = (int *)realloc(*own, sizeof(int) * (size_t)(*nown + 1));
+        if (g) { *own = g; (*own)[(*nown)++] = bb[j]; }
+        continue;
+      }
+      const int *av; int an = bi_mixin_args(nt, bb[j], part == 2, &av);
+      for (int a = 0; a < an; a++) {
+        const char *ml = bi_mixin_module(nt, av[a], key, at, sizeof at);
+        if (!ml || bi_seen(seen, at, ml)) continue;
+        for (int p = 0; p < 3; p++) own_enum_mixin_defs(nt, at, ml, p, seen, own, nown);
+      }
+    }
+  }
+}
+
 /* The generic definition of an own Enumerable method: a copy of its def,
    taking the receiver as the first parameter as a builtin's does, the
-   reopening's def left to answer for the module's includers */
-static int own_enum_generic(NodeTable *nt, int def) {
+   reopening's def left to answer for the module's includers; cls the
+   module's name */
+static int own_enum_generic(NodeTable *nt, int def, const char *cls) {
   int copy = nt_clone_subtree(nt, def);
   if (copy < 0) return -1;
-  bi_self_to_local(nt, copy, nt->count - 1);
+  bi_self_to_local(nt, copy, nt->count - 1, cls);
   int pn = nt_ref(nt, copy, "parameters");
   if (pn < 0) { pn = nt_new_node(nt, "ParametersNode"); if (pn < 0) return -1; nt_node_set_ref(nt, copy, "parameters", pn); }
   int sp = nt_new_node(nt, "RequiredParameterNode"); if (sp < 0) return -1;
@@ -12785,6 +12927,7 @@ int desugar_builtins(Compiler *c) {
   if (!gdef) { free(nb); free(tb); free(tfile); return 0; }
   for (int i = 0; i < sp_builtin_enum_names_n; i++) gdef[i] = -1;
   int *own = NULL, nown = 0;   /* the own Enumerable methods a builtin receiver takes */
+  const char *own_mn = NULL;   /* the module's name, as the program's reopenings spell it */
   for (int i = 0; i < tn; i++) {
     int st = tb[i];
     int cp = nt_kind(nt, st) == NK_ModuleNode ? nt_ref(nt, st, "constant_path") : -1;
@@ -12797,9 +12940,10 @@ int desugar_builtins(Compiler *c) {
       if (nt_kind(nt, bb[k]) != NK_DefNode || builtin_enum_name_index(nt_str(nt, bb[k], "name")) < 0) all_builtin = 0;
     if (!all_builtin) {   /* a program's own reopen: left as it was, for its includers */
       if (!tfile[i]) nb[nbn++] = st;
+      own_mn = mn;
       for (int k = 0; k < bn; k++) {
-        if (nt_kind(nt, bb[k]) != NK_DefNode || nt_ref(nt, bb[k], "receiver") >= 0 ||
-            !own_enum_name_routable(nt_str(nt, bb[k], "name"))) continue;
+        int d = fwd_body_def(nt, bb[k]);
+        if (d < 0 || nt_ref(nt, d, "receiver") >= 0 || !own_enum_name_routable(nt_str(nt, d, "name"))) continue;
         int *g = (int *)realloc(own, sizeof(int) * (size_t)(nown + 1));
         if (!g) break;
         own = g; own[nown++] = bb[k];
@@ -12824,7 +12968,7 @@ int desugar_builtins(Compiler *c) {
       /* `self` and the receiverless calls in the body */
       int dbody = nt_ref(nt, def, "body");
       int lo = dbody >= 0 ? dbody : def;
-      bi_self_to_local(nt, lo, hi);
+      bi_self_to_local(nt, lo, hi, NULL);
       /* the generic definition itself stays out of the program: the copies
          below are what the call sites use. It keeps a name of its own so
          that, orphaned in the node table, it cannot be mistaken for a
@@ -12841,11 +12985,26 @@ int desugar_builtins(Compiler *c) {
     changed = 1;
   }
   free(tb); free(tfile);
+  /* the methods of the modules the reopenings include go behind their own
+     defs, those of the modules they prepend ahead of them */
+  if (own_mn) {
+    BiSeen seen = { NULL, 0 };
+    int *all = NULL, nall = 0;
+    bi_seen(&seen, "", own_mn);
+    own_enum_mixin_defs(nt, "", own_mn, 0, &seen, &all, &nall);
+    int *g = (int *)realloc(all, sizeof(int) * (size_t)(nall + nown + 1));
+    if (g) { all = g; memcpy(all + nall, own, sizeof(int) * (size_t)nown); nall += nown; }
+    own_enum_mixin_defs(nt, "", own_mn, 2, &seen, &all, &nall);
+    bi_seen_free(&seen);
+    if (g) { free(own); own = all; nown = nall; }
+    else free(all);
+  }
   /* the own methods join the builtins' names; a later reopening's
      definition of a name replaces an earlier one's, as in Ruby */
   int nbuiltin = sp_builtin_enum_names_n, own_lo = nt->count;
   for (int k = 0; k < nown; k++) {
-    const char *name = nt_str(nt, own[k], "name");
+    int d = fwd_body_def(nt, own[k]);
+    const char *name = nt_str(nt, d, "name");
     int bi = builtin_enum_name_index(name);
     if (bi < 0) {
       char **nn = (char **)realloc(sp_builtin_enum_names, sizeof(char *) * (size_t)(sp_builtin_enum_names_n + 1));
@@ -12858,8 +13017,12 @@ int desugar_builtins(Compiler *c) {
       gdef[bi] = -1;
     }
     if (bi < nbuiltin) continue;
-    int g = own_enum_generic(nt, own[k]);
+    int g = own_enum_generic(nt, d, own_mn);
     if (g < 0) break;
+    /* `private def m` (protected, module_function): only a call on self
+       takes the copy; another call raises as the method is not public */
+    if (d != own[k] && visibility_of_name(nt_str(nt, own[k], "name")) != BVIS_PUBLIC)
+      nt_node_set_int(nt, g, "enum_self_only", 1);
     if (gdef[bi] >= 0) nt_subtree_blank(nt, gdef[bi]);
     gdef[bi] = g;
     changed = 1;
@@ -12949,6 +13112,7 @@ int desugar_builtins(Compiler *c) {
     }
     int bi = builtin_enum_name_index(cn0);
     if (bi < 0 || gdef[bi] < 0) continue;
+    if (nt_int(nt, gdef[bi], "enum_self_only", 0) && !nt_ignore_visibility(nt, id)) continue;
     int in_copy = (int)nt_int(nt, id, "enum_in_copy", -1), rec = -1;
     for (int a = in_copy; a >= 0 && rec < 0; a = (int)nt_int(nt, a, "enum_in_copy", -1))
       if ((int)nt_int(nt, a, "enum_bi", -1) == bi) rec = a;
@@ -14194,7 +14358,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
           nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr); }
         int dbody = nt_ref(nt, def, "body");
         int lo = dbody >= 0 ? dbody : def;
-        bi_self_to_local(nt, lo, hi);
+        bi_self_to_local(nt, lo, hi, NULL);
         { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, def, "name", gn); }
         if (bi >= 0) gdef[bx][bi] = def;
       }
@@ -14253,7 +14417,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
         nr[0] = spself; for (int j = 0; j < rn; j++) nr[j + 1] = reqs[j];
         nt_node_set_arr(nt, pn, "requireds", nr, rn + 1); free(nr); }
       int lo = clone;
-      bi_self_to_local(nt, lo, hi);
+      bi_self_to_local(nt, lo, hi, mn);
       { char gn[256]; snprintf(gn, sizeof gn, "%s%s", sp_bx_prefix[bx], name); nt_node_set_str(nt, clone, "name", gn); }
       int bi = sp_builtin_extra_name_index(bx, name);
       if (bi >= 0) {
