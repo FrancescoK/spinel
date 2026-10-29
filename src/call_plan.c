@@ -3861,7 +3861,7 @@ static int ver_cell_put(Compiler *c, const char *cell, int list, int at, int aft
   return g;
 }
 /* ...and the cells' writes: after each statement that makes a version an
-   entry a reachable call reaches arms (compute_reachable), the write of
+   entry arms (ahead of it when it is a def, an alias or an undef), the write of
    the version's number to its history's cell (0 for a remove_method's,
    which passes the search on), in the same statement list; and 0 ahead of
    the entry file's first statement (unless that statement makes one of the
@@ -3877,7 +3877,8 @@ void ver_cells_write(Compiler *c) {
   const int *par = c->nver_entries ? comp_parent_map(c) : NULL, *first = top >= 0 ? nt_arr(nt, top, "body", &ntop) : NULL;
   for (int i = 0; i < c->nver_entries; i++) {
     const struct VerEntry *e = &c->ver_entries[i];
-    if (e->scope < 0 || !c->scopes[e->scope].reachable) continue;
+    /* (not only the entries reached now: a send's arms, made in the fixpoint, reach methods whose calls bind entries this first pass leaves unreached) */
+    if (e->scope < 0) continue;
     int nv = elab_chain_versions(c, e->cls, e->sg, e->name, vs, VER_MAX_ARMS);
     for (int j = 0; j < nv; j++) {
       int node = vs[j].v->node, st = node, dup = 0;
@@ -3896,7 +3897,10 @@ void ver_cells_write(Compiler *c) {
     for (int j = 0; j < nw && z; j++)   /* (one per cell; none where the first statement writes it) */
       z = w[j].hist != w[k].hist || (j >= k && w[j].stmt != at0);
     if (z) made[nw + nz++] = ver_cell_put(c, cell, top, at0, 0, 0);
-    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, 1, w[k].n);
+    NodeKind sk = nt_kind(nt, w[k].stmt);
+    /* (ahead of a def, an alias or an undef, which runs no program code: after one that ends a branch, the write would be the branch's value) */
+    int after = sk != NK_DefNode && sk != NK_AliasMethodNode && sk != NK_UndefNode;
+    made[k] = ver_cell_put(c, cell, par[w[k].stmt], w[k].stmt, after, w[k].n);
   }
   for (int k = 0; k < nw + nz; k++) elab_record_write(c, made[k]);
   free(made); free(w);
