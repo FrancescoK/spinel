@@ -716,7 +716,6 @@ int desugar_handle_ivars(Compiler *c);
 int desugar_fiber_prepended_init(Compiler *c);
 int desugar_handle_reopen_self_recv(Compiler *c);
 int desugar_call_or_write_reopen(Compiler *c);
-int desugar_static_class_eval(Compiler *c);
 int desugar_table_loops(Compiler *c);         /* analyze_ct.c */
 
 /* ---- the lowering table (analyze_lower.c, #9898) ----
@@ -752,6 +751,9 @@ typedef struct LowerCtx {
   int rewrote[LW__COUNT];   /* per row, the nodes it rewrote (the check's report) */
   int n0;                   /* the node count at the running row's entry */
   int owner, body;          /* LF_STMT: the body owner being visited and its StatementsNode */
+  int scope;                /* LF_SCOPE: the node whose tag names the scope being visited (the owner, or a splice's first statement) */
+  const int *scope_stmts;   /* ... and the scope's statements: the owner's body, or the splice's statements */
+  int scope_n;
   /* scratch of the running row, zero at each run */
   int serial;               /* the fresh-name counter of a run */
   char **used;              /* names the program wrote that a row's invented ones must step past */
@@ -767,6 +769,15 @@ typedef struct LowerCtx {
   unsigned parent_version;
   unsigned long parent_edits;
   int prog_memo[4];         /* answers of the whole program a row asks for as needed: -1 until asked */
+  /* spans (lower_span): code a step splices in after rows have run */
+  unsigned char ran[LW__COUNT];     /* the row has run over the program */
+  unsigned char settle[LW__COUNT];  /* ... and a span left it to lower_settle: LF_PROGRAM, or its gate said yes anew */
+  unsigned char gate_no[LW__COUNT]; /* its gate said 0 at its last run over the program */
+  unsigned char span_gate[LW__COUNT];   /* its gate in this step's spans: 0 not asked yet, 1 no, 2 yes */
+  int *span_ids[LW__COUNT];         /* the ids that ask collected (ids), for the step */
+  int span_nids[LW__COUNT];
+  struct LowerSpan *span;   /* the span being lowered, or NULL: the program */
+  int span_step;            /* spans were lowered since the last lower_settle */
 } LowerCtx;
 
 typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);
@@ -779,6 +790,28 @@ void lower_begin(Compiler *c, LowerCtx *lc);
 void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int root);   /* SPINEL_LOWER_CHECK: no root reaches the subtree at root */
 int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
 int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
+int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts, const int *scopes, int n);   /* the rows that ran, on spliced statements */
+void lower_settle(Compiler *c, LowerCtx *lc);   /* the rows spans left to the program, once per step */
+
+/* ---- the host (analyze_elab.c, #9898) ----
+   A step that splices code into a body after the load stage began hands it
+   to the host, which makes it what the program's own code is at that point:
+   the static class_eval text in it is grafted (analyze_desugar.c's sce),
+   and its statements are lowered by the rows that have run (lower_span), at
+   host_end, once the step has spliced everything. What the text graft asks
+   of the whole program is asked once per step. */
+typedef struct HostStep {
+  LowerCtx *lc;
+  struct SceFacts *sce;    /* the graft's answers about the whole program, made at its first ask in the step */
+  int *spans;              /* (owner, body, statement, its splice's first statement) of each statement the step spliced */
+  int nspans, cspans;
+} HostStep;
+void host_begin(HostStep *h, LowerCtx *lc);
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* the n statements at body[at]: the count they become */
+void host_end(Compiler *c, HostStep *h);
+int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* ... over spliced statements */
+void sce_facts_free(struct SceFacts *f);
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
 /* the rows' functions, in the files that own the rewrites */
@@ -913,7 +946,7 @@ int desugar_readers_over_inherited_defs(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);
 int desugar_singleton_class_meta(Compiler *c);
 int desugar_class_new_blocks(Compiler *c);
-int desugar_included_hooks(Compiler *c);
+int desugar_included_hooks(Compiler *c, HostStep *h);
 int desugar_class_body_object_acts(Compiler *c);
 int desugar_struct_block_anonymous(Compiler *c);
 int desugar_eval_method_block(Compiler *c);

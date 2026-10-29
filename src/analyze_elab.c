@@ -3858,3 +3858,59 @@ void elab_free(Compiler *c) {
   free(r->st); free(r->at); free(r->bits); free(r->dscope); free(r);
   c->lrec = NULL;
 }
+
+/* ---- the host (#9898) ----
+   Code a step splices into a body once the load stage is under way is
+   handed to the host, which makes it what the program's own code is at that
+   point: the static class_eval text in it is grafted (sce_span), and
+   at the end of the step its statements are lowered by every row that has
+   run (lower_span), then the rows a span cannot be asked of run once over
+   the program (lower_settle). Nothing here rebuilds anything of the whole
+   program per splice: what the graft asks of the program is asked once per
+   step (HostStep), and a span is lowered by a walk of its own nodes. */
+
+void host_begin(HostStep *h, LowerCtx *lc) {
+  memset(h, 0, sizeof *h);
+  h->lc = lc;
+}
+
+/* One splice is one scope: its first statement names it (lower_span) */
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
+  n = sce_span(c, h, owner, body, at, n);
+  int bn = 0;
+  const int *st = nt_arr(c->nt, body, "body", &bn);
+  for (int i = at; i < at + n && i < bn; i++) {
+    if (h->nspans + 4 > h->cspans) {
+      h->cspans = h->cspans ? h->cspans * 2 : 64;
+      h->spans = realloc(h->spans, sizeof(int) * (size_t)h->cspans);
+      if (!h->spans) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    h->spans[h->nspans++] = owner;
+    h->spans[h->nspans++] = body;
+    h->spans[h->nspans++] = st[i];
+    h->spans[h->nspans++] = st[at];
+  }
+  return n;
+}
+
+void host_end(Compiler *c, HostStep *h) {
+  int ns = h->nspans / 4;
+  int *stmts = ns ? malloc(sizeof(int) * (size_t)ns) : NULL, *scopes = ns ? malloc(sizeof(int) * (size_t)ns) : NULL;
+  if (ns && (!stmts || !scopes)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* the statements of one body, spliced one after another, are one span */
+  for (int i = 0; i < h->nspans;) {
+    int owner = h->spans[i], body = h->spans[i + 1], n = 0;
+    while (i < h->nspans && h->spans[i] == owner && h->spans[i + 1] == body) {
+      stmts[n] = h->spans[i + 2];
+      scopes[n++] = h->spans[i + 3];
+      i += 4;
+    }
+    lower_span(c, h->lc, owner, body, stmts, scopes, n);
+  }
+  free(stmts);
+  free(scopes);
+  lower_settle(c, h->lc);
+  free(h->spans);
+  sce_facts_free(h->sce);
+  memset(h, 0, sizeof *h);
+}

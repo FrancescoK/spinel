@@ -328,9 +328,19 @@ void nt_dump(const NodeTable *nt, FILE *out) {
   }
 }
 
+/* A walk that marks the nodes it collects begins: no mark an earlier one
+   left looks current. */
+static void nt_mark_begin(NodeTable *nt) {
+  nt_aux(nt, nt->count - 1);
+  if (++nt->clone_gen == 0) {   /* wrapped: no mark may look current */
+    for (int i = 0; i < nt->aux_cap; i++) nt->aux[i].mark = 0;
+    nt->clone_gen = 1;
+  }
+}
+
 /* Collect the subtree node ids reachable from `id` via ref + array fields,
-   each marked as in the clone being made. */
-static void nt_clone_collect(NodeTable *nt, int id, int **list, int *n, int *cap) {
+   each marked as in the walk being made (a clone's, nt_subtree_ids'). */
+static void nt_subtree_collect(NodeTable *nt, int id, int **list, int *n, int *cap) {
   if (id < 0 || id >= nt->count || nt->aux[id].mark == nt->clone_gen) return;
   nt->aux[id].mark = nt->clone_gen;
   if (*n == *cap) {
@@ -340,14 +350,25 @@ static void nt_clone_collect(NodeTable *nt, int id, int **list, int *n, int *cap
   }
   (*list)[(*n)++] = id;
   SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) nt_clone_collect(nt, nd->r[j].ref, list, n, cap);
+  for (int j = 0; j < nd->nr; j++) nt_subtree_collect(nt, nd->r[j].ref, list, n, cap);
   for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++) nt_clone_collect(nt, nd->a[j].ids[k], list, n, cap);
+    for (int k = 0; k < nd->a[j].n; k++) nt_subtree_collect(nt, nd->a[j].ids[k], list, n, cap);
 }
 
 /* A field's node id in the clone: its copy for a node of the subtree */
 static int nt_clone_map(const NodeTable *nt, int base, int id) {
   return id >= 0 && id < base && nt->aux[id].mark == nt->clone_gen ? nt->aux[id].to : id;
+}
+
+int *nt_subtree_ids(NodeTable *nt, const int *roots, int n, int *out) {
+  int cap = 64, sn = 0;
+  int *list = nt_alloc(sizeof(int) * (size_t)cap);
+  if (nt->count > 0) {
+    nt_mark_begin(nt);
+    for (int i = 0; i < n; i++) nt_subtree_collect(nt, roots[i], &list, &sn, &cap);
+  }
+  *out = sn;
+  return list;
 }
 
 /* Retype every node of the subtree at `id` to a NilNode: a desugar that
@@ -374,14 +395,10 @@ void nt_subtree_blank(NodeTable *nt, int id) {
 int nt_clone_subtree(NodeTable *nt, int root) {
   if (root < 0 || root >= nt->count) return -1;
   int base = nt->count;
-  nt_aux(nt, base - 1);
-  if (++nt->clone_gen == 0) {   /* wrapped: no mark may look current */
-    for (int i = 0; i < nt->aux_cap; i++) nt->aux[i].mark = 0;
-    nt->clone_gen = 1;
-  }
+  nt_mark_begin(nt);
   int cap = 64, sn = 0;
   int *list = nt_alloc(sizeof(int) * (size_t)cap);
-  nt_clone_collect(nt, root, &list, &sn, &cap);
+  nt_subtree_collect(nt, root, &list, &sn, &cap);
   for (int i = 0; i < sn; i++) nt->aux[list[i]].to = base + i;
   /* by doubling, as nt_new_node grows it: a resize to the count each time
      copied the whole table per clone */

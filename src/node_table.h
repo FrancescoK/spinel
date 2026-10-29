@@ -254,6 +254,10 @@ void nt_renumber(NodeTable *nt, const int *order);
    Appends nodes and grows nt->count -- parallel per-node arrays must be
    resized to match afterward. */
 int nt_clone_subtree(NodeTable *nt, int root);
+/* The ids of the subtrees at roots[0..n), each once, in walk order (a node
+   two roots share is listed once): a malloc'd list the caller frees, its
+   length in *out. A walk of those subtrees alone. */
+int *nt_subtree_ids(NodeTable *nt, const int *roots, int n, int *out);
 /* Where node `id` came from, for a node appended after nt_track_origins:
    the node it is a copy of (*how 'c'), or the node it was first linked
    under (*how 'r', *a the ref field's index; *how 'a', *a the array

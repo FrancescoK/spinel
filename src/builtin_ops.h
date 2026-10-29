@@ -19,7 +19,8 @@
 enum {
   BOP_READ_NUMERIC = 1u,
   BOP_READ_CONTAINER = 2u,
-  BOP_READ_STRING = 4u
+  BOP_READ_STRING = 4u,
+  BOP_READ_ARRAY_INTACT = 8u   /* reads an Array and leaves it as it is (a template over a constant's elements) */
 };
 enum {
   BOP_MUT_LOCAL = 1u,
