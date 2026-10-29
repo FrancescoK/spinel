@@ -431,12 +431,22 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       /* the defaults are spelled for the proc form's own parameter
          types when that is the symbol called (#4492) */
       Scope *ds = &c->scopes[pfi9 >= 0 ? pfi9 : mi];
+      /* and their bare calls are the callee class's methods */
+      int saved_cls = g_emitting_class_id;
+      g_emitting_class_id = ds->class_id;
       /* a default reading an earlier parameter: each argument is bound to
          a rooted local in order (ctor_arm_arg), which a later default reads
          and which holds what an earlier default made; else the defaults go
          in the argument list, an allocating one held in a temp */
       int pd_uid = default_refs_earlier_param(c, ds) ? ++g_tmp : 0, pd_base = g_nren;
-      if (!pd_uid) emit_zero_arg_defaults(c, ds, &cb, &dpre);
+      if (!pd_uid) {
+        /* what a default hoists runs inside this arm, on its receiver:
+           ahead of the switch it read a receiver not yet there */
+        Buf *sv_pre9 = g_pre;
+        g_pre = &pdpre;
+        emit_zero_arg_defaults(c, ds, &cb, &dpre);
+        g_pre = sv_pre9;
+      }
       else {
         Buf *sv_pre9 = g_pre;
         g_pre = &pdpre;
@@ -450,7 +460,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
         g_nren = pd_base;
         g_pre = sv_pre9;
       }
-      g_self = saved_self; g_self_deref = saved_deref;
+      g_self = saved_self; g_self_deref = saved_deref; g_emitting_class_id = saved_cls;
     }
     /* self is always the first argument here, so a zero-param method
        still needs the separator the helper only adds after a real

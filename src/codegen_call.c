@@ -6914,7 +6914,10 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
      hash; unmatched keywords fall back to the param default (#3268) */
   if (!pnm || !callee_param_is_declared_kwarg(c, ms, pnm)) return 0;
   const char *saved_self = g_self;
-  if (selfp) g_self = selfp;
+  int saved_cls = g_emitting_class_id;
+  /* the default runs on the receiver, so its bare calls are the callee
+     class's methods, not the caller's */
+  if (selfp) { g_self = selfp; g_emitting_class_id = ms->class_id; }
   /* a key written twice binds its last value, as CRuby binds it; each
      value already ran once, in order, into its temp */
   int e_found = -1;
@@ -6948,7 +6951,7 @@ static int emit_poly_kw_param(Compiler *c, Scope *ms, int a, const PolyKw *kw,
     else { emit_obj_upcast_prefix(c, kpt, at, pa); buf_puts(pa, tn); }
   }
   else emit_arg_or_default(c, ms, a, -1, pa);
-  g_self = saved_self;
+  g_self = saved_self; g_emitting_class_id = saved_cls;
   return 1;
 }
 
@@ -9325,6 +9328,7 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
   TyKind pt = pv ? pv->type : TY_POLY;
   if (pt == TY_UNKNOWN) pt = TY_POLY;
   const char *saved_self = g_self;
+  int saved_cls = g_emitting_class_id;
   switch (L->from[a]) {
   case ARG_BY_NAME:
     if (emit_poly_kw_param(c, ms, a, A->kw, selfd, pa)) return;
@@ -9361,16 +9365,16 @@ static void emit_poly_arm_param(Compiler *c, Scope *ms, int a, const ArgLayout *
     return;
   case ARG_ELEM:
   case ARG_GATHERED:
-    if (selfd) g_self = selfd;
+    if (selfd) { g_self = selfd; g_emitting_class_id = ms->class_id; }
     emit_gathered_param(c, ms, a, ct, pa);
-    g_self = saved_self;
+    g_self = saved_self; g_emitting_class_id = saved_cls;
     return;
   case ARG_DEFAULT:
     break;
   }
-  if (selfd) g_self = selfd;
+  if (selfd) { g_self = selfd; g_emitting_class_id = ms->class_id; }
   emit_arg_or_default(c, ms, a, -1, pa);
-  g_self = saved_self;
+  g_self = saved_self; g_emitting_class_id = saved_cls;
 }
 
 /* The last handle read needs no root before a callee roots its parameters
