@@ -28364,6 +28364,13 @@ static struct {
   ANameHash lnames;
   unsigned char *litpost; /* per node: 0 not asked, 1 no post appended, 2 a post appended (dyn_lit_post_app) */
   unsigned char *blkpost; /* per scope: the same for the blocks its call sites pass as `&blk` */
+  /* dyn_call_target_mi's memo: per call, its method and the edit count it
+     was asked at (+1, 0 for none), kept while the table and the scopes are
+     the ones it was filled for */
+  int *tgt;
+  unsigned long *tgt_at;
+  unsigned tgt_ver;
+  int tgt_count, tgt_nscopes;
 } g_dyn;
 
 static void dyn_memo_reset(Compiler *c) {
@@ -28375,6 +28382,7 @@ static void dyn_memo_reset(Compiler *c) {
   anh_free(&g_dyn.bnames);
   free(g_dyn.bhead); free(g_dyn.bnext); free(g_dyn.bnode);
   anh_free(&g_dyn.snames); free(g_dyn.shead); free(g_dyn.snext);
+  free(g_dyn.tgt); free(g_dyn.tgt_at); g_dyn.tgt = NULL; g_dyn.tgt_at = NULL;
   memset(&g_dyn, 0, sizeof g_dyn);
   g_dyn.nlit = c->nt->count;
   g_dyn.nscope = c->nscopes;
@@ -28393,6 +28401,28 @@ static void dyn_memo_reset(Compiler *c) {
   g_dyn.ctor_any = -1;
   g_dyn.kw_any = -1;
   g_dyn.fresh = 1;
+}
+
+/* an_call_target_mi, kept per call: what it reads (the call's name and
+   receiver, the receiver's type, the methods and scopes) stays while no
+   type moved (comp_ty_edits), the table is the one it was asked of and no
+   scope was added. A yield of a spliced method asks it of every call of the
+   method's name, once per yield: at 400 classes each with its own yielding
+   method and calls, a quarter of a million asks of 800 answers. */
+static int dyn_call_target_mi(Compiler *c, int u) {
+  const NodeTable *nt = c->nt;
+  if (u < 0 || u >= nt->count) return an_call_target_mi(c, u);
+  if (!g_dyn.tgt || g_dyn.tgt_count != nt->count || g_dyn.tgt_ver != nt->version || g_dyn.tgt_nscopes != c->nscopes) {
+    free(g_dyn.tgt); free(g_dyn.tgt_at);
+    g_dyn.tgt = malloc(sizeof(int) * (size_t)nt->count);
+    g_dyn.tgt_at = calloc((size_t)nt->count, sizeof(unsigned long));
+    if (!g_dyn.tgt || !g_dyn.tgt_at) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    g_dyn.tgt_count = nt->count; g_dyn.tgt_ver = nt->version; g_dyn.tgt_nscopes = c->nscopes;
+  }
+  if (g_dyn.tgt_at[u] == comp_ty_edits + 1) return g_dyn.tgt[u];
+  int mi = an_call_target_mi(c, u);
+  g_dyn.tgt[u] = mi; g_dyn.tgt_at[u] = comp_ty_edits + 1;
+  return mi;
 }
 
 /* A proc-creating node: a lambda literal, or proc / lambda / Proc.new with
@@ -30251,7 +30281,7 @@ static unsigned ctor_append_scan(Compiler *c, int mi, unsigned *kept_out) {
         if (j < 0 || j >= DYN_ARGS || (app & (1u << j))) continue;
         for (int e = g_dyn.bhead[h]; e >= 0; e = g_dyn.bnext[e]) {
           int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-          if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+          if (nt_kind(nt, ba) != NK_BlockArgumentNode || dyn_call_target_mi(c, u) != mi) continue;
           DynReach r; memset(&r, 0, sizeof r);
           dyn_reach_value(c, nt_ref(nt, ba, "expression"), k, 0, &r);
           if (!r.unlifted && (r.app || (r.unknown && dyn_any_appender(c)))) { app |= 1u << j; break; }
@@ -30857,7 +30887,7 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
     int is_h = local_is_handle(c, v), into_h = 0;
     for (int ei = h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
       int u = g_dyn.bnode[ei], blk = nt_ref(nt, u, "block");
-      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, blk) != NK_BlockNode || dyn_call_target_mi(c, u) != mi) continue;
       const char *kp = an_block_kw_param(c, blk, key);
       Scope *bs = kp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, kp) : NULL;
@@ -30869,7 +30899,7 @@ static int yield_splice_kw_handles(Compiler *c, int mi, int h, int kwh, int pass
     if (pass && into_h && !is_h) changed |= dyn_pull_arg(c, v, 0);
     for (int ei = !pass && h >= 0 ? g_dyn.bhead[h] : -1; ei >= 0; ei = g_dyn.bnext[ei]) {
       int u = g_dyn.bnode[ei], ba = nt_ref(nt, u, "block");
-      if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, ba) != NK_BlockArgumentNode || dyn_call_target_mi(c, u) != mi) continue;
       int x = nt_ref(nt, ba, "expression");
       if (x < 0) continue;
       DynReach r; memset(&r, 0, sizeof r);
@@ -30907,7 +30937,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     if (!pass && (at == TY_STRING || at == TY_STRBUF))
       for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
         int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-        if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+        if (nt_kind(nt, blk) != NK_BlockNode || dyn_call_target_mi(c, u) != mi) continue;
         const char *bp = block_param_at(c, blk, k, call_plain_argc(c, y));
         Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
         LocalVar *t = bs ? scope_local(bs, bp) : NULL;
@@ -30931,7 +30961,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
         if (ms->pnames[j] && an_local_aliases_reach(aliases, mi, ms->pnames[j], yn)) pj = j;
       for (int e = !pass && pj >= 0 && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
         int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-        if (an_call_target_mi(c, u) != mi) continue;
+        if (dyn_call_target_mi(c, u) != mi) continue;
         /* a literal block the method is spliced with appends to the
            parameter its position binds, directly or through an alias
            (dyn_lit_bits): the boxed value it reaches is the caller's,
@@ -30966,7 +30996,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
     int is_h = an_local_is_handle_or_aliased(c, aliases, av[k]), into_h = 0;
     for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, blk) != NK_BlockNode || dyn_call_target_mi(c, u) != mi) continue;
       const char *bp = block_param_at(c, blk, k, call_plain_argc(c, y));
       Scope *bs = bp ? comp_scope_of(c, blk) : NULL;
       LocalVar *t = bs ? scope_local(bs, bp) : NULL;
@@ -30990,7 +31020,7 @@ static int yield_splice_site(Compiler *c, int y, int pass, ALocalAliases *aliase
        which carries the handle into a proc that appends to it */
     for (int e = !pass && h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], ba = nt_ref(nt, u, "block");
-      if (nt_kind(nt, ba) != NK_BlockArgumentNode || an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, ba) != NK_BlockArgumentNode || dyn_call_target_mi(c, u) != mi) continue;
       int v = nt_ref(nt, ba, "expression");
       if (v < 0) continue;
       DynReach r; memset(&r, 0, sizeof r);
@@ -31014,7 +31044,7 @@ static int yield_splice_handles(Compiler *c) {
   /* a spliced method's parameter bound from a handle */
   for (int u = comp_kind_first(c, NK_CallNode); u >= 0; u = comp_kind_next(c, u)) {
     if (nt_kind(nt, u) != NK_CallNode) continue;
-    int mi = an_call_target_mi(c, u);
+    int mi = dyn_call_target_mi(c, u);
     if (mi < 0 || !c->scopes[mi].yields) continue;
     Scope *m = &c->scopes[mi];
     int blk = nt_ref(nt, u, "block");
@@ -31119,7 +31149,7 @@ static int yield_rest_handles(Compiler *c) {
     int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
     for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-      if (nt_kind(nt, blk) != NK_BlockNode || an_call_target_mi(c, u) != mi) continue;
+      if (nt_kind(nt, blk) != NK_BlockNode || dyn_call_target_mi(c, u) != mi) continue;
       changed |= block_rest_pull_args(c, blk, av, ac, ms, u);
     }
   }
@@ -31234,7 +31264,7 @@ static int subtree_hands_to_appender(Compiler *c, int node, const char *vn, int 
   if (nt_kind(nt, node) == NK_CallNode) {
     int a = nt_ref(nt, node, "arguments"), ac = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
-    int mi = ac > 0 ? an_call_target_mi(c, node) : -1;
+    int mi = ac > 0 ? dyn_call_target_mi(c, node) : -1;
     for (int k = 0; mi >= 0 && k < ac && k < c->scopes[mi].nparams; k++) {
       NodeKind ak = nt_kind(nt, av[k]);
       if (ak == NK_SplatNode || ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) break;
@@ -31314,7 +31344,7 @@ static int yield_splat_handles(Compiler *c) {
     int h = anh_find(&g_dyn.bnames, sp_streq(ms->name, "initialize") ? "new" : ms->name);
     for (int e = h >= 0 ? g_dyn.bhead[h] : -1; e >= 0; e = g_dyn.bnext[e]) {
       int u = g_dyn.bnode[e], blk = nt_ref(nt, u, "block");
-      if (an_call_target_mi(c, u) != mi) continue;
+      if (dyn_call_target_mi(c, u) != mi) continue;
       if (nt_kind(nt, blk) == NK_BlockNode) { changed |= block_splat_pull_args(c, blk, av, ac); continue; }
       /* a proc a call site passes with `&` (`y(s, &pr)`): the yield boxes
          the gathered values, so a String one there goes over as the handle
