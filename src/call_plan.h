@@ -196,8 +196,28 @@ void cplan_served_report(void);
 int cplan_overridden(Compiler *c, int cid, const char *name, int cmeth);
 int cplan_dispatch_form(Compiler *c, int call, int cid, const char *name, int has_base);
 
-/* whether mi is the plan's method or, for a switch, one of its arms */
-int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi);
+/* The most candidate classes the statement-level block dispatch takes
+   (poly_block_dispatch_cands refuses a program with more). */
+enum { CPB_MAX_CANDS = 64 };
+
+/* The methods a boxed native-block call's statement-level dispatch reaches
+   (each arm's method and its proc form), asked once for a call and kept
+   here: a caller testing many methods against one plan owns one, zeroed
+   in `state`, and passes it to every cplan_virtual_member, so the poly-block
+   plan is built once, not once per method. It holds copies: the plan
+   cplan_poly_block answers is replaced by that function's next call. */
+typedef struct {
+  int state;       /* 0: not asked, 1: no native-block dispatch, 2: mi[0..n), 3: too many to hold, ask the plan */
+  int n;
+  /* a method and its proc form for each candidate's arm, and room for
+     the two a default or trial arm would add if one ever had a method */
+  int mi[2 * CPB_MAX_CANDS + 2];
+} PolyBlockMembers;
+
+/* whether mi is the plan's method or, for a switch, one of its arms; blk
+   is the caller's PolyBlockMembers for one plan tested against many
+   methods, or NULL for a single test */
+int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi, PolyBlockMembers *blk);
 
 /* ---- CP_POLY: the arms of a dispatch on a boxed (poly) receiver ----
    One arm per runtime class (or, later, builtin kind) the switch can take:

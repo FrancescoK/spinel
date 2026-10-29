@@ -490,7 +490,27 @@ const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh)
   return p->mi >= 0 && p->via == UC_CMETH && p->dispatch == CP_DIRECT ? p : NULL;
 }
 
-int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
+/* Ask the native-block dispatch of the call once into blk (see
+   PolyBlockMembers); the same tests cplan_resolve_call makes for a poly
+   receiver. */
+static void cplan_block_members(Compiler *c, int id, const PolyCand *pcs, int npc, PolyBlockMembers *blk) {
+  blk->state = 1;
+  blk->n = 0;
+  if (!cplan_native_block_possible(c, id, pcs, npc)) return;
+  const PolyPlan *bp = cplan_poly_block(c, id);
+  blk->state = 2;
+  for (int i = 0; i < bp->n; i++) {
+    int arm = bp->arm[i].mi;
+    if (arm < 0) continue;
+    /* (more than blk holds: the member test scans the plan itself) */
+    if (blk->n + 2 > (int)(sizeof blk->mi / sizeof *blk->mi)) { blk->state = 3; blk->n = 0; return; }
+    blk->mi[blk->n++] = arm;
+    int form = scope_proc_form_of(c, arm);
+    if (form >= 0) blk->mi[blk->n++] = form;
+  }
+}
+
+int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi, PolyBlockMembers *blk) {
   if (mi < 0) return 0;
   if (p->send_fallback == mi) return 1;
   if (p->mi < 0) return 0;
@@ -517,7 +537,13 @@ int cplan_virtual_member(Compiler *c, int id, const CallPlan *p, int mi) {
   if (p->via == UC_POLY) {
     int npc = 0;
     const PolyCand *pcs = comp_poly_candidates(c, name, &npc);
-    if (cplan_native_block_possible(c, id, pcs, npc)) {
+    PolyBlockMembers once;
+    once.state = 0;
+    if (!blk) blk = &once;
+    if (!blk->state) cplan_block_members(c, id, pcs, npc, blk);
+    for (int i = 0; i < blk->n; i++)
+      if (blk->mi[i] == mi) return 1;
+    if (blk->state == 3) {
       const PolyPlan *bp = cplan_poly_block(c, id);
       for (int i = 0; i < bp->n; i++)
         if (bp->arm[i].mi == mi || scope_proc_form_of(c, bp->arm[i].mi) == mi) return 1;
@@ -1036,6 +1062,8 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   const char *name = plan.delegate ? plan.delegate : c->scopes[plan.mi].name;
   if (!name) return n;
   if (g_ct_nidx < 0) ct_index_build(c);
+  PolyBlockMembers blk;
+  blk.state = 0;
   int lo = 0, hi = g_ct_nidx;
   g_ct_sort_c = c;
   while (lo < hi) {
@@ -1045,7 +1073,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
   }
   for (int i = lo; i < g_ct_nidx && sp_streq(c->scopes[g_ct_idx[i]].name, name); i++) {
     int k = g_ct_idx[i];
-    if (k == plan.mi || !cplan_virtual_member(c, id, &plan, k)) continue;
+    if (k == plan.mi || !cplan_virtual_member(c, id, &plan, k, &blk)) continue;
     if (n == CPT_MAX) return CPT_UNKNOWN;
     out[n++] = k;
   }
@@ -1066,7 +1094,7 @@ static int ct_resolve(Compiler *c, int id, int *out) {
          above has the methods of that name) */
       if (k < 0 || !c->scopes[k].name || sp_streq(c->scopes[k].name, name)) continue;
       for (int j = 0; j < n && !seen; j++) seen = out[j] == k;
-      if (seen || !cplan_virtual_member(c, id, &plan, k)) continue;
+      if (seen || !cplan_virtual_member(c, id, &plan, k, &blk)) continue;
       if (n == CPT_MAX) return CPT_UNKNOWN;
       out[n++] = k;
     }
@@ -2694,8 +2722,8 @@ const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   bp.arm = NULL; bp.n = 0; bp.flags = 0; bp.native_block = 0;
   bp.ntype = bp.ret = comp_ntype(c, id);
   int cap = 0;
-  int cand[64];
-  int nc = poly_block_dispatch_cands(c, id, cand, 64);
+  int cand[CPB_MAX_CANDS];
+  int nc = poly_block_dispatch_cands(c, id, cand, CPB_MAX_CANDS);
   const char *name = nt_str(c->nt, id, "name");
   for (int i = 0; i < nc; i++) {
     cpoly_add(&bp, &cap, PA_USER, cand[i], call_target(c, id, cand[i], name, 0, NULL), TY_UNKNOWN, PC_VOID);

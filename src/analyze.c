@@ -26766,9 +26766,11 @@ static int param_borrow_targets(Compiler *c, int n, int *out, int cap) {
   out[k++] = plan.mi;
   if (plan.dispatch >= CP_SWITCH) {
     const char *name = c->scopes[plan.mi].name;
+    PolyBlockMembers blk;
+    blk.state = 0;
     for (int s = 0; s < c->nscopes; s++)
       if (s != plan.mi && c->scopes[s].name && name && sp_streq(c->scopes[s].name, name) &&
-          cplan_virtual_member(c, n, &plan, s)) {
+          cplan_virtual_member(c, n, &plan, s, &blk)) {
         if (k == cap) return -1;   /* more targets than can be checked: no borrow */
         out[k++] = s;
       }

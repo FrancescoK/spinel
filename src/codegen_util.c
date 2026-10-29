@@ -175,7 +175,7 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
   const CallPlan *conversion = view_conversion(c, &id);
   if (g_repr_check) repr_channel_call(c, id, mi);
   if (conversion) {
-    int member = cplan_virtual_member(c, id, conversion, mi);
+    int member = cplan_virtual_member(c, id, conversion, mi, NULL);
     fprintf(stderr, "plan-check: conversion-%s: node %d %s: plan %d, codegen %d\n",
             member ? "agree" : "conflict", id, conversion->delegate, conversion->mi, mi);
     return;
@@ -198,7 +198,7 @@ void ucall_observe(Compiler *c, int id, int mi, int owner_ci, int add) {
     if (method.mi < 0) method = cplan_send_arm(c, id);
     const CallPlan *pl = &method;
     int member = pl->mi >= 0 &&
-                 (cplan_virtual_member(c, id, pl, mi) || (add && pl->dispatch >= CP_SWITCH) ||
+                 (cplan_virtual_member(c, id, pl, mi, NULL) || (add && pl->dispatch >= CP_SWITCH) ||
                   (c->scopes[mi].is_proc_form && scope_proc_form_of(c, pl->mi) == mi));
     if (pl->mi < 0) o->rflags |= UR_NONE;
     /* a switch's arms: agreement is the plan's method among them, decided
@@ -305,7 +305,7 @@ static void ucall_resolver_report(Compiler *c) {
                 nm ? nm : "?", xs, inf->via < 10 ? (const char *[]){ "none", "top", "inst", "cmeth", "super",
                 "send_blind", "ie", "included", "reopen", "poly" }[inf->via] : "?");
       }
-      else if (cplan_virtual_member(c, id, pl, inf->mi) ||
+      else if (cplan_virtual_member(c, id, pl, inf->mi, NULL) ||
                (inf->via == UC_POLY && pl->via == UC_POLY)) ai++;
       else {
         di++;
