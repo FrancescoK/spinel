@@ -30,3 +30,6 @@ true
 true
 "undefined method 'special?' for an instance of String"
 "undefined method 'special?' for an instance of Integer"
+[3, 2]
+true
+true

@@ -14034,6 +14034,17 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) continue; }
     int base = nt->count;
     int encl = c->nscope[id];
+    /* A dynamic send's arms share one receiver node; rewritten here it
+       becomes a value (a local's or the copy's first argument), and the
+       dispatch's other arms read it there: a String mutator arm's write
+       back to its variable landed on that read and the C did not compile.
+       This arm takes a copy of its own, read where the arm runs as before. */
+    if (nt_int(nt, id, "dyn_arm", 0) && recv >= 0) {
+      int rc = nt_clone_subtree(nt, recv);
+      if (rc < 0) continue;
+      nt_node_set_ref(nt, id, "receiver", rc);
+      recv = rc;
+    }
     /* A receiver known only at run time may be an instance of a class that
        defines the name itself, which keeps its own method: the call becomes
          (__r = recv; __r.is_a?(K) ? __r.m(args) { } : __enum_m(__r, args) { })

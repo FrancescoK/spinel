@@ -68,3 +68,8 @@ end
 rescue NoMethodError => e
   p e.message
 end
+
+# a computed name sent to a boxed value, whose arms are builtins' as well:
+# the arms that take a copy leave the others' receiver as it was
+p [:abc, "ab"].map(&("si" + "ze").to_sym)
+p [[1, 2], "x"][0].public_send("spec#{sfx}"), [{a: 1, b: 2}, 3][0].public_send("spec#{sfx}")
