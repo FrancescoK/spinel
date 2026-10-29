@@ -3,13 +3,15 @@
 # receiver's class does not answer that name itself (no Integer, Float or
 # Comparable method is named select, format, rand or sleep), and the
 # program's own method when the program defines the name on that class or
-# in Comparable (putc, beside select in the same module). A name the
-# receiver answers with a method of its own is called on self: Numeric's
-# public singleton_method_added raises a TypeError for an Integer or a
-# Float, bare in a method of the reopened Integer as well as written with
-# its receiver, and through a boxed number (a value read out of an Array
-# of both kinds, which the --int-overflow=promote copy's self is too). The
-# boxed receiver and its argument run once, in order.
+# in Comparable (putc, beside select in the same module), or on Integer
+# and Float for a Comparable method (sprintf). A name the receiver answers
+# with a method of its own is called on self: Numeric's public
+# singleton_method_added raises a TypeError for an Integer or a Float,
+# bare in a method of the reopened Integer as well as written with its
+# receiver, with or without a block, and through a boxed number (a value
+# read out of an Array of both kinds, which the --int-overflow=promote
+# copy's self is too). The boxed receiver and its argument run once, in
+# order.
 class Integer
   def int_select = select(nil, nil, nil, 0).inspect
   def int_format = format("%03d", self)
@@ -80,6 +82,17 @@ begin; 1.5.send(:singleton_method_added, :x); rescue TypeError => e; p e.message
 
 [5, 1.5].each do |v|
   begin; v.singleton_method_added(:x); rescue TypeError => e; p e.message; end
+end
+
+# a block is ignored, as CRuby ignores it
+class Integer
+  def call_added_block = singleton_method_added(:x) { p :block_ran }
+end
+begin; 5.call_added_block; rescue TypeError => e; p e.message; end
+begin; 5.singleton_method_added(:x) { p :block_ran }; rescue TypeError => e; p e.message; end
+begin; 1.5.singleton_method_added(:x) { p :block_ran }; rescue TypeError => e; p e.message; end
+[5, 1.5].each do |v|
+  begin; v.singleton_method_added(:x) { p :block_ran }; rescue TypeError => e; p e.message; end
 end
 
 $trace = []

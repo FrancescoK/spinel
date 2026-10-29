@@ -834,11 +834,11 @@ int poly_scalar_arms_open(Compiler *c, int id, PolyScalarArms *pa, Buf *b) {
   memset(pa, 0, sizeof *pa);
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
-  if (!name || recv < 0 || nt_ref(nt, id, "block") >= 0 || g_n_argov + 8 > MAX_ARG_OVERRIDE) return 0;
+  if (!name || recv < 0 || nt_call_has_block_arg(nt, id) || g_n_argov + 8 > MAX_ARG_OVERRIDE) return 0;
   int argc; const int *argv = call_args(nt, id, &argc);
   if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) return 0;
-  int any = 0;
-  for (int i = 0; i < ns; i++) any |= poly_scalar_row(S[i].k, name, argc) != NULL;
+  int blk = nt_ref(nt, id, "block") >= 0, any = 0;
+  for (int i = 0; i < ns; i++) any |= poly_scalar_row(S[i].k, name, argc, blk) != NULL;
   if (!any) return 0;
   int tv = hoist_boxed_rooted(c, recv);
   pa->hn = hoist_dispatch_args(c, nt_ref(nt, id, "arguments"), &pa->hsv, &pa->hvw);
@@ -856,7 +856,7 @@ int poly_scalar_arms_open(Compiler *c, int id, PolyScalarArms *pa, Buf *b) {
     Buf one; memset(&one, 0, sizeof one);
     /* an emitter that stages code ahead of the statement would run it for
        every tag: such a row gets no arm */
-    if (poly_scalar_row(S[i].k, name, argc) &&
+    if (poly_scalar_row(S[i].k, name, argc, blk) &&
         emit_builtin_op_arm_boxed(c, id, recv, S[i].k, name, &one) && g_pre->len == pre) {
       buf_printf(&ab, "(_t%d.tag == %s) ? %s : ", tv, S[i].tag, one.p ? one.p : "sp_box_nil()");
       pa->arms++;

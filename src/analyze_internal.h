@@ -657,11 +657,12 @@ int desugar_splat_to_a(Compiler *c);
 int desugar_builtin_splat_forward(Compiler *c);
 int builtin_class_arity_spec(const char *cls, const char *m, int *min, int *max,
                              const char **lo_exp, const char **hi_exp);
-/* The row an Integer or a Float (k) answers `name` with argc arguments from,
-   for a boxed value that may be either, or NULL: only where CRuby's argument
-   counts prove argc right for the class, as a row's own range can be the
-   legacy any-count one (analyze_infer.c) */
-const struct BuiltinOp *poly_scalar_row(TyKind k, const char *name, int argc);
+/* The row an Integer or a Float (k) answers `name` with argc arguments
+   from (and a literal block, has_block, where the row's block form takes
+   one), for a boxed value that may be either, or NULL: only where CRuby's
+   argument counts prove argc right for the class, as a row's own range can
+   be the legacy any-count one (analyze_infer.c) */
+const struct BuiltinOp *poly_scalar_row(TyKind k, const char *name, int argc, int has_block);
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);

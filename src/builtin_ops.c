@@ -1872,9 +1872,10 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "freeze",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)sizeof(sp_int))" },
   /* Numeric#singleton_method_added is public, and an Integer or a Float
-     answers it with a TypeError: no singleton can be defined on one. The
-     nil kind keeps the raise's slot valid. */
-  { TY_INT,   "singleton_method_added", 1, 1, BF_NONE, TY_NIL, BOPE_TEMPLATE, "((void)($r), (void)($e0), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
+     answers it with a TypeError: no singleton can be defined on one. A
+     block is ignored, as CRuby ignores it. The nil kind keeps the raise's
+     slot valid. */
+  { TY_INT,   "singleton_method_added", 1, 1, BF_ANY,  TY_NIL, BOPE_TEMPLATE, "((void)($r), (void)($e0), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
   { TY_INT,   "to_int",      1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "ord",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "infinite?",   1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), sp_oint_nil())" },
@@ -1958,7 +1959,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "to_s",        1,   1, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_int_to_s_base($r, $i0)" },
   /* Float: arms with no inference row of their own */
   /* a receiver that can be nil answers as nil does: "" / "nil" / 0.0 */
-  { TY_FLOAT, "singleton_method_added", 1, 1, BF_NONE, TY_NIL, BOPE_TEMPLATE, "((void)($r), (void)($e0), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
+  { TY_FLOAT, "singleton_method_added", 1, 1, BF_ANY,  TY_NIL, BOPE_TEMPLATE, "((void)($r), (void)($e0), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
   { TY_FLOAT, "to_s",        0, 127, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_float_opt_to_s($N)" },
   { TY_FLOAT, "inspect",     0, 127, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_float_opt_inspect($N)" },
   { TY_FLOAT, "arg",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_float_arg($r)" },
