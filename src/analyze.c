@@ -23705,6 +23705,46 @@ static int share_lift_poly_static_stores(Compiler *c, int kind, const char *name
   }
   return changed;
 }
+/* Has share_lift_poly_ivar_stores lifted the writer calls of ivar `name`
+   (`o.name = v`, `o.instance_variable_set(:@name, v)`) since the types and
+   the node table last moved? Those calls are the same for every class's
+   ivar of the name, and share_lift_value reads only the types (each change
+   of which comp_ty_edits counts), the nodes and the marks it sets, so a
+   second walk at the same counts marks nothing. A program of many classes
+   with one attribute name walked all the writer calls once per class
+   (#10546). Answers 0, and records the counts, when the walk is to run. */
+static int sl_writers_lifted(Compiler *c, const char *name) {
+  static const Compiler *mc; static const NodeTable *mnt;
+  static char **key; static unsigned long *at; static unsigned *atv; static int cap, n;
+  if (mc != c || mnt != c->nt) {
+    for (int i = 0; i < cap; i++) free(key[i]);
+    free(key); free(at); free(atv);
+    key = NULL; at = NULL; atv = NULL; cap = n = 0; mc = c; mnt = c->nt;
+  }
+  if (n * 2 >= cap) {
+    int ocap = cap; char **ok = key; unsigned long *oa = at; unsigned *ov = atv;
+    cap = ocap ? ocap * 2 : 64;
+    key = calloc((size_t)cap, sizeof *key); at = calloc((size_t)cap, sizeof *at); atv = calloc((size_t)cap, sizeof *atv);
+    if (!key || !at || !atv) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!ok[i]) continue;
+      unsigned j = sp_strhash(ok[i]) & (unsigned)(cap - 1);
+      while (key[j]) j = (j + 1) & (unsigned)(cap - 1);
+      key[j] = ok[i]; at[j] = oa[i]; atv[j] = ov[i];
+    }
+    free(ok); free(oa); free(ov);
+  }
+  unsigned j = sp_strhash(name) & (unsigned)(cap - 1);
+  while (key[j] && !sp_streq(key[j], name)) j = (j + 1) & (unsigned)(cap - 1);
+  if (key[j] && at[j] == comp_ty_edits && atv[j] == c->nt->version) return 1;
+  if (!key[j]) {
+    key[j] = strdup(name);
+    if (!key[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    n++;
+  }
+  at[j] = comp_ty_edits; atv[j] = c->nt->version;
+  return 0;
+}
 static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   const NodeTable *nt = c->nt;
   int changed = 0;
@@ -23726,7 +23766,7 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
   char wname[256];
   snprintf(wname, sizeof wname, "%s=", name + 1);
   const char *writers[2] = { wname, "instance_variable_set" };
-  for (int q = 0; q < 2; q++)
+  for (int q = sl_writers_lifted(c, name) ? 2 : 0; q < 2; q++)
   for (int w = an_calls_named_first(c, writers[q]); w >= 0; w = an_calls_named_next(w)) {
     const char *cn = nt_str(nt, w, "name");
     int a = nt_ref(nt, w, "arguments"), an = 0;
