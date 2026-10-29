@@ -12,7 +12,8 @@
 # form, Math.sqrt through to_f (a Float, as in CRuby), the seven rounding
 # constants (ROUND_UP, ROUND_DOWN, ROUND_HALF_UP, ROUND_HALF_DOWN,
 # ROUND_HALF_EVEN, ROUND_CEILING, ROUND_FLOOR, with CRuby's integer values)
-# and #round(n) / #round(n, mode) for a constant or its Symbol. Every mode
+# and #round(n) / #round(n, mode) for a constant or its Symbol, and #floor,
+# #ceil and #truncate with or without n. Every mode
 # is computed on the digit array, so it is exact and never goes through a
 # Float.
 #
@@ -343,6 +344,27 @@ class BigDecimal < Numeric
     end
     result = BigDecimal.new(@sign, out, -n)
     to_int ? result.to_i : result
+  end
+
+  # floor(), ceil() and truncate() answer an Integer; given n they answer a
+  # BigDecimal rounded to n places in that direction, as round(n, mode) does.
+  # A magnitude below one is answered directly: rounding it to a unit
+  # through #round would meet the negative zero that representation lacks
+  # (-0.3.ceil is 0 in CRuby).
+  def floor(*args) = __round_toward(ROUND_FLOOR, args)
+  def ceil(*args) = __round_toward(ROUND_CEILING, args)
+  def truncate(*args) = __round_toward(ROUND_DOWN, args)
+
+  def __round_toward(mode, args)
+    raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..1)" if args.length > 1
+    return round(args[0], mode) if args.length == 1
+    return 0 if @sign == 0
+    if @digits.length + @exp <= 0
+      return -1 if mode == ROUND_FLOOR && @sign < 0
+      return 1 if mode == ROUND_CEILING && @sign > 0
+      return 0
+    end
+    round(0, mode).to_i
   end
 
   def <=>(other)
