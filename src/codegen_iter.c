@@ -1919,6 +1919,15 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
    method-tail path already routes both to the value path (codegen_stmt.c);
    a spliced block's tail needed the same, or the statement expression took
    whatever the last emitted statement happened to leave (#4155). */
+/* Whether the program gives the builtin class cn a []= of its own (a reopen,
+   or a module it includes or prepends there): the value form of `x[k] = v`
+   then answers that method's value, not v */
+static int program_defines_builtin_aset(Compiler *c, const char *cn) {
+  int ci = comp_class_index(c, cn);
+  int mi = ci >= 0 ? comp_method_in_chain(c, ci, "[]=", NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
 static int call_targets_yielding_method(Compiler *c, int id);
 static int block_tail_needs_value_form(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -1989,6 +1998,18 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       nt_ref(nt, id, "receiver") >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_ref(nt, id, "arguments") >= 0 && ty_is_array(comp_ntype(c, nt_ref(nt, id, "receiver"))))
     return 1;
+  /* ...and `a.clear` / `a&.clear` on an Array, `h.store(k, v)` on a Hash
+     and `x[k] = v` on either: the statement form empties or stores in a
+     compound, while the call answers the receiver or the value (`t { x.clear }` on a general Array
+     did not build) */
+  { int r = nt_ref(nt, id, "receiver");
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (r >= 0 && nt_ref(nt, id, "block") < 0 &&
+        ((sp_streq(nm, "clear") && nt_ref(nt, id, "arguments") < 0 && ty_is_array(rt)) ||
+         (sp_streq(nm, "store") && ty_is_hash(rt)) ||
+         (sp_streq(nm, "[]=") && (ty_is_hash(rt) || ty_is_array(rt)) &&
+          !program_defines_builtin_aset(c, ty_is_hash(rt) ? "Hash" : "Array"))))
+      return 1; }
   /* and a String mutator on a String held as the sp_String buffer (a block
      parameter that is the shared handle): the statement form appends
      through a void C call, while the call answers the String */

@@ -188,15 +188,26 @@ which arms resolve (the result is `poly`). A name that is not one of those
 literals, or not a method on the receiver, raises `NoMethodError` at runtime. A
 **computed** name (an interpolation, `to_sym`, a concatenation) sent to a user-class
 receiver dispatches over everything that class answers -- its methods, readers and
-writers, and the Object methods every instance has -- so the set is complete; on a
-boxed receiver it covers every user class plus the program's literals. A method's
-parameter is a computed name when a caller hands it one (`handle(name) =
-public_send(name)` called with `"on_#{ev}".to_sym`), also through a method that
-passes the parameter on; handed only literals, it keeps the literal arms. An element
-of a table filled with such names is computed too (`M = Hash.new { |h, t| h[t] =
-:"on_#{t}" }` then `send(M[t])`, or a table a `[]=` stores them into). A computed
-name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
-time. A **literal** name is fully resolved -- see below.
+writers, and the Object methods every instance has -- so the set is complete; sent
+to a receiver typed as a builtin class (a String, an Array, ...) it dispatches over
+that class's methods, with what it inherits from Object, Comparable, Enumerable or
+Numeric and what the program adds by reopening them; on a boxed receiver it covers
+every user class, the program's literals, and the methods of the builtin classes a
+boxed value can be: Integer, Float, String, Symbol, Array, Hash, Range and nil
+always, and Time, File, Regexp, MatchData, Thread, Fiber and Random when some
+expression of the program has that type (the classes `builtin_class_of_type`
+names; a Proc, Rational, Complex, Exception, Queue, true or false in a boxed slot
+gets no arms of its own, so a builtin method of those raises `NoMethodError`
+there). The builtin arms come after the program's, so a send that
+would exceed the arm cap (1024) keeps the program's arms alone. A computed send
+that carries a block, splats its arguments or passes keywords takes the program's
+names alone on a boxed receiver, so a builtin's method raises `NoMethodError`
+there. A method's parameter is a computed name when a caller hands it one
+(`handle(name) = public_send(name)` called with `"on_#{ev}".to_sym`), also
+through a method that passes the parameter on; handed only literals, it keeps
+the literal arms. An element of a table filled with such names is computed too
+(`M = Hash.new { |h, t| h[t] = :"on_#{t}" }` then `send(M[t])`, or a table a
+`[]=` stores them into). A **literal** name is fully resolved -- see below.
 `public_send(*args, &blk)` with the name as the first element of a splatted
 variable (activesupport's `Object#try`) dispatches too: the arms take
 `*args.drop(1)`. The send's block -- written at the send or a forwarded `&blk`
