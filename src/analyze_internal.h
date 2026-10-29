@@ -390,6 +390,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    nt_pred_const). */
 typedef struct {
   int e, file, top, frame, depth, rep;
+  int list;   /* the statement list the node is an element of (a StatementsNode), -1 for a lone expression */
   unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };

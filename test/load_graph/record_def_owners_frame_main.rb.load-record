@@ -38,10 +38,10 @@ entity K: owner main leaf K
 const C: write#1
 C.made: def#4 end=yes
 const K: write#5
-K#from_iter: def#7 end=yes
-K#cond_m#__cond1: def#9 may end=unknown
+K#from_iter: def#7 end=yes open
+K#cond_m#__cond1: def#9 may end=unknown open
 $__cond_def1: write#10 may write#12 may
-K#cond_m#__cond2: def#11 may end=unknown
+K#cond_m#__cond2: def#11 may end=unknown open
 K#cond_m: def#13 end=yes
 K.mk: def#14 end=yes
 const S: write#15
