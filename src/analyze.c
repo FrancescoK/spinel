@@ -16176,6 +16176,7 @@ static int narrow_object_arrays(Compiler *c) {
       continue;
     }
     oa_classify_value(c, sl, n, read_slot, call_ret, claimed, S, v);
+    if (tgt >= 0) claimed[tgt] = 1;   /* `M::X =`'s target path is the write, no read */
     /* nothing re-derives a constant's literal from the constant: built at
        the narrowed kind in place, or the write would hand it a poly array */
     if (nt_kind(nt, v) == NK_ArrayNode) oa_note_src(S, v);

@@ -4576,7 +4576,7 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  grep -q 'sp_Body_step(sp_Body \*self, sp_PtrArray \* lv_bodies, sp_float lv_dt)' "$$tmp/oer.c" || { echo "infer-test: FAIL (a table handed to a method of its own element stayed boxed)"; ok=0; }; \
 	  grep -q 'sp_Rod_advance(sp_Rod \*self, sp_PolyArray \* lv_rods)' "$$tmp/oer.c" || { echo "infer-test: FAIL (a call on a reassigned block parameter narrowed the table it was handed)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_array_constant.rb -c --no-line-map -o "$$tmp/oac.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_array_constant: -c)"; ok=0; }; \
-	  [ "$$(grep -c '^static sp_PtrArray \* cst_\(PLANETS\|STARS\) = NULL;' "$$tmp/oac.c")" = 2 ] || { echo "infer-test: FAIL (a constant table of objects stayed boxed)"; ok=0; }; \
+	  [ "$$(grep -c '^static sp_PtrArray \* cst_\(PLANETS\|STARS\|RING\) = NULL;' "$$tmp/oac.c")" = 3 ] || { echo "infer-test: FAIL (a constant table of objects stayed boxed)"; ok=0; }; \
 	  grep -q '^static sp_PolyArray \* cst_NAMED = NULL;' "$$tmp/oac.c" || { echo "infer-test: FAIL (a constant reached through const_get narrowed)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_receiver_cmethod_kwarg_unbound.rb -c --no-line-map -o "$$tmp/pck.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_receiver_cmethod_kwarg_unbound: -c)"; ok=0; }; \
 	  grep -q 'sp_StrArray \* sp_Restore_s_apply(sp_Table \* lv_table, sp_StrArray \* lv_names)' "$$tmp/pck.c" || { echo "infer-test: FAIL (a keyword-only call bound a keyword hash into a keyword method's positional parameter)"; ok=0; }; \
