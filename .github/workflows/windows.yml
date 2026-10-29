@@ -27,6 +27,9 @@ on:
       - '.github/workflows/windows.yml'
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 concurrency:
   group: windows-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -46,6 +49,8 @@ jobs:
       - run: git config --global core.autocrlf false
         shell: bash
       - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
 
       # The packages docs/windows.md lists.
       - uses: msys2/setup-msys2@v2

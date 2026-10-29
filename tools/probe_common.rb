@@ -371,9 +371,9 @@ module ProbeCommon
   # seconds; a stopped run raises Stopped. It leads a session of its own, so
   # a run that does not end is killed with what it started.
   def run_on_tty(argv, timeout, stop = nil)
+    raise Stopped if stop&.call
     # not at the top: Windows' Ruby has no pty, and the build's generators load this file
     require "pty"
-    raise Stopped if stop&.call
     out = +""
     r, w, pid = PTY.spawn(*argv, in: File::NULL)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout
