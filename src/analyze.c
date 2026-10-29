@@ -46048,7 +46048,11 @@ static void an_phase_desugar_register(Compiler *c) {
   desugar_class_reopen(c);               /* class Class / Class.class_eval -> a module */
   AN_STEP_V("desugar_inline_struct_blocks", desugar_inline_struct_blocks(c));      /* Struct.new(:x) { .. } -> (__spinel_struct_1 = Struct.new(:x) { .. }) */
   AN_STEP_V("desugar_singleton_class_meta", desugar_singleton_class_meta(c));      /* Foo.singleton_class.attr_accessor :a -> class << Foo; attr_accessor :a; end */
-  AN_STEP_V("desugar_class_new_blocks", desugar_class_new_blocks(c));           /* X = Class.new(B) do..end -> class X < B; ..; end */
+  /* X = Class.new(B) do..end -> class X < B; ..; end, a body the host grafts
+     (its class_eval "<text>") and lowers as a class body */
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_class_new_blocks", desugar_class_new_blocks(c, &hs));
+  host_end(c, &hs);
   desugar_struct_block_anonymous(c);    /* Point = Struct.new do p self end: anonymous until written */
   AN_STEP_V("desugar_singleton_body_self", desugar_singleton_body_self(c));       /* class << X; p self; end -> refused */
   /* include M / extend M -> M.included/extended(base)'s body, a splice the
