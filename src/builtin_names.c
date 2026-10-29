@@ -769,31 +769,6 @@ int is_exception_ctor_name(const char *n) {
   return n && sp_streq(n, "exception");
 }
 
-static int builtin_name_in(const char *name, const char *const *names);
-/* A name CRuby's core may call on an object it is given (sg 0) or on a
-   class object (sg 1), beyond method_name_implicitly_invoked and
-   method_missing: every operator (case/when's ===, sum's +, sort's <=>,
-   !); pattern matching's deconstruct; respond_to? and
-   respond_to_missing?; the conversions Float(), Rational(), Complex(),
-   format and Regexp.union make; a Range's succ, begin and end; the
-   messages of an uncaught error; Marshal's; dup's and clone's
-   initialize_*; a Hash subclass's default; an output port's write; a
-   Numeric's arithmetic helpers. On a class: succ, name, const_missing,
-   exception (_load only Marshal.load calls, which may call any method) */
-int is_core_callback_name(const char *n, int sg) {
-  static const char *const inst[] = {
-    "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r", "to_c", "to_sym",
-    "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message", "detailed_message",
-    "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result", "marshal_dump", "_dump",
-    "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read", "readpartial", "flush",
-    "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?", "nonzero?", "positive?",
-    "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate", "div", "modulo", "divmod",
-    "remainder", "fdiv", "quo", NULL };
-  if (!n) return 0;
-  if (!((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_')) return 1;
-  return sg ? sp_streq(n, "succ") || sp_streq(n, "name") || is_const_missing_name(n) || is_exception_ctor_name(n) : builtin_name_in(n, inst);
-}
-
 /* to_enum and enum_for: an Enumerator that calls the method they name */
 int is_enumerator_maker(const char *n) {
   return n && (sp_streq(n, "to_enum") || sp_streq(n, "enum_for"));
@@ -2214,27 +2189,6 @@ int is_const_visibility_name(const char *n) {
 }
 /* class_variable_set remove_class_variable */
 int is_cvar_write_name(const char *n) { return n && (sp_streq(n, "class_variable_set") || sp_streq(n, "remove_class_variable")); }
-/* The names CRuby's core and standard library call on an object by
-   themselves besides the runtime protocols (method_name_implicitly_invoked):
-   an operator, method_missing and respond_to_missing?, a pattern's
-   deconstruct, a conversion, a Range's endpoints and succ, an exception's
-   readers, Marshal's and dup's hooks, a Hash's default, an IO-like's
-   writer and readers, pp's and YAML's hooks, and the Numeric helpers
-   numeric core methods call on a subclass. This is the instance side of
-   is_core_callback_name (the record's reachability work), with
-   method_missing; whichever lands second keeps one predicate. */
-int is_runtime_callback_name(const char *n) {
-  static const char *const names[] = {
-    "method_missing", "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r",
-    "to_c", "to_sym", "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message",
-    "detailed_message", "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result",
-    "marshal_dump", "_dump", "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read",
-    "readpartial", "flush", "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?",
-    "nonzero?", "positive?", "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate",
-    "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
-  if (!n) return 0;
-  return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
-}
 int is_hook_protocol_name(const char *n) {
   return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
 }

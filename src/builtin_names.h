@@ -164,7 +164,6 @@ int is_object_loader(const char *recv, const char *meth, int argc); /* Marshal.l
 int is_method_bind_name(const char *n); /* bind bind_call */
 int is_timeout_call(const char *recv, const char *meth); /* Timeout.timeout(sec, klass) */
 int is_exception_ctor_name(const char *n); /* exception */
-int is_core_callback_name(const char *n, int sg); /* what CRuby's core may call on an object it is given (sg 0) or a class object (sg 1): operators, deconstruct, respond_to?, to_f, ... */
 int is_enumerator_maker(const char *n); /* to_enum enum_for */
 int is_allocate_name(const char *n); /* allocate */
 int is_ivar_remove_name(const char *n); /* remove_instance_variable */
@@ -561,7 +560,6 @@ int is_using_name(const char *n);          /* using */
 int is_remove_const_name(const char *n);   /* remove_const */
 int is_const_visibility_name(const char *n);   /* private_constant public_constant deprecate_constant */
 int is_cvar_write_name(const char *n);     /* class_variable_set remove_class_variable */
-int is_runtime_callback_name(const char *n);   /* an operator, method_missing, deconstruct, to_f ...: what CRuby's core calls by itself */
 int is_hook_protocol_name(const char *n);  /* append_features extend_object prepend_features: what include, extend and prepend send before their hooks */
 int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an object makes it the port output goes to */
 

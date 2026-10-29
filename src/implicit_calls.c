@@ -158,6 +158,19 @@ int ic_node_calls(Compiler *c, int id, IcCall *out, int max) {
   return s.n;
 }
 
+/* A class object is handed over in the CLASS role, or is the receiver whose
+   own hook the builtin calls (HOOK), or a node's syntax calls it on a class
+   (a class header's inherited, a constant read's const_missing, a backtick
+   in a class method); an object of the class in any other role (a program
+   subclass as the receiver, an argument, an element, a block's answer, a
+   port, a loaded object, a name asked through rb_check_funcall), or by a
+   node's syntax. */
+int ic_core_callback(const char *name, int class_side) {
+  unsigned roles = bop_callback_roles(name);
+  if (class_side) return (roles & (BCR_CLASS | BCR_HOOK)) != 0 || (nt_implied_name_sides(name) & NTS_CLASS) != 0;
+  return (roles & ~(unsigned)(BCR_CLASS | BCR_HOOK)) != 0 || (nt_implied_name_sides(name) & NTS_INST) != 0;
+}
+
 /* ---- may the operand hold an object of the program's ---- */
 
 /* The program class a receiver node names as a class value: a constant of a

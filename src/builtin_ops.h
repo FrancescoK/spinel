@@ -64,6 +64,8 @@ int bop_name_callbacks(const char *builtin, const BopCallback **out);
 /* Every callback name with the roles in which some builtin calls it, sorted;
    their number */
 int bop_callback_names(const BopCallback **out);
+/* The roles in which some builtin calls `name` (BCR_ bits), 0 for a name none does */
+unsigned bop_callback_roles(const char *name);
 /* The callbacks of `builtin` on one receiver class ("Array"; "File." for a
    singleton method), for the typed passes. -1 means unknown, as it does for
    bop_name_callbacks: that receiver was not probed for it, and the caller

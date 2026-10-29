@@ -36,6 +36,7 @@ typedef struct {
    one. */
 int nt_implied_calls(const NodeTable *nt, int id, NtImplied *out, int max);
 int nt_implied_possible(const NodeTable *nt, int id);   /* the kind has rows, or is a super */
+unsigned nt_implied_name_sides(const char *name);   /* the NTS_ sides some row names `name` for, 0 when none: is it a method CRuby's syntax calls */
 int nt_implied_super(const NodeTable *nt, int id);   /* a super: it calls the builtin of its def's name when no ancestor of the program has it */
 
 /* --dump-implied-calls: for each node of the program's own file that makes

@@ -1543,8 +1543,8 @@ static int lr_body_defines(Compiler *c, int def, int direct, int depth) {
 }
 
 /* May a method the runtime calls back by itself (a protocol's,
-   method_name_implicitly_invoked; an operator, method_missing, a
-   conversion ..., is_runtime_callback_name) define or write something?
+   method_name_implicitly_invoked; one a builtin or a node's syntax
+   calls on an object, ic_core_callback) define or write something?
    Its direct answer is enough: what it calls back in turn is one of these
    too. Kept once no such method may, or once the record is made. */
 static int lr_callbacks_define(Compiler *c, int depth) {
@@ -1553,7 +1553,7 @@ static int lr_callbacks_define(Compiler *c, int depth) {
   int o = 0;
   for (int i = 0; i < r->nnames && !o; i++)
     if ((i == 0 || strcmp(r->names[i - 1], r->names[i]) != 0) &&
-        (method_name_implicitly_invoked(r->names[i]) || is_runtime_callback_name(r->names[i])))
+        (method_name_implicitly_invoked(r->names[i]) || ic_core_callback(r->names[i], 0)))
       o = lr_callee_defines(c, r->names[i], 1, depth);
   if (!o || r->recorded) r->callbacks = (unsigned char)(o ? 2 : 1);
   return o;
@@ -2964,7 +2964,7 @@ static int lr_node_runs(Compiler *c, int id) {
    (lr_node_runs' LR_DISPATCH) calls the names it may call back
    (method_name_implicitly_invoked, method_missing) and those CRuby's core
    calls on the objects and class objects it is given
-   (is_core_callback_name); a definition form its hooks; super its
+   (ic_core_callback); a definition form its hooks; super its
    method's name; send, a method object, an Enumerator or `&:sym` its name
    (`&:new` making any class); refine the refining module's methods. A computed
    name, eval, bind or an object loader calls every name and makes any
@@ -3085,7 +3085,7 @@ static void lr_rta_all(LrRta *t, int disp) {
   for (int x = 0; x < r->nnames; x++) {
     const char *n = r->names[x];
     int imp = disp && (method_name_implicitly_invoked(n) || is_method_missing_name(n));
-    int how = (!disp || imp || is_core_callback_name(n, 1) ? RQ_CLASS : 0) | (imp || (disp && is_core_callback_name(n, 0)) ? RQ_INST : 0);
+    int how = (!disp || imp || ic_core_callback(n, 1) ? RQ_CLASS : 0) | (imp || (disp && ic_core_callback(n, 0)) ? RQ_INST : 0);
     if (how) lr_rta_call(t, n, how);
   }
 }
