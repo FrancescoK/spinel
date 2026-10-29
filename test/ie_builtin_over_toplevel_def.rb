@@ -43,6 +43,13 @@ p({}.instance_eval { size })
 def run(x) = x.instance_eval { size }
 p run(H.new)
 
+# in a class body, the block's self is still its receiver, not the class
+class C
+  def self.size = :cls
+  N = H.new.instance_eval { size }
+end
+p C::N
+
 # Kernel's names: the top-level def wins
 p h.instance_eval { frozen? }
 p h.instance_eval { is_a?(Hash) }

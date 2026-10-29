@@ -1046,8 +1046,9 @@ int desugar_body_self_call(Compiler *c) {
     if (recv < 0 || nt_kind(nt, recv) != NK_SelfNode) continue;
     /* self in a `class << X` body is X's singleton class, not X */
     if (nt_int(nt, recv, "sclass_value", 0)) continue;
-    /* a rebindable block's self is whatever instance_exec binds */
-    if (nt_int(nt, recv, "ie_rself", 0)) continue;
+    /* a rebindable block's self is whatever instance_exec binds, and an
+       instance_eval block's self is its receiver */
+    if (nt_int(nt, recv, "ie_rself", 0) || nt_int(nt, recv, "ie_self", 0)) continue;
     int cb = self_class_body(c, recv);
     if (cb < 0 || !c->classes[cb].name) continue;
     long long line = nt_int(nt, recv, "node_line", 0), file = nt_int(nt, recv, "node_file", 0),
