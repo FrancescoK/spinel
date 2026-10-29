@@ -2011,6 +2011,7 @@ const char *time_strict_parser_call(Compiler *c, int id);
 int        class_eval_reopen_class(Compiler *c, int id, int enclosing_class);
 int        class_reopen_cmethod(Compiler *c, int call, int recv, const char *name); /* a method the program adds to Class, run by `call` (-1: no call) */
 int        class_reopen_class(Compiler *c);   /* the module that holds the program's methods of Class (`class Class`), -1 for none */
+int        object_reopen_class(Compiler *c);  /* the class that holds the program's methods of Object and Kernel, -1 for none */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_member_intern(ClassInfo *ci, const char *name);

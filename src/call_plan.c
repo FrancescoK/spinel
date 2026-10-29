@@ -80,7 +80,7 @@ int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi) {
    not answer itself, that call `call` runs */
 static void cplan_object_reopen(Compiler *c, int call, const char *name, CallPlan *p) {
   if (builtin_object_method_known(name)) return;
-  int oci = comp_class_index(c, "Object");
+  int oci = object_reopen_class(c);
   int omi = oci >= 0 ? call_target(c, call, oci, name, 0, NULL) : -1;
   if (omi >= 0) cplan_set(p, omi, oci, UC_REOPEN, CP_DIRECT);
 }
@@ -92,7 +92,7 @@ static void cplan_object_reopen(Compiler *c, int call, const char *name, CallPla
    block). */
 int cplan_exc_object_method(Compiler *c, int call, const char *name) {
   if (!is_gated_exception_accessor(name)) return -1;
-  int oc = comp_class_index(c, "Object");
+  int oc = object_reopen_class(c);
   int mi = oc >= 0 ? call_target(c, call, oc, name, CT_OWN, NULL) : -1;
   if (mi < 0 || comp_method_vis_declared(c, oc, name, NULL) == SP_VIS_PRIVATE ||
       c->scopes[mi].nparams != 0 || c->scopes[mi].yields) return -1;
@@ -1102,9 +1102,13 @@ int ct_version_marked(Compiler *c, const char *nm) {
    descendants; for any other receiver, main and
    each class the load record holds a history of the name for
    (elab_method_holder), on that side (a class that holds none answers as
-   its nearest ancestor that does). Reachability marks the versions the
-   call binds on each (cr_collect_versions); ver_entries_build makes the
-   entries they need. */
+   its nearest ancestor that does). Each of the others also on Object's
+   instance side: every lookup but BasicObject's ends in Object's methods
+   (Kernel's among them), which the tables leave out of a program class's
+   chain and of its class side, so the plan binds them by asking Object
+   (cplan_object_reopen). Reachability marks the versions the call binds
+   on each (cr_collect_versions); ver_entries_build makes the entries
+   they need. */
 static void ct_class_and_descendants(Compiler *c, int id, const char *nm, int k, unsigned flags, CtClassFn fn, void *arg) {
   int nd = 0;
   const int *ds = k >= 0 ? comp_descendants(c, k, &nd) : NULL;
@@ -1167,6 +1171,7 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
      its writes may bind there, when the record can list them */
   int *rcs = NULL, nrc = rk == NK_ConstantReadNode && rc < 0 ? elab_class_candidates(c, r, &rcs) : -1;
   TyKind rt = r >= 0 && rk != NK_SelfNode && !cref ? comp_ntype(c, r) : TY_UNKNOWN;
+  int oc = object_reopen_class(c);
   if (r < 0 || rk == NK_SelfNode) {
     Scope *sc = comp_scope_of(c, id);
     int self_cls = sc && sc->class_id >= 0 ? sc->class_id : c->node_cbody[id];
@@ -1191,7 +1196,9 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
     const int *hold = ver_holders(c, nm, &nh);
     fn(c, id, nm, -1, CT_TOP, arg);
     for (int i = 0; i < nh; i++) fn(c, id, nm, hold[2 * i], hold[2 * i + 1] ? CT_CMETHOD : 0, arg);
+    oc = -1;   /* (Object among them, where its chain holds two) */
   }
+  if (oc >= 0) fn(c, id, nm, oc, 0, arg);
   free(rcs);
 }
 
