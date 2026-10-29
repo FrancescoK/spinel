@@ -2431,8 +2431,25 @@ static void reject_dynamic_mixin_args(Compiler *c) {
   }
 }
 
-/* Renames a constant node that names a class alias to the underlying class. */
-static void rewrite_const_alias_name(Compiler *c, int node) {
+/* The renames rewrite_const_alias_receivers has decided and not yet made: a
+   constant node and the class name it takes (an owned copy). */
+typedef struct AliasRename { int node; char *name; } AliasRename;
+typedef struct AliasRenames { AliasRename *v; int n, cap; } AliasRenames;
+
+static void alias_rename_add(AliasRenames *q, int node, const char *name) {
+  if (q->n == q->cap) {
+    q->cap = q->cap ? q->cap * 2 : 64;
+    q->v = realloc(q->v, sizeof *q->v * (size_t)q->cap);
+    if (!q->v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  q->v[q->n].node = node;
+  q->v[q->n].name = strdup(name);
+  q->n++;
+}
+
+/* Asks the class a constant node names when it names a class alias, and
+   queues its rename to the underlying class. */
+static void ask_const_alias_name(Compiler *c, int node, AliasRenames *q) {
   const NodeTable *nt = c->nt;
   if (node < 0 || !nt_type(nt, node)) return;
   NodeKind k = nt_kind(nt, node);
@@ -2443,17 +2460,14 @@ static void rewrite_const_alias_name(Compiler *c, int node) {
   const char *rn = nt_str(nt, node, "name");
   if (!rn || comp_class_index(c, rn) >= 0) return;  /* already a class name */
   const char *real = resolve_class_alias(c, rn);
-  if (real && !sp_streq(real, rn)) {
-    char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees rn */
-    nt_set_str((NodeTable *)nt, node, "name", buf);
-  }
+  if (real && !sp_streq(real, rn)) alias_rename_add(q, node, real);
 }
 
 /* `extend Alias` / `include Alias` / `prepend Alias` with `Alias = Mod`
-   (also through a chain of aliases): name the module itself, since the
+   (also through a chain of aliases): queue naming the module itself, since the
    extend pass and the singleton prepend it carries match a module's own
    name only, and dropped an alias silently. */
-static void rewrite_mixin_alias_args(Compiler *c, int call) {
+static void ask_mixin_alias_args(Compiler *c, int call, AliasRenames *q) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, call, "name");
   if (!nm || nt_ref(nt, call, "receiver") >= 0 || !is_mixin_call(nm)) return;
@@ -2466,8 +2480,7 @@ static void rewrite_mixin_alias_args(Compiler *c, int call) {
     if (!rn || comp_class_index(c, rn) >= 0) continue;
     const char *real = resolve_class_alias_chain(c, rn);
     if (!real || sp_streq(real, rn) || comp_class_index(c, real) < 0) continue;
-    char buf[256]; snprintf(buf, sizeof buf, "%s", real);  /* copy: set frees rn */
-    nt_set_str((NodeTable *)nt, av[j], "name", buf);
+    alias_rename_add(q, av[j], real);
   }
 }
 
@@ -2479,23 +2492,31 @@ static void rewrite_mixin_alias_args(Compiler *c, int call) {
    in walk_scope. Runs once after classes are registered. */
 void rewrite_const_alias_receivers(Compiler *c) {
   const NodeTable *nt = c->nt;
+  AliasRenames q = {0};
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k == NK_WhenNode) {
       int wn = 0; const int *wc = nt_arr(nt, id, "conditions", &wn);
-      for (int i = 0; i < wn; i++) rewrite_const_alias_name(c, wc[i]);
+      for (int i = 0; i < wn; i++) ask_const_alias_name(c, wc[i], &q);
       continue;
     }
     if (k != NK_CallNode) continue;
-    rewrite_const_alias_name(c, nt_ref(nt, id, "receiver"));
-    rewrite_mixin_alias_args(c, id);
+    ask_const_alias_name(c, nt_ref(nt, id, "receiver"), &q);
+    ask_mixin_alias_args(c, id, &q);
     const char *nm = nt_str(nt, id, "name");
     if (nm && is_kind_query(nm)) {
       int args = nt_ref(nt, id, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an == 1 && av) rewrite_const_alias_name(c, av[0]);
+      if (an == 1 && av) ask_const_alias_name(c, av[0], &q);
     }
   }
+  /* The asks above are the load record's, which rebuilds its point map after
+     an edit: every rename waits until the last one is asked. */
+  for (int i = 0; i < q.n; i++) {
+    nt_set_str((NodeTable *)nt, q.v[i].node, "name", q.v[i].name);
+    free(q.v[i].name);
+  }
+  free(q.v);
 }
 
 /* The exception classes named by `raise Alias, msg` and by `rescue Alias`
