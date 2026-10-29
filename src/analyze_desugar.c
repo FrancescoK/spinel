@@ -14483,14 +14483,19 @@ static int rd_call_name_is(const LowerCtx *lc, const char *nm, const char *want)
   return 0;
 }
 
+/* The program's ClassNodes, gathered once per run of
+   desugar_recursive_param_defaults for rd_new_reaches: sweeping the table
+   for each `X.new` of each pair of defaults was most of the pass. */
+static int *rd_class_ids, rd_nclass_ids;
+
 /* Does `X.new` run the initialize of class `cls`: X is cls, or a subclass
    that inherits cls's initialize without defining its own? Classes are
    matched by their last name segment, before any scope exists. */
 static int rd_new_reaches(const NodeTable *nt, const char *x, const char *cls, int depth) {
   if (!x || !cls || depth > 16) return 0;
   if (sp_streq(x, cls)) return 1;
-  for (int id = 0; id < nt->count; id++) {
-    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+  for (int q = 0; q < rd_nclass_ids; q++) {
+    int id = rd_class_ids[q];
     const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
     if (!cn || !sp_streq(cn, x)) continue;
     int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
@@ -14643,12 +14648,19 @@ int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
     free(edge); free(stack); free(seen); free(ds);
     return 0;
   }
+  rd_nclass_ids = 0;
+  rd_class_ids = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!rd_class_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < n0; k++)
+    if (fwd_node_is(nt, k, "ClassNode")) rd_class_ids[rd_nclass_ids++] = k;
   for (int i = 0; i < nd; i++)
     for (int j = 0; j < nd; j++) {
       int bad = 0;
       edge[(size_t)i * nd + j] =
         (unsigned char)rd_subtree_calls(lc, nt, ds[i].val, &ds[i], &ds[j], &bad);
     }
+  free(rd_class_ids);
+  rd_class_ids = NULL; rd_nclass_ids = 0;
   int changed = 0;
   for (int i = 0; i < nd; i++) {
     /* is default i reachable from itself? */
