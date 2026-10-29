@@ -1308,10 +1308,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);
     if (cn) {
       int t = ++g_tmp;
+      /* the call typed as a box, as above (a program class's own `is_a?`
+         answering other than true or false, aliased as `kind_of?`, types
+         every poly receiver's kind query so): the test's bool boxed for
+         it, where the C took an int for the sp_RbVal */
+      int boxed_ans = repr_of(c, id).kind == RK_BOXED;
+      if (boxed_ans) buf_puts(b, "sp_box_bool(");
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
       char v[32]; snprintf(v, sizeof v, "_t%d", t);
       emit_poly_isa_test(c, cn, v, sp_streq(name, "instance_of?"), b);
-      buf_puts(b, "; })");
+      buf_puts(b, boxed_ans ? "; }))" : "; })");
       return 1;
     }
   }
