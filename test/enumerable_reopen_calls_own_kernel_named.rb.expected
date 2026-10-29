@@ -1,0 +1,33 @@
+42
+42
+42
+"own %d items 2"
+"own %d items 4"
+"own %d items 2"
+"HI"
+"HI"
+"1"
+"1"
+:array_rand
+42
+42
+42
+:prot
+private method 'warn' called for an instance of Array
+:array_mix
+:hash_mix
+:range_mix
+:nested
+1
+:enum_mix
+1
+1
+:deep2
+:deep1
+:enumerable
+:behind_only
+:ahead
+:secret
+:second
+NoMethodError
+40
