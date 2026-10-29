@@ -6903,11 +6903,11 @@ int static_isa_cond(Compiler *c, int pred) {
        ancestors hold for nil as well, so those stay folded. */
     if ((rt == TY_STRING || ((rt == TY_INT || rt == TY_FLOAT) && nullable_int_value(c, recv))) &&
         !is_object_root(target_name)) {
-      int ans = ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
+      int ans = ty_matches_class(c, rt, target_name, sp_streq(nm, "instance_of?"));
       if (ans == 1 || sp_streq(target_name, "NilClass")) return -1;
       return ans;
     }
-    return ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
+    return ty_matches_class(c, rt, target_name, sp_streq(nm, "instance_of?"));
   }
   int target = comp_class_index(c, target_name);
   /* Comparable, Enumerable and Math name no class of the table: the includes
@@ -8172,7 +8172,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       emit_class_val_when(cn2, t, b);
       return 1;
     }
-    int yes = ty_matches_class(pt, cn2, 0);
+    int yes = ty_matches_class(c, pt, cn2, 0);
     /* a scalar subject holding nil (its nil flag) is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
        nil too, as in the is_a? fold. A String slot, a typed Hash or Array
@@ -8360,7 +8360,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
         }
         if (classpat >= 0) {
           const char *cn2 = nt_str(nt, classpat, "name");
-          if (cn2 && ty_matches_class(et2, cn2, 0) <= 0 &&
+          if (cn2 && ty_matches_class(c, et2, cn2, 0) <= 0 &&
               !(et2 == TY_STRING && sp_streq(cn2, "NilClass"))) class_mismatch = 1;
         }
       }
@@ -8561,7 +8561,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       }
       else {
         const char *cn = nt_str(nt, classpat, "name");
-        if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
+        if (cn && ty_matches_class(c, hvt, cn, 0) <= 0) {
           emit_indent(hs, hi); buf_printf(hs, "_t%d = 0;\n", hcond);
         }
       }
@@ -10618,9 +10618,9 @@ static int when_builtin_value_const(Compiler *c, int cond) {
   return ct == TY_POLY && enc_const_path(c->nt, cond);
 }
 
-static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
+static int emit_when_scalar_class(Compiler *c, TyKind pt, const char *cn, int t, Buf *b) {
   if (pt != TY_INT && pt != TY_FLOAT && pt != TY_STRING) return 0;
-  int yes = ty_matches_class(pt, cn, 0);
+  int yes = ty_matches_class(c, pt, cn, 0);
   int nilcls = sp_streq(cn, "NilClass");
   int univ = is_object_root(cn);
   if (yes < 0 || (!nilcls && (!yes || univ))) return 0;
@@ -11080,9 +11080,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
                not decidable from the static TY_BOOL type (#2966) */
             buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
           }
-          else if (cn2 && emit_when_scalar_class(pt, cn2, t, b)) { }
+          else if (cn2 && emit_when_scalar_class(c, pt, cn2, t, b)) { }
           else if (cn2) {
-            int yes = ty_matches_class(pt, cn2, 0);
+            int yes = ty_matches_class(c, pt, cn2, 0);
             buf_printf(b, "%d", yes > 0 ? 1 : 0);
           }
           else {
@@ -11514,8 +11514,8 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
           /* a boolean's class is a runtime value, not the static TY_BOOL (#2966) */
           buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
         }
-        else if (cn2 && emit_when_scalar_class(pt, cn2, t, b)) { }
-        else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
+        else if (cn2 && emit_when_scalar_class(c, pt, cn2, t, b)) { }
+        else if (cn2) { int yes = ty_matches_class(c, pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
         if (emit_when_typed_test(c, conds[j], t, pt, b)) { }
         else if (comp_ntype(c, conds[j]) == TY_PROC &&

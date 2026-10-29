@@ -1239,7 +1239,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
     }
     if (emit_isa_runtime_flag_class(c, nt, name, eff_rt, recv, argv, b)) return 1;
-    int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
+    int yes = ty_matches_class(c, eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
     /* an Integer or a Float reads its nil flag at run time, as nil?
        does: the nullable-value analysis does not see every way nil reaches
        one (a method's parameter only nil is passed to, a splat of a boxed
@@ -1250,7 +1250,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (yes >= 0 && oint_kind(eff_rt) && node_has_oint_form(c, recv)) {
       /* a number that can be nil: nil's own answer where it is one
          (`Integer === nil` false, `nil.is_a?(Object)` true) */
-      int nilyes = ty_matches_class(TY_NIL, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
+      int nilyes = ty_matches_class(c, TY_NIL, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
       if (nilyes < 0) nilyes = 0;
       int tq = ++g_tmp;
       buf_printf(b, "({ %s _t%d = ", oint_ctype(eff_rt), tq); emit_oint_expr(c, recv, eff_rt, b);
