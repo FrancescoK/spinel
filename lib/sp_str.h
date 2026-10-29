@@ -330,7 +330,7 @@ static inline uint64_t sp_str_hash_compute(const char*s){
    hash. Kept out-of-line so sp_str_hash's inline fast path -- a cached-hash
    read -- stays tiny and doesn't bloat every call site's code layout. */
 static SP_NOINLINE uint64_t sp_str_hash_miss(const char*s,unsigned char m){
-  if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8){
+  if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8||m==0xfb){
     sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;
     uint64_t h=sp_str_hash_compute(s);
     hd->hash=h?h:1;
@@ -345,7 +345,11 @@ static inline uint64_t sp_str_hash(const char*s){
      against NULL, so the probe walks past every occupied slot. */
   if(!s)return 14695981039346656037ULL;
   unsigned char m=((const unsigned char*)s)[-1];
-  if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8){
+  /* (0xfb, a static String with a header -- Symbol#to_s's chilled one, a
+     one-byte slice -- is never changed in place, so its hash is kept too:
+     a Hash keyed by `sym.to_s` hashed the name byte by byte each lookup,
+     #10548) */
+  if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8||m==0xfb){
     uint64_t cached=(((sp_str_hdr*)(s-1))-1)->hash;
     if(cached)return cached;
   }
