@@ -5559,12 +5559,17 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
    separator is read once, then the limit, and its tag picks the arm. */
 static void emit_poly_split_poly_sep(Compiler *c, int argc, const int *argv, int tv, Buf *b) {
   int tp = ++g_tmp, tl = 0;
-  buf_printf(b, "({ sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b);
-  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d); ", tp, tp, tp);
+  /* the receiver stays rooted while the separator and the limit run */
+  buf_printf(b, "({ SP_GC_ROOT_RBVAL(_t%d); sp_RbVal _t%d = ", tv, tp); emit_boxed(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tp);
   if (argc == 2) {
     tl = ++g_tmp;
     buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, argv[1], b); buf_puts(b, "; ");
   }
+  /* read after the limit, which may have appended to it */
+  buf_printf(b, "_t%d = sp_poly_strbuf_deref(_t%d); ", tp, tp);
+  /* a limit of 1 answers the whole String, whatever the separator is */
+  if (argc == 2) buf_printf(b, "_t%d == 1 ? sp_str_split_limit(_t%d.v.s, \",\", 1) : ", tl, tv);
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? ", tp, tp);
   if (argc == 1) buf_printf(b, "sp_re_split((mrb_regexp_pattern *)_t%d.v.p, _t%d.v.s)", tp, tv);
   else buf_printf(b, "sp_re_split_limit((mrb_regexp_pattern *)_t%d.v.p, _t%d.v.s, _t%d)", tp, tv, tl);

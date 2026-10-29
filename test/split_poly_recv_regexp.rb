@@ -29,3 +29,9 @@ p cut2("abcbd", sep_once, ($n *= 10; 2)), $n
 class Comma; def to_str = ","; end
 sb = +""; sb << ","
 p cut("a1b2c", /(\d)/), cut2("a b c", nil, 2), cut("a,b", sb), cut2("a,b,c", [Comma.new, 1][0], 2)
+
+# a limit of 1 answers the whole String before the separator is looked at
+p cut2("ab", :a, 1), cut2(" a b", nil, 1), cut2("a b", /x/, 1)
+# the separator is read after the limit, which may append to it
+sb2 = +""; sb2 << ","
+p cut2("a,b;c", sb2, (sb2 << ";"; 5))

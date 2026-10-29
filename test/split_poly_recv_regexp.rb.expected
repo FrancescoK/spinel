@@ -18,3 +18,7 @@ NoMethodError
 ["a", "b c"]
 ["a", "b"]
 ["a", "b,c"]
+["ab"]
+[" a b"]
+["a b"]
+["a,b;c"]
