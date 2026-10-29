@@ -6747,9 +6747,14 @@ static int class_declares_vis(const ClassInfo *ci, const char *name) {
   return 0;
 }
 
+static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line);
+static const char *mixin_flag_name(Compiler *c, char flag[64]);
+static void mixin_guard_flag_write(Compiler *c, int list, int after, const char *flag);
 /* Copy module mod_id's instance methods into class ci, one clone per
-   includer, as `include` does (process_include_body). */
-static void include_module_methods(Compiler *c, int ci, int mod_id) {
+   includer, as `include` does (process_include_body). guard: the flag a
+   copy that becomes the class's method reads first (mixin_guard_body), for
+   an include a reopening runs after the class's first body; NULL for none. */
+static void include_module_methods(Compiler *c, int ci, int mod_id, const char *guard) {
   const NodeTable *nt = c->nt;
   /* snapshot count before adding new scopes to avoid re-scanning them */
   int snap = c->nscopes;
@@ -6764,6 +6769,10 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
     const char *dst_name = src->name;
     char inc_shadow[256];
     int own = comp_method_in_class(c, ci, src->name);
+    /* a late include of a module whose method the class already has from
+       the same module (an include repeated, or reached through another
+       module) is Ruby's no-op: the copy stands as it is, unguarded */
+    if (guard && own >= 0 && c->scopes[own].is_include_copy && c->scopes[own].def_node == src->def_node) continue;
     if (own >= 0 && c->scopes[own].is_include_copy) {
       /* An earlier include of another module put this name here. Ruby's MRO
          puts the LAST include first, so this module supersedes it: rename
@@ -6780,7 +6789,9 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
         }
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(inc_shadow);
-      if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
+      /* (a guarded copy's `super` reaches the earlier copy until the
+         include has run: the chain keeps it) */
+      if (scope_body_has_super(c, ms) || guard) comp_prep_chain_add(cif, src->name, inc_shadow);
       else { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       own = -1;
     }
@@ -6873,6 +6884,14 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
       if (nb >= 0) {
         comp_grow_node_arrays(c);
         src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+        /* a copy a later reopening's include makes hands the call to the
+           method the class had until that statement has run */
+        if (guard && own < 0) {
+          nb = mixin_guard_body((NodeTable *)nt, nb, guard, (int)nt_int(nt, src->def_node, "node_line", 0));
+          comp_grow_node_arrays(c);
+          src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+          dst->mixin_guarded = 1;
+        }
         { dst->body = nb; comp_touch_scope(dst->idx); }
         /* in a reopened Time or Integer, `self.class` is that builtin,
            as in a method the reopening writes itself, and a bare `strip` is
@@ -6886,10 +6905,22 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
       }
       else { dst->body = src->body; comp_touch_scope(dst->idx); }
     }
+    else if (guard && own < 0) {   /* an empty method's copy too, whose body is the guard */
+      int nb = mixin_guard_body((NodeTable *)nt, -1, guard, (int)nt_int(nt, src->def_node, "node_line", 0));
+      comp_grow_node_arrays(c);
+      src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
+      { dst->body = nb; comp_touch_scope(dst->idx); }
+      dst->mixin_guarded = 1;
+      walk_scope(c, nb, dst_idx, ci);
+      g_inc_did_clone = 1;
+    }
 else {
       { dst->body = src->body; comp_touch_scope(dst->idx); }
     }
     { dst->origin_module_ci = src->class_id + 1; comp_touch_scope(dst->idx); }  /* #owner names it (#3662) */
+    /* a copy of a guarded copy (a module's, of a module it included late)
+       carries the guard in its body */
+    if (src->mixin_guarded) dst->mixin_guarded = 1;
     { dst->class_id = ci; comp_touch_scope(dst->idx); }
     { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
     dst->is_include_copy = 1;
@@ -6953,8 +6984,47 @@ static BodyMix *body_mixins(Compiler *c, int ci, int body, unsigned kinds, int *
   return v;
 }
 
+/* The class body `body` of class ci, where its statement reopens the class
+   after the class's first body ran (`class Dog; end; d.speak; class Dog;
+   include Loud; end`, at a file's top level or in a module's body): that
+   reopening's node, or -1. The first body's mixins are the class's from
+   the start; a reopening's include runs when its statement does, and an
+   object made before then has the method the class had (CRuby's call
+   picks by whether the include has run), so the copies such an include
+   makes read a flag the statement sets, as a late prepend's do
+   (mixin_guard_body). */
+static int include_late_stmt(Compiler *c, int ci, int body) {
+  const NodeTable *nt = c->nt;
+  int nb = 0;
+  const LrOpen *ob = elab_class_bodies(c, ci, &nb);
+  for (int k = 1; k < nb; k++) {
+    int s = ob[k].node;
+    if ((nt_kind(nt, s) != NK_ClassNode && nt_kind(nt, s) != NK_ModuleNode) || nt_ref(nt, s, "body") != body) continue;
+    /* the guard answers unless the header is known to come first: another
+       region's runs at a time the record does not fix */
+    LoadPoint p0 = elab_point_of(c, ob[0].node), p1 = elab_point_of(c, s);
+    int o = elab_cmp(p0, p1);
+    return o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0) ? s : -1;
+  }
+  return -1;
+}
+/* Is `stmt` one of statement list `list`'s own statements? (where
+   mixin_guard_flag_write puts the flag's write, after it) */
+static int list_has_stmt(const NodeTable *nt, int list, int stmt) {
+  if (list < 0 || nt_kind(nt, list) != NK_StatementsNode) return 0;
+  int n = 0;
+  const int *st = nt_arr(nt, list, "body", &n);
+  for (int i = 0; i < n; i++) if (st[i] == stmt) return 1;
+  return 0;
+}
+
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
+  /* (a module's late include guards the module's copies, which a class
+     including the module clones with the guard in them) */
+  int late = include_late_stmt(c, ci, body_node);
+  char flag[64] = "";
+  int flag_stmt = -1;
   int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
   if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
@@ -6967,6 +7037,12 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     NodeKind ak = arg >= 0 ? nt_kind(nt, arg) : NK_NONE;
     const char *mname = arg < 0 ? c->classes[mod_id].name
                       : ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, arg, "name") : NULL;
+    /* after an include's last module, the write that sets the flag its
+       copies read */
+    if (flag[0] && mx[j].stmt != flag_stmt) {
+      mixin_guard_flag_write(c, body_node, flag_stmt, flag);
+      flag[0] = 0;
+    }
     if (mx[j].kind == LR_PREPEND) {
       if (is_comparable_module_name(mname)) c->classes[ci].cmp_prepended = 1;
       else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
@@ -7029,8 +7105,14 @@ void process_include_body(Compiler *c, int ci, int body_node) {
     }
     /* record membership for `rescue M` matching (dedup across reopenings) */
     class_note_included_mod(c, ci, mod_id);
-    include_module_methods(c, ci, mod_id);
+    /* an include a reopening runs after the class's first body: its copies
+       read a flag the statement sets (one that may not run keeps the
+       class's chain as it is, as the refusal of a call ahead of it does) */
+    int guard = late >= 0 && list_has_stmt(nt, body_node, mx[j].stmt) && !elab_point_may(c, mx[j].stmt);
+    if (guard) flag_stmt = mx[j].stmt;
+    include_module_methods(c, ci, mod_id, guard ? mixin_flag_name(c, flag) : NULL);
   }
+  if (flag[0]) mixin_guard_flag_write(c, body_node, flag_stmt, flag);
   free(mx);
 }
 
@@ -7102,12 +7184,12 @@ void register_includes(Compiler *c) {
        (#9292): what that class and the classes up to Struct define is
        answered with this class's members, as a reopening of Struct is */
     for (int k = par, g = 0; k >= 0 && g < 64; k = c->classes[k].parent, g++) {
-      include_module_methods(c, ci, k);
+      include_module_methods(c, ci, k, NULL);
       if (k == c->classes[k].parent) break;
     }
     int base = comp_class_index(c, c->classes[ci].is_data ? "Data" : "Struct");
     if (base >= 0 && base != ci && !c->classes[base].is_struct)
-      include_module_methods(c, ci, base);
+      include_module_methods(c, ci, base, NULL);
   }
   if (g_inc_did_clone) register_locals(c);
 }
