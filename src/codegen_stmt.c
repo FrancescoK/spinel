@@ -16462,7 +16462,7 @@ static int masgn_ivar_home(Compiler *c, int id, const char *ivnm, char *lhs, siz
   }
   if (sc && sc->is_cmethod) return 0;
   if (g_class_body_id >= 0) cc = g_class_body_id;
-  else cc = comp_class_index(c, "Toplevel");
+  else cc = c->toplevel_class;
   if (cc < 0) return 0;
   snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, iv_c(ivnm + 1));
   *cid = cc;
@@ -18721,7 +18721,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int iv_global = 0;
       if (iv_cid < 0 && !(iv_sc && iv_sc->is_cmethod)) {
         if (g_class_body_id >= 0) { iv_cid = g_class_body_id; iv_global = 1; }
-        else if (comp_class_index(c, "Toplevel") >= 0) { iv_cid = comp_class_index(c, "Toplevel"); iv_global = 1; }
+        else if (c->toplevel_class >= 0) { iv_cid = c->toplevel_class; iv_global = 1; }
         else continue;   /* no home for it: the value was evaluated above */
       }
       TyKind ivt = TY_UNKNOWN;
@@ -19607,7 +19607,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
     else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
-             comp_class_index(c, "Toplevel") >= 0) {
+             c->toplevel_class >= 0) {
       emit_indent(b, indent);
       buf_printf(b, "civ_Toplevel_%s = ", iv_c(nm + 1));
     }
@@ -19627,7 +19627,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     NodeKind vk = nt_kind(nt, v);
     int sc = g_ie_class_id >= 0 ? g_ie_class_id : (cws ? cws->class_id : -1);
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0) sc = c->toplevel_class;
     TyKind ivt = TY_INT;
     int iv_nullable = 0, iv_elems_handle = 0;
     if (sc >= 0) {
@@ -19922,7 +19922,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     /* same scope ladder as the plain-write form: class body civ_, then the
        Toplevel pseudo-class global (a bare `self` here is undeclared C) */
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0 && g_ie_class_id < 0) sc = c->toplevel_class;
     TyKind vt = TY_UNKNOWN;
     int vnil = 0;
     if (sc >= 0) {
@@ -19937,7 +19937,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
              g_class_body_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
     else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
-             comp_class_index(c, "Toplevel") >= 0)
+             c->toplevel_class >= 0)
       snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
@@ -21369,7 +21369,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        else a top-level `@x ||= v` renders no store and the assignment is lost. */
     int sc2 = cws2 ? cws2->class_id : -1;
     if (sc2 < 0 && g_class_body_id >= 0) sc2 = g_class_body_id;
-    if (sc2 < 0) sc2 = comp_class_index(c, "Toplevel");
+    if (sc2 < 0) sc2 = c->toplevel_class;
     /* inside an instance_eval/exec block the slot is the receiver's, as the
        plain write reads it */
     if (ie_class_of(c, id) >= 0) sc2 = ie_class_of(c, id);
@@ -22297,7 +22297,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
                  g_ie_class_id < 0 && g_class_body_id < 0;
     /* a toplevel method's ivar lives on the Toplevel class (`civ_Toplevel_x`) */
     int tl9 = ics9 && ics9->class_id < 0 && g_ie_class_id < 0 &&
-              g_class_body_id < 0 ? comp_class_index(c, "Toplevel") : -1;
+              g_class_body_id < 0 ? c->toplevel_class : -1;
     if ((plain9 || cmeth9 || tl9 >= 0) && inm9) {
       int icls9 = tl9 >= 0 ? tl9 : ics9->class_id;
       int iidx9 = comp_ivar_index(&c->classes[icls9], inm9);

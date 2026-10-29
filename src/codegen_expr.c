@@ -2613,7 +2613,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        store below writes (civ_Toplevel_x): without its kind the value went
        in as it was, and `y = (@a = [])` put an Integer array into a slot
        a later write had made a poly array */
-    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
+    if (ivcls2 < 0) ivcls2 = c->toplevel_class;
     TyKind ivt2 = TY_UNKNOWN;
     int ivnull2 = 0, iveh2 = 0;
     if (ivcls2 >= 0) {
@@ -2641,7 +2641,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
       fz_cid = g_ie_class_id;
     }
-    else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
+    else if (cid2 < 0 && c->toplevel_class >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
     else if (ivar_class_body_slot(c, id, cws, ref2e, sizeof ref2e)) {}
     else {
@@ -2784,7 +2784,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     /* a toplevel method's ivar is the Toplevel pseudo-class global, as in
        the statement form */
     int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
-    if (tl3) cid3 = comp_class_index(c, "Toplevel");
+    if (tl3) cid3 = c->toplevel_class;
     TyKind ivt3 = TY_UNKNOWN;
     int eh3 = 0;
     /* inside an instance_eval/exec block the slot is the receiver's, as the
@@ -2999,7 +2999,7 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
     }
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
-      int tl = comp_class_index(c, "Toplevel");
+      int tl = c->toplevel_class;
       if (tl >= 0) { buf_printf(&ref, "civ_Toplevel_%s", iv_c(nm + 1)); is_static = 1; }
       else { snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref); buf_printf(&ref, "%siv_%s", pfx, iv_c(nm + 1)); }
     }
@@ -6448,7 +6448,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* the slot is read back as the read of the ivar finds it: a top-level
        ivar is the Toplevel pseudo-class's file-scope global, where `self`
        names nothing (`x = (@i += 1)` at the top level, or a min/max block) */
-    int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? comp_class_index(c, "Toplevel") : -1;
+    int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? c->toplevel_class : -1;
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
     else if (ivar_class_body_slot(c, id, cs, ref, sizeof ref)) sc = g_class_body_id;

@@ -18678,7 +18678,7 @@ static int scope_is_orphan_method(Compiler *c, int s) {
   if (k0 < 0 || k0 >= c->nclasses || sc->is_cmethod || sc->is_proc_form) return 0;
   const ClassInfo *ci = &c->classes[k0];
   if (ci->is_struct || ci->is_native_class || is_builtin_reopen(ci->name) ||
-      sp_streq(ci->name, "Toplevel")) return 0;
+      k0 == c->toplevel_class) return 0;
   int dn = ci->def_node;
   if (dn < 0 || dn >= c->nt->count || nt_kind(c->nt, dn) != NK_ClassNode) return 0;
   for (int k = 0; k < c->nclasses; k++)
@@ -20521,7 +20521,7 @@ static void emit_sym_class_name_rt(Compiler *c, Buf *b) {
       /* a reopened builtin's entry (`class Object; def m` gives Object one)
          is what its constant boxes to, and it prints the builtin's name;
          the Toplevel pseudo-class alone has no Ruby name */
-      if (is_builtin_reopen(c->classes[i].name) && !sp_streq(c->classes[i].name, "Toplevel")) {
+      if (is_builtin_reopen(c->classes[i].name) && i != c->toplevel_class) {
         buf_printf(b, "case %d:return SPL(\"%s\");", i, c->classes[i].name);
         continue;
       }

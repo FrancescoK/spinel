@@ -17281,7 +17281,7 @@ int emit_object_ivar_defined_computed(Compiler *c, int recv, int cid, int arg, B
 /* the same for main's ivars, which live in the top-level statics; a name
    a computed write may have put in main's table (`objv` its sp_RbVal) */
 static void emit_toplevel_ivar_get_by_name(Compiler *c, const char *syv, const char *out, const char *objv, Buf *b) {
-  int main_ci = comp_class_index(c, "Toplevel");
+  int main_ci = c->toplevel_class;
   if (main_ci < 0) return;
   ClassInfo *ci = &c->classes[main_ci];
   int any = 0;
@@ -17418,7 +17418,7 @@ void emit_ivar_set_by_name(Compiler *c, int k, const char *obj, const char *syv,
 /* the same for main's ivars, in the top-level statics; a name main's
    literal writes never use goes to its Object table */
 static void emit_toplevel_ivar_set_by_name(Compiler *c, int tv, const char *syv, const char *val, Buf *b) {
-  int main_ci = comp_class_index(c, "Toplevel");
+  int main_ci = c->toplevel_class;
   ClassInfo *ci = &c->classes[main_ci];
   int any = 0;
   buf_printf(b, "{ const char *_n = sp_sym_to_s(%s); (void)_n; ", syv);
@@ -17491,7 +17491,7 @@ static void emit_poly_ivar_set_computed(Compiler *c, int id, int recv, TyKind rt
     buf_puts(b, " break;");
   }
   buf_puts(b, " case SP_BUILTIN_OBJECT: ");
-  if (comp_class_index(c, "Toplevel") >= 0) {
+  if (c->toplevel_class >= 0) {
     buf_printf(b, "if (_t%d.v.p == sp_main_obj) ", tv);
     emit_toplevel_ivar_set_by_name(c, tv, syv, ivn, b);
     buf_puts(b, " else ");
@@ -17537,7 +17537,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
     }
     buf_puts(b, " case SP_BUILTIN_OBJECT: ");
     /* main's ordinary ivars live in the same statics its top-level reads use */
-    if (comp_class_index(c, "Toplevel") >= 0) {
+    if (c->toplevel_class >= 0) {
       char objv[24]; snprintf(objv, sizeof objv, "_t%d", tv);
       buf_printf(b, "if (_t%d.v.p == sp_main_obj) ", tv);
       emit_toplevel_ivar_get_by_name(c, syv, ivn, objv, b);
@@ -17745,7 +17745,7 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
       }
       buf_puts(b, " case SP_BUILTIN_OBJECT: ");
       /* main's ordinary ivars live in the same statics its top-level reads use. */
-      int main_ci = comp_class_index(c, "Toplevel");
+      int main_ci = c->toplevel_class;
       int main_iv = main_ci >= 0 ? comp_ivar_index(&c->classes[main_ci], sym) : -1;
       if (main_iv >= 0) {
         char slot[300]; snprintf(slot, sizeof slot, "civ_Toplevel_%s", iv_c(sym + 1));

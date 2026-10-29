@@ -9596,7 +9596,7 @@ static int program_defines_object_method_named(Compiler *c, const char *name) {
     if (sc->is_cmethod || !sc->name || !sp_streq(sc->name, name)) continue;
     const char *cn = sc->class_id >= 0 && sc->class_id < c->nclasses ? c->classes[sc->class_id].name : NULL;
     if (!cn || sp_streq(cn, "Object") || sp_streq(cn, "Kernel") || sp_streq(cn, "BasicObject") ||
-        sp_streq(cn, "Toplevel")) return 1;
+        sc->class_id == c->toplevel_class) return 1;
   }
   return 0;
 }

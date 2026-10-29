@@ -3214,7 +3214,7 @@ int civ_class_of(Compiler *c, int node, Scope *s) {
   if (s->is_cmethod) return s->class_id;
   if (s->class_id >= 0 || g_ie_class_id >= 0 || ie_class_of(c, node) >= 0) return -1;
   if (g_class_body_id >= 0) return g_class_body_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 /* The same for ivar write node `w`, which stores into self: an instance
    method's, or an instance_eval body's, whose self is the rebound receiver
@@ -3243,7 +3243,7 @@ int ivar_global_slot(Compiler *c, int node, Buf *out) {
   if (g_sb_iv_name && sp_streq(nm, g_sb_iv_name)) return 0;
   if (cs->is_cmethod && cs->class_id >= 0)
     buf_printf(out, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
-  else if (cs->class_id < 0 && g_ie_class_id < 0 && comp_class_index(c, "Toplevel") >= 0)
+  else if (cs->class_id < 0 && g_ie_class_id < 0 && c->toplevel_class >= 0)
     buf_printf(out, "civ_Toplevel_%s", iv_c(nm + 1));
   else return 0;
   return 1;

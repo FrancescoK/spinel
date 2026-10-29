@@ -1230,7 +1230,7 @@ int repr_box_nullable_arg(Compiler *c, int v) {
   if (nt_kind(nt, v) == NK_InstanceVariableReadNode) {
     Scope *s = comp_scope_of(c, v);
     int cid = s ? s->class_id : -1;
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) cid = c->toplevel_class;
     if (cid < 0 || cid >= c->nclasses) return 0;
     ClassInfo *ci = &c->classes[cid];
     const char *ivn = nt_str(nt, v, "name");

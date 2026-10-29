@@ -1379,6 +1379,7 @@ typedef struct {
 
   ClassInfo *classes;
   int nclasses, cclasses;
+  int toplevel_class;
   int *class_head, *class_next, class_buckets;   /* name -> class index (comp_class_index) */
   unsigned char class_hash_check;   /* SPINEL_ELAB_CHECK: each lookup also scans the classes */
   int object_standin;   /* +1-based index (0 = none) of the empty root class an
@@ -1932,6 +1933,7 @@ int const_seg_builtin(Compiler *c, int id);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
+int comp_toplevel_class_make(Compiler *c);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
