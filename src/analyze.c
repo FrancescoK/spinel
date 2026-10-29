@@ -10439,7 +10439,7 @@ static int desugar_hash_new_capacity(Compiler *c) {
     int argsn = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = argsn >= 0 ? nt_arr(nt, argsn, "arguments", &an) : NULL;
     if (nt_argv_kwh(nt, av, an) < 0) continue;
-    if (cplan_const_user(c, id, nt_str(nt, r, "name"), 1)) continue;
+    if (cplan_const_user(c, id, r, 1)) continue;
     int en = 0; const int *el = nt_arr(nt, av[an - 1], "elements", &en);
     if (en != 1 || nt_kind(nt, el[0]) != NK_AssocNode) continue;
     int key = nt_ref(nt, el[0], "key"), val = nt_ref(nt, el[0], "value");
@@ -10486,7 +10486,7 @@ static int pin_arg_position_hash_new(Compiler *c) {
       if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
       const char *cn = nt_str(nt, arecv, "name");
       if (cn && sp_streq(cn, "Hash")) {
-        if (cplan_const_user(c, a, cn, 1)) continue;
+        if (cplan_const_user(c, a, arecv, 1)) continue;
         nt_node_set_str(nt, a, "name", "__hash_new_default");
         changed = 1;
       }
@@ -10509,7 +10509,7 @@ static int pin_arg_position_hash_new(Compiler *c) {
     if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
     const char *cn = nt_str(nt, arecv, "name");
     if (cn && sp_streq(cn, "Hash")) {
-      if (cplan_const_user(c, a, cn, 1)) continue;
+      if (cplan_const_user(c, a, arecv, 1)) continue;
       nt_node_set_str(nt, a, "name", "__hash_new_default");
       changed = 1;
     }
@@ -10555,7 +10555,7 @@ int desugar_kernel_recv(Compiler *c) {
     const char *rn = nt_str(nt, recv, "name");
     if (!rn || !sp_streq(rn, "Kernel")) continue;
     const char *mn = nt_str(nt, id, "name");
-    if (!mn || !is_kernel_module_function(mn) || cplan_const_user(c, id, rn, 1)) continue;
+    if (!mn || !is_kernel_module_function(mn) || cplan_const_user(c, id, recv, 1)) continue;
     nt_node_set_ref(nt, id, "receiver", -1);
     /* still Kernel's: a reopening's pass that gives a bare call self
        (desugar_handle_reopen_self_recv) leaves it bare, and no method
@@ -12885,7 +12885,7 @@ static int desugar_file_stat_new(Compiler *c) {
     int par = nt_ref(nt, recv, "parent");
     const char *pn = par >= 0 ? nt_str(nt, par, "name") : NULL;
     if (!pn || !sp_streq(pn, "File")) continue;
-    if (cplan_const_user(c, id, cn, 1)) continue;
+    if (cplan_const_user(c, id, recv, 1)) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0;
     if (args >= 0) nt_arr(nt, args, "arguments", &an);

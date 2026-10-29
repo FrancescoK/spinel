@@ -6314,7 +6314,7 @@ int is_fresh_array(Compiler *c, int v) {
   if (!nm || r < 0 || !ty_is_array(infer_type(c, v))) return 0;
   if (nt_kind(nt, r) == NK_ConstantReadNode)
     return sp_streq(nm, "new") && sp_streq(nt_str(nt, r, "name"), "Array") &&
-           !cplan_const_user(c, v, "Array", 1);
+           !cplan_const_user(c, v, r, 1);
   TyKind rt = infer_type(c, r);
   if (rt == TY_UNKNOWN || rt == TY_POLY || ty_is_object(rt)) return 0;
   /* a reopen's own method of the name answers what it answers: an Array it
@@ -13878,7 +13878,7 @@ int desugar_dir_surface(Compiler *c) {
     const char *rn = nt_str(nt, recv, "name");
     if (!rn) continue;
     /* A resolved user singleton is not a builtin rewrite. */
-    if (cplan_const_user(c, id, rn, 1)) continue;
+    if (cplan_const_user(c, id, recv, 1)) continue;
     /* IO.read/write/readlines/binread/foreach are the File forms (#2793) */
     if (sp_streq(rn, "IO") &&
         (sp_streq(nm, "read") || sp_streq(nm, "write") || sp_streq(nm, "binread") ||
@@ -16961,7 +16961,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
       (sp_streq(nt_str(nt, recv, "name"), "File") ||
        sp_streq(nt_str(nt, recv, "name"), "IO")) &&
-      !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1)) {
+      !cplan_const_user(c, id, recv, 1)) {
     const char *p0 = block_param_name(c, block, 0);
     if (p0) { LocalVar *l = scope_local_intern(comp_scope_of(c, block), p0); l->is_block_param = 1;
               if (l->type != TY_IO) { lv_set_type(l, TY_IO); changed = 1; } }
