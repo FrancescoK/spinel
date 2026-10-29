@@ -21530,6 +21530,53 @@ static int io_reopen_call_vis(Compiler *c, int k, const char *nm, int plain, int
     vis = SP_VIS_PUBLIC;
   return vis;
 }
+/* Can the per-class loop below refuse a call of `nm` for any class? Only
+   when some class or module declares the name private or protected, lists
+   it in an `undef`, or makes an alias of it (the alias carries its target's
+   visibility, comp_method_vis_declared): any other name is public on every
+   class and undefined nowhere, and the loop, which asks each class for the
+   call's target, emits nothing for it. A program of many classes paid that
+   loop at every boxed call (#10546). The set is built once the analysis is
+   done (g_scopes_settled), when the tables it reads are the analysis's
+   last; asked sooner, every name may refuse. */
+static const char **pvr_name; static int pvr_cap, pvr_nclasses = -1;
+static const Compiler *pvr_c;
+static void pvr_add(const char *nm) {
+  if (!nm) return;
+  unsigned j = sp_strhash(nm) & (unsigned)(pvr_cap - 1);
+  while (pvr_name[j]) {
+    if (sp_streq(pvr_name[j], nm)) return;
+    j = (j + 1) & (unsigned)(pvr_cap - 1);
+  }
+  pvr_name[j] = nm;
+}
+static int vis_name_may_refuse(Compiler *c, const char *nm) {
+  if (!g_scopes_settled) return 1;
+  if (pvr_c != c || pvr_nclasses != c->nclasses) {
+    int n = 0;
+    for (int k = 0; k < c->nclasses; k++)
+      n += c->classes[k].nvis + c->classes[k].nundefs + c->classes[k].naliases;
+    free(pvr_name);
+    pvr_cap = 16;
+    while (pvr_cap < 2 * n + 2) pvr_cap *= 2;
+    pvr_name = calloc((size_t)pvr_cap, sizeof(char *));
+    if (!pvr_name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = 0; k < c->nclasses; k++) {
+      ClassInfo *ci = &c->classes[k];
+      for (int i = 0; i < ci->nvis; i++)
+        if (ci->vis_kinds[i] != SP_VIS_PUBLIC) pvr_add(ci->vis_names[i]);
+      for (int i = 0; i < ci->nundefs; i++) pvr_add(ci->undefs[i]);
+      for (int i = 0; i < ci->naliases; i++) pvr_add(ci->alias_new[i]);
+    }
+    pvr_c = c; pvr_nclasses = c->nclasses;
+  }
+  unsigned j = sp_strhash(nm) & (unsigned)(pvr_cap - 1);
+  while (pvr_name[j]) {
+    if (sp_streq(pvr_name[j], nm)) return 1;
+    j = (j + 1) & (unsigned)(pvr_cap - 1);
+  }
+  return 0;
+}
 void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   const NodeTable *nt = c->nt;
   int vrecv = nt_ref(nt, id, "receiver");
@@ -21541,7 +21588,8 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
   if (!vnm) return;
   Scope *cs = comp_scope_of(c, id);
   int caller = (cs && !cs->is_cmethod) ? cs->class_id : -1;
-  for (int k = 0; k < c->nclasses; k++) {
+  int may_refuse = vis_name_may_refuse(c, vnm);
+  for (int k = 0; may_refuse && k < c->nclasses; k++) {
     if (!c->classes[k].instantiated || c->classes[k].is_native_class) continue;
     if (plain && nt_kind(nt, vrecv) == NK_SelfNode && cplan_has_method_missing(c, id, k, 0)) continue;
     if (call_target(c, id, k, vnm, 0, NULL) < 0) {
