@@ -5554,6 +5554,28 @@ int emit_array_call(Compiler *c, int id, Buf *b) {
   return r;
 }
 
+/* poly.split(sep[, limit]) with a separator of run-time type, as Rack's
+   COMMON_SEP[sep]. Read as a String, a Regexp raised TypeError. The
+   separator is read once, then the limit, and its tag picks the arm. */
+static void emit_poly_split_poly_sep(Compiler *c, int argc, const int *argv, int tv, Buf *b) {
+  int tp = ++g_tmp, tl = 0;
+  buf_printf(b, "({ sp_RbVal _t%d = ", tp); emit_boxed(c, argv[0], b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); _t%d = sp_poly_strbuf_deref(_t%d); ", tp, tp, tp);
+  if (argc == 2) {
+    tl = ++g_tmp;
+    buf_printf(b, "sp_int _t%d = ", tl); emit_int_expr(c, argv[1], b); buf_puts(b, "; ");
+  }
+  buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_REGEX) ? ", tp, tp);
+  if (argc == 1) buf_printf(b, "sp_re_split((mrb_regexp_pattern *)_t%d.v.p, _t%d.v.s)", tp, tv);
+  else buf_printf(b, "sp_re_split_limit((mrb_regexp_pattern *)_t%d.v.p, _t%d.v.s, _t%d)", tp, tv, tl);
+  /* anything else is a String or nil, or CRuby's "expected Regexp" */
+  if (argc == 1) buf_printf(b, " : sp_str_split_drop_trailing(_t%d.v.s, ", tv);
+  else buf_printf(b, " : sp_str_split_limit(_t%d.v.s, ", tv);
+  buf_printf(b, "_t%d.tag == SP_TAG_STR ? _t%d.v.s : sp_poly_arg_str_or_null(sp_poly_pattern_chk(_t%d, 1))", tp, tp, tp);
+  if (argc == 2) buf_printf(b, ", _t%d", tl);
+  buf_puts(b, "); })");
+}
+
 /* emit_array_call past its prefix arms, under the empty-receiver views */
 static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
@@ -5958,6 +5980,7 @@ static int emit_array_call_arms(Compiler *c, int id, Buf *b) {
     buf_puts(b, ")");
     buf_printf(b, "; _t%d.tag == SP_TAG_STR ? ", tv);
     if (argc == 0) buf_printf(b, "sp_str_split_ws(_t%d.v.s)", tv);
+    else if (comp_ntype(c, argv[0]) == TY_POLY) emit_poly_split_poly_sep(c, argc, argv, tv, b);
     else if (argc == 1) {
       /* a regex separator splits with sp_re_split, not the string-separator path
          (which would coerce the pattern to a bogus literal separator) (#3212). */
