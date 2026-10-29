@@ -24438,6 +24438,9 @@ static int sce_graft(Compiler *c, const SceFrame *fr, SceText *up, int k, const 
   NodeTable *tmp = sp_parse_snippet_in(text, &sf);
   free(sv); free(dflt);
   if (!tmp) return -1;
+  /* each node is the text's, which runs where the eval stood (node_eval):
+     the load record places it as it places the program's own code */
+  for (int i = 0; i < tmp->count; i++) nt_node_set_int(tmp, i, "node_eval", 1);
   w.path = tmp->source_file; w.line = sf.line; w.base = base;
   int prog = tmp->root_id;
   int stmts = prog >= 0 ? nt_ref(tmp, prog, "statements") : -1;

@@ -2676,12 +2676,15 @@ int elab_version_captured(Compiler *c, const char *name) {
    load order the record holds. Not a copy a rewrite put in its source's
    place (node_in_place: the source became the parentheses that run it), which
    runs where the source stood, in its frame, once, and stands where it is
-   linked; a clone of one (how 'c') stands where the clone is. */
+   linked; nor a node of an eval's text the graft put in place of the eval
+   (node_eval), which runs where the eval runs, as the program's own code
+   does. A clone of either (how 'c') stands where the clone is. */
 static int lr_unplaced(Compiler *c, int node) {
   char how = 0; int a = 0, k = 0; unsigned pass = 0;
   int tier = nt_file_tier(c->nt, (int)nt_int(c->nt, node, "node_file", -1));
   int made = nt_origin(c->nt, node, &how, &a, &pass, &k) >= 0;
-  return nt_int(c->nt, node, "node_bi", 0) || (made && (how == 'c' || !nt_int(c->nt, node, "node_in_place", 0))) ||
+  return nt_int(c->nt, node, "node_bi", 0) ||
+         (made && (how == 'c' || (!nt_int(c->nt, node, "node_in_place", 0) && !nt_int(c->nt, node, "node_eval", 0)))) ||
          tier == SP_LIB_BUILTIN || tier == SP_LIB_PACKAGE;
 }
 
