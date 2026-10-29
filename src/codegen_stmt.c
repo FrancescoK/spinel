@@ -17293,6 +17293,7 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
 static int class_body_name_undefined(Compiler *c, const char *nm) {
   static const char *const decls[] = { "private", "protected", "public", "module_function",
     "private_class_method", "public_class_method", "private_constant", "public_constant",
+    "deprecate_constant",
     "attr", "attr_reader", "attr_writer", "attr_accessor", "attribute", "attributes",
     "include", "extend", "prepend",
     "using", "refine", "alias_method", "define_method", "define_singleton_method",
