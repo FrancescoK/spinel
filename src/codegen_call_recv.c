@@ -312,17 +312,11 @@ static int value_obj_defines_eq(Compiler *c, int node) {
                       (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)));
 }
 
-/* The program defines an == that the compare of an element of the typed
-   Array `rt` with a needle of kind `nk` would run: Integer#== or Float#==
-   for the element, Rational#== which Integer#== hands a Rational to. The
-   general Array's scan does not call it. */
-static int program_defines_num_eq(Compiler *c, TyKind rt, TyKind nk) {
+/* The program defines its own == on a class named `cn` (a reopen or a
+   prepended module). */
+static int program_defines_eq_on(Compiler *c, const char *cn) {
   for (int k = 0; k < c->nclasses; k++) {
-    const char *cn = c->classes[k].name;
-    /* a `class Rational` body's methods are kept on Object */
-    if (!cn || !(sp_streq(cn, "Rational") || sp_streq(cn, "Object") ? nk == TY_RATIONAL
-                 : sp_streq(cn, "Integer") ? rt == TY_INT_ARRAY
-                 : sp_streq(cn, "Float") && rt == TY_FLOAT_ARRAY)) continue;
+    if (!c->classes[k].name || !sp_streq(c->classes[k].name, cn)) continue;
     int mi = comp_method_in_chain(c, k, "==", NULL);
     if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0))
@@ -330,19 +324,39 @@ static int program_defines_num_eq(Compiler *c, TyKind rt, TyKind nk) {
   }
   return 0;
 }
+/* ... Integer#== or Float#==, which every compare of an element of the
+   typed Array `rt` runs */
+static int program_defines_elem_eq(Compiler *c, TyKind rt) {
+  return program_defines_eq_on(c, rt == TY_INT_ARRAY ? "Integer" : "Float");
+}
+/* ... Rational#==, which Integer#== and Float#== hand a Rational to. A
+   `class Rational` body's methods are kept on Object. */
+static int program_defines_rational_eq(Compiler *c) {
+  return program_defines_eq_on(c, "Rational") || program_defines_eq_on(c, "Object");
+}
+/* The program defines an == that the compare of an element of the typed
+   Array `rt` with a needle of kind `nk` would run. The general Array's
+   scan does not call it. */
+static int program_defines_num_eq(Compiler *c, TyKind rt, TyKind nk) {
+  return program_defines_elem_eq(c, rt) || (nk == TY_RATIONAL && program_defines_rational_eq(c));
+}
 
 /* The general Array's == scan over the typed Integer or Float Array held in
    `_t<ta>`, for the boxed needle `_t<tv>`: include? (`inc`) or index/rindex
    (`rev`), answered as a bool or a boxed position. A tag the typed search
    does not compare (a Rational, a Bignum, a Float into an Integer Array)
    is found by value as CRuby's == finds it. Where the program defines an
-   == the scan would skip, the answer stays "not there". */
+   == the scan would skip, that kind of needle stays "not there": every
+   needle for Integer#== or Float#==, a Rational for Rational#==. */
 static void emit_typed_arr_scan(Compiler *c, TyKind rt, int ta, int tv, int inc, int rev, Buf *b) {
-  if (program_defines_num_eq(c, rt, TY_RATIONAL)) { buf_puts(b, inc ? "FALSE" : "sp_box_nil()"); return; }
+  const char *miss = inc ? "FALSE" : "sp_box_nil()";
+  if (program_defines_elem_eq(c, rt)) { buf_puts(b, miss); return; }
   const char *bk = rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : "SP_BUILTIN_FLT_ARRAY";
   /* a String, Symbol, true, false or nil is never == to a number: no walk */
   buf_printf(b, "(_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || _t%d.tag == SP_TAG_BOOL || _t%d.tag == SP_TAG_NIL ||"
-                " sp_poly_is_strbuf(_t%d)) ? %s : ", tv, tv, tv, tv, tv, inc ? "FALSE" : "sp_box_nil()");
+                " sp_poly_is_strbuf(_t%d)) ? %s : ", tv, tv, tv, tv, tv, miss);
+  if (program_defines_rational_eq(c))
+    buf_printf(b, "(sp_poly_is_rational(_t%d) || sp_poly_is_brat(_t%d)) ? %s : ", tv, tv, miss);
   if (inc) buf_printf(b, "sp_poly_arr_include_eq(sp_box_nullable_obj((void *)_t%d, %s), _t%d)", ta, bk, tv);
   else buf_printf(b, "sp_box_oint(sp_poly_arr_index_val(sp_box_nullable_obj((void *)_t%d, %s), _t%d, %d))", ta, bk, tv, rev);
 }
