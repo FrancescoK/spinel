@@ -23686,6 +23686,10 @@ static int share_demand_nested_read(Compiler *c, int call, int recv) {
    to Array[String] is boxed too: the seed gives the Ruby type, not the
    C form. So is a Hash an --rbs seed pins to Hash[String, String]
    (`hash`: the family's slots are that Hash, boxed as the poly Hash). */
+/* Set once the rule has widened a holder's type to the poly container
+   (here and in one_reflect_widen): the stores written from such a holder
+   join their slots again (an_phase_storage), as the locals do. */
+static int g_share_widened_holder;
 static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash) {
   TyKind typed = hash ? TY_STR_STR_HASH : TY_STR_ARRAY, boxed = hash ? TY_STR_POLY_HASH : TY_POLY_ARRAY;
   int top = cid;
@@ -23702,7 +23706,7 @@ static int share_box_ivar_family(Compiler *c, int cid, const char *nm, int hash)
     if (ki < 0 || kc->ivar_types[ki] != typed) continue;
     ivar_set_type(kc, ki, boxed);
     if (!hash) { kc->ivar_elems_shared[ki] |= ELEMS_POLY; comp_touch_class(kc->idx); }
-    changed = 1;
+    changed = g_share_widened_holder = 1;
   }
   return changed;
 }
@@ -23813,6 +23817,7 @@ static int one_reflect_widen(Compiler *c) {
       }
   }
   free(rf.n);
+  if (changed) g_share_widened_holder = 1;
   return changed;
 }
 /* The places a String can be held, as the rule below asks them: every local
@@ -50793,6 +50798,12 @@ static void an_phase_storage(Compiler *c) {
      refresh moves a type, so the rule decides over the types the seal will
      see (a holder it shares only by them is refused there otherwise). */
   TyKind *nt0 = NULL;
+  /* The types every store's input had before the rule: once the rule has
+     widened a holder, a store whose input has widened since joins its slot
+     again (infer_changed_store_types). */
+  NodeTypes before_rule;
+  node_types_take(c, &before_rule);
+  g_share_widened_holder = 0;
   for (int round = 0;; round++) {
     for (;;) {
       handle_arg_tab_init(c, &hat);
@@ -50824,6 +50835,15 @@ static void an_phase_storage(Compiler *c) {
         if (infer_return_types(c)) ch = late_widened = 1;
         g_ret_no_new_poly = 0;
         if (rejoin_local_writes(c)) ch = late_widened = 1;
+        /* ... and so do the instance, class and global variables and the
+           constants written from it. A constant a runtime-name const_get
+           reaches is the poly Array under the rule (one_reflect_widen), and
+           a class variable a class body wrote its copy (`@@p = PATHS.dup`)
+           kept the String Array slot the fixpoint gave it, which the copy no
+           longer fits. Once the rule has widened a holder, each store whose
+           input has widened since the rule began joins again; the rest keep
+           what they settled on. */
+        if (g_share_widened_holder && infer_changed_store_types(c, &before_rule)) ch = late_widened = 1;
       }
       if (!ch) break;
       handle_arg_tab_free(&hat);
@@ -50859,6 +50879,7 @@ static void an_phase_storage(Compiler *c) {
     for (int s = 0; s < c->nscopes; s++) conv0[s] = share_converted_locals(c, s);
   }
   free(nt0);
+  free(before_rule.ty);
   free(conv0);
   /* A read an is_a? or nil guard narrowed to String (`m(x) if
      x.is_a?(String)`) unboxed a copy of the String its POLY variable holds:
