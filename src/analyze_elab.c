@@ -127,6 +127,7 @@ struct LoadRecord {
   /* the method histories by name (lr_vers_index), as of nentries entries */
   long nentries, indexed;
   unsigned char *clsmod; int clsmod_all; struct { int nhist, ncls, recorded; unsigned ver; } clsmod_of;   /* lr_class_object_modules, and the record state it is of */
+  int *mixed, nmixed; struct { int nhist, ncls, recorded; unsigned ver; } mixed_of;   /* lr_mixed */
   const LrDef **cand; int ncand, ccand, cand_bad; unsigned char collect;   /* elab_class_candidates: the writes lr_last_before passes */
   long opened;               /* LrHist.open is of this many entries (lr_open_make), -1 for none made */
   struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
@@ -2704,15 +2705,36 @@ static int lr_inside(Compiler *c, int node, LoadPoint p0, LoadPoint p1) {
          (b == PROG_AFTER && lr_runs_again(c, node, p0));
 }
 
+/* The classes that carry a mixin or code the record cannot follow, in order:
+   of the others a chain takes nothing (lr_chain_moves, elab_chain_settled).
+   Kept for the histories as they stand. */
+static const int *lr_mixed(Compiler *c, int *n) {
+  LoadRecord *r = c->lrec;
+  if (!r->mixed || r->mixed_of.nhist != r->nhist || r->mixed_of.ncls != r->ncls || r->mixed_of.recorded != r->recorded || r->mixed_of.ver != r->ver) {
+    free(r->mixed);
+    if (!(r->mixed = malloc(sizeof(int) * ((size_t)r->ncls + 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    r->nmixed = 0;
+    for (int k = LR_MAIN; k + 1 < r->ncls; k++) {
+      const LrClass *kc = lr_class(r, k);
+      if ((kc && kc->nmix) || lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(k), "", 0)) r->mixed[r->nmixed++] = k;
+    }
+    r->mixed_of.nhist = r->nhist; r->mixed_of.ncls = r->ncls; r->mixed_of.recorded = r->recorded; r->mixed_of.ver = r->ver;
+  }
+  *n = r->nmixed;
+  return r->mixed;
+}
+
 /* Does cls's chain (its singleton's when sg) change for `name` strictly
    between p0 and p1: a module that has or may have the name mixed into a
    class on it, code the record cannot follow run on one of them? */
 static int lr_chain_moves(Compiler *c, int cls, int sg, const char *name, LoadPoint p0, LoadPoint p1) {
   LoadRecord *r = c->lrec;
-  for (int k = LR_MAIN; k + 1 < r->ncls; k++) {
+  int nk = 0;
+  const int *mk = lr_mixed(c, &nk);
+  for (int i = 0; i < nk; i++) {
+    int k = mk[i];
     const LrClass *kc = lr_class(r, k);
     const LrHist *op = lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(k), "", 0);
-    if ((!kc || !kc->nmix) && !op) continue;
     if (!lr_in_ancestry(c, cls, sg, k, p1)) continue;
     for (int j = 0; kc && j < kc->nmix; j++) {
       LrMixin *m = &kc->mix[j];
@@ -2731,10 +2753,13 @@ int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint
   if (!r || !r->recorded || !name || cls < LR_MAIN || p.region < 0) return 0;
   lr_run_points(c);
   LoadPoint end = { p.region, r->rend[p.region] };
-  for (int k = LR_MAIN; k + 1 < r->ncls; k++) {
+  int nk = 0;
+  const int *mk = lr_mixed(c, &nk);
+  for (int i = 0; i < nk; i++) {
+    int k = mk[i];
     const LrClass *kc = lr_class(r, k);
     const LrHist *op = lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(k), "", 0);
-    if (((!kc || !kc->nmix) && !op) || !lr_in_ancestry(c, cls, sg, k, end)) continue;
+    if (!lr_in_ancestry(c, cls, sg, k, end)) continue;
     if (op && op->n) return 0;
     for (int j = 0; kc && j < kc->nmix; j++) {
       LrMixin *m = &kc->mix[j];
@@ -3366,6 +3391,57 @@ int elab_call_window(Compiler *c, int id, ElabWindow *w) {
   return ELAB_YES;
 }
 
+/* The owners whose histories can be in cls's ancestry: its superclass chain
+   and the modules mixed into any of those, a module's own mixins too (at any
+   time, so a superset of lr_in_ancestry's). -1 when that is not known: a
+   superclass or a mixin the record cannot resolve, code it cannot follow run
+   on one of them, or more owners than fit. */
+static int lr_ancestry_owners(Compiler *c, int cls, int *out, int cap) {
+  LoadRecord *r = c->lrec;
+  int n = 0, a = cls;
+  for (int d = 0; a >= LR_MAIN; a = lr_super(c, a), d++) {
+    if (d >= 64 || n >= cap) return -1;
+    out[n++] = a;
+  }
+  if (a != LR_UNKNOWN_CLASS || out[n - 1] != LR_MAIN) return -1;
+  for (int i = 0; i < n; i++) {
+    if (lr_hist(r, LR_KEY_OPAQUE, lr_const_owner(out[i]), "", 0)) return -1;
+    const LrClass *kc = lr_class(r, out[i]);
+    for (int j = 0; kc && j < kc->nmix; j++) {
+      int mod = lr_mixin_class(c, &kc->mix[j]), have = 0;
+      if (mod < LR_MAIN) {   /* a builtin module has a history only if the program reopens it, which no name chain holds */
+        int builtin = 0;
+        for (int k = 0; !builtin && builtin_class_at(k); k++) builtin = builtin_class_at(k)->id == mod;
+        if (!builtin) return -1;
+        continue;
+      }
+      for (int k = 0; k < n && !have; k++) have = out[k] == mod;
+      if (have) continue;
+      if (n >= cap) return -1;
+      out[n++] = mod;
+    }
+  }
+  return n;
+}
+
+typedef struct { int m, nh, any, *cp; } LrSpanAcc;
+/* history h's versions inside the window (p0, p1), when it is one of cls's ancestors' */
+static void lr_span_take(Compiler *c, const LrHist *h, int cls, int sg, LoadPoint p0, LoadPoint p1, LrSpanAcc *s) {
+  if ((h->b != sg && !sg) || !lr_in_ancestry(c, cls, sg, h->a, p1)) return;
+  int had = s->m;
+  for (int j = 0; j < h->n; j++) {
+    const LrDef *v = &h->v[j];
+    if (!lr_is_version(v) || !lr_inside(c, v->node, p0, p1)) continue;
+    LoadPoint q = elab_point_of(c, v->node);
+    if (v->may || elab_cmp(p0, q) != PROG_BEFORE || elab_cmp(q, p1) != PROG_BEFORE) { s->any = 1; continue; }
+    if (!(s->m & (s->m - 1)) && !(s->cp = realloc(s->cp, sizeof(int) * (size_t)(s->m ? 2 * s->m : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int k = s->m++;
+    while (k > 0 && s->cp[k - 1] > q.seq) { s->cp[k] = s->cp[k - 1]; k--; }
+    s->cp[k] = q.seq;
+  }
+  s->nh += s->m > had;
+}
+
 /* elab_method_span; *idle when no statement of w that may run code of the
    program's sees a version (the one version counts all the same) */
 static int lr_span(Compiler *c, int cls, const char *name, int sg, const ElabWindow *w, const LrDef **out, int cap, int *idle) {
@@ -3382,24 +3458,19 @@ static int lr_span(Compiler *c, int cls, const char *name, int sg, const ElabWin
   int bl = b.region != p0.region ? -1 : sg || r->rinst[cls + 1] < b.seq ? b.seq : r->rinst[cls + 1];
   if (bl >= p1.seq) bl = p1.seq - 1;
   if (p0.seq < bl && bl < p1.seq) p0.seq = bl;
-  int m = 0, nh = 0, *cp = NULL, n = 0, obs0 = 0, any = 0;
+  int n = 0, obs0 = 0, owners[64], no = lr_ancestry_owners(c, cls, owners, 64);
+  LrSpanAcc acc = { 0, 0, 0, NULL };
   const LrVers *x = lr_vers(r, name);
-  for (int i = x ? x->first : -1; i >= 0; i = r->hist[i].nlink) {
-    const LrHist *h = &r->hist[i];
-    if ((h->b != sg && !sg) || !lr_in_ancestry(c, cls, sg, h->a, p1)) continue;
-    int had = m;
-    for (int j = 0; j < h->n; j++) {
-      const LrDef *v = &h->v[j];
-      if (!lr_is_version(v) || !lr_inside(c, v->node, p0, p1)) continue;
-      LoadPoint q = elab_point_of(c, v->node);
-      if (v->may || elab_cmp(p0, q) != PROG_BEFORE || elab_cmp(q, p1) != PROG_BEFORE) { any = 1; continue; }
-      if (!(m & (m - 1)) && !(cp = realloc(cp, sizeof(int) * (size_t)(m ? 2 * m : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-      int k = m++;
-      while (k > 0 && cp[k - 1] > q.seq) { cp[k] = cp[k - 1]; k--; }
-      cp[k] = q.seq;
-    }
-    nh += m > had;
+  if (no >= 0) {   /* the histories of the ancestors alone, through the hash */
+    for (int i = 0; i < no; i++)
+      for (int side = 0; side <= (sg != 0); side++) {
+        const LrHist *h = lr_hist(r, owners[i], side, name, 0);
+        if (h) lr_span_take(c, h, cls, sg, p0, p1, &acc);
+      }
   }
+  else
+    for (int i = x ? x->first : -1; i >= 0; i = r->hist[i].nlink) lr_span_take(c, &r->hist[i], cls, sg, p0, p1, &acc);
+  int m = acc.m, nh = acc.nh, any = acc.any, *cp = acc.cp;
   /* in a body that runs again, the version at its end is live at its start
      on the next run: so with the changes of one history only; with more, or
      a version w may not run or the record cannot order, any version of the
@@ -4861,7 +4932,7 @@ void elab_free(Compiler *c) {
   for (int i = 0; i < r->nsrcw; i++) free(r->srcw[i].name);
   free(r->srcw);
   free(r->slot); free(r->slot_head); free(r->slotp);
-  free(r->hist); free(r->clsmod); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
+  free(r->hist); free(r->mixed); free(r->clsmod); free(r->hhead); free(r->cls); free(r->held); free(r->vers); free(r->vers_head); free(r->set);
   for (int i = 0; i < r->nhdr; i++) free(r->hdr[i].leaf);
   free(r->hdr); free(r->hdr_head);
   free(r->st); free(r->at); free(r->bits); free(r->dscope); free(r->rend); free(r->rinst); free(r->urun); free(r);
