@@ -7796,9 +7796,7 @@ static int an_enum_reaches_v(Compiler *c, int ci, unsigned char *seen) {
     for (int id = 0; id < nt->count; id++) {
       int k = nt_kind(nt, id);
       if (k != NK_ClassNode && k != NK_ModuleNode) continue;
-      int cp = nt_ref(nt, id, "constant_path");
-      const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      if (!cn || comp_class_index(c, cn) != cur) continue;
+      if (elab_header_class(c, id, NULL, NULL) != cur) continue;
       int body = nt_ref(nt, id, "body");
       int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
       for (int s2 = 0; s2 < bn; s2++) {

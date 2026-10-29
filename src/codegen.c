@@ -11438,7 +11438,7 @@ const char *arysub_array_ctype(Compiler *c, int cid) {
    elements); the Array starts as a fresh one of its kind does. */
 static void emit_ivar_nil_inits(Compiler *c, Buf *b, ClassInfo *ci, const char *lv, const char *lead, const char *term);
 void emit_arysub_alloc(Compiler *c, ClassInfo *ci, Buf *b) {
-  int cid = comp_class_index(c, ci->name);
+  int cid = (int)(ci - c->classes);
   if (ci->ary_root <= 0 || cid < 0) return;
   const char *at = arysub_array_ctype(c, cid), *cn = ci->c_name;
   buf_printf(b, "SP_UNUSED static sp_%s *sp_%s__alloc(void) {\n", cn, cn);
@@ -11491,7 +11491,7 @@ void emit_class_struct(Compiler *c, ClassInfo *ci, Buf *b) {
      only its forward-decl (`typedef struct sp_X_s sp_X;`) and holds pointers. */
   if (ci->is_native_class) return;
   /* Exception subclasses share sp_Exception as their underlying type. */
-  int cid = comp_class_index(c, ci->name);
+  int cid = (int)(ci - c->classes);
   if (cid >= 0 && class_is_exc_subclass(c, cid)) {
     /* An ivar-less exception subclass is forward-declared as
        `typedef sp_Exception` and needs no struct of its own. One with
@@ -11631,7 +11631,7 @@ int class_needs_scan(ClassInfo *ci) {
    (poly ivars holding tree children were the canonical case). */
 void emit_class_scan(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->is_native_class) return;  /* the package owns the struct + its GC scan */
-  int cid = comp_class_index(c, ci->name);
+  int cid = (int)(ci - c->classes);
   int is_exc_iv = cid >= 0 && ci->nivars > 0 && class_is_exc_subclass(c, cid);
   /* An ivar-bearing exception subclass always needs a scan: even with no
      heap ivar, its `msg` (a managed string in the dedicated struct) must
@@ -11825,7 +11825,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   if (ci->is_native_class) return;
   { char nt_[UNIT_TAG_MAX], grp[UNIT_TAG_MAX]; snprintf(nt_, sizeof nt_, "new_%s", ci->c_name ? ci->c_name : ci->name);
     unit_begin_in(b, nt_, class_unit_group(c, (int)(ci - c->classes), ci->def_node, grp, sizeof grp)); }
-  int cid = comp_class_index(c, ci->name);
+  int cid = (int)(ci - c->classes);
   if (ci->is_struct) {
     int sinit_def = cid;
     int sinit = comp_method_in_chain(c, cid, "initialize", &sinit_def);
@@ -12765,7 +12765,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (!(ci->is_struct || ci->is_data) || !ci->instantiated) continue;
-    buf_printf(b, "    case %d: {\n", comp_class_index(c, ci->name));
+    buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_SymPolyHash *h = sp_SymPolyHash_new(); SP_GC_ROOT(h);\n");
     for (int j = 0; j < ci->nmembers; j++) {
@@ -12773,7 +12773,7 @@ static void emit_obj_to_h_dispatch(Compiler *c, Buf *b) {
       const char *iv = ci->ivars[j] + 1;  /* member name, sans @ (sym key) */
       const char *ivf = iv_c(iv);          /* C field id (mangled member) */
       buf_printf(b, "      sp_SymPolyHash_set(h, sp_sym_intern(\"%s\"), ", iv);
-      emit_member_boxed(c, comp_class_index(c, ci->name), j, b);
+      emit_member_boxed(c, i, j, b);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return sp_box_obj(h, SP_BUILTIN_SYM_POLY_HASH);\n    }\n");
@@ -12824,14 +12824,14 @@ static void emit_obj_struct_values_dispatch(Compiler *c, Buf *b) {
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
     if (!ci->is_struct || ci->is_data || !ci->instantiated) continue;
-    buf_printf(b, "    case %d: {\n", comp_class_index(c, ci->name));
+    buf_printf(b, "    case %d: {\n", i);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_puts(b, "      sp_PolyArray *a = sp_PolyArray_new(); SP_GC_ROOT(a);\n");
     for (int j = 0; j < ci->nmembers; j++) {
       TyKind mt = ci->ivar_types[j];
       const char *ivf = iv_c(ci->ivars[j] + 1);
       buf_puts(b, "      sp_PolyArray_push(a, ");
-      emit_member_boxed(c, comp_class_index(c, ci->name), j, b);
+      emit_member_boxed(c, i, j, b);
       buf_puts(b, ");\n");
     }
     buf_puts(b, "      return sp_box_poly_array(a);\n    }\n");
@@ -13134,7 +13134,7 @@ static void emit_obj_with_dispatch(Compiler *c, Buf *b) {
        a Data falls through to NoMethodError (rare). */
     int scust = comp_method_in_chain(c, i, "initialize", NULL);
     if (scust >= 0 && c->scopes[scust].reachable) continue;
-    int idx = comp_class_index(c, ci->name);
+    int idx = i;
     buf_printf(b, "    case %d: {\n", idx);
     buf_printf(b, "      sp_%s *o = (sp_%s *)v.v.p; (void)o;\n", ci->c_name, ci->c_name);
     buf_printf(b, "      return sp_box_obj(sp_%s_new(", ci->c_name);
@@ -15893,7 +15893,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     TyKind pt = scope_param_type(m, 0);
     const char *dcn = c->classes[defcls].c_name;
     int self_vt = c->classes[defcls].is_value_type;
-    int cid = comp_class_index(c, c->classes[k].name);
+    int cid = k;
     char argbuf[160];
     int obj_operand = 0;
     int pcid = -1;
@@ -15902,7 +15902,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
     if (ty_is_object(pt)) {
       int pcls = ty_object_class(pt);
       const char *pcn = c->classes[pcls].name;
-      pcid = comp_class_index(c, pcn);   /* guard b against the OPERAND's class, not the receiver's */
+      pcid = pcls;   /* guard b against the OPERAND's class, not the receiver's */
       snprintf(argbuf, sizeof argbuf, "%s(sp_%s *)b.v.p",
                c->classes[pcls].is_value_type ? "*" : "", pcn);
       obj_operand = 1;
@@ -15963,7 +15963,7 @@ static void emit_obj_cmp_dispatch(Compiler *c, Buf *b) {
       for (int d = 0; d < c->nclasses; d++) {
         if (d == pcid || !c->classes[d].instantiated) continue;
         if (!is_descendant(c, d, pcid)) continue;
-        int dcid = comp_class_index(c, c->classes[d].name);
+        int dcid = d;
         buf_printf(b, " || b.cls_id == %d", dcid);
       }
       buf_puts(b, ")) { *comparable = FALSE; return 0; }\n");
@@ -16022,7 +16022,7 @@ static int user_dispatch_arg(Compiler *c, Scope *m, int pi, const char *v,
   if (ty_is_object(pt)) {
     int pcls = ty_object_class(pt);
     snprintf(guard, gsz, "%s.tag == SP_TAG_OBJ && %s.cls_id == %d",
-             v, v, comp_class_index(c, c->classes[pcls].name));
+             v, v, pcls);
     snprintf(arg, asz, "%s(sp_%s *)%s.v.p",
              c->classes[pcls].is_value_type ? "*" : "", c->classes[pcls].name, v);
   }
@@ -16082,7 +16082,7 @@ static void emit_user_aset_dispatch(Compiler *c, Buf *b) {
     if (!user_dispatch_arg(c, m, 0, "k", g0, sizeof g0, a0, sizeof a0) ||
         !user_dispatch_arg(c, m, 1, "v", g1, sizeof g1, a1, sizeof a1)) continue;
     const char *dcn = c->classes[defcls].c_name;
-    buf_printf(b, "    case %d:\n", comp_class_index(c, c->classes[ci].name));
+    buf_printf(b, "    case %d:\n", ci);
     buf_printf(b, "      if ((%s) && (%s)) {\n", g0[0] ? g0 : "1", g1[0] ? g1 : "1");
     buf_printf(b, "        *handled = TRUE; (void)%s(%s(sp_%s *)a.v.p, %s, %s);\n      }\n",
                mc_method(c, m), c->classes[defcls].is_value_type ? "*" : "", dcn, a0, a1);
@@ -16206,7 +16206,7 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
     for (int u = 0; uops[u] && !any; u++)
       if (comp_method_in_chain(c, k, uops[u], NULL) >= 0) any = 1;
     if (!any) continue;
-    int cid = comp_class_index(c, c->classes[k].name);
+    int cid = k;
     if (bcase) buf_printf(b, "    case %s: {\n", bcase);
     else buf_printf(b, "    case %d: {\n", cid);
     for (int u = 0; uops[u]; u++) {
@@ -16284,7 +16284,7 @@ static void emit_user_op_dispatch(Compiler *c, Buf *b, const char *fname, const 
             if (ty_is_object(cpt)) {
               int pcls2 = ty_object_class(cpt);
               snprintf(cgb, sizeof cgb, "b.tag == SP_TAG_OBJ && b.cls_id == %d",
-                       comp_class_index(c, c->classes[pcls2].name));
+                       pcls2);
               cguard = cgb;
               snprintf(cargs, sizeof cargs, "%s(sp_%s *)b.v.p",
                        c->classes[pcls2].is_value_type ? "*" : "", c->classes[pcls2].name);
@@ -16363,7 +16363,7 @@ static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
     int has_blk = m->blk_param && m->blk_param[0];
     if (m->ret == TY_IO) {
       buf_printf(b, "    case %d: return sp_%s_to_io(%s(sp_%s *)v.v.p%s);\n",
-                 comp_class_index(c, c->classes[k].name),
+                 k,
                  dcn, c->classes[defcls].is_value_type ? "*" : "", dcn,
                  has_blk ? ", NULL" : "");
     }
@@ -16372,7 +16372,7 @@ static void emit_user_to_io_dispatch(Compiler *c, Buf *b) {
          so a non-IO answer falls through to the caller's TypeError instead
          of a segfault. */
       buf_printf(b, "    case %d: { sp_RbVal _r = sp_%s_to_io(%s(sp_%s *)v.v.p%s); return (sp_File *)sp_poly_to_file(_r); }\n",
-                 comp_class_index(c, c->classes[k].name),
+                 k,
                  dcn, c->classes[defcls].is_value_type ? "*" : "", dcn,
                  has_blk ? ", NULL" : "");
     }
@@ -16409,7 +16409,7 @@ static void emit_user_coerce_dispatch(Compiler *c, Buf *b) {
        a Float array -- is just as valid as a poly one, and rejecting it left
        the operation lowered against the object's address. Convert it. */
     Scope *cm = &c->scopes[mi];
-    int cidx = comp_class_index(c, c->classes[k].name);
+    int cidx = k;
     if (cm->ret == TY_POLY_ARRAY) {
       buf_printf(b, "    case %d: _pr = sp_%s_coerce(%s(sp_%s *)obj.v.p, %s); break;\n",
                  cidx, dcn, c->classes[defcls].is_value_type ? "*" : "", dcn, arg);
@@ -16525,7 +16525,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
       const char *rn = comp_resolve_alias(c, k, "hash");
       char fld[600];
       snprintf(fld, sizeof fld, "((sp_%s *)p)->iv_%s", rcn, iv_c(rn));
-      buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+      buf_printf(b, "    case %d: ", k);
       if (c->classes[rd].ivar_types[ivx] == TY_POLY) buf_printf(b, "return sp_poly_arg_int_chk(%s);\n", fld);
       else if (ivar_has_nilbit(c, rd, ivx)) {
         char objp[200]; snprintf(objp, sizeof objp, "((sp_%s *)p)->", rcn);
@@ -16539,7 +16539,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     if (!m->reachable) continue;   /* no hash table op reaches it: the key hashes by identity */
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
-    buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+    buf_printf(b, "    case %d: ", k);
     if (m->ret == TY_INT && method_ret_is_oint(m))   /* a nil hash: TypeError */
       buf_printf(b, "return sp_oint_arg(%s(%s(sp_%s *)p%s));\n", mc_method(c, m), slf, dcn, bridge_blk_arg(c, mi));
     else if (m->ret == TY_INT)
@@ -16562,7 +16562,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
        #hash with the value a typed one does; with h*31+x here the two
        disagreed for equal structs. */
     buf_printf(b, "    case %d: { sp_%s *o = (sp_%s *)p; uint64_t _h = 1469598103934665603ULL;\n",
-               comp_class_index(c, ci->name), ci->c_name, ci->c_name);
+               k, ci->c_name, ci->c_name);
     for (int i = 0; i < ci->nmembers; i++) {
       char fe[128]; snprintf(fe, sizeof fe, "o->iv_%s", iv_c(ci->ivars[i] + 1));
       Buf bx; memset(&bx, 0, sizeof bx); emit_member_boxed_text(c, ci, i, "o->", fe, &bx);
@@ -16595,7 +16595,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     strncat(argbuf, bridge_blk_arg(c, mi), sizeof argbuf - strlen(argbuf) - 1);
     const char *dcn = c->classes[defcls].c_name;
     const char *slf = c->classes[defcls].is_value_type ? "*" : "";
-    buf_printf(b, "    case %d: ", comp_class_index(c, c->classes[k].name));
+    buf_printf(b, "    case %d: ", k);
     if (m->ret == TY_BOOL)
       buf_printf(b, "return %s(%s(sp_%s *)a, %s);\n", mc_method(c, m), slf, dcn, argbuf);
     else
@@ -16608,7 +16608,7 @@ static void emit_obj_hashkey_dispatch(Compiler *c, Buf *b) {
     if (!class_is_valuekey(c, k)) continue;
     ClassInfo *ci = &c->classes[k];
     buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a, *_b = (sp_%s *)b_; if (!_a || !_b) return _a == _b; return ",
-               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
+               k, ci->c_name, ci->c_name, ci->c_name);
     if (ci->nmembers == 0) buf_puts(b, "1");
     for (int i = 0; i < ci->nmembers; i++) {
       const char *iv = iv_c(ci->ivars[i] + 1);
@@ -16641,7 +16641,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
        through to FALSE here, unchanged) */
     if (comp_method_in_chain(c, k, "==", NULL) >= 0) continue;
     buf_printf(b, "    case %d: { sp_%s *_a = (sp_%s *)a.v.p, *_b = (sp_%s *)b.v.p; if (!_a || !_b) return _a == _b; return ",
-               comp_class_index(c, ci->name), ci->c_name, ci->c_name, ci->c_name);
+               k, ci->c_name, ci->c_name, ci->c_name);
     if (ci->nmembers == 0) buf_puts(b, "1");
     for (int i = 0; i < ci->nmembers; i++) {
       const char *iv = iv_c(ci->ivars[i] + 1);  /* skip leading '@', mangle to a C field */
@@ -16663,7 +16663,7 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     if (!ci->instantiated || !class_is_exc_subclass(c, k)) continue;
     if (comp_method_in_chain(c, k, "==", NULL) >= 0) continue;
     buf_printf(b, "    case %d: return sp_exc_eq((sp_Exception *)a.v.p, (sp_Exception *)b.v.p);\n",
-               comp_class_index(c, ci->name));
+               k);
   }
   /* A class with a reachable user-defined `==`: dispatch to it so Array#include?
      / #index / uniq (all through sp_poly_eq -> this hook) honor value equality.
@@ -16697,11 +16697,11 @@ static void emit_obj_valeq_dispatch(Compiler *c, Buf *b) {
     int builds = 0;
     if (emit_arm_args_text(c, mi, armself, &arg, 1, &pre, &args, &builds, raise, sizeof raise))
       buf_printf(b, "    case %d: { %s%sreturn %s(%s(sp_%s *)a.v.p%s); }\n",
-                 comp_class_index(c, ci->name),
+                 k,
                  builds ? "SP_GC_ROOT_RBVAL(a); SP_GC_ROOT_RBVAL(b); " : "", pre.p ? pre.p : "",
                  mc_method(c, m), slf, dcn, args.p);
     else
-      buf_printf(b, "    case %d: { %s return FALSE; }\n", comp_class_index(c, ci->name), raise);
+      buf_printf(b, "    case %d: { %s return FALSE; }\n", k, raise);
     free(pre.p); free(args.p);
   }
   buf_puts(b, "    default: break;\n  }\n  return FALSE;\n}\n");

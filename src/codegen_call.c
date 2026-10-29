@@ -2216,8 +2216,8 @@ static int path_header_class(Compiler *c, int stmt) {
   if (k != NK_ClassNode && k != NK_ModuleNode) return -1;
   int cp = nt_ref(nt, stmt, "constant_path");
   if (cp < 0 || nt_kind(nt, cp) != NK_ConstantPathNode) return -1;
-  const char *full = nt_str(nt, cp, "name");
-  return full ? comp_class_index(c, full) : -1;
+  int ci = elab_header_class(c, stmt, NULL, NULL);
+  return ci >= 0 ? ci : -1;
 }
 
 /* The constant names a class/module defines in its OWN body, in declaration
@@ -2231,9 +2231,7 @@ static int class_body_constants(Compiler *c, int ci, const char **out, const cha
   for (int id = 0; id < nt->count && n < max; id++) {
     NodeKind ty_k = nt_kind(nt, id);
     if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cn || comp_class_index(c, cn) != ci) continue;
+    if (elab_header_class(c, id, NULL, NULL) != ci) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
@@ -2302,9 +2300,7 @@ static int class_module_refs(Compiler *c, int ci, const char *kw, int *out, int 
   for (int id = 0; id < nt->count && n < max; id++) {
     NodeKind ty_k = nt_kind(nt, id);
     if (ty_k != NK_ClassNode && ty_k != NK_ModuleNode) continue;
-    int cp = nt_ref(nt, id, "constant_path");
-    const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (!cn || comp_class_index(c, cn) != ci) continue;
+    if (elab_header_class(c, id, NULL, NULL) != ci) continue;
     int body = nt_ref(nt, id, "body");
     int bn = 0; const int *stmts = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
     for (int k = 0; k < bn && n < max; k++) {
