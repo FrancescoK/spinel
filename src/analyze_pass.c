@@ -19440,7 +19440,24 @@ static int bi_reaches(const BiPair *pairs, int np, const char *var, const char *
   return 0;
 }
 
+/* The writes a round asked bi_promote about, in order, and the tree they
+   were read from: which writes ask is read from the tree alone (the names
+   and shapes the scans compare), never from a type, so a round over the
+   same tree asks the same writes, and replays them instead of walking */
+static struct {
+  unsigned version; int count, promote_mode, valid, recording;
+  int n, cap, *node;
+} bi_memo;
+
 static void bi_promote(Compiler *c, int write_id, const char *lname) {
+  if (bi_memo.recording) {
+    if (bi_memo.n == bi_memo.cap) {
+      bi_memo.cap = bi_memo.cap ? bi_memo.cap * 2 : 64;
+      bi_memo.node = realloc(bi_memo.node, sizeof(int) * (size_t)bi_memo.cap);
+      if (!bi_memo.node) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    bi_memo.node[bi_memo.n++] = write_id;
+  }
   Scope *s = comp_scope_of(c, write_id);
   LocalVar *lv = s ? scope_local(s, lname) : NULL;
   if (!lv || lv->rbs_seeded) return;
@@ -19736,12 +19753,23 @@ static int bi_round(Compiler *c) {
 
 void infer_bigint_loop_locals(Compiler *c) {
   /* (wrap: Integer arithmetic wraps wherever it stands, a loop's included) */
-  if (g_wrap_mode || bi_round(c)) return;
+  if (g_wrap_mode) return;
   const NodeTable *nt = c->nt;
-  for (int id = 0; id < nt->count; id++) {
-    int body = bi_loop_body(nt, id);
-    if (body >= 0) bi_scan_loop_body(c, body);
+  /* every write asked is a local write whose own name is the local asked */
+  if (bi_memo.valid && bi_memo.version == nt->version && bi_memo.count == nt->count &&
+      bi_memo.promote_mode == g_promote_mode) {
+    for (int i = 0; i < bi_memo.n; i++)
+      bi_promote(c, bi_memo.node[i], nt_str(nt, bi_memo.node[i], "name"));
+    return;
   }
+  bi_memo.n = 0; bi_memo.recording = 1;
+  if (!bi_round(c))
+    for (int id = 0; id < nt->count; id++) {
+      int body = bi_loop_body(nt, id);
+      if (body >= 0) bi_scan_loop_body(c, body);
+    }
+  bi_memo.recording = 0; bi_memo.valid = 1;
+  bi_memo.version = nt->version; bi_memo.count = nt->count; bi_memo.promote_mode = g_promote_mode;
 }
 
 /* io/console's `io.raw { |x| body }` and `io.noecho { |x| body }`: the mode is
