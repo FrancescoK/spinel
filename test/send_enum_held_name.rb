@@ -73,3 +73,18 @@ end
 # the arms that take a copy leave the others' receiver as it was
 p [:abc, "ab"].map(&("si" + "ze").to_sym)
 p [[1, 2], "x"][0].public_send("spec#{sfx}"), [{a: 1, b: 2}, 3][0].public_send("spec#{sfx}")
+
+# an alias the definition has under another name: collect_concat is
+# flat_map, detect find -- held, or a literal send's -- unless the
+# receiver's class defines the alias itself
+cc = :collect_concat
+p [[1], [2]].public_send(cc) { |x| x }, {a: [1]}.public_send(cc) { |k, v| v }
+dt = :detect
+p [1, 2, 3].public_send(dt) { |x| x > 1 }, [1, 2, 3].send(:detect) { |x| x > 1 }
+p [[1], [2]].public_send(:collect_concat) { |x| x }
+class Det
+  include Enumerable
+  def each = yield(5)
+  def detect = :own
+end
+p Det.new.public_send(dt), Det.new.send(:detect)
