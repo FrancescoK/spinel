@@ -437,7 +437,8 @@ static pm_node_t *flat_superclass(pm_node_t *sup) {
    first-assigned-inside): Ruby scoping makes the non-param ones FRESH on
    every call, and a name the enclosing scope assigns only after the block's
    text is the block's own, not the enclosing one. A class or module body's:
-   the frame an eval's text in it reads (sp_parse_snippet_in). */
+   the frame an eval's text in it reads (sp_parse_snippet_in), as a def's
+   is (a hook's, whose text runs where the hook is spliced). */
 static void out_scope_locals(int id, const pm_constant_id_list_t *locals) {
   if (locals->size == 0) return;
   /* join the names in one pass (single cstr per name, no strcat rescans) */
@@ -462,6 +463,17 @@ static void out_scope_locals(int id, const pm_constant_id_list_t *locals) {
   }
   for (size_t li = 0; li < locals->size; li++) free(nms[li]);
   free(nms);
+}
+
+/* A def's fields: its name, parameters, body and receiver, and its locals */
+static void flat_def(int id, const pm_def_node_t *n) {
+  char *nm = cstr(n->name);
+  emit_str(id, "name", nm);
+  free(nm);
+  emit_ref(id, "parameters", (pm_node_t *)n->parameters);
+  emit_ref(id, "body", (pm_node_t *)n->body);
+  emit_ref(id, "receiver", (pm_node_t *)n->receiver);
+  out_scope_locals(id, &n->locals);
 }
 
 static void emit_node_array(int id, const char *field, pm_node_list_t *list) {
@@ -1280,15 +1292,10 @@ static int flatten_node(pm_node_t *node) {
     R("body", n->body);
     break;
   }
-  case PM_DEF_NODE: {
-    pm_def_node_t *n = (pm_def_node_t *)node;
+  case PM_DEF_NODE:
     N("DefNode");
-    NAME("name", n->name);
-    R("parameters", n->parameters);
-    R("body", n->body);
-    R("receiver", n->receiver);
+    flat_def(id, (const pm_def_node_t *)node);
     break;
-  }
   case PM_CALL_NODE: {
     pm_call_node_t *n = (pm_call_node_t *)node;
     if (sp_flatten_call_as(id, n)) break;

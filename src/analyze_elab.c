@@ -4053,9 +4053,11 @@ void host_begin(HostStep *h, LowerCtx *lc) {
   h->lc = lc;
 }
 
-/* One splice is one scope: its first statement names it (lower_span) */
-int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
-  n = sce_span(c, h, owner, body, at, n);
+/* One splice is one scope: its first statement names it (lower_span). Its
+   code runs in a frame of the locals `locals` (comma-joined; NULL: not
+   known) but `gone`, which its class_eval text reads. */
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone) {
+  n = sce_span(c, h, owner, body, at, n, locals, gone);
   int bn = 0;
   const int *st = nt_arr(c->nt, body, "body", &bn);
   for (int i = at; i < at + n && i < bn; i++) {

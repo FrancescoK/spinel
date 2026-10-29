@@ -1,6 +1,6 @@
 # A class_eval text inside a hook's class_eval text reads the hook's local
-# `x`: the hook's frame is not known where its code is spliced, so the
-# inner text is not grafted either. Not grafted.
+# `x`: the inner text runs in the frame the outer one makes, inside the
+# hook's.
 module Hook
   def self.included(base)
     x = 42

@@ -18080,7 +18080,7 @@ int desugar_singleton_class_meta(Compiler *c) {
 static void cn_host_body(Compiler *c, HostStep *h, int cls, int body) {
   int bn = 0;
   nt_arr(c->nt, body, "body", &bn);
-  host_splice(c, h, cls, body, 0, bn);
+  host_splice(c, h, cls, body, 0, bn, NULL, NULL);
 }
 int desugar_class_new_blocks(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -18526,17 +18526,31 @@ static void incl_subst(NodeTable *nt, int node, const InclSubst *is, int self_mo
   }
 }
 
+/* fr, comma-joined names, with those of locals after them */
+static char *incl_frame_add(char *fr, const char *locals) {
+  size_t l = strlen(fr);
+  fr = realloc(fr, l + strlen(locals) + 2);
+  if (!fr) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  snprintf(fr + l, strlen(locals) + 2, "%s%s", l ? "," : "", locals);
+  return fr;
+}
+
 /* The statements a hook statement becomes: a bare class_eval-family call
-   with a block is its block's body; anything else is itself. */
-static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *cap) {
+   with a block is its block's body; anything else is itself. *frame, when
+   asked for, gains the locals of each block unwrapped (sce_span), or
+   becomes NULL, not known, at a block that takes parameters. */
+static void incl_emit_stmt(const NodeTable *nt, int s, int **out, int *no, int *cap, char **frame) {
   if (nt_kind(nt, s) == NK_CallNode && nt_ref(nt, s, "receiver") < 0) {
     const char *nm = nt_str(nt, s, "name");
     int blk = nt_ref(nt, s, "block");
     if (nm && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode &&
         is_eval_exec_family(nm)) {
+      const char *bl = nt_str(nt, blk, "locals");
+      if (frame && *frame && nt_ref(nt, blk, "parameters") >= 0) { free(*frame); *frame = NULL; }
+      else if (frame && *frame && bl && *bl) *frame = incl_frame_add(*frame, bl);
       int bb = nt_ref(nt, blk, "body");
       int bn = 0; const int *bs = bb >= 0 && nt_kind(nt, bb) == NK_StatementsNode ? nt_arr(nt, bb, "body", &bn) : NULL;
-      for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap);
+      for (int j = 0; j < bn; j++) incl_emit_stmt(nt, bs[j], out, no, cap, frame);
       return;
     }
   }
@@ -18671,17 +18685,23 @@ static void incl_names_build(const NodeTable *nt, int n0, int **parent_out, char
 /* What a hook splices into a body: the statements out[at[i]..at[i] + n[i])
    that were not the body's before (one call of a hook, one class_eval
    block the splice unwraps), handed to the host once the body is set. Each
-   is a scope of its own, so two that meet stay two splices. */
-typedef struct { int *at, *n, len, cap; } InclRanges;
-static void incl_range_add(InclRanges *r, int from, int to) {
-  if (to <= from) return;
+   is a scope of its own, so two that meet stay two splices. A hook call's
+   carries the frame its code runs in (frame, taken; NULL: not known) and
+   the parameter that frame does not keep (gone): the hook's base. */
+typedef struct { int *at, *n, len, cap; char **frame, **gone; } InclRanges;
+static void incl_range_add(InclRanges *r, int from, int to, char *frame, const char *gone) {
+  if (to <= from) { free(frame); return; }
   if (r->len == r->cap) {
     r->cap = r->cap ? r->cap * 2 : 8;
     r->at = realloc(r->at, sizeof(int) * (size_t)r->cap);
     r->n = realloc(r->n, sizeof(int) * (size_t)r->cap);
-    if (!r->at || !r->n) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    r->frame = realloc(r->frame, sizeof(char *) * (size_t)r->cap);
+    r->gone = realloc(r->gone, sizeof(char *) * (size_t)r->cap);
+    if (!r->at || !r->n || !r->frame || !r->gone) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   r->at[r->len] = from;
+  r->frame[r->len] = frame;
+  r->gone[r->len] = gone ? strdup(gone) : NULL;
   r->n[r->len++] = to - from;
 }
 int desugar_included_hooks(Compiler *c, HostStep *h) {
@@ -18729,8 +18749,8 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
     InclRanges rg = {0};
     for (int k = 0; k < n; k++) {
       int s = st[k], was = no;
-      incl_emit_stmt(nt, s, &out, &no, &cap);   /* the statement itself */
-      if (no != was + 1 || out[was] != s) incl_range_add(&rg, was, no);   /* a class_eval block, unwrapped */
+      incl_emit_stmt(nt, s, &out, &no, &cap, NULL);   /* the statement itself */
+      if (no != was + 1 || out[was] != s) incl_range_add(&rg, was, no, NULL, NULL);   /* a class_eval block, unwrapped */
       /* incl_emit_stmt only unwraps receiverless class_eval; a plain
          statement passes through, so this is the statement as written */
       if (nt_kind(nt, s) != NK_CallNode || nt_ref(nt, s, "receiver") >= 0) continue;
@@ -18756,8 +18776,8 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
         if (incl_hook_returns(nt, hb)) {
           int call = incl_hook_call(nt, s, av[j], is_ext ? "extended" : "included");
           if (call < 0) continue;
-          incl_emit_stmt(nt, call, &out, &no, &cap);
-          incl_range_add(&rg, was, no);
+          incl_emit_stmt(nt, call, &out, &no, &cap, NULL);
+          incl_range_add(&rg, was, no, NULL, NULL);
           spliced = 1;
           continue;
         }
@@ -18766,13 +18786,16 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
         InclSubst is = { param, cls, av[j], hook_mod };
         incl_subst(nt, clone, &is, 1);
         int hn = 0; const int *hs = nt_kind(nt, clone) == NK_StatementsNode ? nt_arr(nt, clone, "body", &hn) : NULL;
-        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap); incl_range_add(&rg, was, no); spliced = 1; continue; }
+        const char *hl = nt_str(nt, hook, "locals");
+        char *frame = strdup(hl ? hl : "");   /* the hook's frame, then the blocks' it unwraps */
+        if (!frame) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        if (!hs) { incl_emit_stmt(nt, clone, &out, &no, &cap, &frame); incl_range_add(&rg, was, no, frame, param); spliced = 1; continue; }
         int *hcp = hn > 0 ? malloc(sizeof(int) * (size_t)hn) : NULL;
-        if (hn > 0 && !hcp) continue;
+        if (hn > 0 && !hcp) { free(frame); continue; }
         if (hn > 0) memcpy(hcp, hs, sizeof(int) * (size_t)hn);
-        for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap);
+        for (int q = 0; q < hn; q++) incl_emit_stmt(nt, hcp[q], &out, &no, &cap, &frame);
         free(hcp);
-        incl_range_add(&rg, was, no);
+        incl_range_add(&rg, was, no, frame, param);
         spliced = 1;
       }
     }
@@ -18781,9 +18804,10 @@ int desugar_included_hooks(Compiler *c, HostStep *h) {
       changed = 1;
       /* each range as the host leaves it: a graft can change its count */
       for (int i = 0, grew = 0; i < rg.len; i++)
-        grew += host_splice(c, h, cn, body, rg.at[i] + grew, rg.n[i]) - rg.n[i];
+        grew += host_splice(c, h, cn, body, rg.at[i] + grew, rg.n[i], rg.frame[i], rg.gone[i]) - rg.n[i];
     }
-    free(rg.at); free(rg.n);
+    for (int i = 0; i < rg.len; i++) { free(rg.frame[i]); free(rg.gone[i]); }
+    free(rg.at); free(rg.n); free(rg.frame); free(rg.gone);
     free(out);
   }
   if (qn) for (int m = 0; m < n0; m++) free(qn[m]);
@@ -24264,10 +24288,12 @@ static const char *sce_eval_path(const NodeTable *nt, int site) {
 
 /* The frame an eval's text runs in, outermost scope first: each scope's
    locals, and the name each takes in the body the text is grafted into
-   (to[i] NULL: a scope the graft leaves, an unrolled loop's block). A frame
-   of no scope is one not known: code a hook spliced into its includer ran
-   in the hook's frame. Text there may name no local outside its defs, nor
-   make a call Prism could not tell from one. */
+   (to[i] NULL: a scope the graft leaves, an unrolled loop's block, or a
+   name it does not keep, a hook's parameter). A hook's code runs in the
+   hook's frame, its locals and those of the class_eval blocks the splice
+   unwraps. A frame of no scope is one not known (code spliced from a block
+   with parameters, or an includer's own block): text there may name no
+   local outside its defs, nor make a call Prism could not tell from one. */
 typedef struct SceScope { char **from, **to; int n; } SceScope;
 typedef struct SceFrame { const SceScope *s; int n; } SceFrame;
 static int sce_scope_find(const SceScope *sc, const char *nm) {
@@ -24972,11 +24998,14 @@ void sce_facts_free(struct SceFacts *f) {
 
 /* The statements body[at..at + n) of a class or module body (owner's): a
    class_eval of text known now becomes the text's statements, in place,
-   run in the owner's frame when they are its own code (own), in a frame not
-   known when a hook spliced them. A bare `private` before them, in the
-   body as written (not one a graft brought in), keeps every graft out. The
-   count the n statements become; *changed when the body changed. */
-static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, int own, int *changed) {
+   run in the frame whose locals are `locals` (comma-joined; NULL: a frame
+   not known), of which the frame does not keep `gone`: the owner's for its
+   own code, a hook's for the code a hook spliced. A bare `private` before
+   them, in the body as written (not one a graft brought in), keeps every
+   graft out. The count the n statements become; *changed when the body
+   changed. */
+static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals,
+                    const char *gone, int *changed) {
   NodeTable *nt = (NodeTable *)c->nt;
   struct SceFacts *f = sce_facts(h);
   int bn = 0; const int *bb0 = nt_arr(nt, body, "body", &bn);
@@ -24988,8 +25017,8 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
   if (!bb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   memcpy(bb, bb0 + at, sizeof(int) * (size_t)n);
   int *nb = NULL, nbn = 0, any = 0;
-  SceScope scope = { 0 };   /* the owner's frame, read at the first graft */
-  int framed = 0;
+  SceScope scope = { 0 };   /* the frame, read at the first graft */
+  int framed = 0, known = locals != NULL;
   for (int i = at; i < at + n; i++) {
     int st = bb[i - at];
     int *ins = NULL, nins = 0, ok = 0;
@@ -24999,9 +25028,13 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
                is_each_name(nt_str(nt, st, "name")) && nt_ref(nt, st, "arguments") < 0;
     if ((str >= 0 || each) && f->gate < 0) f->gate = sce_program_reflects_scoped(nt, &f->scoped);
     if (f->gate > 0 || ((str >= 0 || each) && f->scoped.n > 0 && sce_scoped_reaches(nt, &f->scoped, owner, 0))) { str = -1; each = 0; }
-    if ((str >= 0 || each) && own && !framed) sce_scope_of(&scope, nt_str(nt, owner, "locals"), 1);
+    if ((str >= 0 || each) && known && !framed) {
+      sce_scope_of(&scope, locals, 1);
+      int g = gone ? sce_scope_find(&scope, gone) : -1;
+      if (g >= 0) scope.to[g] = NULL;
+    }
     framed |= str >= 0 || each;
-    SceFrame fr = { &scope, own };
+    SceFrame fr = { &scope, known };
     if (str >= 0) {
       char *text = sce_text(nt, str, NULL, NULL);
       if (text) { ok = sce_graft(c, &fr, NULL, -1, text, st, &ins, &nins) >= 0; free(text); }
@@ -25024,8 +25057,8 @@ static int sce_body(Compiler *c, HostStep *h, int owner, int body, int at, int n
       if (var && estr >= 0 && ne >= 0) {
         /* the block's locals, which the graft outside it leaves */
         SceScope bs[2] = { scope, { 0 } };
-        if (own) sce_scope_of(&bs[1], nt_str(nt, blk, "locals"), 0);
-        SceFrame bfr = { bs, own ? 2 : 0 };
+        if (known) sce_scope_of(&bs[1], nt_str(nt, blk, "locals"), 0);
+        SceFrame bfr = { bs, known ? 2 : 0 };
         ok = 1;
         for (int e = 0; e < ne && ok; e++) {
           char *text = sce_text(nt, estr, var, elems[e]);
@@ -25070,22 +25103,24 @@ int desugar_static_class_eval(Compiler *c, HostStep *h) {
     int body = nt_ref(nt, id, "body");
     if (body < 0 || nt_kind(nt, body) != NK_StatementsNode) continue;
     int bn = 0; nt_arr(nt, body, "body", &bn);
-    sce_body(c, h, id, body, 0, bn, 1, &changed);
+    const char *ls = nt_str(nt, id, "locals");
+    sce_body(c, h, id, body, 0, bn, ls ? ls : "", NULL, &changed);
   }
   if (changed) comp_grow_node_arrays(c);
   return changed;
 }
 
 /* The graft on reach of a splice: the statements body[at..at + n), which a step
-   put into owner's body. The count the n statements become. A class or
+   put into owner's body, run in a frame of the locals `locals` but `gone`
+   (NULL: not known). The count the n statements become. A class or
    module body among them was grafted with the program's: a hook's body,
    a method's, defines none, and a class_eval block the splice unwraps and
    the block a Class.new body was made of were the program's. */
-int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   NodeKind ok = nt_kind(nt, owner);
-  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, 0, &changed);
+  if (ok == NK_ClassNode || ok == NK_ModuleNode) n = sce_body(c, h, owner, body, at, n, locals, gone, &changed);
   if (changed) comp_grow_node_arrays(c);
   return n;
 }
