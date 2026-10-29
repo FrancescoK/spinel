@@ -779,6 +779,10 @@ const char *block_param_name(Compiler *c, int block, int idx);
 int native_call_ret_plain_num(Compiler *c, int v);   /* a native method declared :int / :float */
 int param_strict(Compiler *c, int mi, int k, const char **what, int *ord);   /* a parameter whose nil raises at its first use */
 int block_param_used_up(Compiler *c, int blk, const char *nm, int value);
+/* May the body of `loop { }` call loop_call raise StopIteration, which
+   Kernel#loop rescues (analyze_util.c)? 0 only when nothing in it, nor any
+   method it calls by name, can: its emitters then open no setjmp frame. */
+int loop_may_stop(Compiler *c, int loop_call);
 /* The name of a numbered block parameter (`_1`..`_9`) on this parameters node.
    Per BLOCK where a scope holds more than one such block; see
    scope_numbered_block_params. Every site that needs the name goes here. */
