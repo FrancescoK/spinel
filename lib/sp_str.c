@@ -541,11 +541,13 @@ const char*sp_str_repeat(const char*s,sp_int n){SP_GC_ROOT_STR(s);
   sp_str_set_len(r,total);
   return sp_str_bin_from(r,s);
 }
-/* root `s` before the IntArray_new GC-alloc: the argument is often a fresh
+/* root `s` before the IntArray's GC-alloc: the argument is often a fresh
    unrooted temp (`data[off, n].bytes` in a fused times.map -- doom's
    Colormap.load), and a collection triggered by the alloc freed it mid-call,
-   yielding an empty result exactly on GC-boundary iterations. */
-sp_IntArray*sp_str_bytes(const char*s){SP_GC_ROOT_STR(s);sp_IntArray*a=sp_IntArray_new();if(!s)sp_nil_recv("bytes");size_t n=sp_str_byte_len(s);for(size_t i=0;i<n;i++)sp_IntArray_push(a,(sp_int)(unsigned char)s[i]);return a;}
+   yielding an empty result exactly on GC-boundary iterations. The Array is
+   made at its final size: pushed into from empty, it was reallocated at
+   every doubling past 16 and checked for room at every byte. */
+sp_IntArray*sp_str_bytes(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("bytes");size_t n=sp_str_byte_len(s);sp_IntArray*a=sp_IntArray_new_fill((sp_int)n,0);for(size_t i=0;i<n;i++)a->data[i]=(sp_int)(unsigned char)s[i];return a;}
 const char*sp_str_lstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("lstrip");size_t len=sp_str_byte_len(s);size_t a=0;while(a<len&&(isspace((unsigned char)s[a])||s[a]=='\0'))a++;size_t n=len-a;char*r=sp_str_alloc(n);memcpy(r,s+a,n);r[n]=0;return sp_str_bin_like(s,r);}
 const char*sp_str_rstrip(const char*s){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("rstrip");size_t len=sp_str_byte_len(s);size_t b=len;while(b>0&&(isspace((unsigned char)s[b-1])||s[b-1]=='\0'))b--;char*r=sp_str_alloc(b);memcpy(r,s,b);r[b]=0;return sp_str_bin_like(s,r);}
 /* String#b: a fresh, unfrozen copy tagged BINARY (ASCII-8BIT). The dup alone
