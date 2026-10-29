@@ -30,7 +30,7 @@ Shape#initialize: def#7 private end=yes
 Shape#w: reader#10 end=yes
 Shape#h: reader#10 end=yes
 opaque Shape: opaque#12
-Shape#odd#__cond1: def#14 may end=unknown
+Shape#odd#__cond1: def#14 may end=unknown open
 $__cond_def1: write#15 may
 Shape#odd: def#16 end=yes
 const Shape::KEEP: write#17

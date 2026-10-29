@@ -51,5 +51,5 @@ B__Kind#kind: def#11 end=yes
 const C: write#12
 C#first_who: alias#14 (who: def#5) end=yes
 const D: write#16
-D#maybe: define_method#18 may end=unknown
+D#maybe: define_method#18 may end=unknown open
 D#sure: def#19 end=yes

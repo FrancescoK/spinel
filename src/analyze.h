@@ -226,6 +226,17 @@ void elab_record_builders(Compiler *c);
    hook (`inherited`, `included`, `method_added`, ...) is asked as the
    singleton method it is: sg = 1. */
 int elab_method_at(Compiler *c, int cls, const char *name, int sg, LoadPoint p, const LrDef **out);
+/* is the history of cls's method `name` (singleton when sg) open: does a
+   version after its last surely applied one (applied 1, lr_stmt_applied)
+   stand under a run-time condition in its class body (applied 2), or in an
+   iterator's block or a begin body with rescue clauses (partial), so that
+   the method the load phase ends with is the last version that ran, which
+   only the run time knows? Made once for every history, as the record
+   stands (a later entry asks it again). 0 before the record is made. */
+int elab_history_open(Compiler *c, int cls, int sg, const char *name);
+/* fn(arg, cls, sg, name) for each open history, in the order the record
+   made them; fn does not change the record */
+void elab_open_histories(Compiler *c, void (*fn)(void *arg, int cls, int sg, const char *name), void *arg);
 /* the versions of method `name` the record holds, in every class's and
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */

@@ -66,8 +66,11 @@ int g_dump_load_record = 0;
    once (a loop, an iterator's block, a begin body a rescue may retry), -1
    for none: a statement after it in that body may also run before it.
    fmay, fpartial: may and partial counted from the frame (ElabPos): a
-   class body opened in an iterator's block runs its statements whole. */
-typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay, fpartial; } LrStmt;
+   class body opened in an iterator's block runs its statements whole.
+   list: the statement list it is an element of (a StatementsNode; -1 for
+   a lone expression), up: the statement whose body holds it (-1 at a
+   file's top level), which lr_may_dominates climbs. */
+typedef struct { int node, file, region, top, rank, depth, frame, last, rep; unsigned char may, partial, fmay, fpartial; int list, up; } LrStmt;
 
 /* The order questions SPINEL_ELAB_CHECK counts, by reader */
 typedef struct { const char *reader; long asked, differ; } LrCheck;
@@ -119,6 +122,7 @@ struct LoadRecord {
   int builders;              /* the builder blocks recorded before their class was made (lr_frame) */
   /* the method histories by name (lr_vers_index), as of nentries entries */
   long nentries, indexed;
+  long opened;               /* LrHist.open is of this many entries (lr_open_make), -1 for none made */
   struct LrSettle *set; int nset, cset;   /* the answers recorded ahead of a later region, to recompute (lr_settle_regions) */
   unsigned char unseen;      /* elab_runs_unseen's memo: 1 no, 2 yes */
   unsigned char consts;      /* lr_const_seen's memo: 1 the program makes constants only as it writes them, 2 not */
@@ -178,7 +182,7 @@ static int lr_add(ElabWalk *w, int node, ElabPos *pos) {
     if (!r->st) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   }
   int k = r->nst++;
-  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial, pos->fmay, pos->fpartial };
+  r->st[k] = (LrStmt){ node, pos->file, w->region, pos->top < 0 ? k : pos->top, -1, pos->depth, pos->frame, w->reg ? INT_MAX : k, pos->rep, pos->may, pos->partial, pos->fmay, pos->fpartial, pos->list, pos->e };
   r->at[node] = k;
   pos->e = k; pos->top = r->st[k].top; pos->kind = EP_SPINE;
   return k;
@@ -216,6 +220,7 @@ static ElabPos elab_body_pos(const NodeTable *nt, int b, ElabPos q) {
   if (k == NK_BeginNode) { q.kind = EP_SPINE; return q; }
   q.depth++;
   q.kind = k == NK_StatementsNode ? EP_LIST : EP_NEW;
+  q.list = -1;
   return q;
 }
 
@@ -247,7 +252,7 @@ ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp) {
   if (pp->e < 0 || ch < 0) return q;
   if (k == NK_DefNode) q.bits |= LR_LATE | LR_BODY;
   else if (k == NK_LambdaNode || (k == NK_BlockNode && pp->defer)) q.bits |= LR_LATE;
-  if (pp->kind == EP_LIST) { q.kind = EP_NEW; return q; }
+  if (pp->kind == EP_LIST) { q.kind = EP_NEW; q.list = p; return q; }
   int spine = pp->kind == EP_SPINE;
   if (!spine && k != NK_CallNode) return q;
   switch (k) {
@@ -469,7 +474,7 @@ static int elab_site_part(void *ud, int id, ElabPos *q) {
   return 1;
 }
 void elab_load_sites(Compiler *c, int stmt, void (*fn)(void *ud, int load, int in_place), void *ud) {
-  ElabPos at = { .e = 0, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW };
+  ElabPos at = { .e = 0, .top = -1, .frame = -1, .rep = -1, .list = -1, .kind = EP_NEW };
   ElabSites s = { c->nt, fn, ud };
   if (stmt >= 0 && elab_site_part(&s, stmt, &at)) elab_parts(c->nt, stmt, &at, elab_site_part, &s);
 }
@@ -492,7 +497,8 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
     c->nscope[root] = sc; c->node_cbody[root] = -1;
     if (st >= 0) { c->nscope[st] = sc; c->node_cbody[st] = -1; }
   }
-  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .kind = EP_NEW }, rp = at;
+  ElabPos at = { .e = -1, .file = f, .top = -1, .frame = -1, .rep = -1, .list = -1, .kind = EP_NEW }, rp = at;
+  at.list = st;   /* the top-level statements are the elements of the root's list */
   if (site) { at.may = rp.may = at.fmay = rp.fmay = site->may; at.partial = rp.partial = at.fpartial = rp.fpartial = site->partial; }
   int e = lr_add(w, root, &rp);
   w->r->st[e].last = e;
@@ -805,8 +811,10 @@ static void lr_settle_add(LoadRecord *r, int fam, int node, int cls, int sg, int
 static void lr_settle_regions(Compiler *c);
 static int lr_form_answer(Compiler *c, int node, int cls, int sg);
 /* a: class, or -2 - ElabVar; b: singleton; nlink: the next method history
-   of the same name (lr_vers_index) */
-typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink; } LrHist;
+   of the same name (lr_vers_index); open: the history's end-of-load version
+   may be a later one than the last the load phase surely applies
+   (elab_history_open) */
+typedef struct LrHist { int a, b; char *name; LrDef *v; int n, cap, next, nlink; unsigned char open; } LrHist;
 /* sup: the superclass the first header naming one names, as resolved
    there (has_sup); LR_UNKNOWN_CLASS when it is not a class the record knows */
 typedef struct LrClass { LrOpen *open; int nopen, copen; LrMixin *mix; int nmix, cmix, sup, sup_ref; unsigned char has_sup; } LrClass;
@@ -844,7 +852,7 @@ static LrHist *lr_hist(LoadRecord *r, int a, int b, const char *name, int make) 
   if (!make) return NULL;
   r->hist = lr_grow(r->hist, &r->chist, r->nhist, sizeof *r->hist);
   LrHist *x = &r->hist[r->nhist];
-  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h], -1 };
+  *x = (LrHist){ a, b, strdup(name), NULL, 0, 0, r->hhead[h], -1, 0 };
   if (!x->name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   r->hhead[h] = r->nhist++;
   return x;
@@ -1734,7 +1742,7 @@ static void lr_record_stmt(ElabRec *x, int e) {
   int own = k == NK_ProgramNode || k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode ||
             k == NK_AliasMethodNode || k == NK_UndefNode || (k == NK_CallNode && lr_nested_form(nt_str(nt, node, "name")));
   if (!own) {
-    ElabPos at = { .e = e, .file = s->file, .top = s->top, .frame = f, .depth = s->depth, .rep = s->rep,
+    ElabPos at = { .e = e, .file = s->file, .top = s->top, .frame = f, .depth = s->depth, .rep = s->rep, .list = -1,
                    .may = s->may, .partial = s->partial, .fmay = s->fmay, .fpartial = s->fpartial, .kind = EP_SPINE };
     LrNested n = { x, fc, fs, f >= 0 ? r->st[f].node : nt_root(nt, s->file), vs };
     elab_parts(nt, node, &at, lr_nested_part, &n);
@@ -1792,7 +1800,7 @@ static void lr_record_drop(LoadRecord *r) {
   for (int b = 0; r->hhead && b < LR_BUCKETS; b++) r->hhead[b] = -1;
   r->nhist = 0; r->frontier = 0; r->nset = 0; r->builders = 0;
   r->slot_builds = -1;
-  r->nentries = 0; r->indexed = -1;   /* the by-name index is of the dropped histories */
+  r->nentries = 0; r->indexed = r->opened = -1;   /* the by-name index and the open bits are of the dropped histories */
   free(r->surf); free(r->surf_at); r->surf = NULL; r->surf_at = NULL;
 }
 
@@ -2321,19 +2329,33 @@ int elab_runs_with(Compiler *c, int node, int def) {
 /* The live version of history h at p (late: as of the load's end):
    ELAB_YES, ELAB_NO (none: ask on), LR_STOP (undefined here), ELAB_UNKNOWN. */
 enum { LR_STOP = 3 };
+/* Has may version v run when p does: is p after v in the statement list
+   holding v's statement, or in a body nested in a later statement of that
+   list (the same branch has run v)? Climbs the statements whose bodies
+   hold p's, as deep as p is nested. */
+static int lr_may_dominates(const LoadRecord *r, const LrDef *v, LoadPoint p) {
+  const LrStmt *sv = lr_stmt_of(r, v->node);
+  if (!sv || sv->region < 0 || sv->list < 0 || p.region != sv->region || p.seq < 0 || p.seq >= r->nst) return 0;
+  for (int x = p.seq; x >= 0; x = r->st[x].up)
+    if (r->st[x].list == sv->list) return x > (int)(sv - r->st);
+  return 0;
+}
+
 /* The last entry of history h before p (late: of the load phase), in *out
    (when asked): ELAB_YES, ELAB_NO for none, ELAB_UNKNOWN when one in
    another region or one that may not have run comes after the last sure
    one -- at the load phase's end too, as elab_written_before answers.
-   skip_vis passes over the visibility versions of a method. A constant
-   history with only uncertain writes supplies a candidate in *out. */
+   A may entry counts as sure at a p its branch has run it for
+   (lr_may_dominates). skip_vis passes over the visibility versions of a
+   method. A constant history with only uncertain writes supplies a
+   candidate in *out. */
 static int lr_last_before(Compiler *c, const LrHist *h, LoadPoint p, int late, int skip_vis, const LrDef **out) {
   int unsure = 0;
   for (int i = h ? h->n - 1 : -1; i >= 0; i--) {
     const LrDef *v = &h->v[i];
     if ((skip_vis && v->kind == LR_VIS) || v->unplaced) continue;
     int o = late ? (elab_point_of(c, v->node).region == 0 ? PROG_BEFORE : PROG_UNKNOWN) : elab_cmp(elab_point_of(c, v->node), p);
-    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && v->may)) {
+    if (o == PROG_UNKNOWN || (o == PROG_BEFORE && v->may && (late || !lr_may_dominates(c->lrec, v, p)))) {
       unsure = 1;
       if (out && h->a == -2 - (int)ELAB_CONST && !*out) *out = v;
       continue;
@@ -3336,6 +3358,51 @@ static int lr_surface_of(Compiler *c, const LrHist *h, ElabSurface *s) {
   return s->node >= 0;
 }
 
+/* The open bit of every method history, once for all of them, as of the
+   entries recorded (a later entry, or the record made again, asks for it
+   anew): some version of the history after its last applied-1 version is
+   applied 2 (under a run-time condition in its class body) or partial (in
+   an iterator's block or a begin body with rescue clauses, at a point),
+   which the registration leaves to the run time. A visibility change is no
+   version. */
+static void lr_open_make(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  if (r->opened == r->nentries) return;
+  for (int i = 0; i < r->nhist; i++) {
+    LrHist *h = &r->hist[i];
+    h->open = 0;
+    if (h->a < LR_MAIN) continue;
+    for (int j = h->n - 1; j >= 0 && !h->open; j--) {
+      const LrDef *v = &h->v[j];
+      if (v->kind > LR_REMOVE) continue;
+      int ap = lr_applied(c, v);
+      if (ap == 1) break;
+      const LrStmt *s = lr_stmt_of(r, v->node);
+      h->open = ap == 2 || (s && s->region >= 0 && s->fpartial);
+    }
+  }
+  r->opened = r->nentries;
+}
+
+int elab_history_open(Compiler *c, int cls, int sg, const char *name) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return 0;
+  const LrHist *h = lr_hist(r, cls, sg != 0, name, 0);
+  if (!h) return 0;
+  lr_open_make(c);
+  return h->open;
+}
+
+void elab_open_histories(Compiler *c, void (*fn)(void *arg, int cls, int sg, const char *name), void *arg) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->recorded) return;
+  lr_open_make(c);
+  for (int i = 0; i < r->nhist; i++) {
+    const LrHist *h = &r->hist[i];
+    if (h->open) fn(arg, h->a, h->b, h->name);
+  }
+}
+
 const ElabSurface *elab_class_surface(Compiler *c, int cls, int sg, int *n) {
   LoadRecord *r = c->lrec;
   *n = 0;
@@ -3624,6 +3691,7 @@ void elab_dump(Compiler *c, FILE *out) {
             s->file, nt_type(nt, s->node), nm ? " " : "", nm ? nm : "", (int)nt_int(nt, s->node, "node_line", 0));
   }
   if (!r->recorded) return;
+  lr_open_make(c);
   static const char *const kinds[] = { "def", "define_method", "reader", "writer", "alias", "copy", "undef", "remove", "vis", "write", "opaque" };
   static const char *const words[] = { "", "module_function", "public", "private", "protected" };
   static const char *const mixes[] = { "include", "extend", "prepend", "singleton_prepend" };
@@ -3672,6 +3740,7 @@ void elab_dump(Compiler *c, FILE *out) {
     }
     if (h->a >= LR_MAIN)   /* what a query from a method body gets: as of the load phase's end */
       fprintf(out, " end=%s", (const char *[]){ "no", "yes", "unknown" }[elab_method_at(c, h->a, h->name, h->b, (LoadPoint){ -1, -1 }, NULL)]);
+    if (h->open) fputs(" open", out);
     fputc('\n', out);
   }
   /* a history with two versions or more: each one's interval, up to the
