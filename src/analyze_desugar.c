@@ -6223,10 +6223,10 @@ void enum_send_copy_take(NodeTable *nt, int call) {
   /* collect_concat is flat_map under another name, and detect find
      (LR_ENUM_NAME's rows): the call takes the copy of the name the
      definition has, under that name, as desugar_builtins renames a written
-     one -- unless the program defines the alias itself */
+     one; a class with its own method of the alias keeps it, answered by
+     the name the call was written with (desugar_builtin_enum_calls) */
   const LowerRow *alias = bi < 0 && nm ? lower_row_named(LR_ENUM_NAME, nm) : NULL;
-  if (alias && !program_defines_name(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
-  else alias = NULL;
+  if (alias) bi = builtin_enum_name_index(alias->target);
   if (bi < 0 || bi >= g_enum_send_copy_n || g_enum_send_copy[bi] < 0) return;
   if (alias) {
     nt_node_set_str(nt, call, "orig_name", nm);
@@ -13344,10 +13344,13 @@ int desugar_builtins(Compiler *c) {
       }
     }
     /* collect_concat is flat_map under another name, and detect find: the
-       call takes the name the definition has (LR_ENUM_NAME's rows; a
-       program that defines collect_concat or detect itself keeps its call) */
+       call takes the name the definition has (LR_ENUM_NAME's rows). A class
+       of the program with its own method of the alias keeps it: the rewrite
+       answers a receiver of that class by the name the call was written
+       with (orig_name), where a program-wide test left an Array's
+       collect_concat no method at all. */
     const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
-    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name(nt, n0, alias->name)) {
+    if (alias && builtin_enum_name_index(alias->target) >= 0) {
       /* (a send keeps its own name until desugar_public_send_recv
          retargets it, which renames it so: renamed here, `a.send(:detect)`
          was a call of find with :detect for its argument) */
@@ -14385,8 +14388,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
        on whatever it is handed, and a boxed String's `special?` (`count >
        1`) reached String#count and raised ArgumentError. Only a value that
        is an Enumerable -- an Array, a Hash, a Range, an Enumerator, a
-       Struct, an IO, or an instance of a program class with Enumerable
-       behind it -- takes the copy; any other takes the call as written,
+       Struct, an IO, a Dir, or an instance of a program class with
+       Enumerable behind it -- takes the copy; any other takes the call as written,
        whose answer is CRuby's NoMethodError. (`is_a?(Enumerable)` itself
        answers false for a boxed builtin.) */
     int scal_arm = rt == TY_POLY && !safe_nav && !range_arm && !wo_arm && nt_int(nt, copy, "enum_own_def", 0);
@@ -14423,7 +14426,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
       if (scal_arm) {
-        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO" };
+        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO", "Dir" };
         const int nenums = (int)(sizeof enums / sizeof enums[0]);
         int is_enum = -1;
         for (int k = 0; k < nenums + c->nclasses; k++) {

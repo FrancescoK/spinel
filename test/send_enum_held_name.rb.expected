@@ -45,8 +45,17 @@ true
 {1 => 2}
 [true, true]
 [true, true]
-"undefined method 'special?'"
-"undefined method 'special?'"
-"undefined method 'special?'"
-"undefined method 'special?'"
-"undefined method 'special?'"
+["undefined method 'special?'", "undefined method 'special?'"]
+["undefined method 'special?'", "undefined method 'special?'"]
+["undefined method 'special?'", "undefined method 'special?'"]
+["undefined method 'special?'", "undefined method 'special?'"]
+["undefined method 'special?'", "undefined method 'special?'"]
+[true, true]
+[1, 2]
+[1, 2]
+[1, 2]
+:own
+:own
+[:own, :own]
+[2, 2]
+[:plain, :plain]
