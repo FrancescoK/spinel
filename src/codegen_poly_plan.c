@@ -232,6 +232,15 @@ static int zero_arg_default_allocates(Compiler *c, Scope *ds, int ai) {
   return ds->pdefault && ds->pdefault[ai] >= 0 && subtree_may_allocate(c->nt, ds->pdefault[ai]);
 }
 
+/* Does a default after the first run something (`def z(a = @n, b = (@n
+   += 1))`)? Made in the argument list, its effect could land ahead of an
+   earlier default's read; bound in order (ctor_arm_arg), a reads 1 first. */
+static int later_default_runs(Compiler *c, Scope *ds) {
+  for (int ai = 1; ds->pdefault && ai < ds->nparams; ai++)
+    if (ds->pdefault[ai] >= 0 && subtree_has_side_effect(c, ds->pdefault[ai])) return 1;
+  return 0;
+}
+
 /* The defaults of a zero-argument call's parameters, `, d0, d1...` into cb.
    Each is made in the C argument list, so a new object one makes (an empty
    rest's Array, an empty **kwrest's Hash) was freed by a later default's
@@ -438,7 +447,7 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
          a rooted local in order (ctor_arm_arg), which a later default reads
          and which holds what an earlier default made; else the defaults go
          in the argument list, an allocating one held in a temp */
-      int pd_uid = default_refs_earlier_param(c, ds) ? ++g_tmp : 0, pd_base = g_nren;
+      int pd_uid = default_refs_earlier_param(c, ds) || later_default_runs(c, ds) ? ++g_tmp : 0, pd_base = g_nren;
       if (!pd_uid) {
         /* what a default hoists runs inside this arm, on its receiver:
            ahead of the switch it read a receiver not yet there */

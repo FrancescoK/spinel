@@ -80,3 +80,18 @@ class R
   def ys(o) = [o.y, o.y2]
 end
 p R.new.ys(Q.new), R.new.ys(P.new)
+
+# a later default with an effect runs after an earlier default's read
+class P2
+  def initialize = @n = 1
+  def z(a = @n, b = (@n += 1)) = [a, b]
+  def y(a = @n, b = (@n += 1), c = @n) = [a, b, c]
+end
+class Q2
+  def z(a = 0, b = 0) = :q
+  def y(a = 0, b = 0, c = 0) = :q
+end
+class R
+  def zy(o) = [o.z, o.y]
+end
+p R.new.zy(Q2.new), R.new.zy(P2.new)
