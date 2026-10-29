@@ -22032,7 +22032,7 @@ int tail_iter_receiver(Compiler *c, int id) {
 /* `n.times { }`, `lo.upto(hi) { }`, `x.step(..) { }` and the rest of the
    numeric iterators emit_call's value form runs as a loop and answers the
    receiver of -- the same receiver types it takes. */
-static int num_iter_answers_recv(Compiler *c, int id) {
+int num_iter_answers_recv(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   int r = nt_ref(nt, id, "receiver");
