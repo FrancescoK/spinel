@@ -2638,6 +2638,15 @@ static int lr_chain_one(Compiler *c, int cls, int sg, const char *name, ElabVers
   }
   return n;
 }
+ElabStamp elab_stamp(Compiler *c) {
+  const LoadRecord *r = c->lrec;
+  ElabStamp s = { c->nt->version, 0, 0, 0, 0 };
+  if (r) { s.rec = r->ver; s.nhist = r->nhist; s.ncls = r->ncls; s.recorded = r->recorded; }
+  return s;
+}
+int elab_stamp_same(ElabStamp a, ElabStamp b) {
+  return a.nt == b.nt && a.rec == b.rec && a.nhist == b.nhist && a.ncls == b.ncls && a.recorded == b.recorded;
+}
 int elab_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap) {
   LoadRecord *r = c->lrec;
   return r && r->recorded && name && cls >= LR_MAIN ? lr_chain_versions(c, cls, sg, name, out, 0, cap, 0) : -1;

@@ -829,6 +829,59 @@ static int ct_pin_of(const Compiler *c, int id) {
 static int ct_top_version(const Compiler *c, int vi, unsigned flags) {
   return !(flags & CT_TOP) && c->scopes[vi].class_id < 0;
 }
+/* (mixed through the multiply and shifts of a finalizer: the keys run over
+   small ranges, and the sum or xor of their products fell in long runs) */
+static unsigned ver_mix(unsigned h) {
+  h ^= h >> 15; h *= 0xC2B2AE35u; h ^= h >> 13;
+  return h;
+}
+/* How many versions rcls's chain holds of name (two at most counted: 0, 1 or
+   2 for more), and whether the first is a plain def, kept by (class, side,
+   name) for the record as it stands (elab_stamp): every call
+   asked of every class of a name asks it, and the answer is the chain's. */
+struct VerChain { struct VerChainSlot { const char *name; int rcls, sg, n, def; } *slot; int cap, used; ElabStamp stamp; };
+void ver_chain_free(Compiler *c) {
+  if (!c->ver_chain) return;
+  free(c->ver_chain->slot);
+  free(c->ver_chain);
+  c->ver_chain = NULL;
+}
+static unsigned ver_chain_hash(const char *name, int rcls, int sg) {
+  return ver_mix(sp_strhash(name) + (unsigned)rcls * 0x9E3779B1u + (unsigned)sg * 0x85EBCA6Bu);
+}
+static int ver_chain_count(Compiler *c, int rcls, int sg, const char *name, int *first_def) {
+  struct VerChain *m = c->ver_chain;
+  if (m && !elab_stamp_same(m->stamp, elab_stamp(c))) { ver_chain_free(c); m = NULL; }
+  if (!m) {
+    if (!(c->ver_chain = m = calloc(1, sizeof *m))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    m->stamp = elab_stamp(c);
+  }
+  if (2 * (m->used + 1) > m->cap) {   /* grown: every kept answer moves */
+    struct VerChainSlot *old = m->slot;
+    int ocap = m->cap;
+    m->cap = ocap ? 2 * ocap : 1024;
+    if (!(m->slot = calloc((size_t)m->cap, sizeof *m->slot))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!old[i].name) continue;
+      int j = (int)(ver_chain_hash(old[i].name, old[i].rcls, old[i].sg) & (unsigned)(m->cap - 1));
+      while (m->slot[j].name) j = (j + 1) & (m->cap - 1);
+      m->slot[j] = old[i];
+    }
+    free(old);
+  }
+  int j = (int)(ver_chain_hash(name, rcls, sg) & (unsigned)(m->cap - 1));
+  for (; m->slot[j].name; j = (j + 1) & (m->cap - 1))
+    if (m->slot[j].rcls == rcls && m->slot[j].sg == sg && sp_streq(m->slot[j].name, name)) {
+      *first_def = m->slot[j].def;
+      return m->slot[j].n;
+    }
+  ElabVersion one[2];
+  int n = elab_chain_versions(c, rcls, sg, name, one, 2), def = n >= 1 && one[0].v->kind == LR_DEF;
+  m->slot[j] = (struct VerChainSlot){ name, rcls, sg, n, def };
+  m->used++;
+  *first_def = def;
+  return n;
+}
 /* The version of `name` call id runs, when the method has more than one
    (#9898): a call at a load point gets the version live there; any other
    (a load point in a body that runs again, a method body, a block kept to
@@ -840,12 +893,11 @@ static int ct_top_version(const Compiler *c, int vi, unsigned flags) {
    entry was made. *span (when asked): how many versions the window
    reaches (elab_method_span), 0 when no window was asked. */
 static int ct_version_at(Compiler *c, int id, int cls, const char *name, unsigned flags, int mi, int *def_class, int *span) {
-  int sg = (flags & CT_CMETHOD) != 0, rcls = flags & CT_TOP ? -1 : cls, vi = -1, dc = -1, n = 0;
+  int sg = (flags & CT_CMETHOD) != 0, rcls = flags & CT_TOP ? -1 : cls, vi = -1, dc = -1, n = 0, first_def = 0;
   const LrDef *d = NULL;
-  ElabVersion one[2];
   /* one def on rcls's whole chain: the table's (a name with versions on
      other chains only) */
-  if (elab_chain_versions(c, rcls, sg, name, one, 2) == 1 && one[0].v->kind == LR_DEF) {
+  if (ver_chain_count(c, rcls, sg, name, &first_def) == 1 && first_def) {
     if (span) *span = 0;
     return mi;
   }
@@ -897,7 +949,7 @@ static struct VerMemo *ver_memo_slot(Compiler *c, int id, int cls, const char *n
       }
     free(old);
   }
-  unsigned h = ((unsigned)id * 2654435761u) ^ ((unsigned)cls * 40503u) ^ flags;
+  unsigned h = ver_mix(((unsigned)id * 0x9E3779B1u) ^ (((unsigned)cls + 0x7F4A7C15u) * 0x85EBCA6Bu) ^ (flags * 0x27D4EB2Fu));
   for (int i = (int)(h & (unsigned)(c->ver_memo_cap - 1));; i = (i + 1) & (c->ver_memo_cap - 1)) {
     struct VerMemo *m = &c->ver_memo[i];
     if (!m->name || (m->id == id && m->cls == cls && m->flags == flags && (m->name == name || sp_streq(m->name, name)))) return m;
@@ -1052,6 +1104,53 @@ static void ct_class_and_descendants(Compiler *c, int id, const char *nm, int k,
   const int *ds = k >= 0 ? comp_descendants(c, k, &nd) : NULL;
   for (int i = -1; i < nd; i++) fn(c, id, nm, i < 0 ? k : ds[i], flags, arg);
 }
+/* The classes (and sides) that hold a history of nm and whose chain of it
+   has two or more versions: of the others no entry is made and no version
+   is marked (ver_need, cr_mark_version), so a call whose receiver is not
+   known is asked of these alone. Kept by name for the record as it stands
+   (the node table's version): a program of thousands of classes that each
+   define a method of one name has a call of it for every class, and each
+   asked every class. */
+struct VerHold { ANameHash names; char **key; int *lo, *n, *pool; int npool, cpool; ElabStamp stamp; };
+void ver_hold_free(Compiler *c) {
+  struct VerHold *m = c->ver_hold;
+  if (!m) return;
+  for (int i = 0; i < m->names.n; i++) free(m->key[i]);
+  anh_free(&m->names);
+  free(m->key); free(m->lo); free(m->n); free(m->pool); free(m);
+  c->ver_hold = NULL;
+}
+static const int *ver_holders(Compiler *c, const char *nm, int *n) {
+  ElabVersion vs[VER_MAX_ARMS];
+  struct VerHold *m = c->ver_hold;
+  if (m && !elab_stamp_same(m->stamp, elab_stamp(c))) { ver_hold_free(c); m = NULL; }
+  if (!m) {
+    if (!(c->ver_hold = m = calloc(1, sizeof *m))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    m->stamp = elab_stamp(c);
+  }
+  int ix = anh_find(&m->names, nm);
+  if (ix < 0) {
+    int lo = m->npool, k, sg;
+    for (int h = -1; (h = elab_method_holder(c, nm, h, &k, &sg)) >= 0;) {
+      if (k < 0 || elab_chain_versions(c, k, sg, nm, vs, VER_MAX_ARMS) < 2) continue;
+      if (m->npool + 2 > m->cpool && !(m->pool = realloc(m->pool, sizeof(int) * (size_t)(m->cpool = m->cpool ? 2 * m->cpool : 64)))) {
+        fprintf(stderr, "spinel: out of memory\n"); exit(1);
+      }
+      m->pool[m->npool++] = k;
+      m->pool[m->npool++] = sg;
+    }
+    ix = m->names.n;
+    if (!(m->key = realloc(m->key, sizeof *m->key * (size_t)(ix + 1))) || !(m->lo = realloc(m->lo, sizeof(int) * (size_t)(ix + 1))) ||
+        !(m->n = realloc(m->n, sizeof(int) * (size_t)(ix + 1))) || !(m->key[ix] = strdup(nm))) {
+      fprintf(stderr, "spinel: out of memory\n"); exit(1);
+    }
+    anh_add(&m->names, m->key[ix]);
+    m->lo[ix] = lo;
+    m->n[ix] = (m->npool - lo) / 2;
+  }
+  *n = m->n[ix];
+  return m->pool + m->lo[ix];
+}
 void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void *arg) {
   const NodeTable *nt = c->nt;
   int r = nt_ref(nt, id, "receiver");
@@ -1082,9 +1181,10 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
   else if (ty_is_object(rt))
     ct_class_and_descendants(c, id, nm, ty_object_class(rt), 0, fn, arg);
   else {
+    int nh = 0;
+    const int *hold = ver_holders(c, nm, &nh);
     fn(c, id, nm, -1, CT_TOP, arg);
-    for (int h = -1, k, sg; (h = elab_method_holder(c, nm, h, &k, &sg)) >= 0;)
-      if (k >= 0) fn(c, id, nm, k, sg ? CT_CMETHOD : 0, arg);
+    for (int i = 0; i < nh; i++) fn(c, id, nm, hold[2 * i], hold[2 * i + 1] ? CT_CMETHOD : 0, arg);
   }
   free(rcs);
 }

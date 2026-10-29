@@ -339,6 +339,12 @@ int elab_chain_settled(Compiler *c, int cls, int sg, const char *name, LoadPoint
    not hold, a mixin's module is not known, or past cap. */
 typedef struct { const LrDef *v; int hist, n; } ElabVersion;
 int elab_chain_versions(Compiler *c, int cls, int sg, const char *name, ElabVersion *out, int cap);
+/* The state of the record and the node table an answer of elab_chain_versions
+   was read from: a kept answer holds while the stamp does (the table's
+   version, and the record's made-ness, size and map). */
+typedef struct { unsigned nt, rec; int nhist, ncls, recorded; } ElabStamp;
+ElabStamp elab_stamp(Compiler *c);
+int elab_stamp_same(ElabStamp a, ElabStamp b);
 /* can the program run code the record has not seen: a load whose target
    it could not resolve (a computed path, a load the parse left)? */
 int elab_runs_unseen(Compiler *c);

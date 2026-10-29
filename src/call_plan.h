@@ -104,6 +104,8 @@ int call_target(Compiler *c, int id, int cls, const char *name, unsigned flags, 
    each handed to fn with the flags call_target is asked with */
 int ct_version_named(Compiler *c, const char *nm);
 int ct_version_marked(Compiler *c, const char *nm);
+void ver_hold_free(Compiler *c);
+void ver_chain_free(Compiler *c);
 /* the method call id reaches when it can reach only main's own method of
    name, -1 for none (a call on main where main's method is defined) */
 int ct_main_target(Compiler *c, int id, const char *name);
