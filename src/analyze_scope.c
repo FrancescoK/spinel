@@ -9699,10 +9699,8 @@ static int pivs_local_escapes(Compiler *c, const char *vn) {
   return anh_find(&g_esc_names, vn) >= 0;
 }
 
-/* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
-   (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
-   does: the iterator's name in buf, 1 for such a call name. */
-static int pivs_enum_iter(const char *name, char *buf, size_t n) {
+/* See analyze_internal.h. */
+int pivs_enum_iter(const char *name, char *buf, size_t n) {
   if (strncmp(name, "__enum_", 7) != 0) return 0;
   const char *sep = strstr(name + 7, "__");
   if (!sep || (size_t)(sep - name - 7) >= n) return 0;

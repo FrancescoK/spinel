@@ -25,6 +25,7 @@ src/analyze.c ie_class_answers which classes answer the name
 src/analyze.c ie_class_value_target which classes answer the name
 src/analyze.c ie_poly_self_classes which classes answer the name
 src/analyze.c mixin_call_guarded which classes answer the name
+src/analyze.c oa_copy_name which classes define dup or clone (a program's own may answer anything)
 src/analyze.c mixin_earlier_reaches which modules answer the name
 src/analyze.c refuse_mixin_after_calls which classes and modules answer the name
 src/analyze_cls.c cf_arms which classes answer the name
