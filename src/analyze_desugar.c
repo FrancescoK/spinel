@@ -14453,6 +14453,7 @@ int desugar_builtin_scalar_calls(Compiler *c) {
    defaults on such a cycle are rewritten. */
 typedef struct {
   int def, param, val, bad;
+  int call0, ncalls;  /* its value's calls, from call0 in the list rd_subtree_calls fills */
   const char *cls;   /* the enclosing class or module's name, NULL at top level */
   int singleton;     /* `def self.m`, or a def inside `class << self` */
 } RdDefault;
@@ -14499,8 +14500,26 @@ static int rd_call_name_is(const LowerCtx *lc, const char *nm, const char *want)
 
 /* The program's ClassNodes, gathered once per run of
    desugar_recursive_param_defaults for rd_new_reaches: sweeping the table
-   for each `X.new` of each pair of defaults was most of the pass. */
-static int *rd_class_ids, rd_nclass_ids;
+   for each `X.new` of each pair of defaults was most of the pass. They are
+   kept by name, sorted by name and then id, so the bodies of one name are a
+   run found by a binary search, in program order. */
+typedef struct { const char *name; int id; } RdClass;
+static RdClass *rd_classes;
+static int rd_nclasses;
+static int rd_class_cmp(const void *a, const void *b) {
+  const RdClass *x = a, *y = b;
+  int c = strcmp(x->name, y->name);
+  return c ? c : (x->id > y->id) - (x->id < y->id);
+}
+/* the first class named `x`, or rd_nclasses */
+static int rd_class_first(const char *x) {
+  int lo = 0, hi = rd_nclasses;
+  while (lo < hi) {
+    int mid = lo + (hi - lo) / 2;
+    if (strcmp(rd_classes[mid].name, x) < 0) lo = mid + 1; else hi = mid;
+  }
+  return lo;
+}
 
 /* Does `X.new` run the initialize of class `cls`: X is cls, or a subclass
    that inherits cls's initialize without defining its own? Classes are
@@ -14508,10 +14527,8 @@ static int *rd_class_ids, rd_nclass_ids;
 static int rd_new_reaches(const NodeTable *nt, const char *x, const char *cls, int depth) {
   if (!x || !cls || depth > 16) return 0;
   if (sp_streq(x, cls)) return 1;
-  for (int q = 0; q < rd_nclass_ids; q++) {
-    int id = rd_class_ids[q];
-    const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
-    if (!cn || !sp_streq(cn, x)) continue;
+  for (int q = rd_class_first(x); q < rd_nclasses && sp_streq(rd_classes[q].name, x); q++) {
+    int id = rd_classes[q].id;
     int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
     for (int k = 0; k < bn; k++)
       if (fwd_node_is(nt, bv[k], "DefNode") && nt_ref(nt, bv[k], "receiver") < 0 &&
@@ -14551,32 +14568,36 @@ static int rd_call_reaches(const LowerCtx *lc, const NodeTable *nt, int call, co
   return want->singleton && cn && want->cls && sp_streq(cn, want->cls) && rd_call_name_is(lc, nm, wn);
 }
 
-/* Does the subtree at `id` call the method default `want` belongs to? `*bad`
-   is set when it holds something that would mean another thing inside a
-   method of its own: the caller's block, `super`, the method's name. */
-static int rd_subtree_calls(const LowerCtx *lc, const NodeTable *nt, int id, const RdDefault *from,
-                            const RdDefault *want, int *bad) {
-  if (id < 0 || id >= nt->count) return 0;
+/* The calls in the subtree at `id`, appended to `calls`: rd_call_reaches
+   asks each whether it reaches a default's method. `*bad` is set when the
+   subtree holds something that would mean another thing inside a method of
+   its own: the caller's block, `super`, the method's name. */
+typedef struct { int *ids; int n, cap; } RdCalls;
+static void rd_subtree_calls(const NodeTable *nt, int id, int *bad, RdCalls *calls) {
+  if (id < 0 || id >= nt->count) return;
   const char *ty = nt_type(nt, id);
   NodeKind ty_k = nt_kind(nt, id);
-  int hit = 0;
   if (ty) {
     if (ty_k == NK_YieldNode || ty_k == NK_SuperNode ||
         ty_k == NK_ForwardingSuperNode || ty_k == NK_DefNode ||
-        nt_kind(nt, id) == NK_ForwardingArgumentsNode) *bad = 1;
+        ty_k == NK_ForwardingArgumentsNode) *bad = 1;
     if (ty_k == NK_CallNode) {
       const char *nm = nt_str(nt, id, "name");
       if (nm && (sp_streq(nm, "block_given?") || sp_streq(nm, "__method__") ||
                  sp_streq(nm, "binding"))) *bad = 1;
-      if (want && rd_call_reaches(lc, nt, id, from, want)) hit = 1;
+      if (calls->n >= calls->cap) {
+        int nc = calls->cap ? calls->cap * 2 : 64;
+        int *g = realloc(calls->ids, sizeof *g * (size_t)nc);
+        if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+        calls->ids = g; calls->cap = nc;
+      }
+      calls->ids[calls->n++] = id;
     }
   }
   const SpNode *nd = &nt->nodes[id];
-  for (int j = 0; j < nd->nr; j++) hit |= rd_subtree_calls(lc, nt, nd->r[j].ref, from, want, bad);
+  for (int j = 0; j < nd->nr; j++) rd_subtree_calls(nt, nd->r[j].ref, bad, calls);
   for (int j = 0; j < nd->na; j++)
-    for (int k = 0; k < nd->a[j].n; k++)
-      hit |= rd_subtree_calls(lc, nt, nd->a[j].ids[k], from, want, bad);
-  return hit;
+    for (int k = 0; k < nd->a[j].n; k++) rd_subtree_calls(nt, nd->a[j].ids[k], bad, calls);
 }
 
 static int rd_subtree_reads(const NodeTable *nt, int id, const char *name) {
@@ -14621,6 +14642,7 @@ int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
   int n0 = nt->count;
   int nd = 0, cap = 0;
   RdDefault *ds = NULL;
+  RdCalls calls = { NULL, 0, 0 };
   for (int def = 0; def < n0; def++) {
     if (!fwd_node_is(nt, def, "DefNode") || !nt_str(nt, def, "name")) continue;
     int ps[256]; int np = rd_params(nt, def, ps, 256);
@@ -14632,15 +14654,17 @@ int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
       if (nd >= cap) {
         cap = cap ? cap * 2 : 16;
         RdDefault *g = realloc(ds, sizeof *ds * (size_t)cap);
-        if (!g) { free(ds); return 0; }
+        if (!g) { free(ds); free(calls.ids); return 0; }
         ds = g;
       }
       ds[nd].def = def; ds[nd].param = ps[i]; ds[nd].val = v; ds[nd].bad = 0;
-      rd_subtree_calls(lc, nt, v, NULL, NULL, &ds[nd].bad);
+      ds[nd].call0 = calls.n;
+      rd_subtree_calls(nt, v, &ds[nd].bad, &calls);
+      ds[nd].ncalls = calls.n - ds[nd].call0;
       nd++;
     }
   }
-  if (nd == 0) { free(ds); return 0; }
+  if (nd == 0) { free(ds); free(calls.ids); return 0; }
   const int *parent = lower_parents(c, lc);
   for (int i = 0; i < nd; i++) {
     ds[i].cls = NULL;
@@ -14659,22 +14683,31 @@ int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
   int *stack = malloc(sizeof(int) * (size_t)nd);
   unsigned char *seen = malloc((size_t)nd);
   if (!edge || !stack || !seen) {
-    free(edge); free(stack); free(seen); free(ds);
+    free(edge); free(stack); free(seen); free(ds); free(calls.ids);
     return 0;
   }
-  rd_nclass_ids = 0;
-  rd_class_ids = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
-  if (!rd_class_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  rd_nclasses = 0;
+  rd_classes = malloc(sizeof *rd_classes * (size_t)(n0 > 0 ? n0 : 1));
+  if (!rd_classes) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = 0; k < n0; k++)
-    if (fwd_node_is(nt, k, "ClassNode")) rd_class_ids[rd_nclass_ids++] = k;
-  for (int i = 0; i < nd; i++)
-    for (int j = 0; j < nd; j++) {
-      int bad = 0;
-      edge[(size_t)i * nd + j] =
-        (unsigned char)rd_subtree_calls(lc, nt, ds[i].val, &ds[i], &ds[j], &bad);
+    if (fwd_node_is(nt, k, "ClassNode")) {
+      const char *cn = nt_str(nt, nt_ref(nt, k, "constant_path"), "name");
+      if (cn) rd_classes[rd_nclasses++] = (RdClass){ cn, k };
     }
-  free(rd_class_ids);
-  rd_class_ids = NULL; rd_nclass_ids = 0;
+  qsort(rd_classes, (size_t)rd_nclasses, sizeof *rd_classes, rd_class_cmp);
+  /* default i reaches j when one of the calls in i's value does: the calls
+     were listed once above, so a default with none (a literal, most of them)
+     costs nothing here, where walking its value once per j cost nd walks */
+  for (int i = 0; i < nd; i++)
+    for (int k = 0; k < ds[i].ncalls; k++) {
+      int call = calls.ids[ds[i].call0 + k];
+      for (int j = 0; j < nd; j++)
+        if (!edge[(size_t)i * nd + j] && rd_call_reaches(lc, nt, call, &ds[i], &ds[j]))
+          edge[(size_t)i * nd + j] = 1;
+    }
+  free(calls.ids);
+  free(rd_classes);
+  rd_classes = NULL; rd_nclasses = 0;
   int changed = 0;
   for (int i = 0; i < nd; i++) {
     /* is default i reachable from itself? */
