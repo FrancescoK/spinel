@@ -17606,6 +17606,63 @@ static int hlm_cnt, hlm_nsc;
 static int *hlm_key, *hlm_off, hlm_hcap, hlm_used;   /* (node * 8 + depth) -> pool offset */
 static int *hlm_pool, hlm_pn, hlm_pcap;
 static int hls_get(Compiler *c, int val, int depth);
+/* The arguments in position pidx of the calls named `name`, in table order,
+   kept beside the memo while it stands: a parameter is asked at each depth
+   it is reached at, and every parameter of a method of that name asks the
+   same calls, so the calls of a name were walked once per ask -- seven
+   million call visits a round on a Rails application, for two hundred
+   thousand answers. */
+typedef struct { char *name; int pidx, off; } HlaSlot;
+static HlaSlot *hla_slot; static int hla_hcap, hla_used;
+static int *hla_pool, hla_pn, hla_pcap;   /* off: the count, then the argument nodes */
+static void hla_reset(void) {
+  for (int i = 0; i < hla_hcap; i++) free(hla_slot[i].name), hla_slot[i].name = NULL;
+  hla_used = 0; hla_pn = 1;
+}
+static int hla_args(Compiler *c, const char *name, int pidx) {
+  const NodeTable *nt = c->nt;
+  if (2 * (hla_used + 1) > hla_hcap) {
+    int ocap = hla_hcap; HlaSlot *os = hla_slot;
+    hla_hcap = ocap ? ocap * 2 : 1024;
+    hla_slot = calloc((size_t)hla_hcap, sizeof *hla_slot);
+    if (!hla_slot) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!os[i].name) continue;
+      unsigned h = (sp_strhash(os[i].name) ^ (unsigned)os[i].pidx * 2654435761u) & (unsigned)(hla_hcap - 1);
+      while (hla_slot[h].name) h = (h + 1) & (unsigned)(hla_hcap - 1);
+      hla_slot[h] = os[i];
+    }
+    free(os);
+  }
+  unsigned h = (sp_strhash(name) ^ (unsigned)pidx * 2654435761u) & (unsigned)(hla_hcap - 1);
+  while (hla_slot[h].name && !(hla_slot[h].pidx == pidx && sp_streq(hla_slot[h].name, name))) h = (h + 1) & (unsigned)(hla_hcap - 1);
+  if (hla_slot[h].name) return hla_slot[h].off;
+  if (!hla_pcap) {
+    hla_pcap = 4096; hla_pn = 1;
+    hla_pool = malloc(sizeof(int) * (size_t)hla_pcap);
+    if (!hla_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  int off = hla_pn++, n = 0;
+  for (int id = an_calls_named_first(c, name); id >= 0; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *cn = nt_str(nt, id, "name");
+    if (!cn || !sp_streq(cn, name)) continue;
+    int ca = nt_ref(nt, id, "arguments"); int cc = 0;
+    const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cc) : NULL;
+    if (!cv || pidx >= cc) continue;
+    if (hla_pn == hla_pcap) {
+      hla_pcap *= 2;
+      hla_pool = realloc(hla_pool, sizeof(int) * (size_t)hla_pcap);
+      if (!hla_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    }
+    hla_pool[hla_pn++] = cv[pidx]; n++;
+  }
+  hla_pool[off] = n;
+  hla_slot[h].name = strdup(name);
+  if (!hla_slot[h].name) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  hla_slot[h].pidx = pidx; hla_slot[h].off = off; hla_used++;
+  return off;
+}
 static int hls_join(int *buf, int n, int off) {
   for (int i = 0; i < hlm_pool[off] && n < HLS_CAP; i++) {
     int s = hlm_pool[off + 1 + i], dup = 0;
@@ -17656,15 +17713,10 @@ static int hls_compute(Compiler *c, int val, int depth, int *out) {
          through the calls-by-name index -- a walk of the whole table for
          each parameter reached made a program with a key operation on a
          copy of a parameter in each of its methods quadratic */
-      for (int id = an_calls_named_first(c, ls->name); id >= 0 && n < HLS_CAP; id = an_calls_named_next(id)) {
-        if (nt_kind(nt, id) != NK_CallNode) continue;
-        const char *cn = nt_str(nt, id, "name");
-        if (!cn || !sp_streq(cn, ls->name)) continue;
-        int ca = nt_ref(nt, id, "arguments"); int cc = 0;
-        const int *cv = ca >= 0 ? nt_arr(nt, ca, "arguments", &cc) : NULL;
-        if (!cv || pidx >= cc) continue;
-        n = hls_join(out, n, hls_get(c, cv[pidx], depth + 1));
-      }
+      int off = hla_args(c, ls->name, pidx), cnt = hla_pool[off];
+      /* (by index: a child's ask may grow the pool) */
+      for (int i = 0; i < cnt && n < HLS_CAP; i++)
+        n = hls_join(out, n, hls_get(c, hla_pool[off + 1 + i], depth + 1));
       return n;
     }
     /* the local's writes through the (scope, name) index, not a walk of
@@ -17692,6 +17744,7 @@ static int hls_get(Compiler *c, int val, int depth) {
       if (!hlm_pool) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     }
     hlm_pool[0] = 0; hlm_pn = 1;
+    hla_reset();
     hlm_nt = nt; hlm_ver = nt->version; hlm_cnt = nt->count; hlm_nsc = c->nscopes;
   }
   if (val < 0 || depth > 6) return 0;
