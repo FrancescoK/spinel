@@ -20,6 +20,13 @@ static int g_pa_n, g_pa_cap;
 static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
 static long g_pa_trial_kept, g_pa_trial_dropped;
 
+/* (codegen_internal.h) the kinds sp_poly_enum_proc walks */
+void emit_penum_kind_test(Buf *b, int tv) {
+  buf_printf(b, "_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || "
+                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)",
+             tv, tv, tv, tv, tv, tv);
+}
+
 int pa_begin(int id) {
   if (g_pa_n == g_pa_cap) {
     int ncap = g_pa_cap ? g_pa_cap * 2 : 8;
@@ -99,7 +106,8 @@ static void pa_arm_text(Compiler *c, const PolyArm *a, char *out, size_t n) {
                                      "default first/last(n)", "default delete/dig/values_at",
                                      "default merge", "default aref2", "default aref/fetch",
                                      "block map!", "subclass re-entry", "array re-entry",
-                                     "array re-entry (receiver)", "face str-bang" };
+                                     "array re-entry (receiver)", "face str-bang", "io-timeout",
+                                     "enum-inline" };
   char kb[48];
   if (a->key >= 0 && a->key < c->nclasses) snprintf(kb, sizeof kb, "%s", c->classes[a->key].name);
   else if (a->key == PA_KEY_DEFAULT) snprintf(kb, sizeof kb, "default");
@@ -2218,7 +2226,9 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
          members are known to it); without it a boxed Range fell to the
          user-class switch's NoMethodError (#4840). So does a String Range
          (a Range of Symbols too), over its members. */
-      buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || _t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)) { _t%d = ", tv, tv, tv, tv, tv, tv, tr);
+      buf_puts(b, "if (");
+      emit_penum_kind_test(b, tv);
+      buf_printf(b, ") { _t%d = ", tr);
       if (ret == TY_POLY) buf_puts(b, pcall);
       else emit_unbox_text(c, ret, pcall, b);
       buf_puts(b, "; }\nelse ");

@@ -295,6 +295,9 @@ typedef enum {
   /* a String value-form mutator through the face table (emit_face_str_bang) */
   PB_FACE_STR_BANG,
   PB_IO_TIMEOUT,
+  /* a boxed receiver's `each { }` beside a program's own each: the kinds
+     PB_ENUM_PROC serves walk inline at the call (cplan_each_split) */
+  PB_ENUM_INLINE,
   PB_NFAMILIES
 } PolyFamily;
 
@@ -387,6 +390,11 @@ void cplan_poly_free(PolyPlan *p);
 /* The name index bounds a query for a native Ruby literal-block target. */
 int cplan_native_block_possible(Compiler *c, int id, const PolyCand *pc, int n);
 const PolyPlan *cplan_poly_block(Compiler *c, int id);
+/* A boxed receiver's `each { }` that the run-time dispatch serves because a
+   class of the program takes a block for `each`: one arm, PB_ENUM_INLINE,
+   when the call splits on the receiver's kind, the builtin kinds walking
+   inline and any other value taking the dispatch; none when it does not. */
+const PolyPlan *cplan_each_split(Compiler *c, int id);
 /* The arms of the class-method tag switch of a call on a poly receiver
    that may hold a Class (emit_unresolved_call): each class's class method
    of the name, or its proc form. Computed afresh. */

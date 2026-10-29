@@ -2839,6 +2839,29 @@ const PolyPlan *cplan_poly_fresh(Compiler *c, int id) {
   return &fresh;
 }
 
+/* (call_plan.h) Only `each`: its inline walk is what sp_poly_enum_proc does
+   for the kinds it serves, reading the length at every step. The inline
+   forms of reverse_each, each_pair and the rest differ from it on a
+   receiver the block changes or a kind the name rejects. The call's value
+   is boxed, as the dispatch's is, so the value form serves it from either
+   arm. */
+const PolyPlan *cplan_each_split(Compiler *c, int id) {
+  static PolyPlan sp;
+  free(sp.arm);
+  sp.arm = NULL; sp.n = 0; sp.flags = 0; sp.native_block = 0;
+  sp.ntype = sp.ret = comp_ntype(c, id);
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
+  if (!name || !is_each_name(name) || recv < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return &sp;
+  if (nt_ref(nt, id, "arguments") >= 0) return &sp;
+  if (repr_of(c, recv).kind != RK_BOXED || repr_of(c, id).kind != RK_BOXED) return &sp;
+  if (!poly_block_call_needs_dispatch(c, id)) return &sp;
+  int cap = 0;
+  cpoly_family(&sp, &cap, PB_ENUM_INLINE);
+  return &sp;
+}
+
 const PolyPlan *cplan_poly_block(Compiler *c, int id) {
   static PolyPlan bp;
   free(bp.arm);
