@@ -2870,6 +2870,7 @@ void emit_with_prelude(Compiler *c, int id, Buf *b, int indent, void (*inner)(Co
 void emit_stmt(Compiler *c, int id, Buf *b, int indent);
 void emit_stmt_tail(Compiler *c, int id, Buf *b, int indent);
 int tail_iter_receiver(Compiler *c, int id);
+int num_iter_answers_recv(Compiler *c, int id);
 int expr_is_arr_or_nil(Compiler *c, int v);
 void emit_stmt_inner(Compiler *c, int id, Buf *b, int indent);
 void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent);

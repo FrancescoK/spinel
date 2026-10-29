@@ -2034,7 +2034,12 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
   /* and a `scan` with a block on a subject that is not a plain read answers
      that subject, which the statement form leaves out */
   if (is_scan_name(nm) && tail_iter_receiver(c, id) < 0) return 1;
-  return iter_value_answers_recv(c, id) && tail_iter_receiver(c, id) < 0;
+  /* ...and `2.times { }`, `1.upto(3) { }`, `x.step(..) { }` on a receiver
+     that is not a plain read: the statement form ends in the loop (in a
+     pure loop's signal counter, whose value the block answered: 1), and the
+     value form answers the receiver */
+  return (iter_value_answers_recv(c, id) || num_iter_answers_recv(c, id)) &&
+         tail_iter_receiver(c, id) < 0;
 }
 
 /* The rename entries a spliced block's text and its yield's argument text
