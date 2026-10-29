@@ -284,6 +284,82 @@ static void plan_put_boxed(Compiler *c, int so, TyKind slotty, const char *text,
 
 /* so: the call's result slot is an oint (plan_slot_oint), one slot for
    every arm */
+/* Class k's struct text after its name, through the line of field
+   iv_<f>, or NULL when the struct has no such field: two classes whose
+   texts are equal lay out every field up to that one at the same offset.
+   Kept per class and field: the structs are final once codegen runs, and a
+   reader dispatch asks for each class of each site. */
+static char **slp_key, **slp_val; static int slp_cap, slp_n, slp_nclasses = -1;
+static const Compiler *slp_c;
+static const char *struct_layout_prefix(Compiler *c, int k, const char *f) {
+  if (slp_c != c || slp_nclasses != c->nclasses) {
+    for (int i = 0; i < slp_cap; i++) { free(slp_key ? slp_key[i] : NULL); free(slp_val ? slp_val[i] : NULL); }
+    free(slp_key); free(slp_val); slp_key = slp_val = NULL; slp_cap = slp_n = 0;
+    slp_c = c; slp_nclasses = c->nclasses;
+  }
+  if (slp_n * 2 >= slp_cap) {
+    int ocap = slp_cap; char **ok = slp_key, **ov = slp_val;
+    slp_cap = ocap ? ocap * 2 : 64;
+    slp_key = calloc((size_t)slp_cap, sizeof *slp_key); slp_val = calloc((size_t)slp_cap, sizeof *slp_val);
+    if (!slp_key || !slp_val) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < ocap; i++) {
+      if (!ok[i]) continue;
+      unsigned j = sp_strhash(ok[i]) & (unsigned)(slp_cap - 1);
+      while (slp_key[j]) j = (j + 1) & (unsigned)(slp_cap - 1);
+      slp_key[j] = ok[i]; slp_val[j] = ov[i];
+    }
+    free(ok); free(ov);
+  }
+  char key[300];
+  snprintf(key, sizeof key, "%d %s", k, f);
+  unsigned j = sp_strhash(key) & (unsigned)(slp_cap - 1);
+  while (slp_key[j]) {
+    if (sp_streq(slp_key[j], key)) return slp_val[j];
+    j = (j + 1) & (unsigned)(slp_cap - 1);
+  }
+  Buf sb; memset(&sb, 0, sizeof sb);
+  emit_class_struct(c, &c->classes[k], &sb);
+  char line[300];
+  snprintf(line, sizeof line, " iv_%s;\n", f);
+  const char *body = sb.p ? strchr(sb.p, '\n') : NULL, *at = body ? strstr(body, line) : NULL;
+  char *v = at ? strndup(body, (size_t)(at + strlen(line) - body)) : NULL;
+  free(sb.p);
+  slp_key[j] = strdup(key); slp_val[j] = v; slp_n++;
+  if (!slp_key[j]) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  return v;
+}
+/* The class whose struct a reader arm reads ivar @rn of class `def`
+   through: the topmost ancestor that holds the ivar at the same index, of
+   the same type and nil bit, with the struct laid out the same up to it
+   (struct_layout_prefix). A hierarchy of subclasses inheriting one
+   attr_reader then reads it through the same struct, and its arms are one
+   (#10549). `def` itself when no ancestor qualifies. */
+static int reader_layout_class(Compiler *c, int def, const char *rn) {
+  if (def < 0 || def >= c->nclasses || !rn) return def;
+  char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn);
+  char f[256]; snprintf(f, sizeof f, "%s", iv_c(rn));
+  ClassInfo *dc = &c->classes[def];
+  int ivx = comp_ivar_index(dc, ivn);
+  const char *mine = ivx >= 0 && !dc->is_native_class ? struct_layout_prefix(c, def, f) : NULL;
+  if (!mine) return def;
+  char mbit[400] = "";
+  int mnil = ivar_has_nilbit(c, def, ivx);
+  if (mnil) ivar_nilbit_test(c, def, ivx, "o->", mbit, sizeof mbit);
+  int best = def;
+  for (int p = dc->parent, g = 0; p >= 0 && p < c->nclasses && g < 256; p = c->classes[p].parent, g++) {
+    ClassInfo *pc = &c->classes[p];
+    if (pc->is_native_class || comp_ivar_index(pc, ivn) != ivx || pc->ivar_types[ivx] != dc->ivar_types[ivx] ||
+        ivar_has_nilbit(c, p, ivx) != mnil) break;
+    if (mnil) {
+      char pbit[400]; ivar_nilbit_test(c, p, ivx, "o->", pbit, sizeof pbit);
+      if (!sp_streq(pbit, mbit)) break;
+    }
+    const char *theirs = struct_layout_prefix(c, p, f);
+    if (!theirs || !sp_streq(theirs, mine)) break;
+    best = p;
+  }
+  return best;
+}
 static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind ret, int tv, int tr,
                                 int blk_tmp0, int so, const PolyArm *a, Buf *b) {
   int k = a->key, mi = a->mi;
@@ -564,9 +640,12 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
     if (g_plan_check) pa_observe(pf9 ? PA_PROC_FORM : PA_USER, k, mi, cret9, pconv);
     return;
   }
-  /* a reader: the ivar of the class that holds the attr */
-  int rdcls = a->def;
+  /* a reader: the ivar of the class that holds the attr, read through the
+     struct of the topmost ancestor that lays the field out the same way
+     (reader_layout_class), so the arms of the subclasses that inherit it
+     are one text and share one case (arm_texts_flush) */
   const char *rn3 = comp_resolve_alias(c, k, name);
+  int rdcls = reader_layout_class(c, a->def, rn3);
   char fld[600];
   snprintf(fld, sizeof fld, "((sp_%s *)_t%d.v.p)->iv_%s", c->classes[rdcls].c_name, tv, iv_c(rn3));
   char ivn[256]; snprintf(ivn, sizeof ivn, "@%s", rn3);
