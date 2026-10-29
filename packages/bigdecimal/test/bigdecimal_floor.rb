@@ -34,3 +34,16 @@ p [BigDecimal("12.345").floor(Places.new), BigDecimal("12.345").ceil(1.9), BigDe
     end
   end
 end
+
+# to_int must answer an Integer, as CRuby's conversion checks.
+class BadPlaces
+  def to_int = "1"
+end
+["0", "12.345"].each do |s|
+  begin
+    BigDecimal(s).floor(BadPlaces.new)
+    p :no_error
+  rescue TypeError => e
+    p e.message
+  end
+end

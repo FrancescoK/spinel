@@ -268,14 +268,17 @@ class BigDecimal < Numeric
   end
 
   # The place count as CRuby's NUM2INT reads it: an Integer, a Float
-  # truncated, anything else through to_int; nil and the rest are a
-  # TypeError, before any value is looked at.
+  # truncated, anything else through to_int, which must answer an
+  # Integer; nil and the rest are a TypeError, before any value is looked
+  # at.
   def self.__precision(n)
     return n if n.is_a?(Integer)
     return n.to_i if n.is_a?(Float)
     raise TypeError, "no implicit conversion from nil to integer" if n.nil?
     raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
-    n.to_int
+    i = n.to_int
+    raise TypeError, "can't convert #{n.class} to Integer (#{n.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
+    i
   end
 
   # round(), round(n) and round(n, mode). No argument, or a single n < 1,

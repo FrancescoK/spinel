@@ -33,3 +33,5 @@
 "no implicit conversion from nil to integer"
 "no implicit conversion of String into Integer"
 "no implicit conversion of String into Integer"
+"can't convert BadPlaces to Integer (BadPlaces#to_int gives String)"
+"can't convert BadPlaces to Integer (BadPlaces#to_int gives String)"
