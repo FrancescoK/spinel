@@ -2447,6 +2447,15 @@ static void alias_rename_add(AliasRenames *q, int node, const char *name) {
   q->n++;
 }
 
+/* Makes the queued renames and frees the queue. */
+static void alias_renames_apply(Compiler *c, AliasRenames *q) {
+  for (int i = 0; i < q->n; i++) {
+    nt_set_str((NodeTable *)c->nt, q->v[i].node, "name", q->v[i].name);
+    free(q->v[i].name);
+  }
+  free(q->v);
+}
+
 /* Asks the class a constant node names when it names a class alias, and
    queues its rename to the underlying class. */
 static void ask_const_alias_name(Compiler *c, int node, AliasRenames *q) {
@@ -2512,11 +2521,22 @@ void rewrite_const_alias_receivers(Compiler *c) {
   }
   /* The asks above are the load record's, which rebuilds its point map after
      an edit: every rename waits until the last one is asked. */
-  for (int i = 0; i < q.n; i++) {
-    nt_set_str((NodeTable *)nt, q.v[i].node, "name", q.v[i].name);
-    free(q.v[i].name);
-  }
-  free(q.v);
+  alias_renames_apply(c, &q);
+}
+
+/* Asks the class a `raise` argument or a `rescue` exception names when it is
+   a class alias, and queues its rename (rewrite_const_alias_raise_targets). */
+static void ask_raise_target(Compiler *c, int t, AliasRenames *q) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, t) != NK_ConstantReadNode && nt_kind(nt, t) != NK_ConstantPathNode) return;
+  const char *rn = nt_str(nt, t, "name");
+  if (!rn || comp_class_index(c, rn) >= 0) return;
+  /* a read that can run before the alias is assigned is CRuby's
+     NameError, which the constant's presence flag raises: keep it */
+  LocalVar *lv = comp_const(c, rn);
+  if (lv && lv->const_early) return;
+  const char *real = resolve_class_alias(c, rn);
+  if (real && !sp_streq(real, rn)) alias_rename_add(q, t, real);
 }
 
 /* The exception classes named by `raise Alias, msg` and by `rescue Alias`
@@ -2527,35 +2547,21 @@ void rewrite_const_alias_receivers(Compiler *c) {
    read can reach before its assignment (LocalVar.const_early) is left alone. */
 static void rewrite_const_alias_raise_targets(Compiler *c) {
   const NodeTable *nt = c->nt;
+  AliasRenames q = {0};
   for (int id = 0; id < nt->count; id++) {
     NodeKind k = nt_kind(nt, id);
-    int targets[64], ntg = 0;
     if (k == NK_CallNode && nt_ref(nt, id, "receiver") < 0 && nt_str(nt, id, "name") &&
-        (sp_streq(nt_str(nt, id, "name"), "raise") || sp_streq(nt_str(nt, id, "name"), "fail"))) {
+        is_raise_alias(nt_str(nt, id, "name"))) {
       int args = nt_ref(nt, id, "arguments"), an = 0;
       const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-      if (an >= 1 && av) targets[ntg++] = av[0];
+      if (an >= 1 && av) ask_raise_target(c, av[0], &q);
     }
     else if (k == NK_RescueNode) {
       int en = 0; const int *ev = nt_arr(nt, id, "exceptions", &en);
-      for (int i = 0; i < en && ntg < 64; i++) targets[ntg++] = ev[i];
-    }
-    for (int i = 0; i < ntg; i++) {
-      int t = targets[i];
-      if (nt_kind(nt, t) != NK_ConstantReadNode && nt_kind(nt, t) != NK_ConstantPathNode) continue;
-      const char *rn = nt_str(nt, t, "name");
-      if (!rn || comp_class_index(c, rn) >= 0) continue;
-      /* a read that can run before the alias is assigned is CRuby's
-         NameError, which the constant's presence flag raises: keep it */
-      LocalVar *lv = comp_const(c, rn);
-      if (lv && lv->const_early) continue;
-      const char *real = resolve_class_alias(c, rn);
-      if (real && !sp_streq(real, rn)) {
-        char buf[256]; snprintf(buf, sizeof buf, "%s", real);
-        nt_set_str((NodeTable *)nt, t, "name", buf);
-      }
+      for (int i = 0; i < en; i++) ask_raise_target(c, ev[i], &q);
     }
   }
+  alias_renames_apply(c, &q);
 }
 
 /* For a receiverless instance_eval/exec CallNode with a literal block inside

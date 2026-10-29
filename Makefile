@@ -5608,6 +5608,10 @@ ENGINE_FOLDS_LIMIT ?= 2.2
 # program with the class named directly. The pass asks for every use before it
 # renames any one.
 ALIAS_RECEIVERS_LIMIT ?= 2.2
+# N `rescue Alias` sites, each with a `raise Alias`, among N classes of other
+# code (test/scale/alias_raise_targets.sh), at 400 and 800 sites: the same
+# ask-then-rename loop in rewrite_const_alias_raise_targets.
+ALIAS_RAISE_LIMIT ?= 2.2
 # A chain of forty bangs over a String a method answers, compiled to C with
 # --share-strings under a CPU-time limit, as the hash-literal fan-out is:
 # strbuf_bang_self_local asked each link once per path that reaches it,
@@ -5667,10 +5671,13 @@ scale-test: $(SPINEL_WORK)
 	sh test/scale/alias_receivers.sh 400 > "$$tmp/r4.rb"; sh test/scale/alias_receivers.sh 800 > "$$tmp/r8.rb"; \
 	ra=$$(sw -c -o "$$tmp/r4.c" "$$tmp/r4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rb=$$(sw -c -o "$$tmp/r8.c" "$$tmp/r8.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	sh test/scale/alias_raise_targets.sh 400 > "$$tmp/t4.rb"; sh test/scale/alias_raise_targets.sh 800 > "$$tmp/t8.rb"; \
+	ta=$$(sw -c -o "$$tmp/t4.c" "$$tmp/t4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	tb=$$(sw -c -o "$$tmp/t8.c" "$$tmp/t8.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ] || \
-	   [ -z "$$ka" ] || [ -z "$$kb" ] || [ -z "$$ea" ] || [ -z "$$eb" ] || [ -z "$$ra" ] || [ -z "$$rb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
+	   [ -z "$$ka" ] || [ -z "$$kb" ] || [ -z "$$ea" ] || [ -z "$$eb" ] || [ -z "$$ra" ] || [ -z "$$rb" ] || [ -z "$$ta" ] || [ -z "$$tb" ]; then echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
 	  { echo "scale-test: FAIL (a boxed Hash store rescanned unrelated method bodies)"; exit 1; }; \
@@ -5683,6 +5690,9 @@ scale-test: $(SPINEL_WORK)
 	awk -v a="$$ra" -v b="$$rb" -v lim="$(ALIAS_RECEIVERS_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: alias receiver work at 2x the uses is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (renaming one alias receiver made the next ask rebuild the load record, see rewrite_const_alias_receivers)"; exit 1; }; \
+	awk -v a="$$ta" -v b="$$tb" -v lim="$(ALIAS_RAISE_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: alias raise and rescue work at 2x the sites is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (renaming one raised or rescued alias made the next ask rebuild the load record, see rewrite_const_alias_raise_targets)"; exit 1; }; \
 	awk -v a="$$wa" -v b="$$wb" -v lim="$(SCALE_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: work at 4x the program is %.2fx (linear 4.00, limit %.2f)\n", r, lim; exit (r > lim) }' || \
 	  { echo "scale-test: FAIL (the front end grew superlinearly: some pass rescans per node; profile per pass, see rubys/roundhouse#72)"; exit 1; }; \
