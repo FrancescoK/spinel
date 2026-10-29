@@ -49253,16 +49253,16 @@ static void an_phase_post_fixpoint(Compiler *c) {
       ivar_backstop_changed = 1;
       /* Also patch the node-type cache for all InstanceVariableReadNode and
          InstanceVariableWriteNode nodes that reference this ivar, so codegen
-         sees TY_POLY for both the struct field and the node type. */
-      for (int nid = 0; nid < c->nt->count; nid++) {
-        const char *nty = nt_type(c->nt, nid);
-        NodeKind nk = nt_kind(c->nt, nid);
-        if (!nty) continue;
-        if (nk != NK_InstanceVariableReadNode &&
-            nk != NK_InstanceVariableWriteNode &&
-            nk != NK_InstanceVariableOperatorWriteNode &&
-            nk != NK_InstanceVariableOrWriteNode &&
-            nk != NK_InstanceVariableAndWriteNode) continue;
+         sees TY_POLY for both the struct field and the node type. The
+         nodes of the five kinds are read off the kind index: a walk of
+         every node for each widened reader grew with the program squared
+         (#10546). */
+      static const NodeKind ivar_kinds[5] = {
+        NK_InstanceVariableReadNode, NK_InstanceVariableWriteNode, NK_InstanceVariableOperatorWriteNode,
+        NK_InstanceVariableOrWriteNode, NK_InstanceVariableAndWriteNode };
+      for (int q = 0; q < 5; q++)
+      NT_FOREACH_KIND(c->nt, ivar_kinds[q], nid) {
+        if (!nt_type(c->nt, nid)) continue;
         /* only within methods of this class */
         Scope *s = comp_scope_of(c, nid);
         if (!s || s->class_id != ci) continue;
