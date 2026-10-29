@@ -37,21 +37,28 @@ int kwh_only_spreads(const NodeTable *nt, int kwh);
 static unsigned wrn_key(const char *nm, int scopeidx) {
   unsigned h = sp_strhash(nm);
   if (scopeidx >= 0) h = h * 31u + (unsigned)scopeidx * 2654435761u;
+  else if (scopeidx <= -2) h = h * 37u + (unsigned)(-scopeidx) * 40503u;   /* (an ivar's class, wrc_class_key) */
   return h;
 }
 static const NodeTable *wrn_nt = NULL;
 static int wrn_ntc = -1, wrn_buckets = 0;
 static int *wrn_next = NULL, *wrn_head = NULL;
+/* the ivar writes again, keyed by (name, class): the scalar-write ask names
+   one class's slot, and a name every class writes chained them all */
+static int *wrc_next = NULL, *wrc_head = NULL;
+static int wrc_class_key(int cls) { return -2 - (cls + 1); }
 static void wrn_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   int n = nt->count;
-  free(wrn_next); free(wrn_head);
+  free(wrn_next); free(wrn_head); free(wrc_next); free(wrc_head);
   wrn_buckets = n > 0 ? n : 1;
   wrn_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
   wrn_head = malloc((size_t)wrn_buckets * sizeof(int));
+  wrc_next = malloc((size_t)(n > 0 ? n : 1) * sizeof(int));
+  wrc_head = malloc((size_t)wrn_buckets * sizeof(int));
   wrn_nt = nt; wrn_ntc = n;
-  if (!wrn_next || !wrn_head) { wrn_buckets = 0; return; }
-  for (int i = 0; i < wrn_buckets; i++) wrn_head[i] = -1;
+  if (!wrn_next || !wrn_head || !wrc_next || !wrc_head) { wrn_buckets = 0; return; }
+  for (int i = 0; i < wrn_buckets; i++) wrn_head[i] = wrc_head[i] = -1;
   for (int id = 0; id < n; id++) {
     const char *ty = nt_type(nt, id);
     NodeKind k = nt_kind(nt, id);
@@ -63,6 +70,11 @@ static void wrn_build(Compiler *c) {
     int scopeidx = is_local ? (int)(comp_scope_of(c, id) - c->scopes) : -1;
     unsigned b = wrn_key(nm, scopeidx) % (unsigned)wrn_buckets;
     wrn_next[id] = wrn_head[b]; wrn_head[b] = id;
+    if (!is_local) {
+      Scope *ws = comp_scope_of(c, id);
+      unsigned cb = wrn_key(nm, wrc_class_key(ws ? ws->class_id : -1)) % (unsigned)wrn_buckets;
+      wrc_next[id] = wrc_head[cb]; wrc_head[cb] = id;
+    }
   }
 }
 static int recv_has_array_write(Compiler *c, int recv);
@@ -94,9 +106,10 @@ static int recv_has_scalar_numeric_write(Compiler *c, int recv) {
   const char *wkind = is_ivar ? "InstanceVariableWriteNode" : "LocalVariableWriteNode";
   if (wrn_nt != nt || wrn_ntc != nt->count) wrn_build(c);
   if (!wrn_buckets) return 0;
-  int qscope = is_local ? (int)(rscope - c->scopes) : -1;
+  int qscope = is_local ? (int)(rscope - c->scopes) : wrc_class_key(rcls);
   unsigned b = wrn_key(rnm, qscope) % (unsigned)wrn_buckets;
-  for (int id = wrn_head[b]; id >= 0; id = wrn_next[id]) {
+  const int *head = is_local ? wrn_head : wrc_head, *next = is_local ? wrn_next : wrc_next;
+  for (int id = head[b]; id >= 0; id = next[id]) {
     const char *ty = nt_type(nt, id);
     if (!ty || !sp_streq(ty, wkind)) continue;
     const char *wnm = nt_str(nt, id, "name");
