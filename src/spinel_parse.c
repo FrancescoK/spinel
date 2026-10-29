@@ -2888,10 +2888,16 @@ static char **sp_file_table = NULL;  /* id -> path (declared above flatten) */
 static unsigned char *sp_file_tier = NULL;   /* id -> where `require` found it (SP_LIB_*) */
 static int sp_file_count = 0, sp_file_cap = 0;
 
+/* A file's tier once another require finds it too (one canonical path,
+   reached through two spellings): the later of the two in SP_LIB_*'s
+   order, so a builtin's or a package's stays that once found; SP_LIB_NONE
+   (a require_relative, the entry) changes nothing. */
+static int sp_tier_merge(int old, int tier) { return tier > old ? tier : old; }
+
 static int sp_intern_file(const char *path, int tier) {
   for (int i = 0; i < sp_file_count; i++)
     if (strcmp(sp_file_table[i], path) == 0) {
-      if (tier != SP_LIB_NONE) sp_file_tier[i] = (unsigned char)tier;
+      sp_file_tier[i] = (unsigned char)sp_tier_merge(sp_file_tier[i], tier);
       return i;
     }
   int cap = sp_file_cap;
@@ -4989,10 +4995,12 @@ static unsigned char *sp_load_flags(SpLoadGraph *g, int id) {
   }
   return &g->flags[id];
 }
-static void sp_load_set_tier(SpLoadGraph *g, int id, int tier) {
-  if (id >= 0) *sp_load_flags(g, id) |= (unsigned char)(tier << SP_FILE_TIER_SHIFT);
-}
 static int sp_load_tier(SpLoadGraph *g, int id) { return (*sp_load_flags(g, id) >> SP_FILE_TIER_SHIFT) & 7; }
+static void sp_load_set_tier(SpLoadGraph *g, int id, int tier) {
+  if (id < 0) return;
+  unsigned char *f = sp_load_flags(g, id);
+  *f = (unsigned char)((*f & ~(7 << SP_FILE_TIER_SHIFT)) | (sp_tier_merge(sp_load_tier(g, id), tier) << SP_FILE_TIER_SHIFT));
+}
 static int sp_load_walk(SpLoadGraph *g, int id) {
   unsigned char *f = sp_load_flags(g, id);
   if (*f & SP_FILE_WALKED) return 0;
