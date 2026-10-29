@@ -13468,7 +13468,15 @@ else {
         ren_hide(&kr_h, pd_ren_base);
         int krhash = emit_kwrest_collect(c, pm, kwh_d, ds_tmp_d, ds_type_d, argsNode);
         ren_unhide(&kr_h);
-        buf_printf(&ab, "_t%d", krhash);
+        /* The shared temp is declared the parameter's type below: a kwrest
+           held boxed (one the method reassigns a value of another class, as
+           `options = merged_options(options)` does) takes the collected hash
+           boxed, as emit_args_filled hands it over. Passed as the bare
+           pointer, the sp_RbVal temp's store did not compile. */
+        if (p && (p->type == TY_POLY || p->type == TY_UNKNOWN))
+          buf_printf(&ab, "sp_box_obj(_t%d, %s)", krhash,
+                     kwrest_any_key(c, pm) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
+        else buf_printf(&ab, "_t%d", krhash);
       }
       else if (!by_splat && kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
         /* keyword param fed by a forwarded `**hash`: extract by name. The
