@@ -149,6 +149,7 @@ Compiler *comp_new(const NodeTable *nt) {
   c->bop_inf = calloc((size_t)n, sizeof *c->bop_inf);
   c->ucall_inf = calloc((size_t)n, sizeof *c->ucall_inf);
   c->node_cap = n;
+  for (int k = 0; k < CORE_N; k++) c->core_cls[k] = -1;
   /* On only when set to something: empty is off, as SPINEL_DEFER_REFUSALS
      reads it, and so is "0". An environment that exports the variable as
      "0" or "" means off. */
@@ -1039,6 +1040,11 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   class_hash_add(c, ci->idx);
   ci->c_name = sp_class_c_name(name);
   ci->is_builtin_const = is_builtin_class_name(name) || is_builtin_module_const_name(name);
+  /* Creation is where a builtin's name becomes a class id. The fill moves
+     to the class entity later (#9898); the first class of this name answers
+     until then. */
+  int core = builtin_core_class_slot(name);
+  if (core >= 0 && c->core_cls[core] < 0) c->core_cls[core] = ci->idx;
   { ci->def_node = def_node; comp_touch_class(ci->idx); }
   if (nt_int(c->nt, def_node, "class_new_anonymous", 0)) c->has_anonymous_classes = 1;
   ci->parent = -1;
@@ -1067,6 +1073,11 @@ int comp_class_index(Compiler *c, const char *name) {
     if (k != i) fprintf(stderr, "spinel: class index check: %s is class %d, the scan finds %d\n", name, i, k);
   }
   return i;
+}
+
+/* The first-created class of core slot k, or -1 before it is made. */
+int comp_core_class(const Compiler *c, int k) {
+  return k < 0 ? -1 : c->core_cls[k];
 }
 
 static unsigned name_idx_hash(const char *s) {

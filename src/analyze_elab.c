@@ -144,7 +144,7 @@ struct LoadRecord {
   struct LrHeader *hdr; int nhdr, chdr, *hdr_head;   /* the class and module headers, in the order the walk reaches them (elab_header_class) */
   ElabSurface *surf; int *surf_at;   /* elab_class_surface's, by class side: [2 * (cls + 1) + sg] .. [+ 1] */
   int *dscope, ndscope;      /* [ndscope] by node: the method scope the scope walk made of a def or define_method (elab_def_scope), 0 for none */
-  int core[CORE_N];          /* the program's reopening of Object, BasicObject, Module and Kernel as the header that opens it registers it (elab_header_opened), its index + 1; 0 before one (lr_core) */
+  int core[CORE_N];          /* every header with a core name as it registers (elab_header_opened), its index + 1; 0 before one; only Object, BasicObject, Module and Kernel are read (lr_core) */
 };
 
 static LoadRecord *lr_get(Compiler *c) {
@@ -1017,10 +1017,12 @@ static int lr_reopened(const LoadRecord *r, const char *name) {
 
 /* The class of a reference recorded before the header that makes it
    (LR_LATER, ref the reference): once made, kept in *cls; until then,
-   LR_LATER, which the queries take as not known */
+   LR_LATER, which the queries take as not known. LR_LATER comes only from
+   elab_class_ref_at's builtin branch; ref keeps that written name, including
+   through qualification (lr_written_name). */
 static int lr_later(Compiler *c, int *cls, int ref) {
   if (*cls == LR_LATER) {
-    int ci = comp_class_index(c, lr_written_name(c->nt, ref));
+    int ci = comp_core_class(c, builtin_core_class_slot(lr_written_name(c->nt, ref)));
     if (ci >= 0) *cls = ci;
   }
   return *cls;
@@ -1060,7 +1062,7 @@ int elab_class_ref_at(Compiler *c, int node) {
   if (o == ELAB_YES) return lr_class_of(c, d);
   /* a name Object does not hold from the program: a core class's or module's */
   if (o == ELAB_NO && pc == LR_MAIN && (is_builtin_class_name(nm) || is_builtin_module_const_name(nm))) {
-    if ((ci = comp_class_index(c, nm)) >= 0) return ci;
+    if ((ci = comp_core_class(c, builtin_core_class_slot(nm))) >= 0) return ci;
     if (lr_reopened(c->lrec, nm)) return LR_LATER;
   }
   return LR_UNKNOWN_CLASS;
@@ -2604,12 +2606,13 @@ static int lr_search_one(Compiler *c, int cls, int sg, const char *name, int mod
    methods: a class's singleton into Class's, then Module's, Object's
    (main's top level's among them) and Kernel's; a module's from Module's;
    main's own singleton from Object's. Each is the program's reopening of
-   that class as registered so far (Class's is class_reopen_class): the
-   histories it searches have no entry before its header. */
+   that class as registered so far (Class's is
+   comp_core_class(c, CORE_CLASS_REOPEN)): the histories it searches have no
+   entry before its header. */
 static int lr_sg_tail_of(Compiler *c, int cls, int tail[5]) {   /* where in tail cls's starts */
   const LoadRecord *r = c->lrec;
   int d = cls >= 0 ? c->classes[cls].def_node : -1;
-  tail[0] = class_reopen_class(c), tail[1] = lr_core(r, CORE_MODULE), tail[2] = lr_core(r, CORE_OBJECT);
+  tail[0] = comp_core_class(c, CORE_CLASS_REOPEN), tail[1] = lr_core(r, CORE_MODULE), tail[2] = lr_core(r, CORE_OBJECT);
   tail[3] = LR_MAIN, tail[4] = lr_core(r, CORE_KERNEL);
   return cls == LR_MAIN ? 2 : d >= 0 && nt_kind(c->nt, d) == NK_ModuleNode ? 1 : 0;
 }
@@ -3690,7 +3693,7 @@ int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg) {
      are its own methods and its singleton's, and the Class reopening's
      class methods are its instance methods, which every class answers */
   if (o == ELAB_NO && cls < 0 && !sg) o = elab_method_at(c, LR_MAIN, name, 1, p, NULL);
-  if (o == ELAB_NO && sg && cls >= 0 && cls == class_reopen_class(c)) o = elab_method_at(c, cls, name, 0, p, NULL);
+  if (o == ELAB_NO && sg && cls >= 0 && cls == comp_core_class(c, CORE_CLASS_REOPEN)) o = elab_method_at(c, cls, name, 0, p, NULL);
   /* a class's singleton chain passes Object's and BasicObject's singletons
      before Class's instance methods */
   int d0 = cls >= 0 ? c->classes[cls].def_node : -1;

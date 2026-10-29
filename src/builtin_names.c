@@ -1228,10 +1228,35 @@ int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
 }
 
+/* The first row of each name, through a table hashed on the first ask: the
+   lookup compared the name with every row, and is asked of class names per
+   call (is_builtin_reopen, of each class a poly block dispatch weighs). */
+#define BUILTIN_ROW_CAP 512   /* a power of two above 4 * the rows */
+static short builtin_row_slot[BUILTIN_ROW_CAP];
+static int builtin_row_built;
 int builtin_core_class_slot(const char *n) {
-  static const char *const CORE[CORE_N] = { "Object", "BasicObject", "Module", "Kernel" };
-  for (int i = 0; n && i < CORE_N; i++)
-    if (sp_streq(n, CORE[i])) return i;
+  if (!n) return -1;
+  const BuiltinClass *r;
+  if (!builtin_row_built) {
+    for (int i = 0; i < BUILTIN_ROW_CAP; i++) builtin_row_slot[i] = -1;
+    for (int i = 0; (r = builtin_class_at(i)) != NULL; i++) {
+      unsigned h = sp_strhash(r->name) & (BUILTIN_ROW_CAP - 1);
+      while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, r->name))
+        h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+      if (builtin_row_slot[h] < 0) builtin_row_slot[h] = (short)i;   /* a later row of the name: the first answers */
+    }
+    builtin_row_built = 1;
+  }
+  unsigned h = sp_strhash(n) & (BUILTIN_ROW_CAP - 1);
+  while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, n))
+    h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+  if (builtin_row_slot[h] >= 0) return builtin_row_slot[h];
+  if (sp_streq(n, "StringIO")) return CORE_STRINGIO;
+  if (sp_streq(n, "Set")) return CORE_SET;
+  if (sp_streq(n, CLASS_REOPEN_NAME)) return CORE_CLASS_REOPEN;
+  if (sp_streq(n, "FileTest")) return CORE_FILETEST;
+  if (sp_streq(n, "Errno")) return CORE_ERRNO;
+  if (sp_streq(n, "Warning")) return CORE_WARNING;
   return -1;
 }
 
@@ -1997,133 +2022,9 @@ const PackageFact *package_fact_at(int i) {
    The `CRUBY_KNOWN` list in codegen_call.c is a fifth list, for a different
    question (names CRuby defines that spinel does not implement), and is left
    alone here. */
-static const BuiltinClass BUILTIN_CLASSES[] = {
-  { "Integer",                      -100,  BC_CLASS },
-  { "Float",                        -101,  BC_CLASS },
-  { "String",                       -102,  BC_CLASS },
-  { "Symbol",                       -103,  BC_CLASS },
-  { "Array",                        -104,  BC_CLASS },
-  { "Hash",                         -105,  BC_CLASS },
-  { "Range",                        -106,  BC_CLASS },
-  { "Time",                         -107,  BC_CLASS },
-  { "Module",                       -108,  BC_CLASS },
-  { "Class",                        -109,  BC_CLASS },
-  { "NilClass",                     -110,  BC_CLASS },
-  { "TrueClass",                    -111,  BC_CLASS },
-  { "FalseClass",                   -112,  BC_CLASS },
-  { "Numeric",                      -113,  BC_CLASS },
-  { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
-  { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
-  { "Object",                       -116,  BC_CLASS | BC_PLAIN },
-  { "BasicObject",                  -117,  BC_CLASS | BC_PLAIN },
-  { "Proc",                         -118,  BC_CLASS },
-  { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
-  { "IO",                           -120,  BC_CLASS },
-  { "File",                         -121,  BC_CLASS },
-  { "Exception",                    -122,  BC_CLASS | BC_EXCEPTION },
-  { "StandardError",                -123,  BC_CLASS | BC_EXCEPTION },
-  { "RuntimeError",                 -124,  BC_CLASS | BC_EXCEPTION },
-  { "TypeError",                    -125,  BC_CLASS | BC_EXCEPTION },
-  { "ArgumentError",                -126,  BC_CLASS | BC_EXCEPTION },
-  { "NameError",                    -127,  BC_CLASS | BC_EXCEPTION },
-  { "NoMethodError",                -128,  BC_CLASS | BC_EXCEPTION },
-  { "StopIteration",                -129,  BC_CLASS | BC_EXCEPTION },
-  { "Math",                         -130,  BC_CLASS | BC_MODULE },
-  { "Complex",                      -131,  BC_CLASS },
-  { "IndexError",                   -132,  BC_CLASS | BC_EXCEPTION },
-  { "KeyError",                     -133,  BC_CLASS | BC_EXCEPTION },
-  { "RangeError",                   -134,  BC_CLASS | BC_EXCEPTION },
-  { "FloatDomainError",             -135,  BC_CLASS | BC_EXCEPTION },
-  { "ZeroDivisionError",            -136,  BC_CLASS | BC_EXCEPTION },
-  { "FrozenError",                  -137,  BC_CLASS | BC_EXCEPTION },
-  { "IOError",                      -138,  BC_CLASS | BC_EXCEPTION },
-  { "LocalJumpError",               -139,  BC_CLASS | BC_EXCEPTION },
-  { "NotImplementedError",          -140,  BC_CLASS | BC_EXCEPTION },
-  { "ScriptError",                  -141,  BC_CLASS | BC_EXCEPTION },
-  { "Rational",                     -142,  BC_CLASS },
-  { "Regexp",                       -143,  BC_CLASS },
-  { "Enumerator",                   -144,  BC_CLASS },
-  { "Struct",                       -145,  BC_CLASS },
-  { "Data",                         -146,  BC_CLASS | BC_PLAIN },
-  { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
-  { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
-  { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
-  { "EncodingError",                -150,  BC_CLASS | BC_EXCEPTION },
-  { "SignalException",              -151,  BC_CLASS | BC_EXCEPTION },
-  { "Interrupt",                    -152,  BC_CLASS | BC_EXCEPTION },
-  { "ThreadError",                  -153,  BC_CLASS | BC_EXCEPTION },
-  { "FiberError",                   -154,  BC_CLASS | BC_EXCEPTION },
-  { "ClosedQueueError",             -155,  BC_CLASS | BC_EXCEPTION },
-  { "UncaughtThrowError",           -156,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternError",       -157,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternKeyError",    -158,  BC_CLASS | BC_EXCEPTION },
-  { "EOFError",                     -159,  BC_CLASS | BC_EXCEPTION },
-  { "Math::DomainError",            -160,  BC_EXCEPTION },
-  { "SystemExit",                   -161,  BC_CLASS | BC_EXCEPTION },
-  { "Signal",                       -162,  BC_CLASS | BC_MODULE },
-  { "Process::Status",              -163,  BC_CLASS },
-  { "Process::Tms",                 -164,  0 },
-  { "Dir",                          -165,  BC_CLASS },
-  { "BasicSocket",                  -166,  BC_CLASS | BC_SOCKET },
-  { "IPSocket",                     -167,  BC_CLASS | BC_SOCKET },
-  { "TCPSocket",                    -168,  BC_CLASS | BC_SOCKET },
-  { "TCPServer",                    -169,  BC_CLASS | BC_SOCKET },
-  { "UDPSocket",                    -170,  BC_CLASS | BC_SOCKET },
-  { "UNIXSocket",                   -171,  BC_CLASS | BC_SOCKET },
-  { "UNIXServer",                   -172,  BC_CLASS | BC_SOCKET },
-  { "Socket",                       -173,  BC_CLASS | BC_SOCKET },
-  { "Thread",                       -174,  BC_CLASS },
-  { "Mutex",                        -175,  BC_CLASS },
-  { "Thread::Mutex",                -175,  0 },
-  { "Queue",                        -176,  BC_CLASS },
-  { "Thread::Queue",                -176,  0 },
-  { "SizedQueue",                   -177,  BC_CLASS },
-  { "Thread::SizedQueue",           -177,  0 },
-  { "ConditionVariable",            -178,  BC_CLASS },
-  { "Thread::ConditionVariable",    -178,  0 },
-  { "Fiber",                        -179,  BC_CLASS },
-  { "MatchData",                    -180,  BC_CLASS },
-  { "Encoding",                     0,     BC_CLASS },
-  { "Enumerator::Chain",            0,     BC_CLASS },
-  { "Enumerator::Lazy",             0,     BC_CLASS },
-  { "Enumerator::Product",          0,     BC_CLASS },
-  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
-     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
-  { "JSON::JSONError",              0,     BC_EXCEPTION },
-  { "JSON::ParserError",            0,     BC_EXCEPTION },
-  { "JSON::NestingError",           0,     BC_EXCEPTION },
-  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
-  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
-  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
-  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
-  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
-  { "Errno::ENOENT",                0,     BC_EXCEPTION },
-  { "GC",                           0,     BC_CLASS | BC_MODULE },
-  { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
-  { "IO::TimeoutError",            0,     BC_EXCEPTION },
-  /* the socket library's: lib/sp_exc.c gives them their parents, so
-     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
-  { "SocketError",                  0,     BC_EXCEPTION },
-  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
-  { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::WaitReadable",             0,     BC_EXCEPTION },
-  { "IO::WaitWritable",             0,     BC_EXCEPTION },
-  { "LoadError",                    0,     BC_EXCEPTION },
-  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
-  { "Method",                       0,     BC_CLASS },
-  { "NoMemoryError",                0,     BC_EXCEPTION },
-  { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
-  { "Process",                      0,     BC_CLASS | BC_MODULE },
-  { "Random",                       0,     BC_CLASS },
-  { "StringScanner::Error",         0,     BC_EXCEPTION },
-  { "SystemCallError",              0,     BC_EXCEPTION },
-  { "SystemStackError",             0,     BC_EXCEPTION },
-  { "UnboundMethod",                0,     BC_CLASS },
-};
+#define X(k, n, id, flags) { n, id, flags },
+static const BuiltinClass BUILTIN_CLASSES[] = { SP_BUILTIN_CLASSES(X) };
+#undef X
 #define BUILTIN_CLASS_N ((int)(sizeof BUILTIN_CLASSES / sizeof BUILTIN_CLASSES[0]))
 
 /* The i-th row, NULL past the last. The socket rows are a constant only
