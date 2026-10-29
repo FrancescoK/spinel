@@ -712,6 +712,44 @@ int an_calls_named_first(Compiler *c, const char *name) {
   return k >= 0 ? g_cn_first[k] : -1;
 }
 int an_calls_named_next(int id) { return (id >= 0 && id < g_cn_cnt) ? g_cn_next[id] : -1; }
+static int an_int_cmp(const void *a, const void *b) {
+  int x = *(const int *)a, y = *(const int *)b;
+  return (x > y) - (x < y);
+}
+/* the calls below n0 of the names `names` lists or `pred` accepts (an
+   index of the index's names), ascending and each once */
+static int cn_collect(Compiler *c, const char *const *names, int (*pred)(const char *), int n0, int **out) {
+  const NodeTable *nt = c->nt;
+  an_calls_named_first(c, "");   /* the index of the table as it is */
+  int n = 0, cap = 64;
+  int *ids = malloc(sizeof(int) * (size_t)cap);
+  if (!ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; names ? names[k] != NULL : k < g_cn_names.n; k++) {
+    int head = -1;
+    if (names) { int j = anh_find(&g_cn_names, names[k]); head = j >= 0 ? g_cn_first[j] : -1; }
+    else if (pred(g_cn_names.key[k])) head = g_cn_first[k];
+    for (int id = head; id >= 0 && id < n0; id = an_calls_named_next(id)) {
+      if (nt_kind(nt, id) != NK_CallNode) continue;
+      if (n == cap) {
+        cap *= 2;
+        ids = realloc(ids, sizeof(int) * (size_t)cap);
+        if (!ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      }
+      ids[n++] = id;
+    }
+  }
+  qsort(ids, (size_t)n, sizeof(int), an_int_cmp);
+  int m = 0;
+  for (int i = 0; i < n; i++) if (m == 0 || ids[m - 1] != ids[i]) ids[m++] = ids[i];
+  *out = ids;
+  return m;
+}
+int an_calls_named_any(Compiler *c, const char *const *names, int n0, int **out) {
+  return cn_collect(c, names, NULL, n0, out);
+}
+int an_calls_named_if(Compiler *c, int (*pred)(const char *), int n0, int **out) {
+  return cn_collect(c, NULL, pred, n0, out);
+}
 
 /* The LocalVariableWriteNodes of each name, ascending, rebuilt whenever the
    node table changes, as the calls above are. Resolving a Method-typed local

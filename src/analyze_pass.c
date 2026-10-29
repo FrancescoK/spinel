@@ -12655,7 +12655,9 @@ int desugar_class_eval_value(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, is_class_eval_family, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !is_class_eval_family(nm)) continue;
@@ -12736,6 +12738,7 @@ int desugar_class_eval_value(Compiler *c) {
     rehome_block_body(c, body, encl);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -13086,7 +13089,10 @@ int desugar_instance_eval_builtin(Compiler *c) {
   /* first, so that a body with a `next` is spliced with its `then` around it */
   int changed = desugar_once_block_next(c);
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "instance_eval", "instance_exec", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "instance_eval") && !sp_streq(nm, "instance_exec"))) continue;
@@ -13302,6 +13308,7 @@ int desugar_instance_eval_builtin(Compiler *c) {
     }
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -19785,7 +19792,10 @@ int desugar_io_console_modes(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   if (!sp_feature_enabled("io/console")) return 0;
   int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "raw", "noecho", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "raw") && !sp_streq(nm, "noecho"))) continue;
@@ -19915,5 +19925,6 @@ int desugar_io_console_modes(Compiler *c) {
     if (body >= 0) rehome_block_body(c, body, encl);
     changed = 1;
   }
+  free(calls);
   return changed;
 }

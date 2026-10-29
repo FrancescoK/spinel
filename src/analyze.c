@@ -12766,7 +12766,10 @@ static int desugar_string_upto(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "upto", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "upto")) continue;
@@ -12798,6 +12801,7 @@ static int desugar_string_upto(Compiler *c) {
     c->nscope[rng] = c->nscope[id];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -12914,7 +12918,10 @@ static int desugar_ewi_pack_values(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "each", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "each")) continue;
@@ -12964,6 +12971,7 @@ static int desugar_ewi_pack_values(Compiler *c) {
     for (int q = n1; q < nt->count; q++) c->nscope[q] = c->nscope[blk];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -12981,7 +12989,10 @@ static int desugar_multi_yield_map_param(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "map", "collect", "flat_map", "collect_concat", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "map") && !sp_streq(nm, "collect") &&
@@ -13058,6 +13069,7 @@ static int desugar_multi_yield_map_param(Compiler *c) {
     if (packed) c->nscope[nt_ref(nt, id, "receiver")] = c->nscope[id];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 

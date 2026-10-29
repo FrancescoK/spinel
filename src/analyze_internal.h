@@ -209,6 +209,13 @@ int blk_locals_have(const char *locals, const char *nm);
    id >= 0; id = an_calls_named_next(id)). Check each node as before. */
 int an_calls_named_first(Compiler *c, const char *name);
 int an_calls_named_next(int id);
+/* The calls below n0 named any of names (NULL-terminated), ascending, into
+   *out, which the caller frees: their count. A pass that acts only on calls
+   of those names, and renames no call it has not reached yet, walks these
+   instead of every node of the table, and reaches the calls it would. */
+int an_calls_named_any(Compiler *c, const char *const *names, int n0, int **out);
+/* The same for the calls whose name pred accepts. */
+int an_calls_named_if(Compiler *c, int (*pred)(const char *), int n0, int **out);
 /* The local variable writes named `name`, ascending, the same way. */
 int an_local_writes_named_first(Compiler *c, const char *name);
 int an_local_writes_named_next(int id);

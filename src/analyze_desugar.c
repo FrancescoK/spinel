@@ -171,7 +171,11 @@ static int bare_call_reaches_own(Compiler *c, int id, const char *name) {
 int desugar_bare_spawn(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+  static const char *const calls_of[] = { "spawn", "exec", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, nt->count, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "spawn") && !sp_streq(nm, "exec"))) continue;
     if (nt_ref(nt, id, "receiver") >= 0 || nt_ref(nt, id, "block") >= 0) continue;
@@ -188,6 +192,7 @@ int desugar_bare_spawn(Compiler *c) {
     nt_set_ignore_visibility(nt, id, 0);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3086,7 +3091,10 @@ int desugar_compose_method_operand(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { ">>", "<<", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, ">>") && !sp_streq(nm, "<<"))) continue;
@@ -3131,6 +3139,7 @@ int desugar_compose_method_operand(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3144,7 +3153,10 @@ int desugar_array_op_to_ary(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "+", "-", "|", "&", "concat", "<=>", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !(sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "|") || sp_streq(nm, "&") ||
@@ -3174,6 +3186,7 @@ int desugar_array_op_to_ary(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3356,10 +3369,16 @@ static int mrv_then_self(Compiler *c, int r) {
     if (c->nscope[w] == si && sp_streq(nt_str(nt, w, "name"), zn)) return 0;
   return 1;
 }
+/* the names desugar_mutator_receiver_value acts on */
+static int mutator_local_name(const char *nm) {
+  return sp_str_mutator(nm, SP_MUT_LOCAL);
+}
 int desugar_mutator_receiver_value(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, mutator_local_name, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int r = nt_ref(nt, id, "receiver");
@@ -3525,6 +3544,7 @@ int desugar_mutator_receiver_value(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3536,7 +3556,10 @@ int desugar_curry_arity_to_int(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "curry", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "curry")) continue;
@@ -3571,6 +3594,7 @@ int desugar_curry_arity_to_int(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3582,7 +3606,10 @@ int desugar_method_curry(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "curry", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "curry")) continue;
@@ -3603,6 +3630,7 @@ int desugar_method_curry(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3615,7 +3643,10 @@ int desugar_int_enum_with_index(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "with_index", "with_object", "each_with_index", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "with_index") && !sp_streq(nm, "with_object") &&
@@ -3686,6 +3717,7 @@ int desugar_int_enum_with_index(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3737,7 +3769,10 @@ int desugar_hash_iter_with_index(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "with_index", "each_with_index", "each", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !(sp_streq(nm, "with_index") || sp_streq(nm, "each_with_index") || sp_streq(nm, "each"))) continue;
@@ -3869,6 +3904,7 @@ int desugar_hash_iter_with_index(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = j < bnodes_end ? bscope : encl;
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -3909,11 +3945,18 @@ static int reduce_block_unused(Compiler *c, int id, int blk) {
          rt == TY_RANGE || rt == TY_STR_RANGE || rt == TY_FLOAT_RANGE;
 }
 
+/* the names desugar_reduce_proc_arg acts on */
+static int reduce_proc_arg_name(const char *nm) {
+  return is_fallback_block_call(nm) || is_hash_merge_bang(nm) || is_hash_transform(nm) ||
+         is_reduce_alias(nm) || is_sort_family(nm) || is_extrema_family(nm);
+}
 int desugar_reduce_proc_arg(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, reduce_proc_arg_name, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int fallback = nm && is_fallback_block_call(nm);
@@ -4018,6 +4061,7 @@ int desugar_reduce_proc_arg(Compiler *c) {
     if (own && fwd_method_called_blockless(c, comp_scope_of(c, id))) fwd_branch_on_block_given(c, id);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -4053,7 +4097,10 @@ int desugar_user_not_match(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "!~", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "!~")) continue;
@@ -4076,14 +4123,21 @@ int desugar_user_not_match(Compiler *c) {
     c->nscope[inner] = c->nscope[id];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
+/* the names desugar_env_enum acts on */
+static int env_enum_call_name(const char *nm) {
+  return env_enum_method(nm) || sp_streq(nm, "fetch");
+}
 int desugar_env_enum(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, env_enum_call_name, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver");
@@ -4185,6 +4239,7 @@ int desugar_env_enum(Compiler *c) {
     else if (sp_streq(nm, "collect_concat")) nt_node_set_str(nt, id, "name", "flat_map");
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -4487,7 +4542,10 @@ int desugar_public_send_recv(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "public_send", "send", "__send__", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     if (nt_ref(nt, id, "receiver") < 0) continue;          /* explicit receiver only */
     const char *nm = nt_str(nt, id, "name");
@@ -4558,6 +4616,7 @@ int desugar_public_send_recv(Compiler *c) {
     expand_static_splat_args(c, id, id + 1);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -7400,7 +7459,11 @@ int desugar_array_first_last(Compiler *c) {
         comp_method_vis_declared(c, k, "first", NULL) != SP_VIS_PUBLIC ||
         comp_method_vis_declared(c, k, "last", NULL) != SP_VIS_PUBLIC) user_fl = 1;
   if (user_fl) return 0;
-  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+  static const char *const calls_of[] = { "first", "last", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, nt->count, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
+    if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || (!sp_streq(nm, "first") && !sp_streq(nm, "last"))) continue;
     int recv = nt_ref(nt, id, "receiver");
@@ -7425,6 +7488,7 @@ int desugar_array_first_last(Compiler *c) {
     nt_node_set_str(nt, id, "name", "[]");
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -8260,7 +8324,10 @@ int desugar_to_h_block(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  static const char *const calls_of[] = { "to_h", NULL };
+  int *calls, ncalls = an_calls_named_any(c, calls_of, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     if (!nm || !sp_streq(nm, "to_h")) continue;
@@ -8312,6 +8379,7 @@ int desugar_to_h_block(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = encl; /* new nodes share the scope */
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -10194,7 +10262,9 @@ int desugar_enumerable_via_to_a(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, enum_via_to_a_name, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int how = nm ? enum_via_to_a_name(nm) : 0;
@@ -10266,6 +10336,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
     for (int j = base; j < nt->count; j++) c->nscope[j] = c->nscope[id];
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -15015,7 +15086,9 @@ int desugar_enum_iter_splat_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_any(c, names, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
@@ -15031,6 +15104,7 @@ int desugar_enum_iter_splat_args(Compiler *c) {
     nt_node_set_ref(nt, id, "arguments", -1);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -15066,7 +15140,9 @@ int desugar_reduce_splat_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   int n0 = nt->count;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_if(c, is_reduce_alias, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     const char *nm = nt_str(nt, id, "name");
     int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments");
@@ -15155,6 +15231,7 @@ int desugar_reduce_splat_args(Compiler *c) {
     scope_local_intern(s, an);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
@@ -15193,7 +15270,9 @@ int desugar_iter_splat_args(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
   int changed = 0;
-  for (int id = 0; id < n0; id++) {
+  int *calls, ncalls = an_calls_named_any(c, names, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
     if (nt_kind(nt, id) != NK_CallNode) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
@@ -15269,6 +15348,7 @@ int desugar_iter_splat_args(Compiler *c) {
     scope_local_intern(s, sn);
     changed = 1;
   }
+  free(calls);
   return changed;
 }
 
