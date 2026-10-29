@@ -334,6 +334,10 @@ int proc_lit_carrier(Compiler *c, int v, int lit);
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv);
 int pivs_settle_hash_stores(Compiler *c);
 int pivs_hash_stores_widened(Compiler *c);
+/* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
+   (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
+   does: the iterator's name in buf, 1 for such a call name. */
+int pivs_enum_iter(const char *name, char *buf, size_t n);
 int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
 int call_unused_block(Compiler *c, int id);   /* codegen_util.c */
 
