@@ -12763,16 +12763,33 @@ static int bi_enum_receivers_answer(const char *nm) {
   for (int i = 0; bi_receiver_class(i); i++) if (builtin_instance_method_known(bi_receiver_class(i), nm)) return 1;
   return 0;
 }
+/* the scalar containers (desugar_builtin_scalar_defs, below): the one a
+   class or module of this name is, or -1, and the receiver kinds its
+   calls are rewritten for */
+static int bx_of_name(const char *mn);
+static int bx_recv_concrete(int bx, TyKind rt);
 /* the builtin classes a copy of a method of the class or module cls is
    made for, the i-th of them, NULL past the last: Enumerable's receivers
-   above, an Integer or a Float for a Comparable copy (the receivers
-   bx_recv_concrete rewrites onto it), and cls itself for a copy of a
-   class's method (an Integer's, a Float's, a Monitor's) */
+   above, else the classes of the kinds the container's calls are
+   rewritten for (bx_recv_concrete: an Integer or a Float for a Comparable
+   copy), each once, cls itself for a kind with no builtin class name */
 static const char *bi_copy_receiver(const char *cls, int i) {
-  static const char *const cmp_recvs[] = { "Integer", "Float", NULL };
   if (is_enumerable_module_name(cls)) return bi_receiver_class(i);
-  if (is_comparable_module_name(cls)) return cmp_recvs[i];
-  return i == 0 ? cls : NULL;
+  int bx = bx_of_name(cls);
+  if (bx < 0) return i == 0 ? cls : NULL;
+  for (int k = TY_UNKNOWN; k < TY_TRAITS_N; k++) {
+    const char *nm = builtin_class_of_type((TyKind)k);
+    if (!bx_recv_concrete(bx, (TyKind)k)) continue;
+    if (!nm) nm = cls;
+    /* only the first kind of a class counts (TY_INT and TY_BIGINT) */
+    int first = 1;
+    for (int j = TY_UNKNOWN; j < k && first; j++) {
+      const char *pj = builtin_class_of_type((TyKind)j);
+      first = !bx_recv_concrete(bx, (TyKind)j) || !sp_streq(pj ? pj : cls, nm);
+    }
+    if (first && i-- == 0) return nm;
+  }
+  return NULL;
 }
 /* does one of those receivers answer a method of this name itself? */
 static int bi_receiver_answers(const char *cls, const char *nm) {
@@ -14593,6 +14610,10 @@ int desugar_builtin_enum_calls(Compiler *c) {
 enum { SP_BX_INTEGER = 0, SP_BX_FLOAT = 1, SP_BX_COMPARABLE = 2, SP_BX_MONITOR = 3, SP_BX_N = 4 };
 static const char *const sp_bx_class_name[SP_BX_N] = { "Integer", "Float", "Comparable", "Monitor" };
 static const char *const sp_bx_prefix[SP_BX_N]     = { "__int_", "__flt_", "__cmp_", "__mon_" };
+static int bx_of_name(const char *mn) {
+  for (int k = 0; k < SP_BX_N; k++) if (mn && sp_streq(mn, sp_bx_class_name[k])) return k;
+  return -1;
+}
 
 extern int sp_builtin_extra_names_n(int idx);
 extern int sp_builtin_extra_name_index(int idx, const char *name);
@@ -14656,8 +14677,7 @@ int desugar_builtin_scalar_defs(Compiler *c) {
     if (sk != NK_ClassNode && sk != NK_ModuleNode) { if (!tfile[i]) nb[nbn++] = st; continue; }
     int cp = nt_ref(nt, st, "constant_path");
     const char *mn = cp >= 0 ? nt_str(nt, cp, "name") : nt_str(nt, st, "name");
-    int bx = -1;
-    for (int k = 0; k < SP_BX_N; k++) if (mn && sp_streq(mn, sp_bx_class_name[k])) { bx = k; break; }
+    int bx = bx_of_name(mn);
     if (bx < 0 || sp_builtin_extra_names_n(bx) == 0) { if (!tfile[i]) nb[nbn++] = st; continue; }
     int body = nt_ref(nt, st, "body");
     int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
