@@ -487,6 +487,19 @@ int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon);
 /* Does the subtree at id hold a call cplan_missing answers, in a block or
    an operand alike? */
 int cplan_subtree_missing(Compiler *c, int id);
+/* Does any call of the program find no method where it runs
+   (cplan_missing)? Asked once, then remembered. */
+int cplan_program_missing(Compiler *c);
+/* The node value v runs last when it holds a call cplan_missing answers,
+   walking v in CRuby's order for a call (the receiver, then the
+   arguments left to right, into nested calls; an operator is a call too):
+   that call, or the operand holding it that runs whole -- one that is no
+   call (an Array, a Hash, an interpolation), or a call whose order this
+   does not follow (`&.`, a splat, keyword, forwarded or block argument, a
+   literal block). -1 when v holds no such call. This is evaluation
+   order, which the value-position walker does not answer: it says where
+   a value comes from. Asked once per node, then remembered. */
+int cplan_missing_in_order(Compiler *c, int v);
 /* The class call id's constant receiver recv names where the call runs, as
    the load record resolves the reference there (elab_class_ref_at): -1 for
    none of the program's (Object's top level), below -1 for one it does not

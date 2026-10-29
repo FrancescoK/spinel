@@ -6860,10 +6860,11 @@ void emit_cond(Compiler *c, int id, Buf *b) {
      (`::Time.zone ? a : b`, DateTime.current): the call raises when reached
      (the NoMethodError gate's answer), so the test that follows is never
      read -- evaluate it for the raise */
-  /* ...and a call that finds no method where it runs (cplan_missing) */
-  char self[160];
+  /* ...and a call that finds no method where it runs (cplan_missing), or
+     runs into one in an operand (`1 / n + zz`), which leaves the
+     operators around it untyped */
   if ((t == TY_UNKNOWN || t == TY_VOID) && nt_kind(c->nt, id) == NK_CallNode &&
-      (call_on_builtin_class_missing(c, id) || cplan_missing(c, id, self, sizeof self, NULL) != CM_NONE)) {
+      (call_on_builtin_class_missing(c, id) || missing_call_raised(c, id) >= 0)) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return;
   }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
@@ -20279,49 +20280,48 @@ static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
     emit_class_assign_name(c, ci, class_ruby_name(c, ci), b, indent);
 }
 
-/* The operands a value runs before the call in it that finds no method
-   where it runs (cplan_missing), each a whole subtree its caller runs for
-   its effect; a growable list. */
-typedef struct { int *ids; int n, cap; } OrderRun;
-
-/* Does an operand run nothing a raise after it could show: a pure read,
-   self, or a constant receiver the load record resolves to a program
-   class? */
+/* Does a subtree hold an operator over scalars that can raise
+   (scalar_op_may_raise: `1 / n`, `x % 0.0`, `2 ** e`)? */
+static int operand_op_may_raise(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  if (nt_kind(nt, id) == NK_CallNode && call_is_scalar_op(c, id) && scalar_op_may_raise(c, id)) return 1;
+  int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+  for (int i = 0; i < nr; i++) if (operand_op_may_raise(c, nt_ref_at(nt, id, i))) return 1;
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (operand_op_may_raise(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* Does an operand run nothing and raise nothing, so that a raise after it
+   shows the same whether it ran or not: self, a constant receiver the
+   load record resolves to a program class, or a pure read none of whose
+   operators can raise? */
 static int order_operand_inert(Compiler *c, int call, int op, int is_recv) {
   NodeKind k = nt_kind(c->nt, op);
   if (k == NK_SelfNode) return 1;
   if (is_recv && (k == NK_ConstantReadNode || k == NK_ConstantPathNode) &&
       cplan_const_recv_class(c, call, op) >= 0) return 1;
-  return subtree_is_pure_read(c, op);
+  return subtree_is_pure_read(c, op) && !operand_op_may_raise(c, op);
 }
 
-/* Walk `v` in CRuby's order for a call: the receiver, then the arguments
-   left to right, into nested calls (an operator is a call too). This is
-   evaluation order, which the value-position walker does not answer: it
-   says where a value comes from. Answers the node to run last -- the call
-   that finds no method, or the operand holding it that runs whole: one
-   that is no call (an Array, a Hash, an interpolation), or a call whose
-   order this does not follow (`&.`, a splat, keyword, forwarded or block
-   argument, a literal block) -- with run->ids the operands before it; -1
-   when `v` holds no such call (run unchanged). */
-static int missing_call_in_order(Compiler *c, int v, OrderRun *run) {
+/* The node v runs last when it holds a call that finds no method where it
+   runs (cplan_missing_in_order), with run->ids the operands before it, in
+   CRuby's order, that can act or raise; -1 when v holds no such call (run
+   unchanged). */
+int missing_call_in_order(Compiler *c, int v, OrderRun *run) {
   const NodeTable *nt = c->nt;
-  if (v < 0) return -1;
-  if (nt_kind(nt, v) != NK_CallNode) return cplan_subtree_missing(c, v) ? v : -1;
-  char self[160];
-  if (cplan_missing(c, v, self, sizeof self, NULL) != CM_NONE) return v;
+  int m = cplan_missing_in_order(c, v);
+  if (m < 0 || m == v) return m;
   int argc = 0;
   const int *argv = call_args(nt, v, &argc);
-  if (nt_safe_nav(nt, v) || nt_ref(nt, v, "block") >= 0 ||
-      nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING))
-    return cplan_subtree_missing(c, v) ? v : -1;
-  int n0 = run->n;
   int r = nt_ref(nt, v, "receiver");
   for (int i = -1; i < argc; i++) {
     int op = i < 0 ? r : argv[i];
     if (op < 0) continue;
-    int m = missing_call_in_order(c, op, run);
-    if (m >= 0) return m;
+    if (cplan_missing_in_order(c, op) >= 0) return missing_call_in_order(c, op, run);
     if (order_operand_inert(c, v, op, i < 0)) continue;
     if (run->n == run->cap) {
       run->cap = run->cap ? run->cap * 2 : 8;
@@ -20331,8 +20331,30 @@ static int missing_call_in_order(Compiler *c, int v, OrderRun *run) {
     }
     run->ids[run->n++] = op;
   }
-  run->n = n0;
-  return -1;
+  return m;
+}
+/* The call finding no method where it runs (cplan_missing) that v runs
+   into, in CRuby's order (missing_call_in_order), and so raises at: v
+   itself or one in its operands; -1 for none */
+int missing_call_raised(Compiler *c, int v) {
+  char self[160];
+  int m = cplan_missing_in_order(c, v);
+  return m >= 0 && cplan_missing(c, m, self, sizeof self, NULL) != CM_NONE ? m : -1;
+}
+/* Run, as statements at indent, the operands of run ahead of the call m
+   that finds no method (missing_call_in_order), then m. Each operand's
+   prelude goes in front of it, not in front of the statement: an earlier
+   operand runs before a later one's. */
+static void emit_missing_run(Compiler *c, int m, const OrderRun *run, Buf *b, int indent) {
+  for (int i = 0; i <= run->n; i++) {
+    Buf op, oe; memset(&op, 0, sizeof op); memset(&oe, 0, sizeof oe);
+    Buf *sv = g_pre; g_pre = &op;
+    emit_expr(c, i < run->n ? run->ids[i] : m, &oe);
+    g_pre = sv;
+    if (op.p) buf_puts(b, op.p);
+    emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", oe.p ? oe.p : "0");
+    free(op.p); free(oe.p);
+  }
 }
 
 static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
@@ -20674,17 +20696,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
       else if (!isg && v >= 0) {
         OrderRun run = { NULL, 0, 0 };
         int m = missing_call_in_order(c, v, &run);
-        /* each operand's prelude goes in front of it, not in front of the
-           statement: an earlier operand runs before a later one's */
-        for (int i = 0; m >= 0 && i <= run.n; i++) {
-          Buf op, oe; memset(&op, 0, sizeof op); memset(&oe, 0, sizeof oe);
-          Buf *sv = g_pre; g_pre = &op;
-          emit_expr(c, i < run.n ? run.ids[i] : m, &oe);
-          g_pre = sv;
-          if (op.p) buf_puts(b, op.p);
-          emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", oe.p ? oe.p : "0");
-          free(op.p); free(oe.p);
-        }
+        if (m >= 0) emit_missing_run(c, m, &run, b, indent);
         free(run.ids);
       }
       return 1;

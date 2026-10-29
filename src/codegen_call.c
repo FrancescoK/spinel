@@ -21936,34 +21936,46 @@ static void emit_raise_placeholder(Compiler *c, int id, Buf *b) {
   }
   else buf_printf(b, ", %s)", dflt);
 }
-/* A call that finds no method where it runs (cplan_missing): CRuby's
-   NameError or NoMethodError, raised after its arguments and its block
-   argument are evaluated, in source order (each one's prelude stays in
-   front of it), with the receiver, and a NoMethodError's positional
-   arguments, staged on the exception (#receiver, #args) */
-static int emit_missing_call(Compiler *c, int id, Buf *b) {
-  char self[160], head[240];
-  int anon = -1, kind = cplan_missing(c, id, self, sizeof self, &anon);
-  if (kind == CM_NONE) return 0;
+/* An operand ahead of a raise (emit_missing_raise), as a statement after
+   its own prelude: its boxed value into temp t, rooted, for t > 0, else
+   run for its effect */
+static void emit_missing_operand(Compiler *c, int op, int t, Buf *b) {
+  Buf ap, ae; memset(&ap, 0, sizeof ap); memset(&ae, 0, sizeof ae);
+  Buf *sv = g_pre; g_pre = &ap;
+  if (t > 0) emit_boxed(c, op, &ae); else emit_expr(c, op, &ae);
+  g_pre = sv;
+  if (ap.p) buf_puts(b, ap.p);
+  if (t > 0) buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t, ae.p ? ae.p : "sp_box_nil()", t);
+  else buf_printf(b, "(void)(%s); ", ae.p ? ae.p : "0");
+  free(ap.p); free(ae.p);
+}
+/* The raise of call m, which finds no method where it runs (cplan_missing
+   kind, self, anon): CRuby's NameError or NoMethodError, raised after the
+   operands of run that the value at holder runs ahead of m (none for NULL)
+   and m's own arguments and block argument, in source order (each one's
+   prelude stays in front of it), with the receiver, and a NoMethodError's
+   positional arguments, staged on the exception (#receiver, #args). Every
+   operand is a statement of the raise's message argument, so they run in
+   order; the receiver, a constant naming a class or self, runs nothing.
+   The text leads with the raise, which is how an operand slot knows it
+   diverges (coerce_const_raise, text_diverges), and stands for holder's
+   value, of holder's own C type. */
+static void emit_missing_raise(Compiler *c, int m, int kind, const char *self, int anon, const OrderRun *run,
+                               int holder, Buf *b) {
+  char head[240];
   const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver"), blk = nt_ref(nt, id, "block");
-  int argc = 0; const int *argv = call_args(nt, id, &argc);
+  const char *name = nt_str(nt, m, "name");
+  int recv = nt_ref(nt, m, "receiver"), blk = nt_ref(nt, m, "block");
+  int argc = 0; const int *argv = call_args(nt, m, &argc);
   int staged = kind == CM_NOMETHOD && !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING);
   int t0 = g_tmp + 1;
   g_tmp += argc;
-  buf_puts(b, "(({ ");
-  for (int k = 0; k < argc; k++) {
-    Buf ap, ae; memset(&ap, 0, sizeof ap); memset(&ae, 0, sizeof ae);
-    Buf *sv = g_pre; g_pre = &ap;
-    if (staged) emit_boxed(c, argv[k], &ae); else emit_expr(c, argv[k], &ae);
-    g_pre = sv;
-    if (ap.p) buf_puts(b, ap.p);
-    if (staged) buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); ", t0 + k, ae.p ? ae.p : "sp_box_nil()", t0 + k);
-    else buf_printf(b, "(void)(%s); ", ae.p ? ae.p : "0");
-    free(ap.p); free(ae.p);
-  }
   int fe = blk >= 0 && nt_kind(nt, blk) == NK_BlockArgumentNode ? nt_ref(nt, blk, "expression") : -1;
+  int body = argc > 0 || fe >= 0 || (run && run->n > 0);
+  buf_puts(b, kind == CM_NAMEERROR ? "(sp_raise_cls(\"NameError\", " : "(sp_raise_cls(\"NoMethodError\", ");
+  if (body) buf_puts(b, "({ ");
+  for (int k = 0; run && k < run->n; k++) emit_missing_operand(c, run->ids[k], 0, b);
+  for (int k = 0; k < argc; k++) emit_missing_operand(c, argv[k], staged ? t0 + k : 0, b);
   if (fe >= 0) {
     Buf ap, ae; memset(&ap, 0, sizeof ap); memset(&ae, 0, sizeof ae);
     Buf *sv = g_pre; g_pre = &ap;
@@ -21982,13 +21994,12 @@ static int emit_missing_call(Compiler *c, int id, Buf *b) {
   }
   snprintf(head, sizeof head, "%s '%s' for %s ", kind == CM_NAMEERROR ? "undefined local variable or method" : "undefined method",
            name, anon >= 0 && comp_class_is_module(c, &c->classes[anon]) ? "module" : "class");
-  buf_puts(b, kind == CM_NAMEERROR ? "sp_raise_cls(\"NameError\", " : "sp_raise_cls(\"NoMethodError\", ");
   buf_puts(b, staged ? "sp_stage_recv_args_msg(" : "sp_stage_recv_msg(");
   if (anon >= 0) anon_class_text(c, anon, head, b);
   else if (kind == CM_NAMEERROR) buf_printf(b, "\"undefined local variable or method '%s' for %s\"", name, self);
   else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1])", name, self);
   buf_puts(b, ", ");
-  int si = recv < 0 ? elab_self_at(c, id) : -2;
+  int si = recv < 0 ? elab_self_at(c, m) : -2;
   if (recv >= 0) emit_boxed(c, recv, b);
   else if (si >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", si);
   else buf_puts(b, si == -1 ? "sp_main_self()" : "sp_box_nil()");
@@ -21998,8 +22009,34 @@ static int emit_missing_call(Compiler *c, int id, Buf *b) {
     if (argc == 0) buf_puts(b, "sp_box_nil()");
     buf_puts(b, "}");
   }
-  buf_puts(b, ")); })");
-  emit_raise_placeholder(c, id, b);
+  buf_puts(b, body ? "); }))" : "))");
+  emit_raise_placeholder(c, holder, b);
+}
+/* A call that finds no method where it runs (cplan_missing): its raise
+   (emit_missing_raise) */
+static int emit_missing_call(Compiler *c, int id, Buf *b) {
+  char self[160];
+  int anon = -1, kind = cplan_missing(c, id, self, sizeof self, &anon);
+  if (kind == CM_NONE) return 0;
+  emit_missing_raise(c, id, kind, self, anon, NULL, id, b);
+  return 1;
+}
+/* A call that runs into one finding no method in its operands, in CRuby's
+   order (missing_call_raised: `1 / n + zz`, `-zz`, `{a: 1}[zz]`): it
+   never reaches its own method, so it is that call's raise, after the
+   operands ahead of it, standing for this call's own value. The operators
+   around the raise are not emitted, each with its own idea of what an
+   untyped operand is. */
+static int emit_missing_in_operand(Compiler *c, int id, Buf *b) {
+  if (!cplan_program_missing(c)) return 0;
+  int m = missing_call_raised(c, id);
+  if (m < 0 || m == id) return 0;
+  char self[160];
+  int anon = -1, kind = cplan_missing(c, m, self, sizeof self, &anon);
+  OrderRun run = { NULL, 0, 0 };
+  missing_call_in_order(c, id, &run);
+  emit_missing_raise(c, m, kind, self, anon, &run, id, b);
+  free(run.ids);
   return 1;
 }
 /* An implicit self-call with arguments whose name the class being emitted
@@ -27813,6 +27850,7 @@ static int emit_call_bool_sides(Compiler *c, int id, Buf *b) {
 
 static void emit_call_lifted(Compiler *c, int id, Buf *b);
 void emit_call(Compiler *c, int id, Buf *b) {
+  if (emit_missing_in_operand(c, id, b)) return;
   int fm = frange_index_view(c, id);
   if (fm >= 0) {
     emit_call(c, id, b);

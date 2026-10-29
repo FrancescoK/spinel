@@ -1254,6 +1254,47 @@ int cplan_subtree_missing(Compiler *c, int id) {
   }
   return 0;
 }
+/* See call_plan.h. */
+int cplan_program_missing(Compiler *c) {
+  if (!c->missing_calls) {
+    const NodeTable *nt = c->nt;
+    char self[160];
+    c->missing_calls = 1;
+    for (int id = 0; id < nt->count && c->missing_calls == 1; id++)
+      if (nt_kind(nt, id) == NK_CallNode && cplan_missing(c, id, self, sizeof self, NULL) != CM_NONE) c->missing_calls = 2;
+  }
+  return c->missing_calls == 2;
+}
+static int cplan_missing_in_order_1(Compiler *c, int v) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, v) != NK_CallNode) return cplan_subtree_missing(c, v) ? v : -1;
+  char self[160];
+  if (cplan_missing(c, v, self, sizeof self, NULL) != CM_NONE) return v;
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (nt_safe_nav(nt, v) || nt_ref(nt, v, "block") >= 0 ||
+      nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING))
+    return cplan_subtree_missing(c, v) ? v : -1;
+  for (int i = -1; i < argc; i++) {
+    int m = cplan_missing_in_order(c, i < 0 ? nt_ref(nt, v, "receiver") : argv[i]);
+    if (m >= 0) return m;
+  }
+  return -1;
+}
+/* See call_plan.h. */
+int cplan_missing_in_order(Compiler *c, int v) {
+  if (v < 0) return -1;
+  if (v >= c->missing_order_n) {
+    int n = c->nt->count > v ? c->nt->count : v + 1;
+    int *g = realloc(c->missing_order, sizeof *g * (size_t)n);
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    memset(g + c->missing_order_n, 0, sizeof *g * (size_t)(n - c->missing_order_n));
+    c->missing_order = g;
+    c->missing_order_n = n;
+  }
+  if (!c->missing_order[v]) c->missing_order[v] = cplan_missing_in_order_1(c, v) + 2;
+  return c->missing_order[v] - 2;
+}
 int cplan_self_builtin(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int recv = nt_ref(nt, id, "receiver");

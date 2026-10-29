@@ -511,6 +511,9 @@ void comp_free(Compiler *c) {
   free(c->lazy_hoist);
   c->lazy_hoist = NULL;
   c->lazy_hoist_n = 0;
+  free(c->missing_order);
+  c->missing_order = NULL;
+  c->missing_order_n = 0;
   free(c->hash_default_arg_memo);
   c->hash_default_arg_memo = NULL;
   free(c->blk_body_map);

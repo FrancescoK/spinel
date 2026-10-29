@@ -752,6 +752,29 @@ int call_is_scalar_op(Compiler *c, int id) {
   int scalar_v = (vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL);
   return scalar_r && scalar_v;
 }
+/* Can a builtin operator over scalars (call_is_scalar_op) raise? A
+   quotient of two Integers and any modulo (a Float one too) raise
+   ZeroDivisionError at a divisor that may be zero, which only a nonzero
+   literal rules out; an Integer power raises for an exponent too large
+   (ArgumentError) and for 0 ** -1; any operator but == and != raises for
+   an operand that can be nil. The rest (+, -, * and the comparisons and
+   bit operators) answer for every Integer and Float. */
+int scalar_op_may_raise(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), ac = 0;
+  const int *av = call_args(nt, id, &ac);
+  int arg = ac == 1 ? av[0] : -1;
+  if (!is_eq_or_ne(nm) && (node_may_be_nil(c, recv) || node_may_be_nil(c, arg))) return 1;
+  TyKind rt = repr_of(c, recv).as_ty, at = arg >= 0 ? repr_of(c, arg).as_ty : TY_UNKNOWN;
+  int fl = rt == TY_FLOAT || at == TY_FLOAT;
+  if (is_pow_op(nm)) return !fl;
+  if (!is_div_or_mod(nm) || (fl && !is_mod_operator(nm))) return 0;
+  NodeKind k = arg >= 0 ? nt_kind(nt, arg) : NK_NilNode;
+  if (k == NK_IntegerNode) return !nt_str(nt, arg, "bigval") && nt_int(nt, arg, "value", 0) == 0;
+  if (k == NK_FloatNode) return strtod(nt_content(nt, arg) ? nt_content(nt, arg) : "0", NULL) == 0.0;
+  return 1;
+}
 
 /* The block of a call to a builtin that leaves it unused (Array#slice), so
    the call is typed and emitted as the one without it: a literal block, or
