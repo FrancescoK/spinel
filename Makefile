@@ -5376,8 +5376,10 @@ IMEMO_SHADOW_PROGRAMS = test/proc_curry_arity_arg.rb test/issue_3071.rb \
   test/route_object_ivar.rb
 imemo-shadow-test: $(SPINEL)
 	@tmp=$$(mktemp -d /tmp/spinel-imemo.XXXXXX); ok=1; \
-	sh test/scale/gen.sh 100 > "$$tmp/g.rb"; sh test/scale/call_shapes.sh 25 > "$$tmp/s.rb"; \
-	sh test/scale/str_chain.sh 100 > "$$tmp/k.rb"; sh test/scale/hash_store_boxed.sh 64 > "$$tmp/h.rb"; \
+	gen () { sh test/scale/$$1.sh $$2 > "$$tmp/$$3" && test -s "$$tmp/$$3" || \
+	  { echo "imemo-shadow-test: FAIL (test/scale/$$1.sh $$2 failed or wrote no program)"; rm -rf "$$tmp"; exit 1; }; }; \
+	gen gen 100 g.rb; gen call_shapes 25 s.rb; \
+	gen str_chain 100 k.rb; gen hash_store_boxed 64 h.rb; \
 	set -- "$$tmp/g.rb" "$$tmp/s.rb" "$$tmp/k.rb" "$$tmp/h.rb" $(IMEMO_SHADOW_PROGRAMS); \
 	[ -f build/optcarrot-single.rb ] && set -- "$$@" build/optcarrot-single.rb; \
 	for f in "$$@"; do for fl in "" --share-strings; do \
@@ -5646,21 +5648,23 @@ SPLICES_LIMIT ?= 2.2
 # reading it alone would accept the ratio of a program that did not build.
 scale-test: $(SPINEL_WORK)
 	@tmp=$$(mktemp -d /tmp/spinel-scale.XXXXXX); \
+	gen () { sh test/scale/$$1.sh $$2 > "$$tmp/$$3" && test -s "$$tmp/$$3" || \
+	  { echo "scale-test: FAIL (test/scale/$$1.sh $$2 failed or wrote no program)"; rm -rf "$$tmp"; exit 1; }; }; \
 	sw () { o=$$($(SPINEL_WORK) "$$@" 2>&1); r=$$?; \
 	  if [ $$r -ne 0 ]; then echo "scale-test: FAIL (spinel-work exited $$r: $$*)" >&2; echo "$$o" | tail -3 >&2; return 1; fi; \
 	  echo "$$o" | sed -n 's/^spinel-work: //p'; }; \
-	sh test/scale/gen.sh 100 > "$$tmp/a.rb"; sh test/scale/gen.sh 400 > "$$tmp/b.rb"; \
+	gen gen 100 a.rb; gen gen 400 b.rb; \
 	wa=$$(sw --emit-rbs -o "$$tmp/a.rbs" "$$tmp/a.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	wb=$$(sw --emit-rbs -o "$$tmp/b.rbs" "$$tmp/b.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	ca=$$(sw -c -o "$$tmp/a.c" "$$tmp/a.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	cb=$$(sw -c -o "$$tmp/b.c" "$$tmp/b.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/call_shapes.sh 25 > "$$tmp/s1.rb"; sh test/scale/call_shapes.sh 100 > "$$tmp/s4.rb"; \
+	gen call_shapes 25 s1.rb; gen call_shapes 100 s4.rb; \
 	sa=$$(sw -c -o "$$tmp/s1.c" "$$tmp/s1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	sb=$$(sw -c -o "$$tmp/s4.c" "$$tmp/s4.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/pivs_aliases.sh 64 > "$$tmp/p64.rb"; sh test/scale/pivs_aliases.sh 128 > "$$tmp/p128.rb"; \
+	gen pivs_aliases 64 p64.rb; gen pivs_aliases 128 p128.rb; \
 	pa=$$(sw -c -o "$$tmp/p64.c" "$$tmp/p64.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	pb=$$(sw -c -o "$$tmp/p128.c" "$$tmp/p128.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/hash_store_boxed.sh 64 > "$$tmp/h64.rb"; sh test/scale/hash_store_boxed.sh 128 > "$$tmp/h128.rb"; \
+	gen hash_store_boxed 64 h64.rb; gen hash_store_boxed 128 h128.rb; \
 	ha=$$(sw -c -o "$$tmp/h64.c" "$$tmp/h64.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	hb=$$(sw -c -o "$$tmp/h128.c" "$$tmp/h128.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) -c -o "$$tmp/hls.c" test/scale/hash_literal_sources_fanout.rb ) >/dev/null 2>&1 || \
@@ -5673,22 +5677,22 @@ scale-test: $(SPINEL_WORK)
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a concat chain's receiver was emitted twice per link, see emit_recv_snapshot)"; exit 1; }; \
 	( ulimit -t 20; $(SPINEL_WORK) --share-strings -c -o "$$tmp/ccs.c" test/string_concat_chain_long.rb ) >/dev/null 2>&1 || \
 	  { rm -rf "$$tmp"; echo "scale-test: FAIL (a concat chain's receiver was emitted twice per link under --share-strings, see emit_recv_snapshot)"; exit 1; }; \
-	sh test/scale/str_chain.sh 100 > "$$tmp/k1.rb"; sh test/scale/str_chain.sh 400 > "$$tmp/k4.rb"; \
+	gen str_chain 100 k1.rb; gen str_chain 400 k4.rb; \
 	ka=$$(sw --emit-rbs -o "$$tmp/k1.rbs" "$$tmp/k1.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	kb=$$(sw --emit-rbs -o "$$tmp/k4.rbs" "$$tmp/k4.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/engine_folds.sh 4000 > "$$tmp/e4.rb"; sh test/scale/engine_folds.sh 8000 > "$$tmp/e8.rb"; \
+	gen engine_folds 4000 e4.rb; gen engine_folds 8000 e8.rb; \
 	ea=$$(sw -c -o "$$tmp/e4.c" "$$tmp/e4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	eb=$$(sw -c -o "$$tmp/e8.c" "$$tmp/e8.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/ie_forward_chain.sh 2 > "$$tmp/f2.rb"; sh test/scale/ie_forward_chain.sh 4 > "$$tmp/f4.rb"; \
+	gen ie_forward_chain 2 f2.rb; gen ie_forward_chain 4 f4.rb; \
 	fa=$$(sw -c -o "$$tmp/f2.c" "$$tmp/f2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	fb=$$(sw -c -o "$$tmp/f4.c" "$$tmp/f4.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/alias_receivers.sh 400 > "$$tmp/r4.rb"; sh test/scale/alias_receivers.sh 800 > "$$tmp/r8.rb"; \
+	gen alias_receivers 400 r4.rb; gen alias_receivers 800 r8.rb; \
 	ra=$$(sw -c -o "$$tmp/r4.c" "$$tmp/r4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rb=$$(sw -c -o "$$tmp/r8.c" "$$tmp/r8.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/alias_raise_targets.sh 400 > "$$tmp/t4.rb"; sh test/scale/alias_raise_targets.sh 800 > "$$tmp/t8.rb"; \
+	gen alias_raise_targets 400 t4.rb; gen alias_raise_targets 800 t8.rb; \
 	ta=$$(sw -c -o "$$tmp/t4.c" "$$tmp/t4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	tb=$$(sw -c -o "$$tmp/t8.c" "$$tmp/t8.rb") || { rm -rf "$$tmp"; exit 1; }; \
-	sh test/scale/splices.sh 200 > "$$tmp/x2.rb"; sh test/scale/splices.sh 400 > "$$tmp/x4.rb"; \
+	gen splices 200 x2.rb; gen splices 400 x4.rb; \
 	xa=$$(sw -c -o "$$tmp/x2.c" "$$tmp/x2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	xb=$$(sw -c -o "$$tmp/x4.c" "$$tmp/x4.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
