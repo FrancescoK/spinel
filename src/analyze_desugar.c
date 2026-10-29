@@ -5484,7 +5484,13 @@ int desugar_paren_def_body_at(Compiler *c, LowerCtx *lc, int id) {
   int *cp = malloc(sizeof(int) * (size_t)pn);
   if (!cp) return 0;
   memcpy(cp, pd, sizeof(int) * (size_t)pn);
-  nt_node_set_arr(nt, nt_ref(nt, id, "body"), "body", cp, pn);
+  int body = nt_ref(nt, id, "body"), bn = 0;
+  int pb = nt_ref(nt, nt_arr(nt, body, "body", &bn)[0], "body");
+  nt_node_set_arr(nt, body, "body", cp, pn);
+  /* The parentheses leave the tree, and their statement list must not keep
+     naming the statements: the parent map takes the last list that does, and
+     a walk up from a moved statement would end at the detached node. */
+  nt_node_set_arr(nt, pb, "body", NULL, 0);
   free(cp);
   return 1;
 }
