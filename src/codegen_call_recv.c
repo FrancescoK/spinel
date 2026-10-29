@@ -340,6 +340,9 @@ static int program_defines_num_eq(Compiler *c, TyKind rt, TyKind nk) {
 static void emit_typed_arr_scan(Compiler *c, TyKind rt, int ta, int tv, int inc, int rev, Buf *b) {
   if (program_defines_num_eq(c, rt, TY_RATIONAL)) { buf_puts(b, inc ? "FALSE" : "sp_box_nil()"); return; }
   const char *bk = rt == TY_INT_ARRAY ? "SP_BUILTIN_INT_ARRAY" : "SP_BUILTIN_FLT_ARRAY";
+  /* a String, Symbol, true, false or nil is never == to a number: no walk */
+  buf_printf(b, "(_t%d.tag == SP_TAG_STR || _t%d.tag == SP_TAG_SYM || _t%d.tag == SP_TAG_BOOL || _t%d.tag == SP_TAG_NIL ||"
+                " sp_poly_is_strbuf(_t%d)) ? %s : ", tv, tv, tv, tv, tv, inc ? "FALSE" : "sp_box_nil()");
   if (inc) buf_printf(b, "sp_poly_arr_include_eq(sp_box_nullable_obj((void *)_t%d, %s), _t%d)", ta, bk, tv);
   else buf_printf(b, "sp_box_oint(sp_poly_arr_index_val(sp_box_nullable_obj((void *)_t%d, %s), _t%d, %d))", ta, bk, tv, rev);
 }
