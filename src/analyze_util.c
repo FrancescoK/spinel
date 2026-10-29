@@ -4942,6 +4942,7 @@ typedef struct {
   ANameHash names; int *head, *next;   /* method scopes by name */
   int *reopen, nreopen;      /* the program's reopened builtin classes */
   signed char *loop_memo;    /* per node: a loop's answer, -1 until asked */
+  char *capt;                /* per scope: keeps its block (a kept block of it yields) */
   int **tg; int *ntg, *ctg;  /* per scope, the method scopes its body may call */
   int all, queues, lazy, in_loop, probe;
 } SiFacts;
@@ -4953,7 +4954,7 @@ static SiFacts g_si;
 static void si_target(SiFacts *f, int from, int mi, int *hit) {
   if (mi < 0 || mi >= f->nscopes) { *hit = 1; return; }
   /* (probing: a target that captures the block as `&blk`) */
-  if (f->probe) { const char *bp = g_si.c->scopes[mi].blk_param; if (bp && bp[0]) *hit = 1; return; }
+  if (f->probe) { const char *bp = g_si.c->scopes[mi].blk_param; if ((bp && bp[0]) || f->capt[mi]) *hit = 1; return; }
   if (from < 0) { if (f->raises[mi]) *hit = 1; return; }
   if (f->ntg[from] == f->ctg[from]) {
     f->ctg[from] = f->ctg[from] ? f->ctg[from] * 2 : 8;
@@ -5038,6 +5039,40 @@ static int si_walk(Compiler *c, SiFacts *f, int from, int id, int depth) {
   return 0;
 }
 
+/* Does subtree id hold a yield (not one of a def inside it)? */
+static int si_has_yield(const NodeTable *nt, int id, int depth) {
+  if (id < 0 || id >= nt->count || depth > 2000) return 0;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_YieldNode) return 1;
+  if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return 0;
+  const SpNode *nd = &nt->nodes[id];
+  for (int j = 0; j < nd->nr; j++) if (si_has_yield(nt, nd->r[j].ref, depth + 1)) return 1;
+  for (int j = 0; j < nd->na; j++)
+    for (int i = 0; i < nd->a[j].n; i++) if (si_has_yield(nt, nd->a[j].ids[i], depth + 1)) return 1;
+  return 0;
+}
+/* The body of the block or lambda node id when it is kept to run later
+   (si_facts), else -1. A `loop`'s own block is its own loop's question. */
+static int si_kept_body(Compiler *c, SiFacts *f, int id) {
+  const NodeTable *nt = c->nt;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_LambdaNode) return nt_ref(nt, id, "body");
+  if (k != NK_CallNode) return -1;
+  const char *nm = nt_str(nt, id, "name");
+  int blk = nt_ref(nt, id, "block");
+  if (!nm || blk < 0 || nt_kind(nt, blk) != NK_BlockNode) return -1;
+  int r = nt_ref(nt, id, "receiver");
+  if (sp_streq(nm, "loop") && r < 0) return -1;
+  if (!f->lazy && !str_in(nm, si_keep_names)) {
+    int capt = 0;
+    f->probe = 1;
+    si_call_targets(c, f, -1, id, nm, r, r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN, &capt);
+    f->probe = 0;
+    if (!capt) return -1;
+  }
+  return nt_ref(nt, blk, "body");
+}
+
 static int si_prelude_scope(Compiler *c, const Scope *sc) {
   const char *path = nt_file_path(c->nt, (int)nt_int(c->nt, sc->def_node, "node_file", 0));
   return path && strstr(path, "/builtins/") != NULL;
@@ -5049,7 +5084,7 @@ static void si_facts(Compiler *c) {
   SiFacts *f = &g_si;
   if (f->c == c && f->nscopes == c->nscopes && f->count == nt->count) return;
   for (int s = 0; s < f->nscopes; s++) free(f->tg ? f->tg[s] : NULL);
-  free(f->tg); free(f->ntg); free(f->ctg); free(f->raises); free(f->head); free(f->next); free(f->reopen); free(f->loop_memo);
+  free(f->tg); free(f->ntg); free(f->ctg); free(f->raises); free(f->head); free(f->next); free(f->reopen); free(f->loop_memo); free(f->capt);
   anh_free(&f->names);
   memset(f, 0, sizeof *f);
   int ns = c->nscopes;
@@ -5062,8 +5097,9 @@ static void si_facts(Compiler *c) {
   f->ntg = (int *)calloc((size_t)ns + 1, sizeof(int));
   f->ctg = (int *)calloc((size_t)ns + 1, sizeof(int));
   f->loop_memo = (signed char *)malloc((size_t)nt->count + 1);
+  f->capt = (char *)calloc((size_t)ns + 1, 1);
   if (f->loop_memo) memset(f->loop_memo, -1, (size_t)nt->count + 1);
-  if (!f->loop_memo || !f->raises || !f->next || !f->head || !f->reopen || !f->tg || !f->ntg || !f->ctg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  if (!f->loop_memo || !f->capt || !f->raises || !f->next || !f->head || !f->reopen || !f->tg || !f->ntg || !f->ctg) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int s = 0; s < ns; s++) {
     Scope *sc = &c->scopes[s];
     f->raises[s] = 0; f->next[s] = -1;
@@ -5111,25 +5147,25 @@ static void si_facts(Compiler *c) {
   }
   /* a block kept to run later, or a lambda, or a Method object, which may
      run any method. Every block is kept in a program that makes a lazy
-     chain, and every block a method the call may reach captures as `&blk`. */
-  for (int id = 0; id < nt->count && !f->all; id++) {
-    NodeKind k = nt_kind(nt, id);
-    int body = -1;
-    if (k == NK_LambdaNode) body = nt_ref(nt, id, "body");
-    else if (k == NK_CallNode) {
-      const char *nm = nt_str(nt, id, "name");
-      if (nm && str_in(nm, si_callable_names)) { f->all = 1; break; }
-      int blk = nt_ref(nt, id, "block");
-      if (blk < 0 || nt_kind(nt, blk) != NK_BlockNode) continue;
-      if (!f->lazy && nm && !str_in(nm, si_keep_names)) {
-        int r = nt_ref(nt, id, "receiver"), capt = 0;
-        f->probe = 1;
-        si_call_targets(c, f, -1, id, nm, r, r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN, &capt);
-        f->probe = 0;
-        if (!capt) continue;
-      }
-      body = nt_ref(nt, blk, "body");
+     chain, and every block a method the call may reach keeps: one it
+     captures as `&blk`, or one a block it keeps yields to (whose yield then
+     runs that block later), until no more methods keep theirs. */
+  for (int id = 0; id < nt->count; id++) {
+    const char *nm = nt_kind(nt, id) == NK_CallNode ? nt_str(nt, id, "name") : NULL;
+    if (nm && str_in(nm, si_callable_names)) { f->all = 1; return; }
+  }
+  for (int grew = 1; grew; ) {
+    grew = 0;
+    for (int id = 0; id < nt->count; id++) {
+      int body = si_kept_body(c, f, id);
+      if (body < 0 || !si_has_yield(nt, body, 0)) continue;
+      Scope *sc = comp_scope_of(c, id);
+      int mi = sc ? (int)(sc - c->scopes) : -1;
+      if (mi >= 0 && mi < ns && !f->capt[mi]) { f->capt[mi] = 1; grew = 1; }
     }
+  }
+  for (int id = 0; id < nt->count && !f->all; id++) {
+    int body = si_kept_body(c, f, id);
     if (body >= 0 && si_walk(c, f, -1, body, 0)) f->all = 1;
   }
 }
