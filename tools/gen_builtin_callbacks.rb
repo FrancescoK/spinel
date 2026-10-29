@@ -72,6 +72,9 @@
 #   LOADED an object the data builds (Marshal.load, YAML.unsafe_load: the class
 #          the data names, any class of the program, receives marshal_load,
 #          _load or init_with)
+#   HOOK   the receiver, a class or module of the program, whose own singleton
+#          method the builtin calls: K.const_get(:Z) asks K for const_missing,
+#          K.define_method(:m) for method_added
 #
 # What it writes. Rows are (builtin, receiver, callbacks): the callbacks of
 # one builtin on one receiver ("Array", or "File." for a singleton method;
@@ -102,7 +105,7 @@ Warning[:deprecated] = false
 Warning[:experimental] = false
 $VERBOSE = nil
 
-ROLES = { arg: 1, elem: 2, block: 4, self: 8, class: 16, port: 32, asked: 64, loaded: 128, gvar: 256 }.freeze
+ROLES = { arg: 1, elem: 2, block: 4, self: 8, class: 16, port: 32, asked: 64, loaded: 128, gvar: 256, hook: 512 }.freeze
 ASKED_NAMES = %w[respond_to? respond_to_missing? method_missing].freeze
 # Methods an IO argument is asked for; the same names handed as an ordinary
 # argument are the port protocol, not a conversion
@@ -180,6 +183,9 @@ STRUCTURAL = %w[respond_to? respond_to_missing? method_missing initialize_copy i
 CLASS_OWN_ANSWER = %i[hash <=>].freeze
 CLASS_ONLY = {   # singleton methods only a class object has
   _load: ->(_s) { Object.new }, const_missing: ->(_n) { raise NameError }, inherited: ->(_k) { nil },
+  # the hooks Module runs on a class as the program defines and removes its members
+  **%i[method_added method_removed method_undefined singleton_method_added singleton_method_removed
+       singleton_method_undefined const_added].to_h { |n| [n, ->(_n) { nil }] },
 }.freeze
 
 module Probe
@@ -311,6 +317,7 @@ module Probe
   # The object of one kind for one role. A SELF receiver, or an object of a
   # `base` the caller names, is a program subclass whatever the kind.
   def self.make(kind, role, omit, idx, base)
+    return class_object(omit, idx, :hook) if role == :hook   # the receiver, whatever the arguments are
     if role == :self || base
       bodies = base.nil? || base == Numeric || !base.is_a?(Class)
       return sample_of(base || Object, instance_class(base || Object, role, omit, bodies)) if base
@@ -401,18 +408,18 @@ end
 # Probe one call in every kind of object, peeling the names that answer: each
 # round leaves out, per role, the candidates the last one called. `own` is the
 # method being probed on a program object (its own name is no callback of
-# itself); `self_omit` leaves it out of the receiver.
-def probe(recv, builtin, own: nil, self_omit: [], &build)
+# itself, as the role `own_role` logs it); `self_omit` leaves it out of the receiver.
+def probe(recv, builtin, own: nil, self_omit: [], own_role: :self, &build)
   key = [recv, builtin]
   OWN[0] = own
   KINDS.each do |kind|
-    left = self_omit.empty? ? {} : { self: self_omit.sort.freeze }
+    left = self_omit.empty? ? {} : { own_role => self_omit.sort.freeze }
     (kind == :ghost ? 1 : PEEL_ROUNDS).times do
       timeouts = STATS[:timeout]
       events = run_once(kind, left, &build)
       TIMED_OUT << key if STATS[:timeout] > timeouts
       break unless events
-      events.reject! { |n, role| role == :self && n == own } if own
+      events.reject! { |n, role| role == own_role && n == own } if own
       events.each { |n, role| ROWS[key] << [ROLES.fetch(effective_role(n, role)), n] }
       ROWS[key]
       grew = false
@@ -446,13 +453,13 @@ end
 # a probe in one slot (the rest 1 or "a"), in every slot, two probes in an
 # Array or a Hash (ELEM); a block that answers a probe (BLOCK) or the first
 # thing it is yielded (an element of the receiver).
-def argument_shapes(n, elems)
-  shapes = [[->(_mk) { Array.new(n, 1) }, ->(mk) { mk.(:block) }]]
-  shapes << [->(_mk) { Array.new(n, 1) }, ->(_mk) { proc { |*a| a.first } }] if elems
+def argument_shapes(n, elems, fills = [1, "a"], plain = [1])
+  shapes = plain.map { |fill| [->(_mk) { Array.new(n, fill) }, ->(mk) { mk.(:block) }] }
+  shapes.concat(plain.map { |fill| [->(_mk) { Array.new(n, fill) }, ->(_mk) { proc { |*a| a.first } }] }) if elems
   return shapes unless n.positive?
   shapes << [->(mk) { Array.new(n) { mk.(:arg) } }, nil]
   n.times do |i|
-    [1, "a"].each do |fill|
+    fills.each do |fill|
       shapes << [->(mk) { Array.new(n, fill).tap { |a| a[i] = mk.(:arg) } }, nil]
     end
     shapes << [->(mk) { Array.new(n, 1).tap { |a| a[i] = [mk.(:elem), mk.(:elem)] } }, nil]
@@ -462,10 +469,10 @@ def argument_shapes(n, elems)
 end
 
 # Every call of `mname` on the receiver `build_recv.(mk)` makes
-def probe_calls(label, mname, counts, build_recv, own: nil, elems: false)
+def probe_calls(label, mname, counts, build_recv, own: nil, elems: false, own_role: :self, fills: [1, "a"], plain: [1])
   counts.each do |n|
-    argument_shapes(n, elems).each do |args, blk|
-      probe(label, mname.to_s, own: own, self_omit: own ? [own] : []) do |mk|
+    argument_shapes(n, elems, fills, plain).each do |args, blk|
+      probe(label, mname.to_s, own: own, self_omit: own ? [own] : [], own_role: own_role) do |mk|
         recv = build_recv.(mk)
         a = args.(mk)
         b = blk&.(mk)
@@ -606,6 +613,20 @@ def probe_subclasses
       next if SELF_SKIP.include?(mname)
       probe_calls(label, mname, arity_counts(owner.instance_method(mname)), ->(mk) { mk.(:self) }, own: mname.to_s)
     end
+  end
+end
+
+# Module's and Class's methods on a class of the program that logs its own
+# singleton hooks. A name argument is also tried as a constant's (Z), which
+# const_get wants before it asks for const_missing, and a method or constant
+# name is tried with the block define_method wants.
+def probe_hooks
+  owners = { Module => "Module", Class => "Class" }
+  Class.public_instance_methods.sort.each do |mname|
+    m = Class.instance_method(mname)
+    next if !owners.key?(m.owner) || SKIP_ANYWHERE.include?(mname)
+    probe_calls(owners[m.owner], mname, arity_counts(m), ->(mk) { mk.(:hook) },
+                own: mname.to_s, own_role: :hook, fills: [1, "a", "Z"], plain: [1, "Z"])
   end
 end
 
@@ -825,6 +846,7 @@ def run_probes
     Dir.chdir(dir) do
       probe_instances
       probe_subclasses
+      probe_hooks
       probe_singletons
       probe_forked_all
       probe_output

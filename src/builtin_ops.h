@@ -51,7 +51,8 @@ enum {
   BCR_ASKED = 64u,  /* asked through rb_check_funcall: respond_to?, respond_to_missing?, method_missing */
   BCR_LOADED = 128u,/* an object the data builds (Marshal.load, YAML.unsafe_load): any class of the program may receive it */
   BCR_GVAR = 256u,  /* $stdout or $stderr holding the object: the assignment is a write of a port global, whose row keeps it */
-  BCR_ALL = 511u
+  BCR_HOOK = 512u,  /* the receiver, a class or module of the program: a singleton hook it defines that the builtin calls (const_get: const_missing) */
+  BCR_ALL = 1023u
 };
 typedef struct { const char *name; unsigned roles; } BopCallback;
 /* What any core method called `builtin` may call back, the union over its
