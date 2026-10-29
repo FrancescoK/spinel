@@ -10,8 +10,8 @@
 # bare in a method of the reopened Integer as well as written with its
 # receiver, with or without a block, and through a boxed number (a value
 # read out of an Array of both kinds, which the --int-overflow=promote
-# copy's self is too). The boxed receiver and its argument run once, in
-# order.
+# copy's self is too), once its argument is converted to a name. The boxed
+# receiver and its argument run once, in order.
 class Integer
   def int_select = select(nil, nil, nil, 0).inspect
   def int_format = format("%03d", self)
@@ -94,6 +94,25 @@ begin; 1.5.singleton_method_added(:x) { p :block_ran }; rescue TypeError => e; p
 [5, 1.5].each do |v|
   begin; v.singleton_method_added(:x) { p :block_ran }; rescue TypeError => e; p e.message; end
 end
+
+# the name is converted first: a String or an object's #to_str is a name,
+# any other value is the TypeError that names it
+class NamedArg; def to_str = ($names << :to_str; "x"); end
+class PlainArg; def inspect = "plain"; end
+class Integer
+  def call_added_num = singleton_method_added(3)
+end
+$names = []
+begin; 5.singleton_method_added("x"); rescue TypeError => e; p e.message; end
+begin; 1.5.singleton_method_added(NamedArg.new); rescue TypeError => e; p e.message; end
+begin; 5.singleton_method_added(PlainArg.new); rescue TypeError => e; p e.message; end
+begin; 1.5.singleton_method_added(nil); rescue TypeError => e; p e.message; end
+begin; 5.call_added_num; rescue TypeError => e; p e.message; end
+[5, 1.5].each do |v|
+  begin; v.singleton_method_added(NamedArg.new); rescue TypeError => e; p e.message; end
+  begin; v.singleton_method_added([v][0]); rescue TypeError => e; p e.message; end
+end
+p $names
 
 $trace = []
 def boxed_num = ($trace << :receiver; [5, 1.5][$trace.size % 2])

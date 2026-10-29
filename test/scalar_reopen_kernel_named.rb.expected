@@ -30,4 +30,14 @@
 "can't define singleton"
 "can't define singleton"
 "can't define singleton"
+"plain is not a symbol nor a string"
+"nil is not a symbol nor a string"
+"3 is not a symbol nor a string"
+"can't define singleton"
+"5 is not a symbol nor a string"
+"can't define singleton"
+"1.5 is not a symbol nor a string"
+[:to_str, :to_str, :to_str]
+"can't define singleton"
+"can't define singleton"
 [:receiver, :argument, :receiver, :argument]
