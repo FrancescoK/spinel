@@ -141,6 +141,7 @@ void       sp_sched_sleep_forever(void);  /* a bare Kernel#sleep */
    plain blocking sleep only in the single-threaded build (spinel_rt.h). */
 void       sp_sched_sleep(double seconds);
 int        sp_sched_other_threads_live(void);
+int        sp_sched_fork(void);   /* fork(2) that leaves the child a sound scheduler (#10516) */
 int        sp_sched_threads_started(void);   /* the worker pool is up: Process.daemon refuses to fork */
 int        sp_sched_wait_child(int pid, int *status);
 void       sp_sleep(sp_float s);   /* Kernel#sleep; relocated from spinel_rt.h to lib/sp_cold.c */

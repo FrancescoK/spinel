@@ -1253,8 +1253,10 @@ int sp_net_poll_event_mode(int i) {
 
 /* ---------- process (prefork) ---------- */
 
+int sp_sched_fork(void);   /* lib/sp_sched.c */
+
 int sp_net_fork(void) {
-    return (int)fork();
+    return sp_sched_fork();   /* the child's scheduler without the parent's threads */
 }
 
 int sp_net_exit(int status) {
