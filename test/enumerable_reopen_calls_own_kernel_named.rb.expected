@@ -32,4 +32,17 @@ private method 'warn' called for an instance of Array
 :arg_a
 :pre_a
 NoMethodError
+:hidden
+NoMethodError
+:prot
+NoMethodError
+:late
+:re
+NoMethodError
+:mf
+:own_gets
+:own_sleep
+private method 'gets' called for an instance of Array
+private method 'sleep' called for an instance of Range
+NoMethodError
 40

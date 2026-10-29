@@ -12,7 +12,10 @@
 # Enumerable's own def of a name when included and ahead of it when
 # prepended, the last included first and of `include A, B` (or `prepend
 # A, B`) A; a module method that calls super is not reached (a call of it
-# still raises NoMethodError).
+# still raises NoMethodError). A method a `private` (`protected`,
+# `module_function`) section above it or a `private :m` after it hides,
+# in Enumerable or a module it includes, is reached from a method of the
+# module only.
 module Enumerable
   def call_open = open
   def open = 42
@@ -115,6 +118,55 @@ module PreA; def pre_order = :pre_a; end
 module PreB; def pre_order = :pre_b; end
 module Enumerable; prepend PreA, PreB; def pre_order = :enumerable_pre; end
 p [1].pre_order
+
+def vis_try
+  p yield
+rescue NoMethodError => e
+  p e.class
+end
+module HidSect
+  private
+  def hid_m = :hidden
+  public
+  def hid_reveal = hid_m
+end
+module ProtSect; protected; def prot_m = :prot; end
+module LateMark; def late_m = :late; private :late_m; def call_late = late_m; end
+module Reexposed; private; def re_m = :re; public :re_m; end
+module FnSect; module_function; def mf_m = :mf; end
+module Enumerable
+  include HidSect, ProtSect, LateMark, Reexposed, FnSect
+  def call_prot = prot_m
+  def call_mf = mf_m
+  def call_gets = gets
+  def gets = :own_gets
+  private :gets
+  private
+  def sleep = :own_sleep
+  public
+  def call_sleep = sleep
+end
+vis_try { [1].hid_m }
+vis_try { [1].hid_reveal }
+vis_try { [1].prot_m }
+vis_try { [1].call_prot }
+vis_try { [1].late_m }
+vis_try { [1].call_late }
+vis_try { [1].re_m }
+vis_try { [1].mf_m }
+vis_try { [1].call_mf }
+p [1].call_gets
+p (1..2).call_sleep
+begin
+  [1].gets
+rescue NoMethodError => e
+  puts e.message
+end
+begin
+  (1..2).sleep
+rescue NoMethodError => e
+  puts e.message
+end
 
 module UpCall; def up_call = super; end
 module Enumerable; include UpCall; end

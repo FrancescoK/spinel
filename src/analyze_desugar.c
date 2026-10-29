@@ -12699,6 +12699,57 @@ int builtin_enum_name_index(const char *name) {
   return -1;
 }
 
+/* The visibility the method m takes in a class or module body, as a walk
+   of the body in program order meets its statements (ahead of `before` and
+   outside it): a def of m (no receiver) takes its section's, set by the
+   last bare `public` / `private` / `protected` / `module_function` above it
+   (a body starts public), a def a visibility call wraps takes that call's,
+   and a later `private :m` (any of the four, the name a literal) changes
+   it. module_function leaves the instance method private. Nested classes,
+   defs and singleton classes are not entered. */
+typedef struct {
+  int sect;   /* the section's visibility, BVIS_* */
+  int vis;    /* m's, once seen */
+  int seen;
+} BodyVis;
+/* the visibility a receiverless visibility call gives an instance method:
+   BVIS_*, 0 for another call */
+static int body_vis_word(const NodeTable *nt, int n) {
+  if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "receiver") >= 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  const char *cn = nt_str(nt, n, "name");
+  int v = cn ? visibility_of_name(cn) : 0;
+  return v == BVIS_MODULE_FUNCTION ? BVIS_PRIVATE : v;
+}
+static void body_vis_walk(const NodeTable *nt, int n, const char *m, int before, BodyVis *st) {
+  if (n < 0 || n == before) return;
+  NodeKind k = nt_kind(nt, n);
+  if (k == NK_DefNode) {
+    const char *dn = nt_str(nt, n, "name");
+    if (n < before && nt_ref(nt, n, "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->vis = st->sect; }
+    return;
+  }
+  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
+  int vis = body_vis_word(nt, n);
+  if (vis) {
+    int an = 0; const int *av = nt_arr(nt, nt_ref(nt, n, "arguments"), "arguments", &an);
+    if (an == 0) { if (n < before) st->sect = vis; return; }
+    for (int q = 0; q < an; q++) {
+      if (nt_kind(nt, av[q]) == NK_DefNode) {
+        const char *dn = nt_str(nt, av[q], "name");
+        if (av[q] < before && nt_ref(nt, av[q], "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->vis = vis; }
+        continue;
+      }
+      const char *ln = vis_arg_name(nt, av[q]);
+      if (ln && sp_streq(ln, m) && n < before && st->seen) st->vis = vis;
+    }
+    return;
+  }
+  const SpNode *nd = &nt->nodes[n];
+  for (int j = 0; j < nd->nr; j++) body_vis_walk(nt, nd->r[j].ref, m, before, st);
+  for (int j = 0; j < nd->na; j++)
+    for (int q = 0; q < nd->a[j].n; q++) body_vis_walk(nt, nd->a[j].ids[q], m, before, st);
+}
+
 /* does a builtin value that an Enumerable method is copied for (an Array, a
    Hash, a Range, an Enumerator) answer a method of this name itself? A
    private Kernel function it also answers (`select`) is reached through the
@@ -12799,6 +12850,29 @@ static int own_chain_defines(const NodeTable *nt, const char *cls, const char *n
     o = bi_body_defines(nt, "", bi_receiver_class(i), nm, &seen);
   bi_seen_free(&seen);
   return o;
+}
+
+/* the visibility (BVIS_*) the program's bodies of the class or module
+   `leaf` in ns (bi_opens) leave its method nm with (body_vis_walk) */
+static int bi_body_visibility(const NodeTable *nt, const char *ns, const char *leaf, const char *nm) {
+  BodyVis st = { BVIS_PUBLIC, BVIS_PUBLIC, 0 };
+  for (int id = 0; id < nt->count; id++) {
+    char key[512];
+    if (!bi_opens(nt, id, ns, leaf, key, sizeof key)) continue;
+    st.sect = BVIS_PUBLIC;
+    body_vis_walk(nt, nt_ref(nt, id, "body"), nm, nt->count, &st);
+  }
+  return st.vis;
+}
+/* the same of the method a body statement st declares (fwd_body_def), in
+   the class or module whose body holds it */
+static int bi_def_visibility(const NodeTable *nt, int st) {
+  int ct = fwd_lex_parent(nt, st);
+  if (ct < 0) return BVIS_PUBLIC;
+  char ns[512] = "";
+  fwd_ns_key(nt, ct, ns, sizeof ns);
+  return bi_body_visibility(nt, ns, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"),
+                            nt_str(nt, fwd_body_def(nt, st), "name"));
 }
 
 /* the receiverless calls a builtin body may make that are NOT methods of
@@ -13133,10 +13207,11 @@ int desugar_builtins(Compiler *c) {
     if (bi < nbuiltin) continue;
     int g = own_enum_generic(nt, d, own_mn);
     if (g < 0) break;
-    /* `private def m` (protected, module_function): only a call on self
-       takes the copy; another call raises as the method is not public */
-    if (d != own[k] && visibility_of_name(nt_str(nt, own[k], "name")) != BVIS_PUBLIC)
-      nt_node_set_int(nt, g, "enum_self_only", 1);
+    /* a method its module's bodies leave private or protected (`private
+       def m`, a bare `private` above the def, `private :m` after it,
+       module_function): only a call on self takes the copy; another call
+       raises as the method is not public */
+    if (bi_def_visibility(nt, own[k]) != BVIS_PUBLIC) nt_node_set_int(nt, g, "enum_self_only", 1);
     if (gdef[bi] >= 0) nt_subtree_blank(nt, gdef[bi]);
     gdef[bi] = g;
     changed = 1;
@@ -24512,57 +24587,6 @@ int desugar_sclass_readers_through_class(Compiler *c) {
    method is not defined to method_defined?. Only a bare or
    `self.` method_defined? / public_method_defined? with a literal name is
    answered; anything else keeps its runtime refusal. */
-typedef struct { int priv, found, seen; } DumState;
-/* a receiverless visibility call: 1 private, 2 public or protected */
-static int dum_vis(const NodeTable *nt, int n) {
-  if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "receiver") >= 0 || nt_ref(nt, n, "block") >= 0) return 0;
-  const char *cn = nt_str(nt, n, "name");
-  if (!cn) return 0;
-  if (sp_streq(cn, "private")) return 1;
-  return sp_streq(cn, "public") || sp_streq(cn, "protected") ? 2 : 0;
-}
-static const char *dum_lit_name(const NodeTable *nt, int a) {
-  NodeKind k = nt_kind(nt, a);
-  return k == NK_SymbolNode ? nt_str(nt, a, "value") : k == NK_StringNode ? nt_str(nt, a, "content") : NULL;
-}
-static const int *dum_args(const NodeTable *nt, int call, int *n) {
-  int ar = nt_ref(nt, call, "arguments");
-  *n = 0;
-  return ar >= 0 ? nt_arr(nt, ar, "arguments", n) : NULL;
-}
-/* body subtree `n` in program order, ahead of `before` and outside it: a def
-   of `m` (no receiver) defines it unless it is private there, and a later
-   `private :m` hides it again; nested classes, defs and singleton classes
-   are not entered */
-static void dum_walk(const NodeTable *nt, int n, const char *m, int before, DumState *st) {
-  if (n < 0 || n == before) return;
-  NodeKind k = nt_kind(nt, n);
-  if (k == NK_DefNode) {
-    const char *dn = nt_str(nt, n, "name");
-    if (n < before && nt_ref(nt, n, "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->found = !st->priv; }
-    return;
-  }
-  if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return;
-  int vis = dum_vis(nt, n);
-  if (vis) {
-    int an = 0; const int *av = dum_args(nt, n, &an);
-    if (an == 0) { if (n < before) st->priv = vis == 1; return; }
-    for (int q = 0; q < an; q++) {
-      if (nt_kind(nt, av[q]) == NK_DefNode) {
-        const char *dn = nt_str(nt, av[q], "name");
-        if (av[q] < before && nt_ref(nt, av[q], "receiver") < 0 && dn && sp_streq(dn, m)) { st->seen = 1; st->found = vis == 2; }
-        continue;
-      }
-      const char *ln = dum_lit_name(nt, av[q]);
-      if (ln && sp_streq(ln, m) && n < before && st->seen) st->found = vis == 2;
-    }
-    return;
-  }
-  const SpNode *nd = &nt->nodes[n];
-  for (int j = 0; j < nd->nr; j++) dum_walk(nt, nd->r[j].ref, m, before, st);
-  for (int j = 0; j < nd->na; j++)
-    for (int q = 0; q < nd->a[j].n; q++) dum_walk(nt, nd->a[j].ids[q], m, before, st);
-}
 static const char *dum_leaf(const NodeTable *nt, int path) {
   if (path < 0) return NULL;
   NodeKind k = nt_kind(nt, path);
@@ -24571,18 +24595,18 @@ static const char *dum_leaf(const NodeTable *nt, int path) {
 static int dum_defined_before(const NodeTable *nt, const char *cls, const char *m, int before, int depth) {
   if (!cls || depth > 16) return 0;
   const char *super = NULL;
-  DumState st = {0, 0, 0};
+  BodyVis st = { BVIS_PUBLIC, BVIS_PUBLIC, 0 };
   for (int n = 0; n < before && n < nt->count; n++) {
     NodeKind k = nt_kind(nt, n);
     if (k != NK_ClassNode && k != NK_ModuleNode) continue;
     const char *ln = dum_leaf(nt, nt_ref(nt, n, "constant_path"));
     if (!ln || !sp_streq(ln, cls)) continue;
-    st.priv = 0;   /* each body starts public */
-    dum_walk(nt, nt_ref(nt, n, "body"), m, before, &st);
+    st.sect = BVIS_PUBLIC;   /* each body starts public */
+    body_vis_walk(nt, nt_ref(nt, n, "body"), m, before, &st);
     if (k == NK_ClassNode && !super) super = dum_leaf(nt, nt_ref(nt, n, "superclass"));
   }
   /* the class's own def decides, a private one too (it hides an inherited one) */
-  if (st.seen) return st.found;
+  if (st.seen) return st.vis != BVIS_PRIVATE;
   return super ? dum_defined_before(nt, super, m, before, depth + 1) : 0;
 }
 int desugar_def_unless_method_defined(Compiler *c) {
