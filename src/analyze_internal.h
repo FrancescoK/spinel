@@ -145,7 +145,7 @@ const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analy
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
 int builtin_method_known_any(const char *m);   /* codegen_call.c */
-int builtin_object_method_known(const char *m);   /* codegen_call.c */
+int builtin_object_method_known(const char *m);   /* builtin_names.c */
 int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 const char *core_class_ancestors(const char *cls);   /* codegen_call_class.c */
 int builtin_method_arity(const char *cls, const char *m, int *out);
@@ -396,7 +396,10 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    list (EP_LIST), whose elements are statements, or a lone expression
    (EP_NEW), which is one. Any other node is one of the statement's
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
-   keeps it to run later, so that its nodes are late. fmay: may, counted
+   keeps it to run later, so that its nodes are late; kept: on a block of a
+   call the record does not know (elab_block_runs 0), which may run it at
+   once or keep it to run later, so its statements may run after any later
+   point too. fmay: may, counted
    from the frame: a condition stands between the node and the body (or
    main's file) holding it; fpartial: partial, counted from the frame. sure:
    an else clause that runs whenever its
@@ -405,7 +408,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 typedef struct {
   int e, file, top, frame, depth, rep;
   int list;   /* the statement list the node is an element of (a StatementsNode), -1 for a lone expression */
-  unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure;
+  unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure, kept;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);

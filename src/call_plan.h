@@ -452,6 +452,40 @@ int cplan_nil_answer_served(Compiler *c, int id);   /* codegen_call.c: nil's ans
    a global, an ivar, an unseen caller) is not. */
 int cplan_nil_written(int why);
 
+/* ---- CM_*: a call that finds no method where it runs ----
+   Whether call id -- receiverless, on self, or on a constant naming a
+   program class -- runs at a load point where the program's method of its
+   name is not defined yet (call_target answers none there, from the load
+   record) and no builtin of self's answers it: the raise CRuby makes,
+   NameError for a bare name, NoMethodError otherwise; self_text how the
+   message names the receiver ("class U", "module M", "main"), or, for an
+   anonymous class, which names itself at run time, *anon its index (-1
+   otherwise; anon may be NULL). Pure. */
+typedef enum { CM_NONE, CM_NAMEERROR, CM_NOMETHOD } CplanMissing;
+int cplan_missing(Compiler *c, int id, char *self_text, size_t cap, int *anon);
+/* Does the subtree at id hold a call cplan_missing answers, in a block or
+   an operand alike? */
+int cplan_subtree_missing(Compiler *c, int id);
+/* The class call id's constant receiver recv names where the call runs, as
+   the load record resolves the reference there (elab_class_ref_at): -1 for
+   none of the program's (Object's top level), below -1 for one it does not
+   know */
+int cplan_const_recv_class(Compiler *c, int id, int recv);
+/* Does the plan route call id, a class body's call on self the desugar
+   spelled with the class (`rand(2)` -> `U.rand(2)`), to Kernel's module
+   function of the name: the class's own method of it is not defined where
+   it runs (call_target), as in a class with no def of it. Kernel's are
+   private, so route_self_builtin_calls makes such a call bare again; a
+   builtin the class itself answers (`U.name`) keeps its receiver and
+   reaches the builtin through call_target's answer. */
+int cplan_self_builtin(Compiler *c, int id);
+/* How a NameError or NoMethodError of call id names self, into buf:
+   "class U" or "module M" in a class or module body and "main" at the top
+   level (the record's self where the call runs, elab_self_at), else "an
+   instance of" the class ci the body is emitted for, else "main". NULL
+   for an anonymous class, which names itself at run time. */
+const char *cplan_self_text(Compiler *c, int id, int ci, char *buf, size_t cap);
+
 int cplan_reopen_runs_builtin(Compiler *c, int id, int mi);
 
 #endif

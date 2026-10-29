@@ -43352,6 +43352,19 @@ static void rewrite_builtin_cm_alias_calls(Compiler *c) {
   }
   free(als);
 }
+/* A class body's call on self the desugar spelled with the class
+   (`rand(2)` -> `U.rand(2)`) that runs before the class's own method of its
+   name is defined, while Kernel has a module function of the name, is
+   Kernel's call, as in a class with no def of the name
+   (cplan_self_builtin): bare again. */
+static void route_self_builtin_calls(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, id)
+    if (cplan_self_builtin(c, id)) {
+      nt_node_set_ref(nt, id, "receiver", -1);
+      nt_node_set_int(nt, id, "self_call", 0);
+    }
+}
 static void rewrite_builtin_alias_self_calls(Compiler *c, int settled) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count;
@@ -46627,6 +46640,7 @@ static void an_phase_desugar_register(Compiler *c) {
   register_globals_consts(c);
   AN_STEP_V("rewrite_const_alias_receivers", rewrite_const_alias_receivers(c));
   AN_STEP_V("rewrite_builtin_cm_alias_calls", rewrite_builtin_cm_alias_calls(c));   /* Time.stamp -> Time.now, the builtin's */
+  AN_STEP_V("route_self_builtin_calls", route_self_builtin_calls(c));   /* U.rand(2) before U's def self.rand -> rand(2), Kernel's */
   desugar_env_values(c);
   AN_STEP_V("register_ffi_decls", register_ffi_decls(c));
   AN_STEP_V("register_cext_layouts", register_cext_layouts(c));

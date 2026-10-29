@@ -2087,7 +2087,6 @@ int builtin_instance_name_known(const char *m) {
 /* Exported probes for the analyze-side method() desugar (#2752): whether the
    builtin table knows (cls, m), and whether m is universal Object surface. */
 int builtin_method_known(const char *cls, const char *m);
-int builtin_object_method_known(const char *m);
 int builtin_method_arity(const char *cls, const char *m, int *out) {
   for (int i = 0; sp_builtin_arity_tbl[i].cls; i++)
     if (sp_streq(sp_builtin_arity_tbl[i].cls, cls) && (!m || sp_streq(sp_builtin_arity_tbl[i].m, m)))
@@ -2164,17 +2163,6 @@ int method_scope_arity(Compiler *c, int target, int *out) {
   int variadic = n_opt > 0 || has_rest || has_forward || (kw_block && !has_req_kw);
   *out = variadic ? -(req + 1) : req;
   return 1;
-}
-int builtin_object_method_known(const char *m) {
-  static const char *const OBJM2[] = {
-    "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
-    "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
-    "instance_variable_get", "instance_variable_set", "instance_variables",
-    "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
-    "object_id", "public_send", "respond_to?", "send", "__send__",
-    "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
-  for (int i = 0; OBJM2[i]; i++) if (sp_streq(m, OBJM2[i])) return 1;
-  return 0;
 }
 
 
@@ -21822,6 +21810,39 @@ static void refuse_setter_sym_block(Compiler *c, int id) {
   if (sv && name_is_plain_setter(sv))
     unsupported_feature(c, id, "a setter Symbol (`&:name=`) as the block of a builtin method is not supported");
 }
+/* The value a raise stands in for, closing `(sp_raise_cls(...)`: the call
+   slot's default (a pointer's NULL cast to its type: a reader inlined over
+   the placeholder, `current_part.id`, dereferences it, and a void * had no
+   member to read; #10079) */
+static void emit_raise_placeholder(Compiler *c, int id, Buf *b) {
+  TyKind ret = repr_of(c, id).as_ty;
+  const char *dflt = (is_scalar_ret(ret) && ret != TY_UNKNOWN) ? default_value_from_compiler(c, ret) : "sp_box_nil()";
+  if (dflt && sp_streq(dflt, "NULL") && ty_is_object(ret) && !comp_ty_value_obj(c, ret)) {
+    buf_puts(b, ", (("); emit_ctype(c, ret, b); buf_puts(b, ")NULL))");
+  }
+  else buf_printf(b, ", %s)", dflt);
+}
+/* A call that finds no method where it runs (cplan_missing): CRuby's
+   NameError or NoMethodError, raised after its arguments are evaluated */
+static int emit_missing_call(Compiler *c, int id, Buf *b) {
+  char self[160], head[240];
+  int anon = -1, kind = cplan_missing(c, id, self, sizeof self, &anon);
+  if (kind == CM_NONE) return 0;
+  const NodeTable *nt = c->nt;
+  const char *name = nt_str(nt, id, "name");
+  int argc = 0; const int *argv = call_args(nt, id, &argc);
+  buf_puts(b, "(");
+  for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
+  snprintf(head, sizeof head, "%s '%s' for %s ", kind == CM_NAMEERROR ? "undefined local variable or method" : "undefined method",
+           name, anon >= 0 && comp_class_is_module(c, &c->classes[anon]) ? "module" : "class");
+  buf_puts(b, kind == CM_NAMEERROR ? "sp_raise_cls(\"NameError\", " : "sp_raise_cls(\"NoMethodError\", ");
+  if (anon >= 0) anon_class_text(c, anon, head, b);
+  else if (kind == CM_NAMEERROR) buf_printf(b, "\"undefined local variable or method '%s' for %s\"", name, self);
+  else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1])", name, self);
+  buf_puts(b, ")");
+  emit_raise_placeholder(c, id, b);
+  return 1;
+}
 /* An implicit self-call with arguments whose name the class being emitted
    does not have in its chain, while some user class or module defines it:
    CRuby's NoMethodError at run time (its arm in emit_unresolved_call).
@@ -21935,22 +21956,13 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
     int vac = 0; call_args(nt, id, &vac);
     if (vac == 0) {
       const char *vnm = nt_str(nt, id, "name");
-      TyKind vret = repr_of(c, id).as_ty;
-      const char *vcn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
-      char head[200];
+      char head[200], self[160];
+      const char *st = cplan_self_text(c, id, g_emitting_class_id, self, sizeof self);
       snprintf(head, sizeof head, "undefined local variable or method '%s' for an instance of ", vnm ? vnm : "?");
       buf_puts(b, "(sp_raise_cls(\"NameError\", ");
-      if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
-      else buf_printf(b, "\"undefined local variable or method '%s' for %s%s\")",
-                      vnm ? vnm : "?", vcn ? "an instance of " : "main", vcn ? vcn : "");
-      const char *vdef = (is_scalar_ret(vret) && vret != TY_UNKNOWN) ? default_value_from_compiler(c, vret) : "sp_box_nil()";
-      /* (a pointer's NULL cast to its type: a reader inlined over the
-         placeholder, `current_part.id`, dereferences it, and a void *
-         had no member to read; #10079) */
-      if (vdef && sp_streq(vdef, "NULL") && ty_is_object(vret) && !comp_ty_value_obj(c, vret)) {
-        buf_puts(b, ", (("); emit_ctype(c, vret, b); buf_puts(b, ")NULL))");
-      }
-      else buf_printf(b, ", %s)", vdef);
+      if (!st && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
+      else buf_printf(b, "\"undefined local variable or method '%s' for %s\")", vnm ? vnm : "?", st ? st : "main");
+      emit_raise_placeholder(c, id, b);
       return 1;
     }
   }
@@ -21968,15 +21980,16 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
      failing loudly. The zero-argument spelling of the same thing is the vcall
      arm above, and both ride the same gate switch. */
   if (call_misses_self_method(c, id)) {
-    const char *ucn = class_ruby_name(c, g_emitting_class_id);
+    char self[160];
+    const char *st = cplan_self_text(c, id, g_emitting_class_id, self, sizeof self);
     TyKind uret = repr_of(c, id).as_ty;
     buf_puts(b, "(");
     for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
     {
       char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
       buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
-      if (!anon_class_text(c, g_emitting_class_id, head, b))
-        buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for an instance of %s\")[1]))", name, ucn ? ucn : "Object");
+      if (st || !anon_class_text(c, g_emitting_class_id, head, b))
+        buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1]))", name, st ? st : "main");
       else buf_puts(b, ")");
       buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
     }
@@ -22006,15 +22019,15 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
       (call_rescued_as_missing(nt, id) || nt_str(nt, id, "send_blind") || nt_str(nt, id, "vis_enforce"))) {
     int plain = !nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK);
     if (plain) {
-      const char *ucn = g_emitting_class_id >= 0 ? class_ruby_name(c, g_emitting_class_id) : NULL;
+      char self[160];
+      const char *st = cplan_self_text(c, id, g_emitting_class_id, self, sizeof self);
       TyKind uret = repr_of(c, id).as_ty;
       buf_puts(b, "(");
       for (int k = 0; k < argc; k++) { buf_puts(b, "(void)("); emit_expr(c, argv[k], b); buf_puts(b, "), "); }
       char head[200]; snprintf(head, sizeof head, "undefined method '%s' for an instance of ", name);
       buf_puts(b, "sp_raise_cls(\"NoMethodError\", ");
-      if (g_emitting_class_id >= 0 && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
-      else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s%s\")[1]))",
-                      name, ucn ? "an instance of " : "main", ucn ? ucn : "");
+      if (!st && anon_class_text(c, g_emitting_class_id, head, b)) buf_puts(b, ")");
+      else buf_printf(b, "(&(\"\\xff\" \"undefined method '%s' for %s\")[1]))", name, st ? st : "main");
       buf_printf(b, ", %s)", (is_scalar_ret(uret) && uret != TY_UNKNOWN) ? default_value_from_compiler(c, uret) : "sp_box_nil()");
       return 1;
     }
@@ -32055,7 +32068,7 @@ static int emit_cext_call(Compiler *c, int id, Buf *b) {
 
 static void emit_call_body_ordinary(Compiler *c, int id, Buf *b);
 void emit_call_body(Compiler *c, int id, Buf *b) {
-  if (emit_cext_call(c, id, b)) return;
+  if (emit_cext_call(c, id, b) || emit_missing_call(c, id, b)) return;
   emit_call_body_ordinary(c, id, b);
 }
 

@@ -673,6 +673,7 @@ void nt_free(NodeTable *nt) {
   for (int k = 0; k < nt->nfiles; k++) free(nt->files[k]);
   free(nt->files);
   free(nt->file_defers);
+  free(nt->file_tier);
   free(nt->file_roots);
   free(nt->aux);
   free(nt->counts);
@@ -695,6 +696,20 @@ void nt_put_file_defers(NodeTable *nt, int fid) {
 }
 int nt_file_defers(const NodeTable *nt, int fid) {
   return nt && nt->file_defers && fid >= 0 && fid < nt->nfile_defers && nt->file_defers[fid];
+}
+void nt_put_file_tier(NodeTable *nt, int fid, int tier) {
+  if (fid < 0) return;
+  if (fid >= nt->nfile_tier) {
+    unsigned char *grown = realloc(nt->file_tier, (size_t)fid + 1);
+    if (!grown) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int k = nt->nfile_tier; k <= fid; k++) grown[k] = SP_LIB_NONE;
+    nt->file_tier = grown;
+    nt->nfile_tier = fid + 1;
+  }
+  nt->file_tier[fid] = (unsigned char)tier;
+}
+int nt_file_tier(const NodeTable *nt, int fid) {
+  return nt && nt->file_tier && fid >= 0 && fid < nt->nfile_tier ? nt->file_tier[fid] : SP_LIB_NONE;
 }
 const char *nt_file_path(const NodeTable *nt, int fid) {
   if (!nt || fid < 0 || fid >= nt->nfiles) return NULL;
