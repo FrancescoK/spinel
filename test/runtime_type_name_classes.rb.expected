@@ -1,0 +1,8 @@
+[StringLiteral, "a"]
+[SumState, 1]
+[EqlSet, :s]
+[LoadCand, 2.5]
+[ProcWide, nil]
+[EnumStr, [1]]
+lit!
+42
