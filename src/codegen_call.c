@@ -22867,7 +22867,7 @@ if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
                into a slot that holds a boxed value: the raise token below
                is what a typed slot's coercion recognizes at the front */
             PolyScalarArms psa;
-            if (gstage && grt == TY_POLY && rr.kind == RK_BOXED && g_sn_skip < 0)
+            if (gstage && grt == TY_POLY && rr.kind == RK_BOXED)
               poly_scalar_arms_open(c, id, &psa, b);
             else memset(&psa, 0, sizeof psa);
             buf_printf(b, "sp_raise_nomethod(sp_nomethod_msg%s(\"%s\", ",

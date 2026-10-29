@@ -10,8 +10,8 @@
 # bare in a method of the reopened Integer as well as written with its
 # receiver, with or without a block, and through a boxed number (a value
 # read out of an Array of both kinds, which the --int-overflow=promote
-# copy's self is too), once its argument is converted to a name. The boxed
-# receiver and its argument run once, in order.
+# copy's self is too), with `&.` too, once its argument is converted to a
+# name. The boxed receiver and its argument run once, in order.
 class Integer
   def int_select = select(nil, nil, nil, 0).inspect
   def int_format = format("%03d", self)
@@ -113,6 +113,15 @@ begin; 5.call_added_num; rescue TypeError => e; p e.message; end
   begin; v.singleton_method_added([v][0]); rescue TypeError => e; p e.message; end
 end
 p $names
+
+# through safe navigation: a nil receiver answers nil and runs no argument
+$sn = []
+def sn_recv = ($sn << :receiver; [5, 1.5, nil][($sn.size - 1) / 2])
+def sn_arg = ($sn << :argument; :x)
+3.times do
+  begin; p sn_recv&.singleton_method_added(sn_arg); rescue TypeError => e; p e.message; end
+end
+p $sn
 
 $trace = []
 def boxed_num = ($trace << :receiver; [5, 1.5][$trace.size % 2])

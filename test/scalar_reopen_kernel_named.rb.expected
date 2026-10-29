@@ -40,4 +40,8 @@
 [:to_str, :to_str, :to_str]
 "can't define singleton"
 "can't define singleton"
+nil
+[:receiver, :argument, :receiver, :argument, :receiver]
+"can't define singleton"
+"can't define singleton"
 [:receiver, :argument, :receiver, :argument]
