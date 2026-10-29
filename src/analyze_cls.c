@@ -2324,12 +2324,15 @@ static void cf_builtin_rule(CF *f, int v, int recv_el, const int *argv, int argc
          one of them. A receiver that is only a builtin and no Proc is a
          container: its read answers its elements, not itself, or every
          container read out of another was the container itself, and a store
-         into a row reached every read of the table, #10520) */
+         into a row reached every read of the table, #10520. Its answer may
+         still be a run of them, `a[0, 2]` or `a[1..]`, a container of its
+         own holding the receiver's, as `last(2)` below) */
       if (sp_streq(nm, "[]")) {
         int rs = recv_el >= 0 ? cf_set_of(f, recv_el) : CF_ALL;
         if (rs == CF_ALL || (rs != CF_EMPTY && (f->pool[rs].pr || f->pool[rs].n > 0))) {
           if (cf_kskip(f, v, recv_el)) cf_krecv_edge(f, recv_el, v); else cf_flow(f, recv_el, v);
         }
+        else cf_share(f, v, recv_el);
       }
       /* no other element read answers its receiver (the receiver flowing
          on made the container one of its own elements, and a store into

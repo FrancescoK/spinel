@@ -46,3 +46,9 @@ add = ->(x, y) { x > y ? A.new : B.new }
 p add.curry[2][1].who
 dh = Hash.new { |_, key| key == :a ? A.new : B.new }
 p dh.default_proc[{}, :b].who, dh[:a].who
+
+# a run of elements read with `[]` is a container holding the receiver's
+mixed = [A.new, B.new, A.new]
+p mixed[0, 1].first.who, mixed[0..0].pop.who, mixed[1..].last.who
+run = mixed[1, 2]
+p run.pop.who, run.first.who
