@@ -405,11 +405,17 @@ static int emit_isa_runtime_flag_class(Compiler *c, const NodeTable *nt, const c
   return 0;
 }
 
-/* Does a program class (not a reopened builtin) define the kind query
-   `name` itself? */
+/* Does a program class (not a reopened builtin) answer the kind query
+   `name` with a method of its own? The chain lookup sees an alias and an
+   inherited definition, as the dispatch's arm count and the analyzer's
+   answer type (an_user_ret_disagrees) do: a query a class only aliased
+   (`def is_a?(k) ...; alias kind_of? is_a?`) was typed by the analyzer as
+   the dispatch's box, while this asked for a def of the name itself,
+   found none, and the static class test below put a bare C truth value
+   where the box was expected. */
 static int kind_query_overridden(Compiler *c, const char *name) {
   for (int k = 0; k < c->nclasses; k++)
-    if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_class(c, k, name) >= 0) return 1;
+    if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
   return 0;
 }
 /* Is kind query `id` on a boxed receiver the general dispatch's? When a
