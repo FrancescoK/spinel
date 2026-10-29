@@ -282,6 +282,18 @@ int desugar_bare_class_self_calls(Compiler *c) {
    class; one of Object's own had nothing to ask and was refused. Give it
    self, as `self.is_a?(Box)`, which the SelfNode path already rebinds to
    the receiver. */
+/* Whether a method of the program's Enumerable (its reopen, or a module it
+   includes there) answers `nm` on an instance of Array or Hash subclass cls.
+   Enumerable comes after the class, its builtin and their reopens, and ahead
+   of Object, in the receiver's chain: `module Enumerable; def bar` wins over
+   a top-level `def bar` there. */
+static int ie_enum_reopen_answers(Compiler *c, int cls, const char *nm) {
+  if (comp_ary_root(c, cls) < 0 || comp_ary_is_str(c, cls)) return 0;
+  int en = comp_class_index(c, "Enumerable");
+  int mi = en >= 0 ? comp_method_in_chain(c, en, nm, NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
 int desugar_ie_bare_object_calls(Compiler *c) {
   static const char *const names[] = {
     "is_a?", "kind_of?", "instance_of?", "respond_to?", "frozen?", "nil?",
@@ -305,13 +317,17 @@ int desugar_ie_bare_object_calls(Compiler *c) {
        Enumerable's, and a reopen's) comes ahead of it in the receiver's
        chain, but it wins over a name the builtin takes from Kernel
        (frozen?, to_enum: is_arysub_kernel_name; is_a?: the names above),
-       and then the bare call stays the top-level one. An undefined name is
-       not the builtin's either. */
+       and then the bare call stays the top-level one. String's own dup and
+       a method of the program's Enumerable come ahead of it too. An
+       undefined name is not the builtin's either. */
     int ro = nm ? comp_arysub_reopen(c, cls) : -1;
-    int own = nm && comp_arysub_name_is_array(c, cls, nm) && !comp_is_undeffed_in_chain(c, cls, nm) &&
+    int enumr = nm && !hit && !is_arysub_kernel_name(nm) && ie_enum_reopen_answers(c, cls, nm);
+    int own = nm && (comp_arysub_name_is_array(c, cls, nm) || enumr ||
+                     (comp_ary_is_str(c, cls) && sp_streq(nm, "dup"))) &&
+              !comp_is_undeffed_in_chain(c, cls, nm) &&
               (!is_arysub_kernel_name(nm) || (ro >= 0 && comp_method_in_class(c, ro, nm) >= 0));
     if (nm && !own && call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) continue;
-    int builtin = !hit && nm && comp_arysub_name_is_array(c, cls, nm);
+    int builtin = !hit && nm && (comp_arysub_name_is_array(c, cls, nm) || enumr);
     if (!builtin && (!hit || call_target(c, id, cls, nm, 0, NULL) >= 0)) continue;
     int sn = nt_new_node(nt, "SelfNode");
     if (sn < 0) continue;
