@@ -282,17 +282,24 @@ int desugar_bare_class_self_calls(Compiler *c) {
    class; one of Object's own had nothing to ask and was refused. Give it
    self, as `self.is_a?(Box)`, which the SelfNode path already rebinds to
    the receiver. */
-/* Whether a method of the program's Enumerable (its reopen, or a module it
-   includes there) answers `nm` on an instance of Array or Hash subclass cls.
-   Enumerable comes after the class, its builtin and their reopens, and ahead
-   of Object, in the receiver's chain: `module Enumerable; def bar` wins over
-   a top-level `def bar` there. */
+/* Whether a public method of the program's Enumerable reopen answers `nm`
+   on an instance of Array or Hash subclass cls. Enumerable comes after the
+   class, its builtin and their reopens, and ahead of Object, in the
+   receiver's chain: `module Enumerable; def bar` wins over a top-level `def
+   bar` there. A private one, or one of a module Enumerable includes, is not
+   reached through self on these receivers yet, so it keeps the bare call. */
 static int ie_enum_reopen_answers(Compiler *c, int cls, const char *nm) {
   if (comp_ary_root(c, cls) < 0 || comp_ary_is_str(c, cls)) return 0;
   int en = comp_class_index(c, "Enumerable");
   int mi = en >= 0 ? comp_method_in_chain(c, en, nm, NULL) : -1;
-  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
-         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+  if (mi < 0) return 0;
+  for (int m = 0; m < c->classes[en].nincluded_mods; m++) {
+    int x = c->classes[en].included_mods[m];
+    if (x >= 0 && x < c->nclasses && comp_method_in_chain(c, x, nm, NULL) >= 0) return 0;
+  }
+  return mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0) &&
+         comp_method_vis_in_chain(c, en, nm) == SP_VIS_PUBLIC;
 }
 int desugar_ie_bare_object_calls(Compiler *c) {
   static const char *const names[] = {
