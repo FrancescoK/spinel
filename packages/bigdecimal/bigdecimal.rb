@@ -12,7 +12,8 @@
 # form, Math.sqrt through to_f (a Float, as in CRuby), the seven rounding
 # constants (ROUND_UP, ROUND_DOWN, ROUND_HALF_UP, ROUND_HALF_DOWN,
 # ROUND_HALF_EVEN, ROUND_CEILING, ROUND_FLOOR, with CRuby's integer values)
-# and #round(n) / #round(n, mode) for a constant or its Symbol. Every mode
+# and #round(n) / #round(n, mode) for a constant or its Symbol, and #floor,
+# #ceil and #truncate with or without n. Every mode
 # is computed on the digit array, so it is exact and never goes through a
 # Float.
 #
@@ -266,6 +267,20 @@ class BigDecimal < Numeric
     end
   end
 
+  # The place count as CRuby's NUM2INT reads it: an Integer, a Float
+  # truncated, anything else through to_int, which must answer an
+  # Integer; nil and the rest are a TypeError, before any value is looked
+  # at.
+  def self.__precision(n)
+    return n if n.is_a?(Integer)
+    return n.to_i if n.is_a?(Float)
+    raise TypeError, "no implicit conversion from nil to integer" if n.nil?
+    raise TypeError, "no implicit conversion of #{n.class} into Integer" unless n.respond_to?(:to_int)
+    i = n.to_int
+    raise TypeError, "can't convert #{n.class} to Integer (#{n.class}#to_int gives #{i.class})" unless i.is_a?(Integer)
+    i
+  end
+
   # round(), round(n) and round(n, mode). No argument, or a single n < 1,
   # answers an Integer (CRuby's rule); a positive n, or any explicit mode,
   # answers a BigDecimal. `n` counts decimal places, so a negative n rounds
@@ -283,14 +298,13 @@ class BigDecimal < Numeric
       n = 0
       to_int = true
     elsif args.length == 1
-      n = args[0]
+      n = BigDecimal.__precision(args[0])
       to_int = n < 1
     else
-      n = args[0]
+      n = BigDecimal.__precision(args[0])
       mode = BigDecimal.__round_mode(args[1])
       to_int = false
     end
-    n = n.to_i if n.is_a?(Float)  # CRuby's NUM2INT truncates a Float
     return to_int ? 0 : BigDecimal.new(0, [], 0) if @sign == 0
     # CRuby rounds from a base-1e9 digit array, so when the rounding
     # position falls left of the first stored group -- the value is far
@@ -343,6 +357,27 @@ class BigDecimal < Numeric
     end
     result = BigDecimal.new(@sign, out, -n)
     to_int ? result.to_i : result
+  end
+
+  # floor(), ceil() and truncate() answer an Integer; given n they answer a
+  # BigDecimal rounded to n places in that direction, as round(n, mode) does.
+  # A magnitude below one is answered directly: rounding it to a unit
+  # through #round would meet the negative zero that representation lacks
+  # (-0.3.ceil is 0 in CRuby).
+  def floor(*args) = __round_toward(ROUND_FLOOR, args)
+  def ceil(*args) = __round_toward(ROUND_CEILING, args)
+  def truncate(*args) = __round_toward(ROUND_DOWN, args)
+
+  def __round_toward(mode, args)
+    raise ArgumentError, "wrong number of arguments (given #{args.length}, expected 0..1)" if args.length > 1
+    return round(args[0], mode) if args.length == 1
+    return 0 if @sign == 0
+    if @digits.length + @exp <= 0
+      return -1 if mode == ROUND_FLOOR && @sign < 0
+      return 1 if mode == ROUND_CEILING && @sign > 0
+      return 0
+    end
+    round(0, mode).to_i
   end
 
   def <=>(other)

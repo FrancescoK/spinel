@@ -1,0 +1,37 @@
+[12, 13, 12]
+[Integer, Integer, Integer]
+[-13, -12, -12]
+[Integer, Integer, Integer]
+[0, 1, 0]
+[Integer, Integer, Integer]
+[-1, 0, 0]
+[Integer, Integer, Integer]
+[7, 7, 7]
+[Integer, Integer, Integer]
+[-7, -7, -7]
+[Integer, Integer, Integer]
+[0, 1, 0]
+[Integer, Integer, Integer]
+[0, 0, 0]
+[Integer, Integer, Integer]
+[0.1234e2, 0.1235e2, 0.1234e2]
+[0.123e2, 0.124e2, 0.123e2]
+[0.12e2, 0.13e2, 0.12e2]
+[0.1e2, 0.2e2, 0.1e2]
+[-0.1235e2, -0.1234e2, -0.1234e2]
+[-0.124e2, -0.123e2, -0.123e2]
+[-0.13e2, -0.12e2, -0.12e2]
+[-0.2e2, -0.1e2, -0.1e2]
+[0.12345e3, 0.12346e3, 0.12345e3]
+[0.1234e3, 0.1235e3, 0.1234e3]
+[0.123e3, 0.124e3, 0.123e3]
+[0.12e3, 0.13e3, 0.12e3]
+806
+[128, 0]
+[0.123e2, 0.124e2, 0.123e2]
+"no implicit conversion from nil to integer"
+"no implicit conversion from nil to integer"
+"no implicit conversion of String into Integer"
+"no implicit conversion of String into Integer"
+"can't convert BadPlaces to Integer (BadPlaces#to_int gives String)"
+"can't convert BadPlaces to Integer (BadPlaces#to_int gives String)"
