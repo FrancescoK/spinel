@@ -1,3 +1,4 @@
+# spinel: int64
 # An Integer or Float Array searched for a number of another kind that ==
 # still finds: Integer#== and Float#== compare a Rational by value, and a
 # Float compares a Bignum by value. include?, member?, index, rindex and
@@ -26,6 +27,12 @@ p w.index(2r)
 def has(x) = [3, 4].include?(x)
 p has(4r)
 p [].include?(1r)
+p [1, 2].include?(2**70 / 2**69)
 o = Object.new
 p a.include?(o)
 p a.index(o)
+# a class with only === is not asked by Integer#==
+class T
+  def ===(o) = true
+end
+p a.include?(T.new)

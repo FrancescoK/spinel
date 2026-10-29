@@ -301,6 +301,36 @@ static int value_obj_compares(Compiler *c, int node) {
                       (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)));
 }
 
+/* The object's class has an == of its own, or the one Comparable makes of
+   its <=>: Integer#== and Float#== hand a compare with it to that ==. A
+   class with only === is not asked (`[1].include?(t)` is false). */
+static int value_obj_defines_eq(Compiler *c, int node) {
+  TyKind t = comp_ntype(c, node);
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  return cid >= 0 && (comp_method_in_chain(c, cid, "==", NULL) >= 0 ||
+                      (comp_method_in_chain(c, cid, "<=>", NULL) >= 0 && class_is_comparable(c, cid)));
+}
+
+/* The program defines an == that the compare of an element of the typed
+   Array `rt` with a needle of kind `nk` would run: Integer#== or Float#==
+   for the element, Rational#== which Integer#== hands a Rational to. The
+   general Array's scan does not call it. */
+static int program_defines_num_eq(Compiler *c, TyKind rt, TyKind nk) {
+  for (int k = 0; k < c->nclasses; k++) {
+    const char *cn = c->classes[k].name;
+    /* a `class Rational` body's methods are kept on Object */
+    if (!cn || !(sp_streq(cn, "Rational") || sp_streq(cn, "Object") ? nk == TY_RATIONAL
+                 : sp_streq(cn, "Integer") ? rt == TY_INT_ARRAY
+                 : sp_streq(cn, "Float") && rt == TY_FLOAT_ARRAY)) continue;
+    int mi = comp_method_in_chain(c, k, "==", NULL);
+    if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+        !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0))
+      return 1;
+  }
+  return 0;
+}
+
 /* 1 when a value of the node's static kind can never be == to an element
    of kind `ek`: a String searched for in an Integer Array, a Symbol in a
    String Array, nil in either. CRuby compares and finds nothing -- Array#delete
@@ -3119,12 +3149,12 @@ else {
   if (argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) && !nil_needle &&
       a0 != TY_INT && a0 != TY_FLOAT && a0 != TY_UNKNOWN && a0 != TY_POLY) elem_mismatch = 1;
   /* ... except a number of another kind that == can still find: a Rational
-     in either array (`[1, 2].include?(2r)` is true), a Bignum in a Float
-     one (`[2.0**70].include?(2**70)`). Integer#== and Float#== compare
-     those by value, so the needle goes boxed into the general Array's
-     scan, which does. */
+     in either array (`[1, 2].include?(2r)` is true), a Bignum (a Float
+     one holds `2.0**70`). Integer#== and Float#== compare those by value,
+     so the needle goes boxed into the general Array's scan, which does --
+     unless the program defines its own == there, which the scan skips. */
   int num_needle = argc == 1 && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
-                   (a0 == TY_RATIONAL || (a0 == TY_BIGINT && rt == TY_FLOAT_ARRAY));
+                   (a0 == TY_RATIONAL || a0 == TY_BIGINT) && !program_defines_num_eq(c, rt, a0);
   if (num_needle && (is_index_query(name) || is_membership_alias(name))) {
     /* the receiver held across the needle, which may allocate */
     int ta = ++g_tmp, tv = ++g_tmp;
@@ -3138,9 +3168,9 @@ else {
   }
   /* ... and a user object whose class defines ==: Integer#== hands the
      compare to the object's own ==, which the typed scan cannot call. The
-     delete and count arms refuse it the same way. */
+     delete and count arms refuse such an object too. */
   if (elem_mismatch && (rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY) &&
-      (is_index_query(name) || is_membership_alias(name)) && value_obj_compares(c, argv[0])) {
+      (is_index_query(name) || is_membership_alias(name)) && value_obj_defines_eq(c, argv[0])) {
     unsupported_feature(c, id, is_index_query(name) ? "Array#index of a user object defining == in a typed Array"
                                                     : "Array#include? of a user object defining == in a typed Array");
     { *out = 0; return 1; }
