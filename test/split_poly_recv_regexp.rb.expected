@@ -1,0 +1,24 @@
+["a", "b"]
+["a", "b"]
+["a", "b"]
+["a", "b&c"]
+["a", "b", "c"]
+["a", "b"]
+NoMethodError
+NoMethodError
+["a=1", "b=2"]
+["a=1", "b=2"]
+["x", "y"]
+NoMethodError
+"wrong argument type Integer (expected Regexp)"
+"wrong argument type Symbol (expected Regexp)"
+["a", "cbd"]
+20
+["a", "1", "b", "2", "c"]
+["a", "b c"]
+["a", "b"]
+["a", "b,c"]
+["ab"]
+[" a b"]
+["a b"]
+["a,b;c"]

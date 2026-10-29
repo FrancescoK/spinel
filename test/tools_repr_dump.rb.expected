@@ -13,8 +13,6 @@ local <main> mixed: boxed ty=poly
 local <main> range: struct ty=range
 local <main> seen: scalar ty=int cell=heap
 local Buf#peek t: strbuf ty=strbuf handle may_nil
-local Pt#__enum_to_a __enum_acc: ptr ty=int_array
-local Pt#__enum_to_a __enum_e: scalar ty=int
 local pair_at a: boxed ty=poly may_nil arr_or_nil
 param Buf#initialize n: scalar ty=int
 param find a: ptr ty=int_array
@@ -22,8 +20,6 @@ param find x: scalar ty=int
 param pair_at n: scalar ty=int
 ret Buf#initialize: scalar ty=int
 ret Buf#peek: opt ty=int may_nil
-ret Pt#__enum_to_a: ptr ty=int_array
-ret Pt#each: ptr ty=obj:Pt
 ret Tally.add: scalar ty=int
 ret find: boxed ty=poly
 ret pair_at: boxed ty=poly

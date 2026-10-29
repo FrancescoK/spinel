@@ -11161,12 +11161,12 @@ static void bls_walk(NodeTable *nt, int id, int lvl, BlsTag *tag) {
    is a local scope of its own, but its statements are emitted into the
    top level's C function, where a local of the same name shared one C
    variable with the top level's (and with every other body's). Each body's
-   locals take a name private to the body. Runs before any pass turns a
-   block into a class body (Class.new do..end), whose locals are the
-   block's and may read the enclosing scope's. Code a later step splices
-   into the body is a scope of its own (a hook's call, a class_eval block):
-   the lowering context hands the scope's statements and the node that
-   names it, the body and its owner for the body's own. */
+   locals take a name private to the body. Code a later step splices into
+   the body is a scope of its own (a hook's call, a class_eval block), and
+   so is a block a later step makes a class body (Class.new do..end), which
+   reads no local of the enclosing scope or stays a block: the lowering
+   context hands the scope's statements and the node that names it, the
+   body and its owner for the body's own. */
 int desugar_body_local_scopes_at(Compiler *c, LowerCtx *lc, int id) {
   NodeTable *nt = (NodeTable *)c->nt;
   BlsTag tag = { c, lc->scope, 0, "" };
@@ -12537,18 +12537,23 @@ int builtin_enum_name_index(const char *name) {
   return -1;
 }
 
+/* does a builtin value that an Enumerable method is copied for (an Array, a
+   Hash, a Range, an Enumerator) answer a method of this name itself? A
+   private Kernel function it also answers (`select`) is reached through the
+   receiver, which is a method of its class ahead of Kernel's. */
+int builtin_instance_method_known(const char *cls, const char *m);
+static int bi_receiver_answers(const char *nm) {
+  static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
+  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 1;
+  return 0;
+}
+
 /* the receiverless calls a builtin body may make that are NOT methods of
-   the receiver: Kernel's functions */
-static int bi_kernel_call_name(const char *nm) {
-  static const char *const ks[] = {
-    "raise", "puts", "p", "print", "printf", "format", "sprintf", "block_given?", "loop",
-    "lambda", "proc", "rand", "srand", "sleep", "require", "require_relative", "catch",
-    "throw", "Integer", "Float", "String", "Array", "Hash", "Rational", "Complex", "gets",
-    "exit", "abort", "at_exit", "binding", "warn", "fail", "freeze", "frozen?", "nil?",
-    "respond_to?", "is_a?", "kind_of?", "instance_of?", "equal?", "eql?", "hash",
-    "object_id", "dup", "clone", "itself", "then", "tap", "inspect", "to_s", "class",
-    "__enum_pairs", "__enum_count_int", NULL };
-  return str_in(nm, ks);
+   the receiver: Kernel's functions, and the public methods of Object */
+static int bi_keeps_receiverless(const char *nm) {
+  if (is_enum_helper_name(nm)) return 1;
+  if (!object_instance_method_name(nm)) return 0;
+  return object_public_method_name(nm) || !bi_receiver_answers(nm);
 }
 
 /* does any DefNode among the program's own nodes carry this name? (the
@@ -12571,7 +12576,7 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
     }
     else if (kind == NK_CallNode && nt_ref(nt, id, "receiver") < 0) {
       const char *nm = nt_str(nt, id, "name");
-      if (!nm || bi_kernel_call_name(nm)) continue;
+      if (!nm || bi_keeps_receiverless(nm)) continue;
       int rd = nt_new_node(nt, "LocalVariableReadNode"); if (rd < 0) return;
       nt_node_set_str(nt, rd, "name", "__self");
       nt_node_set_int(nt, rd, "depth", 0);
@@ -12588,12 +12593,9 @@ static void bi_self_to_local(NodeTable *nt, int lo, int hi) {
    registers a class no builtin receiver dispatches through, so a name it
    adds that none of them answers otherwise is given a generic definition
    beside the builtins', and each call takes its copy the same way. */
-int builtin_instance_method_known(const char *cls, const char *m);
 static int own_enum_name_routable(const char *nm) {
-  static const char *const recvs[] = { "Array", "Hash", "Range", "Enumerator", NULL };
-  if (!nm || builtin_enum_name_index(nm) >= 0 || bi_kernel_call_name(nm) || object_public_method_name(nm)) return 0;
-  for (int i = 0; recvs[i]; i++) if (builtin_instance_method_known(recvs[i], nm)) return 0;
-  return 1;
+  if (!nm || builtin_enum_name_index(nm) >= 0 || is_enum_helper_name(nm) || object_public_method_name(nm)) return 0;
+  return !bi_receiver_answers(nm);
 }
 
 /* The generic definition of an own Enumerable method: a copy of its def,
@@ -14495,14 +14497,19 @@ static int rd_call_name_is(const LowerCtx *lc, const char *nm, const char *want)
   return 0;
 }
 
+/* The program's ClassNodes, gathered once per run of
+   desugar_recursive_param_defaults for rd_new_reaches: sweeping the table
+   for each `X.new` of each pair of defaults was most of the pass. */
+static int *rd_class_ids, rd_nclass_ids;
+
 /* Does `X.new` run the initialize of class `cls`: X is cls, or a subclass
    that inherits cls's initialize without defining its own? Classes are
    matched by their last name segment, before any scope exists. */
 static int rd_new_reaches(const NodeTable *nt, const char *x, const char *cls, int depth) {
   if (!x || !cls || depth > 16) return 0;
   if (sp_streq(x, cls)) return 1;
-  for (int id = 0; id < nt->count; id++) {
-    if (!fwd_node_is(nt, id, "ClassNode")) continue;
+  for (int q = 0; q < rd_nclass_ids; q++) {
+    int id = rd_class_ids[q];
     const char *cn = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
     if (!cn || !sp_streq(cn, x)) continue;
     int bn = 0; const int *bv = nt_arr(nt, nt_ref(nt, id, "body"), "body", &bn);
@@ -14655,12 +14662,19 @@ int desugar_recursive_param_defaults_at(Compiler *c, LowerCtx *lc, int id) {
     free(edge); free(stack); free(seen); free(ds);
     return 0;
   }
+  rd_nclass_ids = 0;
+  rd_class_ids = malloc(sizeof(int) * (size_t)(n0 > 0 ? n0 : 1));
+  if (!rd_class_ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int k = 0; k < n0; k++)
+    if (fwd_node_is(nt, k, "ClassNode")) rd_class_ids[rd_nclass_ids++] = k;
   for (int i = 0; i < nd; i++)
     for (int j = 0; j < nd; j++) {
       int bad = 0;
       edge[(size_t)i * nd + j] =
         (unsigned char)rd_subtree_calls(lc, nt, ds[i].val, &ds[i], &ds[j], &bad);
     }
+  free(rd_class_ids);
+  rd_class_ids = NULL; rd_nclass_ids = 0;
   int changed = 0;
   for (int i = 0; i < nd; i++) {
     /* is default i reachable from itself? */
@@ -18018,7 +18032,15 @@ int desugar_singleton_class_meta(Compiler *c) {
   return changed;
 }
 
-int desugar_class_new_blocks(Compiler *c) {
+/* The class body a Class.new or Module.new block became, after rows have
+   run over it as a block's code: handed to the host as one splice, which
+   grafts its class_eval text and lowers it as the class body it now is */
+static void cn_host_body(Compiler *c, HostStep *h, int cls, int body) {
+  int bn = 0;
+  nt_arr(c->nt, body, "body", &bn);
+  host_splice(c, h, cls, body, 0, bn);
+}
+int desugar_class_new_blocks(Compiler *c, HostStep *h) {
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0, serial = 0;
   int *parent = an_build_parent_index(nt, n0);
@@ -18160,6 +18182,7 @@ int desugar_class_new_blocks(Compiler *c) {
       nt_node_set_ref(nt, par, "body", body);
       nt_node_set_int(nt, par, "class_new_anonymous", 1);
       nt_node_set_int(nt, par, "block_made_body", 1);
+      cn_host_body(c, h, par, body);
       changed = 1;
       continue;
     }
@@ -18192,6 +18215,7 @@ int desugar_class_new_blocks(Compiler *c) {
       free(out);
       nt_node_reset(nt, id, "ConstantReadNode");
       nt_node_set_str(nt, id, "name", name);
+      cn_host_body(c, h, cls, body);
       changed = 1;
       continue;
     }
@@ -20507,6 +20531,13 @@ static int name_in_list(const char *const *list, const char *n) {
    answers about itself (the generated RB_OBJECT_PUBLIC)? */
 int object_public_method_name(const char *n) {
   return name_in_list(RB_OBJECT_PUBLIC, n);
+}
+
+/* Is `n` one of Object's instance methods, public or private (Kernel's puts,
+   raise, format ...)? The names an object of a plain class answers (the
+   generated OBJECT_METHOD_NAMES). */
+int object_instance_method_name(const char *n) {
+  return name_in_list(OBJECT_METHOD_NAMES, n);
 }
 
 static int rbself_builtin(const char *cn) {
@@ -24814,8 +24845,8 @@ int desugar_static_class_eval(Compiler *c, HostStep *h) {
 /* The graft on reach of a splice: the statements body[at..at + n), which a step
    put into owner's body. The count the n statements become. A class or
    module body among them was grafted with the program's: a hook's body,
-   a method's, defines none, and a class_eval block the splice unwraps was
-   the program's. */
+   a method's, defines none, and a class_eval block the splice unwraps and
+   the block a Class.new body was made of were the program's. */
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;

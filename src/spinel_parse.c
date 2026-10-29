@@ -1119,6 +1119,16 @@ static void flatten_parameter(int id, pm_node_t *node) {
   if (value) emit_ref(id, "value", value);
 }
 
+/* An attribute's `+=`, `||=` and `&&=` calls the reader and then the writer:
+   both names, the reader as `name` and the writer as `write_name`. */
+static void emit_attr_names(int id, pm_constant_id_t read, pm_constant_id_t write) {
+  char *r = cstr(read), *w = cstr(write);
+  emit_str(id, "name", r);
+  emit_str(id, "write_name", w);
+  free(r);
+  free(w);
+}
+
 /* The Prism flags of a CallNode that the passes read by name, each written
    only when Prism set it: `recv&.name` (nt_safe_nav); `recv.name = v`,
    `recv.name=(v)` and `recv[i] = v`, which `recv.send(:name=, v)` is not
@@ -1564,7 +1574,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_operator_write_node_t *n = (pm_call_operator_write_node_t *)node;
     N("CallOperatorWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     NAME("binary_operator", n->binary_operator);
     R("value", n->value);
     emit_call_flags(id, node);
@@ -1574,7 +1584,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_and_write_node_t *n = (pm_call_and_write_node_t *)node;
     N("CallAndWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     R("value", n->value);
     emit_call_flags(id, node);
     break;
@@ -1583,7 +1593,7 @@ static int flatten_node(pm_node_t *node) {
     pm_call_or_write_node_t *n = (pm_call_or_write_node_t *)node;
     N("CallOrWriteNode");
     R("receiver", n->receiver);
-    NAME("name", n->read_name);
+    emit_attr_names(id, n->read_name, n->write_name);
     R("value", n->value);
     emit_call_flags(id, node);
     break;
@@ -2790,6 +2800,15 @@ static void sp_includes_free(void) {
    own coordinates until POP. */
 #define SP_PUSH_PREFIX "#<SPINEL_PUSH>"
 #define SP_INSERT_PREFIX "#<SPINEL_INSERT>"
+
+/* A PUSH or INSERT marker's file, after the prefix: its path, and the tier
+   sp_wrap_included wrote ahead of it (SP_LIB_NONE for the program's own) */
+#define SP_TIER_MARK '\x1f'
+static const char *sp_marker_file(const char *p, size_t *len, int *tier) {
+  *tier = SP_LIB_NONE;
+  if (*len >= 2 && p[0] == SP_TIER_MARK && p[1] >= '0' && p[1] <= '9') { *tier = p[1] - '0'; *len -= 2; return p + 2; }
+  return p;
+}
 #define SP_POP_PREFIX "#<SPINEL_POP>"
 /* A generated .rb names the source its lines came from (#7630):
    `#<SPINEL_SOURCE>greeting.html.erb:12` pins file and line for the lines
@@ -2834,7 +2853,10 @@ static void sp_find_builtin_ranges(const char *src) {
     size_t pl = !strncmp(line, SP_PUSH_PREFIX, strlen(SP_PUSH_PREFIX)) ? strlen(SP_PUSH_PREFIX)
               : !strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) ? strlen(SP_INSERT_PREFIX) : 0;
     if (pl && sp < 64) {
-      int bi = sp_is_builtin_path(line + pl, len - pl);
+      size_t fl = len - pl;
+      int tier;
+      const char *fp = sp_marker_file(line + pl, &fl, &tier);
+      int bi = sp_is_builtin_path(fp, fl);
       stk_lo[sp] = (size_t)(line - src); stk_bi[sp] = bi; sp++;
     }
     else if (!strncmp(line, SP_POP_PREFIX, strlen(SP_POP_PREFIX)) && sp > 0) {
@@ -2863,30 +2885,45 @@ static int sp_in_builtin(const uint8_t *at) {
 }
 
 static char **sp_file_table = NULL;  /* id -> path (declared above flatten) */
+static unsigned char *sp_file_tier = NULL;   /* id -> where `require` found it (SP_LIB_*) */
 static int sp_file_count = 0, sp_file_cap = 0;
 
-static int sp_intern_file(const char *path) {
+static int sp_intern_file(const char *path, int tier) {
   for (int i = 0; i < sp_file_count; i++)
-    if (strcmp(sp_file_table[i], path) == 0) return i;
+    if (strcmp(sp_file_table[i], path) == 0) {
+      if (tier != SP_LIB_NONE) sp_file_tier[i] = (unsigned char)tier;
+      return i;
+    }
+  int cap = sp_file_cap;
   sp_file_table = sp_grow_strs(sp_file_table, sp_file_count, &sp_file_cap, 8);
+  if (sp_file_cap != cap) sp_file_tier = realloc(sp_file_tier, (size_t)sp_file_cap);
   char *dup_path = strdup(path);
-  if (!dup_path) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
+  if (!dup_path || !sp_file_tier) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
   sp_file_table[sp_file_count] = dup_path;
+  sp_file_tier[sp_file_count] = (unsigned char)tier;
   return sp_file_count++;
 }
 
+/* The file table's tiers, onto the node table's */
+static void sp_file_tiers_mark(NodeTable *nt) {
+  for (int i = 0; i < sp_file_count; i++)
+    if (sp_file_tier[i] != SP_LIB_NONE) nt_put_file_tier(nt, i, sp_file_tier[i]);
+}
+
 /* In debug mode, wrap an included file's (already-resolved) content with
-   PUSH <path> / POP marker lines. Takes ownership of `content`; returns it
-   unchanged when not in debug mode. */
-static char *sp_wrap_included(char *content, const char *path) {
+   PUSH <path> / POP marker lines; a library file's path carries the tier
+   `require` found it at (sp_marker_file). Takes ownership of `content`;
+   returns it unchanged when not in debug mode. */
+static char *sp_wrap_included(char *content, const char *path, int tier) {
   if (!g_src_map) return content;
   size_t clen = strlen(content);
   int need_nl = (clen > 0 && content[clen - 1] != '\n') ? 1 : 0;
-  size_t total = strlen(SP_PUSH_PREFIX) + strlen(path) + 1 + clen + need_nl
+  size_t total = strlen(SP_PUSH_PREFIX) + 2 + strlen(path) + 1 + clen + need_nl
                + strlen(SP_POP_PREFIX) + 1 + 1;
   char *w = malloc(total + 8);
   if (!w) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
-  size_t o = (size_t)sprintf(w, SP_PUSH_PREFIX "%s\n", path);
+  size_t o = tier != SP_LIB_NONE ? (size_t)sprintf(w, SP_PUSH_PREFIX "%c%d%s\n", SP_TIER_MARK, tier, path)
+                                 : (size_t)sprintf(w, SP_PUSH_PREFIX "%s\n", path);
   memcpy(w + o, content, clen); o += clen;
   if (need_nl) w[o++] = '\n';
   o += (size_t)sprintf(w + o, SP_POP_PREFIX "\n");
@@ -2916,7 +2953,7 @@ static void sp_build_line_map(const char *src, const char *toplevel) {
     fprintf(stderr, "spinel_parse: out of memory\n"); exit(1);
   }
   int sp = 0;
-  stk_file[sp] = sp_intern_file(toplevel);
+  stk_file[sp] = sp_intern_file(toplevel, SP_LIB_NONE);
   stk_next[sp] = 1;
 
   int bl = 1;
@@ -2936,11 +2973,13 @@ else if (strncmp(line, SP_INSERT_PREFIX, strlen(SP_INSERT_PREFIX)) == 0) {
     if (prefix_len) {
       char pathbuf[1024];
       size_t plen = len - prefix_len;
+      int tier;
+      const char *fp = sp_marker_file(line + prefix_len, &plen, &tier);
       if (plen >= sizeof(pathbuf)) plen = sizeof(pathbuf) - 1;
-      memcpy(pathbuf, line + prefix_len, plen);
+      memcpy(pathbuf, fp, plen);
       pathbuf[plen] = '\0';
       sp++;
-      stk_file[sp] = sp_intern_file(pathbuf);
+      stk_file[sp] = sp_intern_file(pathbuf, tier);
       stk_next[sp] = 1;
       stk_start[sp] = bl;
       stk_dfile[sp] = 0;
@@ -2967,7 +3006,7 @@ else if (len < 12 || strncmp(line + len - 12, "SPINEL_COND>", 12) != 0) {
         long ln = colon ? strtol(colon + 1, &end, 10) : 0;
         if (colon && colon > pathbuf && end && end != colon + 1 && *end == '\0' && ln > 0 && ln < 1000000000) {
           *colon = '\0';
-          stk_dfile[sp] = sp_intern_file(pathbuf);
+          stk_dfile[sp] = sp_intern_file(pathbuf, SP_LIB_NONE);
           stk_dline[sp] = (int)ln;
         }
       }
@@ -4937,7 +4976,8 @@ static int sp_load_file(SpLoadGraph *g, const char *path) {
 /* 1 the first time file `id`'s sites are asked for: a file read again
    (inlined under two conditions) records them once. */
 enum { SP_FILE_WALKED = 1,    /* its sites are recorded */
-       SP_FILE_BUILTIN = 2 };  /* a builtins/ file: its nodes are builtin ones */
+       SP_FILE_BUILTIN = 2,    /* a builtins/ file: its nodes are builtin ones */
+       SP_FILE_TIER_SHIFT = 2 };   /* bits 2..4: where `require` found it (SP_LIB_*) */
 static unsigned char *sp_load_flags(SpLoadGraph *g, int id) {
   if (id >= g->flagcap) {
     int cap = g->flagcap ? g->flagcap : 16;
@@ -4949,6 +4989,10 @@ static unsigned char *sp_load_flags(SpLoadGraph *g, int id) {
   }
   return &g->flags[id];
 }
+static void sp_load_set_tier(SpLoadGraph *g, int id, int tier) {
+  if (id >= 0) *sp_load_flags(g, id) |= (unsigned char)(tier << SP_FILE_TIER_SHIFT);
+}
+static int sp_load_tier(SpLoadGraph *g, int id) { return (*sp_load_flags(g, id) >> SP_FILE_TIER_SHIFT) & 7; }
 static int sp_load_walk(SpLoadGraph *g, int id) {
   unsigned char *f = sp_load_flags(g, id);
   if (*f & SP_FILE_WALKED) return 0;
@@ -4982,9 +5026,9 @@ static int sp_lib_file(const char *path) {
 /* Where `require "<lib_name>"` (".rb" taken off) finds its file, in the
    order the plain pass looks: lib/, lib/ one level up, the `-I` roots,
    builtins/, packages/ and packages/ one level up, the ffi and fiddle
-   packages only where their object is built. The tier that answers, with
-   the file in `out`; SP_LIB_NONE when no file does. */
-enum { SP_LIB_NONE, SP_LIB_LIB, SP_LIB_ROOT, SP_LIB_BUILTIN, SP_LIB_PACKAGE };
+   packages only where their object is built. The tier that answers
+   (SP_LIB_*, node_table.h), with the file in `out`; SP_LIB_NONE when no
+   file does. */
 /* Pre-installed package `pkg`'s file for `feature`
    (packages/<pkg>/<feature>.rb), beside lib/ or one level up, into out: 0
    when there is none */
@@ -5312,7 +5356,7 @@ else {
 
     /* Debug: wrap with PUSH/POP markers so the line map can attribute this
        file's nodes to the right source. No-op outside --debug. */
-    content = sp_wrap_included(content, full_path);
+    content = sp_wrap_included(content, full_path, SP_LIB_NONE);
     sp_fsl_pad_wrap(&cfsl, &cfsl_n);
 
     /* The call's value is live (a condition, an assignment, a receiver) or a
@@ -6101,6 +6145,7 @@ static char *resolve_plain_requires(SpLoadGraph *g, char *source, const char *ex
       continue;
     }
     char lib_path[1024];
+    int lib_tier = SP_LIB_NONE;   /* where `require` found the file it splices */
     snprintf(lib_path, sizeof(lib_path), "%s/%s", lib_dir, lib_name);
     {
       size_t fl = strlen(lib_path);
@@ -6140,6 +6185,7 @@ else {
       content = tier ? read_file(found) : NULL;
       if (content) snprintf(lib_path, sizeof(lib_path), "%s", found);
       if (content) snprintf(spl_to, sizeof spl_to, "%s", found);
+      if (content) lib_tier = tier;
       if (content && tier == SP_LIB_ROOT) {
         char *rc = sp_canonical_path(lib_path);
         for (int i = sp_rr_included; i < sp_included_count && !root_dup; i++) root_dup = sp_included_paths[i] && strcmp(sp_included_paths[i], rc) == 0;
@@ -6231,7 +6277,7 @@ else {
 
     /* Debug: marker-wrap so plain-require'd lib content doesn't corrupt the
        line map's accounting for code after the require. No-op without --debug. */
-    content = sp_wrap_included(content, lib_path);
+    content = sp_wrap_included(content, lib_path, lib_tier);
     sp_fsl_pad_wrap(&cfsl, &cfsl_n);
 
     /* The call's value is live: the require sits in a condition, an
@@ -6593,6 +6639,7 @@ static int sp_load_target(SpLoadGraph *g, int from, int rel, const char *path, i
   *to = how == SP_LOAD_FILE ? sp_load_file(g, found) : -1;
   if (*to >= known) sp_graph_inherit(g, *to);
   if (tier == SP_LIB_BUILTIN) *sp_load_flags(g, *to) |= SP_FILE_BUILTIN;
+  sp_load_set_tier(g, *to, tier);
   return how;
 }
 
@@ -7688,7 +7735,7 @@ static int sp_graph_flatten(SpLoadGraph *g, int f, const char *source_file) {
   /* the file in the table's file list, in graph order: flatten stamps a
      node's position from this parse, and a builtins/ root's nodes as
      builtin ones */
-  g_flat_file = sp_intern_file(f ? g->file[f] : source_file);
+  g_flat_file = sp_intern_file(f ? g->file[f] : source_file, f ? sp_load_tier(g, f) : SP_LIB_NONE);
   g_flat_builtin = (*sp_load_flags(g, f) & SP_FILE_BUILTIN) != 0;
   g_bi_base = -1;
   g_parser = &r->src.parser;
@@ -7754,6 +7801,7 @@ static int sp_graph_boot_load(SpLoadGraph *g, const SpBootLib *b) {
   sp_note_required_feature(b->lib);
   int to = sp_load_file(g, b->path);
   if (b->tier == SP_LIB_BUILTIN) *sp_load_flags(g, to) |= SP_FILE_BUILTIN;
+  sp_load_set_tier(g, to, b->tier);
   sp_load_edge(&g->edge, &g->nedge, &g->edgecap, 0, 0, 1, b->lib, SP_LOAD_FILE, to);
   g->edge[g->nedge - 1].top = 1;
   return g->nedge - 1;
@@ -7795,6 +7843,7 @@ static int sp_edge_native_require(const SpLoadEdge *e, const char *feature) {
    flattened. */
 static void sp_graph_addon_load(SpLoadGraph *g, const SpBootLib *b) {
   int to = sp_load_file(g, b->path);
+  sp_load_set_tier(g, to, b->tier);
   for (int i = 0; i < g->nedge; i++)
     if (sp_edge_native_require(&g->edge[i], b->rides)) { g->edge[i].how = SP_LOAD_FILE; g->edge[i].to = to; }
 }
@@ -8110,6 +8159,7 @@ static NodeTable *sp_parse_graph(const char *source_file, const char *argv0) {
     nt_put_source_file(nt, source_file);
     for (int i = 0; i < sp_file_count; i++) nt_put_file(nt, i, sp_file_table[i]);
     sp_defer_paths_mark(nt);
+    sp_file_tiers_mark(nt);
     nt->file_roots = calloc((size_t)g.nfile, sizeof(int));
     if (!nt->file_roots) { fprintf(stderr, "spinel_parse: out of memory\n"); exit(1); }
     nt->nfile_roots = g.nfile;
@@ -8332,6 +8382,7 @@ else {
   nt_put_source_file(out_nt, g_source_file);
   for (int i = 0; i < sp_file_count; i++) nt_put_file(out_nt, i, sp_file_table[i]);
   sp_defer_paths_mark(out_nt);
+  sp_file_tiers_mark(out_nt);
   NodeTable *nt = out_nt;
   out_nt = NULL;
 

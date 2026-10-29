@@ -283,6 +283,10 @@ int is_array_push_family(const char *n); /* << append prepend push unshift */
 int is_io_class_name(const char *n); /* File IO */
 int is_immediate_class_name(const char *n); /* FalseClass NilClass TrueClass */
 int is_object_base_name(const char *n); /* BasicObject Object */
+/* The classes a class's singleton chain ends in, which the load record
+   holds by the header that reopens each (builtin_core_class_slot) */
+enum { CORE_OBJECT, CORE_BASIC_OBJECT, CORE_MODULE, CORE_KERNEL, CORE_N };
+int builtin_core_class_slot(const char *n);  /* CORE_* for Object BasicObject Module Kernel, -1 for any other */
 int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
 int is_numeric_literal_tag(const char *n); /* Float Int */
@@ -394,6 +398,8 @@ int is_dir_blockless_iter(const char *n);  /* foreach each_child: an Enumerator 
 
 int is_kernel_module_name(const char *n);
 int is_kernel_module_function(const char *n);
+int builtin_object_method_known(const char *m);   /* one of Object's own methods every object answers */
+int builtin_self_method_known(const char *name);  /* a builtin answers it on any self: Kernel's, Object's, Module's, Class's */
 int is_builtin_module_const_name(const char *n);
 int is_untabled_native_class_name(const char *n);
 
@@ -401,6 +407,7 @@ int is_define_method_name(const char *n); /* define_method */
 int is_define_singleton_method_name(const char *n); /* define_singleton_method */
 int is_undef_method_name(const char *n);  /* undef_method */
 int is_remove_method_name(const char *n); /* remove_method */
+int is_check_funcall_name(const char *n);   /* respond_to? respond_to_missing? method_missing: what rb_check_funcall asks */
 int is_implicitly_private_name(const char *n); /* initialize initialize_copy/_clone/_dup respond_to_missing? */
 int is_alias_method_name(const char *n);  /* alias_method */
 /* The operations a String Array (whose elements are handles) answers
@@ -541,11 +548,22 @@ int is_attr_decl_reader(const char *n);    /* attr attr_reader attr_accessor, an
 int is_attr_decl_writer(const char *n);    /* attr_writer attr_accessor attribute attributes: declare a writer of each name */
 int class_method_vis_of_name(const char *n); /* private_class_method public_class_method: BVIS_PRIVATE / BVIS_PUBLIC, else 0 */
 int is_refine_name(const char *n);         /* refine */
+int is_enum_helper_name(const char *n);   /* __enum_pairs __enum_count_int: the compiler's helpers a receiverless call names */
 int is_load_effect_call(const char *n);    /* a method body's call that defines, writes, loads or runs code the load record cannot follow */
 int is_using_name(const char *n);          /* using */
 int is_remove_const_name(const char *n);   /* remove_const */
 int is_const_visibility_name(const char *n);   /* private_constant public_constant deprecate_constant */
 int is_cvar_write_name(const char *n);     /* class_variable_set remove_class_variable */
 int is_runtime_callback_name(const char *n);   /* an operator, method_missing, deconstruct, to_f ...: what CRuby's core calls by itself */
+int is_hook_protocol_name(const char *n);  /* append_features extend_object prepend_features: what include, extend and prepend send before their hooks */
+int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an object makes it the port output goes to */
+
+/* A name the compiler synthesizes for a protocol method (the no-argument
+   display wrappers `__noarg to_s` and `__noarg inspect`, the Enumerable
+   materializer `__enum_to_a`): 1, and in *proto the i-th protocol name it
+   answers for, else 0. The materializer is what Enumerable#to_a runs (it
+   calls each), what a Struct's to_a and deconstruct read (its members; CRuby
+   calls nothing), so it answers for each, to_a and deconstruct. */
+int synth_stands_for(const char *name, int i, const char **proto);
 int is_method_list_call(const char *n);    /* attr attr_reader attr_writer attr_accessor remove_method undef_method: every argument names a method */
 #endif

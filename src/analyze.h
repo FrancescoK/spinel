@@ -237,6 +237,23 @@ int elab_history_open(Compiler *c, int cls, int sg, const char *name);
 /* fn(arg, cls, sg, name) for each open history, in the order the record
    made them; fn does not change the record */
 void elab_open_histories(Compiler *c, void (*fn)(void *arg, int cls, int sg, const char *name), void *arg);
+/* does call node id find a method `name` on cls's chain (its singleton's
+   when sg; main's when cls < 0, both its sides, as the top-level functions
+   are) where it runs: ELAB_YES / NO / UNKNOWN, for a reader that acts on
+   ELAB_NO. ELAB_UNKNOWN, not ELAB_NO, for a call at no point, in a block a
+   call may keep to run later, or a pass made (a hook the language calls);
+   for a chain through a class whose superclass the record does not hold
+   (`Struct.new`, a core class); after an undef or a removal of an earlier
+   definition; and where what the record cannot order may supply the name
+   (a version or mixin a pass made or copied, one of the builtin prelude or
+   of a package CRuby loads at boot, code the record cannot follow run on
+   the chain before the call, a load it could not resolve). For the Class
+   reopening's class side, its instance side is searched too. */
+int elab_call_method(Compiler *c, int id, int cls, const char *name, int sg);
+/* the class self is where node runs at its load point: a class or module
+   body's; -1 for main's top level; -2 for any other frame (a singleton
+   class body, an eval form's or class builder's block) or no point */
+int elab_self_at(Compiler *c, int node);
 /* the versions of method `name` the record holds, in every class's and
    module's histories: defs, define_methods, attrs, aliases, module_function
    copies, undefs and removes (not visibility changes) */

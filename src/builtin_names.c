@@ -2,6 +2,7 @@
    Each family is spelled once here; the order is the order its compares run
    in, the one most of the replaced chains used. */
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "types.h"
 #include "builtin_names.h"
@@ -1117,6 +1118,12 @@ int is_initialize_name(const char *n) {
   return sp_streq(n, "initialize");
 }
 
+/* The names CRuby's core asks a receiver through rb_check_funcall, which
+   calls method_missing when respond_to_missing? answers true */
+int is_check_funcall_name(const char *n) {
+  return n && (sp_streq(n, "respond_to?") || sp_streq(n, "respond_to_missing?") || sp_streq(n, "method_missing"));
+}
+
 /* The methods CRuby makes private wherever they are defined:
    initialize, its copy forms, and respond_to_missing? */
 int is_implicitly_private_name(const char *n) {
@@ -1166,6 +1173,13 @@ int is_range_or_time_class(const char *n) {
 
 int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
+}
+
+int builtin_core_class_slot(const char *n) {
+  static const char *const CORE[CORE_N] = { "Object", "BasicObject", "Module", "Kernel" };
+  for (int i = 0; n && i < CORE_N; i++)
+    if (sp_streq(n, CORE[i])) return i;
+  return -1;
 }
 
 /* A class or module besides the builtin classes (is_builtin_reopen) whose
@@ -1608,6 +1622,54 @@ int is_kernel_module_function(const char *m) {
     NULL
   };
   return m && builtin_name_in(m, K);
+}
+
+/* Is m one of Object's own methods every object answers? */
+int builtin_object_method_known(const char *m) {
+  static const char *const OBJM2[] = {
+    "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
+    "instance_variable_get", "instance_variable_set", "instance_variables",
+    "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+    "object_id", "public_send", "respond_to?", "send", "__send__",
+    "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
+  return m && builtin_name_in(m, OBJM2);
+}
+
+/* The names CRuby's own facts give Object, BasicObject, Kernel, Module and
+   Class (builtin_arity.inc), sorted once for builtin_self_method_known */
+#define BAI(c,m,...) {c,m},
+#define BAM(c,m,a) {c,m},
+#define BAS(c,m,...) {c,m},
+#define BAC(...)
+#define BAK(...)
+static const struct { const char *cls, *m; } self_fact_rows[] = {
+#include "builtin_arity.inc"
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+#undef BAK
+static int self_fact_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+/* Does a builtin answer `name` on any self, main or a class or module:
+   Kernel's module functions, Object's surface, or one of the facts' Object,
+   BasicObject, Kernel, Module or Class methods? A binary search over the
+   facts' names, sorted at the first ask. */
+int builtin_self_method_known(const char *name) {
+  enum { N = sizeof self_fact_rows / sizeof self_fact_rows[0] };
+  static const char *names[N];
+  static int n = -1;
+  if (!name) return 0;
+  if (is_kernel_module_function(name) || builtin_object_method_known(name)) return 1;
+  if (n < 0) {
+    static const char *const owners[] = { "Object", "BasicObject", "Kernel", "Module", "Class", NULL };
+    n = 0;
+    for (int i = 0; i < N; i++)
+      if (builtin_name_in(self_fact_rows[i].cls, owners)) names[n++] = self_fact_rows[i].m;
+    qsort(names, (size_t)n, sizeof names[0], self_fact_cmp);
+  }
+  return bsearch(&name, names, (size_t)n, sizeof names[0], self_fact_cmp) != NULL;
 }
 
 /* the builtins whose subclass instance IS the builtin (#7449) */
@@ -2064,6 +2126,11 @@ int class_method_vis_of_name(const char *n) {
   return !n ? 0 : sp_streq(n, "private_class_method") ? BVIS_PRIVATE : sp_streq(n, "public_class_method") ? BVIS_PUBLIC : 0;
 }
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+/* The compiler's own enumerable helpers, which a receiverless call names the way
+   a Kernel function is named */
+int is_enum_helper_name(const char *n) {
+  return n && (sp_streq(n, "__enum_pairs") || sp_streq(n, "__enum_count_int"));
+}
 /* The calls by which a method body changes what the load record holds:
    ones that define, undefine or set methods, constants or variables, mix
    a module in or refine, load a file, or run code it cannot follow from
@@ -2103,6 +2170,23 @@ int is_runtime_callback_name(const char *n) {
     "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
   if (!n) return 0;
   return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
+}
+int is_hook_protocol_name(const char *n) {
+  return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
+}
+
+int is_port_gvar_name(const char *n) {
+  return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
+}
+
+int synth_stands_for(const char *name, int i, const char **proto) {
+  const char *stands = NULL;
+  if (!name || i < 0) return 0;
+  if (sp_streq(name, "__noarg to_s")) stands = i == 0 ? "to_s" : NULL;
+  else if (sp_streq(name, "__noarg inspect")) stands = i == 0 ? "inspect" : NULL;
+  else if (sp_streq(name, "__enum_to_a")) stands = i == 0 ? "each" : i == 1 ? "to_a" : i == 2 ? "deconstruct" : NULL;
+  if (stands && proto) *proto = stands;
+  return stands != NULL;
 }
 int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||

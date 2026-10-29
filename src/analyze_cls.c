@@ -151,6 +151,7 @@ typedef struct CF {
   int *sent; unsigned char *sentp;      /* per element: the set, and whether a container the walk does not track, last sent on */
   int **pdel, *npdel, *cpdel;           /* per element: the objects added since it was last sent on */
   int **ld, *nld, *cld, **st, *nst, *cst;   /* per element: the loads out of it, the stores into it */
+  unsigned long long *oe_out, *oe_in;   /* per element: bit o, an edge to (out) or from (in) object o's contents was asked of cf_edge once (cf_obj_edge) */
   unsigned char *ptop, *esc;            /* may hold an untracked container; its objects escaped */
   unsigned char *smc;                   /* a summary object's contents element: past the cap it gives up */
   int *elobj;                           /* per element: the object it stands for, -1 */
@@ -457,6 +458,7 @@ static void cf_grow_directed(CF *f) {
   CF_GROW(f->pdel); CF_GROW(f->npdel); CF_GROW(f->cpdel);
   CF_GROW(f->ld); CF_GROW(f->nld); CF_GROW(f->cld);
   CF_GROW(f->st); CF_GROW(f->nst); CF_GROW(f->cst);
+  CF_GROW(f->oe_out); CF_GROW(f->oe_in);
   CF_GROW(f->ptop); CF_GROW(f->esc); CF_GROW(f->elobj); CF_GROW(f->summ); CF_GROW(f->smc);
   if (f->kon) { CF_GROW(f->kseed); memset(f->kseed + f->dcap, 0, (size_t)(ncap - f->dcap)); }
 #undef CF_GROW
@@ -468,6 +470,7 @@ static void cf_grow_directed(CF *f) {
     f->pdel[i] = NULL; f->npdel[i] = 0; f->cpdel[i] = 0;
     f->ld[i] = NULL; f->nld[i] = 0; f->cld[i] = 0;
     f->st[i] = NULL; f->nst[i] = 0; f->cst[i] = 0;
+    f->oe_out[i] = 0; f->oe_in[i] = 0;
     f->ptop[i] = 0; f->esc[i] = 0; f->elobj[i] = -1; f->summ[i] = -1; f->smc[i] = 0;
   }
   f->dcap = ncap;
@@ -526,6 +529,7 @@ static int cf_pts_has(CF *f, int x, int o) {
   return q < f->npbit[x] && ((f->pbit[x][q] >> (o & 63)) & 1);
 }
 static void cf_edge(CF *f, int src, int dst);
+static void cf_obj_edge(CF *f, int x, int o, int out);
 /* x holds object o */
 #define CF_PTS_MAX 64
 static int cf_new_obj(CF *f);
@@ -566,8 +570,8 @@ static void cf_pts_add(CF *f, int x, int o) {
   f->st_pts++;
   f->changed = 1;
   int k = f->obj_cont[o];
-  for (int i = 0; i < f->nld[x]; i++) cf_edge(f, k, f->ld[x][i]);
-  for (int i = 0; i < f->nst[x]; i++) cf_edge(f, f->st[x][i], k);
+  for (int i = 0; i < f->nld[x]; i++) cf_obj_edge(f, f->ld[x][i], o, 0);
+  for (int i = 0; i < f->nst[x]; i++) cf_obj_edge(f, f->st[x][i], o, 1);
   if (f->esc[x] && f->rtc >= 0) { cf_edge(f, f->rtc, k); cf_edge(f, k, f->rtc); }
   if (x == f->rvis) cf_edge(f, k, f->rvis);   /* (the runtime reads what an object it sees holds) */
   cf_push_int(&f->pdel[x], &f->npdel[x], &f->cpdel[x], o);
@@ -750,6 +754,24 @@ static void cf_pedge(CF *f, int src, int dst) {
   if (f->npts[src]) { cf_push_int(&f->fs, &f->nfs, &f->cfs, src); cf_push_int(&f->fs, &f->nfs, &f->cfs, dst); }
   if (f->ptop[src]) cf_wl_push(f, src);
   cf_kick(f, src);
+}
+
+/* an edge between x and object o's contents, x -> cont(o) (out) or
+   cont(o) -> x (in), once: a store into or a load out of a container asks
+   it for every object the container holds, and a value stored into many
+   containers that hold the same few objects (the closed walk's are its
+   allocation kinds) asked the key table a few hundred million times for a
+   few hundred thousand edges. A bit per element and object below 64
+   remembers that cf_edge was asked, which is all a second ask would do. */
+static void cf_obj_edge(CF *f, int x, int o, int out) {
+  if (x < 0) return;
+  if (o < 64) {
+    unsigned long long *b = out ? &f->oe_out[x] : &f->oe_in[x], m = 1ULL << o;
+    if (*b & m) return;
+    *b |= m;
+  }
+  if (out) cf_edge(f, x, f->obj_cont[o]);
+  else cf_edge(f, f->obj_cont[o], x);
 }
 
 /* ---- the kinds (directed, for Set#compare_by_identity) ----
@@ -1026,7 +1048,7 @@ static void cf_store_at(CF *f, int c, int e, int line) {
     if (!cf_mark(f, CF_KEY(c, e, 2))) return;
     cf_push_int(&f->st[c], &f->nst[c], &f->cst[c], e);
     f->changed = 1;
-    for (int i = 0; i < f->npts[c]; i++) if (!f->obj_str[f->pts[c][i]]) cf_edge(f, e, f->obj_cont[f->pts[c][i]]);
+    for (int i = 0; i < f->npts[c]; i++) if (!f->obj_str[f->pts[c][i]]) cf_obj_edge(f, e, f->pts[c][i], 1);
     if (f->ptop[c]) cf_escape(f, e);
     if (!f->npts[c] && !f->ptop[c]) cf_el_obj(f, c);
     return;
@@ -1043,7 +1065,7 @@ static void cf_load_at(CF *f, int c, int v, int line) {
     f->changed = 1;
     for (int i = 0; i < f->npts[c]; i++) {
       if (f->obj_str[f->pts[c][i]]) cf_add_set_at(f, v, cf_bv_set(f), line);   /* a String's slice is a String */
-      else cf_edge(f, f->obj_cont[f->pts[c][i]], v);
+      else cf_obj_edge(f, v, f->pts[c][i], 0);
     }
     if (f->ptop[c]) { f->knoall++; cf_add_set_at(f, v, CF_ALL, f->orig && f->orig[c] > 0 ? f->orig[c] : __LINE__); f->knoall--; }
     return;
@@ -5462,7 +5484,7 @@ static void cf_solve(Compiler *c, int directed, int dump_facts) {
     free(f.pbit); free(f.npbit); free(f.sent); free(f.sentp);
     free(f.pdel); free(f.npdel); free(f.cpdel);
     free(f.psucc); free(f.npsucc); free(f.cpsucc); free(f.pts); free(f.npts); free(f.cpts);
-    free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst);
+    free(f.ld); free(f.nld); free(f.cld); free(f.st); free(f.nst); free(f.cst); free(f.oe_out); free(f.oe_in);
     free(f.ptop); free(f.esc); free(f.elobj); free(f.summ); free(f.smc); free(f.obj_cont); free(f.obj_str); free(f.fs);
     free(f.kseed); free(f.kdone); free(f.kx); free(f.kstr); free(f.kcu); free(f.kesc); free(f.kqs); free(f.kk); free(f.knarrow); free(f.kskp); free(f.kdefs); free(f.kpair); free(f.ksend); free(f.kskiparm);
   }

@@ -6860,8 +6860,10 @@ void emit_cond(Compiler *c, int id, Buf *b) {
      (`::Time.zone ? a : b`, DateTime.current): the call raises when reached
      (the NoMethodError gate's answer), so the test that follows is never
      read -- evaluate it for the raise */
+  /* ...and a call that finds no method where it runs (cplan_missing) */
+  char self[160];
   if ((t == TY_UNKNOWN || t == TY_VOID) && nt_kind(c->nt, id) == NK_CallNode &&
-      call_on_builtin_class_missing(c, id)) {
+      (call_on_builtin_class_missing(c, id) || cplan_missing(c, id, self, sizeof self, NULL) != CM_NONE)) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return;
   }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
@@ -17293,6 +17295,7 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
 static int class_body_name_undefined(Compiler *c, const char *nm) {
   static const char *const decls[] = { "private", "protected", "public", "module_function",
     "private_class_method", "public_class_method", "private_constant", "public_constant",
+    "deprecate_constant",
     "attr", "attr_reader", "attr_writer", "attr_accessor", "attribute", "attributes",
     "include", "extend", "prepend",
     "using", "refine", "alias_method", "define_method", "define_singleton_method",
@@ -20276,6 +20279,62 @@ static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
     emit_class_assign_name(c, ci, class_ruby_name(c, ci), b, indent);
 }
 
+/* The operands a value runs before the call in it that finds no method
+   where it runs (cplan_missing), each a whole subtree its caller runs for
+   its effect; a growable list. */
+typedef struct { int *ids; int n, cap; } OrderRun;
+
+/* Does an operand run nothing a raise after it could show: a pure read,
+   self, or a constant receiver the load record resolves to a program
+   class? */
+static int order_operand_inert(Compiler *c, int call, int op, int is_recv) {
+  NodeKind k = nt_kind(c->nt, op);
+  if (k == NK_SelfNode) return 1;
+  if (is_recv && (k == NK_ConstantReadNode || k == NK_ConstantPathNode) &&
+      cplan_const_recv_class(c, call, op) >= 0) return 1;
+  return subtree_is_pure_read(c, op);
+}
+
+/* Walk `v` in CRuby's order for a call: the receiver, then the arguments
+   left to right, into nested calls (an operator is a call too). This is
+   evaluation order, which the value-position walker does not answer: it
+   says where a value comes from. Answers the node to run last -- the call
+   that finds no method, or the operand holding it that runs whole: one
+   that is no call (an Array, a Hash, an interpolation), or a call whose
+   order this does not follow (`&.`, a splat, keyword, forwarded or block
+   argument, a literal block) -- with run->ids the operands before it; -1
+   when `v` holds no such call (run unchanged). */
+static int missing_call_in_order(Compiler *c, int v, OrderRun *run) {
+  const NodeTable *nt = c->nt;
+  if (v < 0) return -1;
+  if (nt_kind(nt, v) != NK_CallNode) return cplan_subtree_missing(c, v) ? v : -1;
+  char self[160];
+  if (cplan_missing(c, v, self, sizeof self, NULL) != CM_NONE) return v;
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  if (nt_safe_nav(nt, v) || nt_ref(nt, v, "block") >= 0 ||
+      nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING))
+    return cplan_subtree_missing(c, v) ? v : -1;
+  int n0 = run->n;
+  int r = nt_ref(nt, v, "receiver");
+  for (int i = -1; i < argc; i++) {
+    int op = i < 0 ? r : argv[i];
+    if (op < 0) continue;
+    int m = missing_call_in_order(c, op, run);
+    if (m >= 0) return m;
+    if (order_operand_inert(c, v, op, i < 0)) continue;
+    if (run->n == run->cap) {
+      run->cap = run->cap ? run->cap * 2 : 8;
+      int *ids = realloc(run->ids, sizeof(int) * (size_t)run->cap);
+      if (!ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      run->ids = ids;
+    }
+    run->ids[run->n++] = op;
+  }
+  run->n = n0;
+  return -1;
+}
+
 static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "CallOperatorWriteNode")) {
     /* `recv.attr op= value` (e.g. doom's `sector.ceiling_height -=
@@ -20607,6 +20666,18 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         emit_class_body_stmts(c, sci, class_def_body(c, id), b, indent);
         /* the block ran with the class anonymous; the write names it */
         if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
+      }
+      /* a value that runs a call finding no method where it runs
+         (cplan_missing: `zz`, `zz + 1`, `zz.to_s`, `id(zz)`) has no type
+         either, and raises there, before the write: run the operands ahead
+         of that call for their effects, then the call */
+      else if (!isg && v >= 0) {
+        OrderRun run = { NULL, 0, 0 };
+        int m = missing_call_in_order(c, v, &run);
+        for (int i = 0; m >= 0 && i <= run.n; i++) {
+          emit_indent(b, indent); buf_puts(b, "(void)("); emit_expr(c, i < run.n ? run.ids[i] : m, b); buf_puts(b, ");\n");
+        }
+        free(run.ids);
       }
       return 1;
     }

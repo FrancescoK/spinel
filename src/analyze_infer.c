@@ -811,8 +811,11 @@ int hv_value_class(Compiler *c, int recv) {
     if (iv < 0 || !hv_is_poly_hash(c->classes[sc->class_id].ivar_types[iv])) return -1;
   }
   else {
+    /* a parameter is assigned the caller's hash, which may hold values of
+       any kind before the method stores its own: only a slot that starts
+       as an empty `{}` here is known by its writes */
     LocalVar *lv = scope_local(&c->scopes[owner], name);
-    if (!lv || !hv_is_poly_hash(lv->type)) return -1;
+    if (!lv || lv->is_param || !hv_is_poly_hash(lv->type)) return -1;
   }
   return h->cls;
 }

@@ -1,0 +1,19 @@
+child0 looper alive: false
+child0 waiter alive: false
+child0 queue size: 1
+child0 popped ping
+child0 joined locked
+child0 junk 20000
+child0 values [10, 20, 30]
+parent: child0 exited
+child1 looper alive: false
+child1 waiter alive: false
+child1 queue size: 1
+child1 popped ping
+child1 joined locked
+child1 junk 20000
+child1 values [10, 20, 30]
+parent: child1 exited
+parent looper alive: true
+parent waiter got: done
+from a thread: fork from a thread other than the main thread

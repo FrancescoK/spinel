@@ -1,5 +1,7 @@
 #include "cext_bridge.h"
 #include "analyze_internal.h"
+#include "implicit_calls.h"
+#include "implied_calls.h"
 #include "builtin_ops.h"
 #include "call_plan.h"
 #include "value_pos.h"
@@ -464,6 +466,29 @@ static int param_gets_boxed_arg(Compiler *c, Scope *sc, int p) {
   return 0;
 }
 
+/* Whether some call of the method `sc` by name passes positional parameter
+   p a typed Hash of a kind other than `hv`: narrowed to hv, the parameter
+   met that argument again in the next round's binding, which joined the
+   two back to the boxed value, and the narrowing was made again after it,
+   to the round cap. */
+static int param_gets_other_hash_arg(Compiler *c, Scope *sc, int p, TyKind hv) {
+  const NodeTable *nt = c->nt;
+  if (!sc->name) return 0;
+  for (int id = an_calls_named_first(c, sc->name); id >= 0; id = an_calls_named_next(id)) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    int args = nt_ref(nt, id, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    ArgLayout L;
+    call_layout(c, sc, av, an, &L);
+    int a = layout_plain_arg(c, sc, av, &L, p);
+    arg_layout_free(&L);
+    if (a < 0 || nt_kind(nt, a) == NK_HashNode) continue;
+    TyKind at = infer_type(c, a);
+    if (ty_is_hash(at) && at != hv) return 1;
+  }
+  return 0;
+}
+
 static int named_param_gets_boxed_arg(Compiler *c, Scope *sc, const char *name) {
   for (int q = 0; name && q < sc->nparams; q++)
     if (sc->pnames && sc->pnames[q] && sp_streq(sc->pnames[q], name)) return param_gets_boxed_arg(c, sc, q);
@@ -545,6 +570,7 @@ int infer_param_hash_value(Compiler *c) {
          so the narrowing was undone by the next round's writes and made
          again after them, to the round cap. */
       if (lv->body_write != TY_UNKNOWN && ty_unify(hv, lv->body_write) != hv) continue;
+      if (cur == TY_POLY && param_gets_other_hash_arg(c, sc, p, hv)) continue;
       if (empty_hash_default && !seedable) {
         /* only the key mismatch, and keep whatever value type is already
            settled unless the writes are more specific */
@@ -6078,17 +6104,109 @@ static int value_node_or_self(const NodeTable *nt, int n) {
   return vp_one(nt, n, VPS_NONE, &one) == VP1_NODE ? one : n;
 }
 
+/* The hashes the value `v` can be, followed back to where each is built:
+   through a local's writes and a method's values, a chain of them, to a
+   hash literal or `Hash.new`, or a parameter. With `apply` 0 it answers
+   whether every one of them can be the poly-keyed variant; with 1 it makes
+   them so, answering 1 on a change. A literal is built as it; a local on
+   the way is pinned to it, since its own stores re-derive the narrower
+   kind each round, and a method's value follows its locals; a parameter
+   widens for its own callers, as a store through it widens it. An ivar, a
+   block parameter, a call nothing resolves or one another body may answer
+   is none of these, and answers 0: the call site refuses it. The methods
+   being walked are on `stack`, and a call back into one of them answers
+   what the method does. */
+static int local_has_target_write(Compiler *c, Scope *sc, const char *name);
+static int hash_src_walk(Compiler *c, int v, int apply, int *stack, int depth) {
+  const NodeTable *nt = c->nt;
+  v = value_node_or_self(nt, v);
+  if (v < 0 || depth > 6) return 0;
+  stack[depth] = -1;
+  if (is_fresh_hash(c, v)) return apply ? want_poly_hash(c, v) : 1;
+  TyKind vt = infer_type(c, v);
+  if (vt == TY_POLY_POLY_HASH) return !apply;
+  if (!ty_is_hash(vt)) return 0;
+  NodeKind k = nt_kind(nt, v);
+  if (k == NK_LocalVariableReadNode || k == NK_LocalVariableWriteNode) {
+    const char *nm = nt_str(nt, v, "name");
+    Scope *sc = nm ? comp_scope_of(c, v) : NULL;
+    LocalVar *lv = sc ? scope_local(sc, nm) : NULL;
+    if (!lv || lv->is_block_param || lv->rbs_seeded) return 0;
+    if (lv->is_param) {
+      if (!apply) return 1;
+      lv_set_type(lv, TY_POLY_POLY_HASH); lv->push_widened = 1;
+      return 1;
+    }
+    /* a multiple assignment's target takes an element it does not convert */
+    if (local_has_target_write(c, sc, nm)) return 0;
+    int saw = 0, ch = 0;
+    for (int r = lw_shared_first(c, nm, (int)(sc - c->scopes)); r >= 0; r = lw_shared_next(r)) {
+      int w = lw_shared_node(r);
+      if (comp_scope_of(c, w) != sc || !sp_streq(nt_str(nt, w, "name"), nm)) continue;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode && nt_kind(nt, w) != NK_LocalVariableOrWriteNode) return 0;
+      int wl[16];
+      int nl = value_leaves(c, nt_ref(nt, w, "value"), wl, 0, 16);
+      if (nl <= 0) return 0;
+      for (int i = 0; i < nl; i++) {
+        /* `x = m(x) ? x : y`: this slot's own hash */
+        if (nt_kind(nt, wl[i]) == NK_LocalVariableReadNode && comp_scope_of(c, wl[i]) == sc &&
+            sp_streq(nt_str(nt, wl[i], "name"), nm)) continue;
+        int got = hash_src_walk(c, wl[i], apply, stack, depth + 1);
+        if (!apply && !got) return 0;
+        ch |= got;
+      }
+      saw = 1;
+    }
+    if (!saw || !apply) return saw;
+    if (!lv->poly_hash_pin || lv->type != TY_POLY_POLY_HASH) {
+      lv_set_type(lv, TY_POLY_POLY_HASH); lv->poly_hash_pin = 1; ch = 1;
+    }
+    return ch;
+  }
+  if (k != NK_CallNode || nt_ref(nt, v, "block") >= 0) return 0;
+  int mi = backprop_call_target(c, v);
+  if (mi < 0 || method_has_other_body(c, mi)) return 0;
+  for (int d = 0; d < depth; d++) if (stack[d] == mi) return !apply;
+  Scope *m = &c->scopes[mi];
+  if (m->ret_rbs_seeded || m->ret_specialized || m->cs_synth || m->is_lowered_yield) return 0;
+  int lv[16];
+  int n = method_value_leaves(c, mi, lv, 16);
+  if (n <= 0) return 0;
+  stack[depth] = mi;
+  int ch = 0;
+  for (int i = 0; i < n; i++) {
+    if (nt_kind(nt, lv[i]) == NK_YieldNode) return 0;
+    int got = hash_src_walk(c, lv[i], apply, stack, depth + 1);
+    if (!apply && !got) return 0;
+    ch |= got;
+  }
+  return apply ? ch : 1;
+}
+
+/* Widens every hash the value `v` can be to the poly-keyed variant, when
+   all of them can be (hash_src_walk). Returns 1 on a change. */
+static int widen_hash_sources(Compiler *c, int v) {
+  int stack[8];
+  if (!hash_src_walk(c, v, 0, stack, 0)) return 0;
+  return hash_src_walk(c, v, 1, stack, 0);
+}
+
 /* A callee stores into the hash argument `arg` names what its variant cannot
    hold: the caller's own hash has to be the poly-keyed variant. Widens the
    hashes the argument's slot is built from, and the slot, where every write
    of it builds a new hash; a parameter widens as the callee's did, for its
-   own callers. Returns 1 on a change. */
+   own callers. A local or a call whose hashes come from further back (a
+   method's value, a local assigned one) is followed to where they are
+   built (widen_hash_sources). Returns 1 on a change. */
 static int widen_arg_hash(Compiler *c, int arg) {
   const NodeTable *nt = c->nt;
   arg = value_node_or_self(nt, arg);   /* `(a; {k: 1})` is the literal */
   NodeKind ak = nt_kind(nt, arg);
   if (ak == NK_HashNode) return want_poly_hash(c, arg);
-  if (ak == NK_CallNode) { int w = widen_returned_hashes(c, arg); if (w >= 0) return w; }
+  if (ak == NK_CallNode) {
+    int w = widen_returned_hashes(c, arg);
+    return w >= 0 ? w : widen_hash_sources(c, arg);
+  }
   const char *an = nt_str(nt, arg, "name");
   Scope *asc = an ? comp_scope_of(c, arg) : NULL;
   if (!asc) return 0;
@@ -6114,7 +6232,8 @@ static int widen_arg_hash(Compiler *c, int arg) {
     for (int r = lw_shared_first(c, an, si); r >= 0; r = lw_shared_next(r)) {
       int w = lw_shared_node(r);
       if (comp_scope_of(c, w) != asc || !sp_streq(nt_str(nt, w, "name"), an)) continue;
-      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !is_fresh_hash(c, nt_ref(nt, w, "value"))) return 0;
+      if (nt_kind(nt, w) != NK_LocalVariableWriteNode || !is_fresh_hash(c, nt_ref(nt, w, "value")))
+        return widen_hash_sources(c, arg);
       saw = 1;
     }
     if (!saw) return 0;
@@ -18956,8 +19075,9 @@ int infer_return_types(Compiler *c) {
    with the count and the last name it left there. Another list, or one
    changed behind it, rebuilds the set from the list. */
 static ANameHash cr_set; static char **cr_set_arr; static int cr_set_n; static const char *cr_set_last;
-static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
-  if (!nm) return;
+static int cr_add_name(char ***out, int *n, int *cap, const char *nm) {
+  if (!nm) return 0;
+  int added = 0;
   if (cr_set_arr != *out || cr_set_n != *n || (*n > 0 && (*out)[*n - 1] != cr_set_last)) {
     anh_free(&cr_set); memset(&cr_set, 0, sizeof cr_set);
     for (int i = 0; i < *n; i++) if (!anh_has(&cr_set, (*out)[i])) anh_add(&cr_set, (*out)[i]);
@@ -18966,8 +19086,10 @@ static void cr_add_name(char ***out, int *n, int *cap, const char *nm) {
     if (*n >= *cap) { *cap = *cap ? *cap * 2 : 8; *out = realloc(*out, sizeof(char *) * (size_t)*cap); }
     (*out)[(*n)++] = strdup(nm);
     anh_add(&cr_set, (*out)[*n - 1]);
+    added = 1;
   }
   cr_set_arr = *out; cr_set_n = *n; cr_set_last = *n > 0 ? (*out)[*n - 1] : NULL;
+  return added;
 }
 
 /* `recv.method(name).arity`: a Method asked only what it is -- its name,
@@ -19006,7 +19128,7 @@ static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
 const ANameHash *g_cr_typed = NULL;
 static int g_cr_user_coerce = 0;
 
-static int cr_ty_builtin_value(Compiler *c, TyKind t) {
+int cr_ty_builtin_value(Compiler *c, TyKind t) {
   return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
          t == TY_BOOL || t == TY_NIL || ((ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub);
 }
@@ -19190,6 +19312,91 @@ static void cr_collect_versions(Compiler *c, const NodeTable *nt, int id, char *
   }
 }
 
+/* What a node makes CRuby call that the program does not name (implicit_calls.h):
+   its implied calls and, for a call, the callbacks of its builtin, each added
+   to the scope's names as a called name would be, once the operand that
+   receives it may hold an object of the program's. A call of a core name the
+   builtin table does not cover may call any callback name. The scope's nodes
+   are collected whether the scope is reachable or not, as its called names
+   are; only a reachable scope marks them. */
+static void cr_mark_implied(Compiler *c, char ***out, int *n, int *cap, const char *name, const char *cause) {
+  if (!ic_defined(c, name)) return;
+  /* by bare name, whatever the side: a def on one object (`def obj.to_a`) is a
+     class method of the class registered for it, and an instance call reaches it */
+  if (cr_add_name(out, n, cap, name) && cause) ic_record(c, name, cause);
+}
+
+static void cr_collect_implied(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap) {
+  IcCall buf[64], *calls = buf;
+  char cause[200];
+  if (!c->ic || c->ic->scope < 0) return;
+  int k = ic_node_calls(c, id, buf, 64);
+  if (k == 0) return;
+  /* a call that runs a method of the program's runs no builtin: its callbacks are the method's own */
+  if (nt_kind(nt, id) == NK_CallNode && ic_runs_program_method(c, id)) return;
+  if (k == IC_ANY) {
+    const BopCallback *names = NULL;
+    int nn = bop_callback_names(&names);
+    if (g_dump_implicit) {
+      snprintf(cause, sizeof cause, "IC_ANY: call of %s, line %d", nt_str(nt, id, "name"), (int)nt_int(nt, id, "node_line", 0));
+      ic_record(c, "*", cause);
+    }
+    for (int i = 0; i < nn; i++)
+      if (!is_definition_hook_name(names[i].name) && !is_hook_protocol_name(names[i].name))
+        cr_mark_implied(c, out, n, cap, names[i].name, g_dump_implicit ? cause : NULL);
+    return;
+  }
+  if (k > 64) {
+    calls = malloc(sizeof *calls * (size_t)k);
+    if (!calls) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    ic_node_calls(c, id, calls, k);
+  }
+  /* a name asked through rb_check_funcall is asked of an object handed over in some other role */
+  int handed = 0;
+  for (int pass = 0; pass < 2; pass++)
+    for (int i = 0; i < k; i++) {
+      int asked = calls[i].role == BCR_ASKED;
+      if (asked != (pass == 1) || (asked && !handed)) continue;
+      /* the hooks the call forms send (include's `included`) are sent by the
+         explicit calls definition_form_hooks desugars them to; the methods
+         they send first (append_features, extend_object) Spinel's forms do
+         not call, so a def of one is not kept for them */
+      if (calls[i].role && (is_definition_hook_name(calls[i].name) || is_hook_protocol_name(calls[i].name))) continue;
+      /* a callback no scope defines marks nothing; it still tells whether an
+         object is handed over, until one is known to be */
+      int defined = ic_defined(c, calls[i].name);
+      if (!defined && (handed || !calls[i].role)) continue;
+      if (!ic_operand_may_hold(c, &calls[i])) continue;
+      if (calls[i].role) handed = 1;
+      if (!defined) continue;
+      if (g_dump_implicit) ic_cause(c, id, &calls[i], cause, sizeof cause);
+      cr_mark_implied(c, out, n, cap, calls[i].name, g_dump_implicit ? cause : NULL);
+    }
+  if (calls != buf) free(calls);
+}
+
+/* The end of the program: an uncaught exception is printed through its class's
+   message, detailed_message, to_s and backtrace, so the exception classes'
+   methods of those names run (a program's own are the only ones asked). The
+   rows are the same for every file's root. */
+void cr_collect_program_end(Compiler *c, char ***out, int *n, int *cap) {
+  const NodeTable *nt = c->nt;
+  NtImplied rows[16];
+  int nr = nt_nroots(nt) > 0 ? nt_implied_calls(nt, nt_root(nt, 0), rows, 16) : 0;
+  if (nr > 16) nr = 16;
+  for (int s = 0; s < c->nscopes && nr > 0; s++) {
+    const Scope *sc = &c->scopes[s];
+    if (!sc->name || sc->is_cmethod || sc->class_id < 0) continue;
+    for (int i = 0; i < nr; i++) {
+      if (!sp_streq(sc->name, rows[i].name) || !class_is_exc_subclass(c, sc->class_id)) continue;
+      char mark[32], cause[120];
+      snprintf(mark, sizeof mark, "\x01%d", s);
+      snprintf(cause, sizeof cause, "ProgramNode: %s of an uncaught exception", rows[i].name);
+      if (cr_add_name(out, n, cap, mark) && g_dump_implicit) ic_record(c, rows[i].name, cause);
+    }
+  }
+}
+
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
@@ -19334,6 +19541,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
   if (builtin_recv) names[0] = NULL;
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);
+  if (k0 == NK_CallNode || nt_implied_possible(nt, id)) cr_collect_implied(c, nt, id, out, n, cap);
   int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);
   for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch >= 0) cr_collect_calls(c, nt, ch, out, n, cap, inner_self); }

@@ -682,6 +682,10 @@ module FFI
   # so they are freed when the pointer (and everything slicing it) is gone --
   # the gem's autorelease. The collector does not move objects, so the address
   # is stable for the pointer's life.
+  #
+  # With a block, the gem yields the new pointer to it and frees the memory
+  # when the block returns; here the collector frees it, so the block only
+  # gets the pointer. new answers the pointer either way, as the gem's does.
   class MemoryPointer < Pointer
     def initialize(size, count = 1, clear = true)
       tsize = if size.is_a?(Integer) then size
@@ -693,6 +697,7 @@ module FFI
       super(Native.str_addr(@buffer))
       @size = total
       @type_size = tsize
+      yield self if block_given?
     end
 
     def self.from_string(s)
