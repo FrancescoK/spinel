@@ -5016,7 +5016,18 @@ int allocate_on_own_class(Compiler *c, int id) {
   if (cid < 0 || cid >= c->nclasses || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
   int recv = nt_ref(nt, id, "receiver");
   if (s->is_cmethod) return (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) ? cid : -1;
+  return self_class_base_ci(c, recv);
+}
+
+/* The class `self.class` at `recv` is based on: the instance method's own
+   class, of which the receiver is an instance or a descendant's. -1 when
+   recv is not `self.class`, or sits in a class method or a module's method. */
+int self_class_base_ci(Compiler *c, int recv) {
+  const NodeTable *nt = c->nt;
   if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  Scope *s = comp_scope_of(c, recv);
+  int cid = s ? s->class_id : -1;
+  if (cid < 0 || cid >= c->nclasses || s->is_cmethod || nt_kind(nt, c->classes[cid].def_node) == NK_ModuleNode) return -1;
   const char *rn = nt_str(nt, recv, "name");
   int rr = nt_ref(nt, recv, "receiver");
   return rn && sp_streq(rn, "class") && rr >= 0 && nt_kind(nt, rr) == NK_SelfNode ? cid : -1;

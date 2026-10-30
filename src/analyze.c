@@ -1052,18 +1052,26 @@ void compute_instantiated(Compiler *c, int early) {
     const char *name = nt_str(nt, id, "name");
     if (!name) continue;
     int recv = nt_ref(nt, id, "receiver");
-    /* Marshal.load / Marshal.restore -> any class can be minted. */
+    /* Marshal.load / Marshal.restore -> any class can be minted. Only from a
+       method something reaches: date's `Date._load` loads with Marshal, and
+       a program that required date but never called Marshal kept every
+       class, with each one's methods and every poly arm (#10592). */
     if (recv >= 0 && (sp_streq(name, "load") || sp_streq(name, "restore"))) {
       NodeKind rk = nt_kind(nt, recv);
       const char *rn = nt_str(nt, recv, "name");
-      if (rk == NK_ConstantReadNode && rn && sp_streq(rn, "Marshal")) {
+      Scope *encl = comp_scope_of(c, id);
+      if (rk == NK_ConstantReadNode && rn && sp_streq(rn, "Marshal") && (!encl || encl->reachable)) {
         disable = 1; break;
       }
     }
-    /* allocate on the method's own class: that class, and each subclass the
-       method can run for */
+    /* allocate on the method's own class, or `self.class.new(...)` in one of
+       its instance methods: that class, and each subclass the method can run
+       for. date's Infinity#abs builds `self.class.new`; reachable through
+       any `abs`, it read as a Class known only at run time and kept every
+       class of the program (#10592). */
     {
       int oc = allocate_on_own_class(c, id);
+      if (oc < 0 && sp_streq(name, "new")) oc = self_class_base_ci(c, recv);
       if (oc >= 0) {
         Scope *encl = comp_scope_of(c, id);
         if (!encl || encl->reachable)
