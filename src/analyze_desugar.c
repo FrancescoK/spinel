@@ -10411,16 +10411,30 @@ int desugar_sort_by_with_index_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-/* Does an Enumerable reopen of the program define find_index? Such a
-   program goes without the builtin definitions, and the reopen's own takes
-   their name on the generic dispatch (__enum_find_index__N, with no
-   node_bi mark), so a find_index call keeps its route to it, block and
-   all. A find_index of another class keeps its own name and does not
-   answer for a Hash or a Range. */
-static int find_index_program_own(const NodeTable *nt) {
+/* Does an Enumerable reopen of the program define find_index? It
+   replaces the builtin definition, so a find_index call on an Enumerable
+   keeps its route to it, block and all. A reopen with find_index alone
+   takes the generic dispatch name (__enum_find_index__N, with no node_bi
+   mark); one with other methods beside it keeps the def in the module
+   body. A find_index of another class does not answer for a Hash or a
+   Range. These passes run before the classes are registered, so it reads
+   the defs. */
+int find_index_program_own(const NodeTable *nt) {
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
     const char *dn = nt_str(nt, d, "name");
     if (dn && !nt_int(nt, d, "node_bi", 0) && strncmp(dn, "__enum_find_index__", 19) == 0) return 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    const char *mn = nt_str(nt, nt_ref(nt, m, "constant_path"), "name");
+    if (!mn || !sp_streq(mn, "Enumerable") || nt_int(nt, m, "node_bi", 0)) continue;
+    int body = nt_ref(nt, m, "body"), bn = 1;
+    const int *bb = &body;
+    if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) bb = nt_arr(nt, body, "body", &bn);
+    for (int i = 0; body >= 0 && i < bn; i++) {
+      if (nt_kind(nt, bb[i]) != NK_DefNode || nt_ref(nt, bb[i], "receiver") >= 0) continue;
+      const char *dn = nt_str(nt, bb[i], "name");
+      if (dn && sp_streq(dn, "find_index")) return 1;
+    }
   }
   return 0;
 }
