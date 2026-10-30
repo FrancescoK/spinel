@@ -192,7 +192,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        (a direct call, or a path with no write). __method__ always answers the
        definition's name (#3729). */
     /* (a method a prepend or an extend moved behind another of its name
-       runs under a shadow name, `__prep_0_go`: the name as written) */
+       runs under a shadow name, `__prep 0 go`: the name as written) */
     /* (and one an alias captured ahead of a redefinition runs under the
        alias, alias_capture_earlier_def: the name its def has) */
     const char *mn = s ? comp_prep_user_name(comp_scope_def_name(c, s)) : NULL;

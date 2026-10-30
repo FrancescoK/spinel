@@ -19891,6 +19891,18 @@ static sp_RbVal sp_poly_each_answer(sp_RbVal v) {
     return sp_enum_walk_result((sp_Enumerator *)v.v.p);
   return v;
 }
+/* The same after `walk` (sp_poly_iter_walk of v) ran: a generator's walk
+   that reached its end answers what the body answered, which the walker
+   kept; reading it through the Enumerator (its to_a) ran the body again
+   and answered the items. */
+static sp_RbVal sp_poly_each_walk_answer(sp_RbVal v, sp_RbVal walk) SP_UNUSED;
+static sp_RbVal sp_poly_each_walk_answer(sp_RbVal v, sp_RbVal walk) {
+  if (sp_enum_is_walker(walk)) {
+    sp_Enumerator *w = (sp_Enumerator *)walk.v.p;
+    if (w->gen && w->walk_done) return w->gen_result;
+  }
+  return sp_poly_each_answer(v);
+}
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) SP_UNUSED;
 static sp_Enumerator *sp_enum_mark_pair(sp_Enumerator *e) {
   e->yields_pair = SP_PAIR_PACKED;
@@ -20513,7 +20525,9 @@ static SP_COLD SP_NOINLINE sp_int sp_enum_walk_len(sp_RbVal v) {
       }
       if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
       it = sp_Fiber_resume(w->fib, sp_box_nil());
-      if (!sp_Fiber_alive(w->fib)) { w->walk_done = TRUE; break; }
+      /* the body ended: what it answered is the walk's answer (gen_result,
+         as #next keeps it for StopIteration#result) */
+      if (!sp_Fiber_alive(w->fib)) { sp_gc_wb((void *)w); w->gen_result = it; w->walk_done = TRUE; break; }
     }
     else {
       sp_int n = w->items ? w->items->len : 0;
@@ -21714,7 +21728,10 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
           case SP_PENUM_NONE: if (sp_poly_truthy(sp_penum_call1(blk, a))) return sp_box_bool(FALSE); break;
         }
       }
-      if (op == SP_PENUM_EACH || op == SP_PENUM_EACH_WITH_INDEX) return recv;
+      /* each answers what the Enumerator's walk does (its body's value, or
+         its source), each_with_index the Enumerator */
+      if (op == SP_PENUM_EACH) return sp_poly_each_walk_answer(recv, walk);
+      if (op == SP_PENUM_EACH_WITH_INDEX) return recv;
       if (op == SP_PENUM_FIND || op == SP_PENUM_FIND_INDEX) return sp_box_nil();
       return sp_box_bool(op != SP_PENUM_ANY);
     }
@@ -21748,7 +21765,8 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
   switch (op) {
     case SP_PENUM_EACH:
       for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call1(blk, SP_PENUM_AT(i));
-      return recv;   /* Array#each answers the receiver */
+      /* Array#each answers the receiver; an Enumerator's each, its source */
+      return sp_poly_each_answer(recv);
     case SP_PENUM_EACH_WITH_INDEX:
       for (sp_int i = 0; i < SP_PENUM_LEN; i++) sp_penum_call2(blk, SP_PENUM_AT(i), sp_box_int(i));
       return recv;

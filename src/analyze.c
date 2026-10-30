@@ -638,7 +638,7 @@ void compute_reachable(Compiler *c, int typed) {
        that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
        of the program the message of an exception class. (A replaced version,
        or a version entry, is reached only by the calls bound to it.) */
-    int bound = sc->replaced || sc->entry;
+    int bound = sc->replaced || sc->entry != ENTRY_NONE;
     int is_root = (s == 0 || !sc->name || (!bound && is_initialize_name(sc->name)) || sc->is_ext_entry);
     if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
   }
@@ -655,7 +655,7 @@ void compute_reachable(Compiler *c, int typed) {
   for (int t = 0; t < c->nscopes; t++) {
     sn_link[t] = -1;
     const char *tn = c->scopes[t].name;
-    if (!tn || c->scopes[t].entry) continue;   /* (no name reaches an entry) */
+    if (!tn || c->scopes[t].entry != ENTRY_NONE) continue;   /* entries are reached by their bound calls or table routes */
     int k = -1;
     if (sn_set.nb)
       for (int i = sn_set.head[sp_strhash(tn) % (unsigned)sn_set.nb]; i >= 0; i = sn_set.next[i])
@@ -960,7 +960,7 @@ void compute_reachable(Compiler *c, int typed) {
       }
       for (int i = 0; i < cls->nprep_chain; i++) {
         const char *pf = cls->prep_from[i]; /* user-facing name, e.g. "hi" */
-        const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep_0_hi" */
+        const char *pt = cls->prep_to[i];   /* shadow name, e.g. "__prep 0 hi" */
         if (!pf || !pt) continue;
         int cside = strncmp(pf, "self.", 5) == 0;   /* a class method's chain */
         if (cside) pf += 5;
@@ -7863,7 +7863,9 @@ static void synth_enum_to_a(Compiler *c) {
        An anonymous `&` forward is excluded (blk_param is "") -- forwarding an
        anonymous block through the synthesized materializer is not yet wired and
        would yield an empty result, so it stays a loud reject. */
-    if (!sp_streq(m->name, "each") ||
+    /* Before entries are built, the table already answers a prepend's
+       hidden copy by its public name. The bridge serves that same name. */
+    if (!is_each_name(comp_prep_user_name(m->name)) ||
         !(m->yields || (m->blk_param && m->blk_param[0]) ||
           /* a class that mixes Enumerable in still gets the materializer even
              when its #each never yields: the mixin is simply empty (#3755) */
@@ -33346,7 +33348,7 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, src->name) && !pf_in_class_dispatch(c, src) &&
+    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, comp_prep_user_name(src->name)) && !pf_in_class_dispatch(c, src) &&
         !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
@@ -41986,8 +41988,8 @@ static void refuse_mixin_after_calls(Compiler *c) {
       if (!hit) continue;
       /* the module's own methods run only once it is mixed in */
       if (in_def && ms->class_id == mod) continue;
-      /* a copy that hands the call to the class's own method until the
-         prepend has run (mixin_guard_body) */
+      /* a copy whose guard entry hands the call to the class's own method
+         until the prepend has run (Scope.mixin_guarded) */
       if (mixin_call_guarded(c, rt, cid, name)) continue;
       char msg[600];
       snprintf(msg, sizeof msg,

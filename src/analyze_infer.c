@@ -6818,7 +6818,7 @@ static int infer_method_proc_call(Compiler *c, int id, const NodeTable *nt, cons
        (sp_streq(name, "===") && argc >= 1) ||
        (sp_streq(name, "bind_call") && argc >= 1))) {
     CallPlan p = cplan_method_call(c, id);
-    int mi = p.mi;
+    int mi = p.dispatch == CP_SWITCH ? -1 : p.mi;
     if (mi >= 0) {
       if (g_plan_check) an_user_call_record(c, id, mi, p.via, p.owner_ci);
       *out = c->scopes[mi].ret == TY_UNKNOWN ? TY_INT : c->scopes[mi].ret; return 1;
@@ -11635,7 +11635,7 @@ TyKind infer_uncached(Compiler *c, int id) {
     if (p < 0) return none;
     /* super inside a class method resolves through the parent's CLASS-method
        chain (the instance chain would miss `def self.x` entirely). */
-    int mi = cplan_super_chain_mi(c, s, p, uname);
+    int mi = cplan_super_chain_mi(c, id, s, p, uname);
     /* a subclass of a native class (#9269): super reaches the native
        class's constructor (initialize) or binding */
     if (mi < 0 && !s->is_cmethod && uname && c->classes[s->class_id].nsub_root > 0) {

@@ -91,6 +91,7 @@ p N2.new.go(1)
 p N2.new.go(1, 5, k: 1)
 p N2.mk(4)
 p N2.mk(4, 5)
+p N2.mk(3, 1.5)
 
 class P
   def go(a, *m) = [a, m]

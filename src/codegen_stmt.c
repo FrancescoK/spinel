@@ -22073,6 +22073,11 @@ int tail_iter_receiver(Compiler *c, int id) {
      arm answers what the program's own each does, so the value form reads
      the call's answer from whichever arm ran */
   if (each_split_applies(c, id)) return -1;
+  /* a boxed `each` answers from the walk it ran: re-read afterwards, an
+     Enumerator's answer came from a second run of it (a generator's body
+     ran twice, and the items were its answer), so the value form serves
+     it (emit_iter_value_expr) */
+  if (is_each_name(nm) && repr_of(c, r).kind == RK_BOXED) return -1;
   return r;
 }
 

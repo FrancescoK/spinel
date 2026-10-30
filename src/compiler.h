@@ -466,11 +466,15 @@ typedef struct {
      (call_plan.c's version entries): it calls the version the run-time
      cells name, one per parameter count the calls need (version_n
      numbers the later ones in C). It has the method's name, as a replaced
-     version does; no lookup of the method by name answers it (sm_owns),
-     only the calls call_target binds to it reach it; main_n, codegen's
+     version does; ENTRY_DISPATCH marks this argument-specific forwarding
+     entry. No lookup of the method by name answers it (sm_owns),
+     only the calls call_target binds to it reach it. entry == ENTRY_TABLE is a
+     general prepend guard: the table answers it under the ordinary name,
+     and its guard_behind names the hidden copy; main_n, codegen's
      number for a method of main's own whose name Object's methods have
      too (both are top-level functions in C) */
-  unsigned char versioned, replaced, entry;
+  unsigned char versioned, replaced;
+  enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE } entry;
   int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
@@ -493,9 +497,13 @@ typedef struct {
                                  front of the class's own (its super reaches
                                  that one -- the builtin's, for a builtin) */
   int mixin_guarded;          /* such a copy of a prepend a later top-level
-                                 reopening makes: it hands the call to the
-                                 class's own method until that statement has
-                                 run (mixin_guard_body) */
+                                 reopening makes: the number of the cell that
+                                 statement sets (n_prepend_cells), 0 for
+                                 none. A call reaches it through its guard
+                                 entry (call_plan.c), which runs the method
+                                 behind it, guard_behind, until the cell is
+                                 set */
+  int guard_behind;
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
@@ -970,7 +978,7 @@ typedef struct {
                           DCEs). Set by compute_instantiated. */
   /* Prepend shadow chain: when `prepend M` is called on this class,
      M's methods overwrite the active slot; the previous slot is
-     renamed to a shadow `__prep_N_<m>`.  The chain maps each name
+     renamed to a shadow `__prep N <m>`.  The chain maps each name
      (user name or shadow name) to the next shadow in the chain,
      so `emit_super` can follow it rather than the parent class. */
   char **prep_from;      /* source name in the chain link */
@@ -1646,14 +1654,15 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
-  /* the flags of the later prepends that guard their copies
-     (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
-  int n_mixin_flags;
+  /* the cells of the later prepends whose copies a guard entry chooses
+     (Scope.mixin_guarded, ver_prepend_cell_name): 1 .. n_prepend_cells */
+  int n_prepend_cells;
   /* the version entries (call_plan.c, ver_entries_build): one method per
      (class, side, name, parameter count) for the calls whose version is
-     known only at run time, and each of its arms' calls pinned to the
-     version it runs */
-  struct VerEntry { const char *name; int cls, sg, ar, scope; } *ver_entries;
+     known only at run time, or with guard, for the calls that reach a
+     later prepend's copy (Scope.mixin_guarded), and each of its arms'
+     calls pinned to the method it runs */
+  struct VerEntry { const char *name; int guard, cls, sg, ar, scope; } *ver_entries;
   int nver_entries;
   struct VerChain *ver_chain;   /* how many versions a class's chain holds of a name, by (class, side, name) (call_plan.c, ver_chain_count) */
   struct VerHold *ver_hold;   /* the holders of a name worth asking, by name (call_plan.c, ver_holders) */
@@ -1663,7 +1672,9 @@ typedef struct {
   unsigned ver_ix_nb;
   struct VerPin { int node, scope; } *ver_pins;
   int nver_pins;
-  /* the entries are made (ver_entries_build) */
+  /* the entries are made (ver_entries_build): the versions the calls get
+     are kept, and a call that reaches a later prepend's copy binds its
+     guard entry */
   int ver_built;
   /* the version each call asked on a class runs, once the entries are
      made (call_plan.c, ct_version): open addressing, name NULL for a free
@@ -2306,6 +2317,8 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
    method of the same name. */
 const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
+void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t size);
+int comp_name_is_prep_shadow(const char *name);
 const char *comp_prep_user_name(const char *name);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);

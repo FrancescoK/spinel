@@ -1739,7 +1739,10 @@ int poly_cls_value_cands(Compiler *c, int id, const char *name, int argc, const 
        method's answer into a slot typed for the others. Asked of a
        candidate it can drop; the walk is memoized per call. */
     if (!poly_cls_value_reaches(c, id, k)) continue;
-    int kmi = cc8[ki].mi;
+    /* the method the call runs on k (cplan_cand_target): for a name with
+       versions or a later prepend's copy, the one the plan binds, as the
+       analysis bound the call's arguments to it */
+    int kmi = cplan_cand_target(c, id, name, &cc8[ki], CT_CMETHOD);
     /* nor a module's own `def self.x` when no box can hold the module, one
        the program only calls by name (comp_class_may_be_value), or no box
        reaches the method (share_target_reachable): the analysis leaves its
@@ -2395,6 +2398,7 @@ int cls_value_owns_name(Compiler *c, int id, const char *name) {
 }
 
 int diag_user_defines(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   return recv_user_defines(c, name) || comp_method_index(c, name) >= 0;
 }
 
@@ -2402,6 +2406,7 @@ int diag_user_defines(Compiler *c, const char *name) {
    is a private method of Object that no explicit receiver reaches, so it
    leaves a builtin's arm in place (`def uniq(o) = o.uniq`). */
 int recv_user_defines(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   /* inside a poly dispatch's builtin arm the value is not a user object: the
      arm re-enters the call's emission for a genuine Array or Hash, and the
      user class owning the name (a Set#flatten) is not a candidate there */
@@ -2605,6 +2610,7 @@ static int user_defines_or_reads_walk(Compiler *c, const char *name) {
 static char **udrc_name; static unsigned char *udrc_ans; static int udrc_cap, udrc_n;
 static unsigned udrc_gen, udrc_shape; static int udrc_nscopes = -1, udrc_nclasses = -1;
 int user_defines_or_reads(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   if (g_poly_builtin_arm) return 0;
   if (!name || !comp_scope_index_is_frozen()) return user_defines_or_reads_walk(c, name);
   if (udrc_gen != comp_scope_index_gen() || udrc_shape != comp_class_shape_gen() ||
@@ -18043,13 +18049,13 @@ void refl_own_instance_methods(Compiler *c, int ci, int pub, int prot, int priv,
     Scope *s = &c->scopes[si];
     if (s->class_id != ci || s->is_cmethod || !s->name || !s->name[0]) continue;
     /* A prepended module that defines a method the class defines too renames
-       the class's own body to `__prep_<n>_<name>`, so the module's copy can
+       the class's own body to `__prep <n> <name>`, so the module's copy can
        super into it. The class still defines <name>: list it under that name,
        with the visibility the rename carried to the body's own name (the
        name itself answers the module's copy). A renamed module copy (a second
        prepend over the first) stays out. */
     const char *nm = s->name;
-    if (strncmp(nm, "__prep_", 7) == 0) {
+    if (comp_name_is_prep_shadow(nm)) {
       if (s->origin_module_ci > 0) continue;
       nm = comp_prep_user_name(nm);
       if (nm == s->name) continue;

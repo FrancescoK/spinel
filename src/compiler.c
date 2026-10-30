@@ -1313,10 +1313,10 @@ static int sm_moved(int s) {
 }
 /* scope `s` is a method of (class_id, is_cm) a lookup may answer: not while
    it is moved, and not a version entry, which only the calls call_target
-   binds to it reach */
+   binds to it reach. A general guard (entry == ENTRY_TABLE) is the table answer. */
 static int sm_owns(const Compiler *c, int s, int class_id, int is_cm) {
   return c->scopes[s].class_id == class_id && (int)c->scopes[s].is_cmethod == is_cm &&
-         !c->scopes[s].entry && (!mv_n || !sm_moved(s));
+         c->scopes[s].entry != ENTRY_DISPATCH && (!mv_n || !sm_moved(s));
 }
 /* the same for a top-level method */
 static int sm_toplevel(const Compiler *c, int s) {
@@ -1412,7 +1412,8 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
        transplanted) definition wins, matching the frozen index's ordering. */
     for (int s = c->nscopes - 1; s >= 0; s--)
       if (sm_owns(c, s, class_id, is_cm) &&
-          c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+          c->scopes[s].name && (sp_streq(c->scopes[s].name, name) ||
+            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_prep_user_name(c->scopes[s].name), name)))) return s;
     return -1;
   }
   if (sm_nscopes != c->nscopes) sm_build(c);
@@ -1574,7 +1575,8 @@ static int sm_version(Compiler *c, int class_id, const char *name, int is_cm, in
   if (!sm_frozen) {
     for (int s = c->nscopes - 1; s >= 0; s--)
       if (c->scopes[s].def_node == def_node && (top ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm)) &&
-          c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return s;
+          c->scopes[s].name && (sp_streq(c->scopes[s].name, name) ||
+            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_prep_user_name(c->scopes[s].name), name)))) return s;
     return -1;
   }
   if (sm_nscopes != c->nscopes) sm_build(c);
@@ -1589,7 +1591,7 @@ static int sm_version(Compiler *c, int class_id, const char *name, int is_cm, in
 /* the scope of (class_id, is_cm; top level when class_id < 0) whose def
    node is def_node, under whatever name an alias that captured the def gave
    it (alias_capture_earlier_def), or -1; not a body a mixin's copy shadows
-   (`__prep_<n>_m`), which a call reaches through the copy */
+   (`__prep <n> m`), which a call reaches through the copy */
 static int sm_version_renamed(Compiler *c, int class_id, int is_cm, int def_node) {
   for (int s = c->nscopes - 1; s >= 0; s--)
     if (c->scopes[s].def_node == def_node && c->scopes[s].name && !c->scopes[s].is_proc_form &&
@@ -4737,12 +4739,18 @@ int comp_super_is_class_new(Compiler *c, int id) {
   return p < 0 || comp_cmethod_in_chain(c, p, "new", NULL) < 0;
 }
 
+void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t size) {
+  snprintf(out, size, "__prep %d %s", ci->prep_shadow_count++, name);
+}
+
+int comp_name_is_prep_shadow(const char *name) {
+  return name && strncmp(name, "__prep ", 7) == 0;
+}
+
 const char *comp_prep_user_name(const char *name) {
   if (name && strncmp(name, "__inc ", 6) == 0) return strchr(name + 6, ' ') + 1;
-  if (!name || strncmp(name, "__prep_", 7) != 0) return name;
-  const char *p = name + 7;
-  while (*p >= '0' && *p <= '9') p++;
-  return (*p == '_') ? p + 1 : name;
+  if (comp_name_is_prep_shadow(name)) return strchr(name + 7, ' ') + 1;
+  return name;
 }
 
 /* The name `super` resolves under from the scope named `name` whose class's
