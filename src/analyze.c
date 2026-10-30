@@ -10814,8 +10814,10 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
+    /* `super(a, &s)` too: left as the block argument, the parent's `&b`
+       had no proc for a Symbol and the call was refused */
+    if (ty_k != NK_CallNode && ty_k != NK_SuperNode) continue;
+    const char *nm = ty_k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
     int is_toproc = nm && sp_streq(nm, "to_proc");
     int ex = -1;
     if (is_toproc) {
@@ -10852,7 +10854,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     /* as many parameters as the call passes its block: the first receives
        the send, the rest are its arguments */
-    int npar = is_toproc ? 1 : sym_block_values(c, id);
+    int npar = is_toproc || ty_k != NK_CallNode ? 1 : sym_block_values(c, id);
     if (npar < 1) npar = 1;
     char pn[8][64];
     int preq[8], sa[9];
