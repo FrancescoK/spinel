@@ -262,6 +262,63 @@ static void yield_target_restore(const YieldTargetSave *s) {
   g_yield_proc_ref_fallback2 = s->ypr; g_yield_slot_ty_fallback2 = s->yslot;
   g_yield_lowered_fallback = s->lowered; g_yield_lowered_blk_fallback = s->lowered_blk;
 }
+/* The whole block context an inline runs its callee's body under: the block
+   current and what its splice binds, the one level out, the forwarded proc
+   and the lowered context, and the break scope a block's `break` leaves.
+   emit_inline_call_x takes a snapshot of the caller's before it switches to
+   the callee's, and puts the caller's back for the call-site code it emits
+   in between (see there). */
+typedef struct {
+  int block_id, block_nren, ytgt_cur;
+  const char *block_param_name, *block_owner_param_name;
+  int yfb, yfb_nren; const char *yfb_owner;
+  const char *blk_brk_fb; int blk_brk_efb;
+  const char *self_fb, *self_deref_fb; int emcls_fb;
+  const char *self_fb2, *self_deref_fb2; int emcls_fb2;
+  int lowered; const char *lowered_blk;
+  int lowered_fb; const char *lowered_blk_fb;
+  const char *ypr, *ypr_expr_ref; int ypr_expr; TyKind yslot;
+  const char *ypr_fb, *ypr_fb2; TyKind yslot_fb, yslot_fb2;
+  const char *brk_var, *ser_var; int brk_ebase, brk_exc_base, brk_rescue_base;
+} InlineBlockCtx;
+static void inline_block_ctx_save(InlineBlockCtx *s) {
+  s->block_id = g_block_id; s->block_nren = g_block_nren; s->ytgt_cur = g_ytgt_cur;
+  s->block_param_name = g_block_param_name; s->block_owner_param_name = g_block_owner_param_name;
+  s->yfb = g_yield_block_fallback; s->yfb_nren = g_yield_block_fallback_nren;
+  s->yfb_owner = g_yield_block_fallback_param_name;
+  s->blk_brk_fb = g_yield_blk_brk_fallback; s->blk_brk_efb = g_yield_blk_brk_efallback;
+  s->self_fb = g_yield_self_fallback; s->self_deref_fb = g_yield_self_deref_fallback;
+  s->emcls_fb = g_yield_emitting_class_fallback;
+  s->self_fb2 = g_yield_self_fallback2; s->self_deref_fb2 = g_yield_self_deref_fallback2;
+  s->emcls_fb2 = g_yield_emitting_class_fallback2;
+  s->lowered = g_current_scope_is_lowered; s->lowered_blk = g_lowered_blk_name;
+  s->lowered_fb = g_yield_lowered_fallback; s->lowered_blk_fb = g_yield_lowered_blk_fallback;
+  s->ypr = g_yield_proc_ref; s->ypr_expr_ref = g_yield_proc_expr_ref; s->ypr_expr = g_yield_proc_expr;
+  s->yslot = g_yield_slot_ty;
+  s->ypr_fb = g_yield_proc_ref_fallback; s->ypr_fb2 = g_yield_proc_ref_fallback2;
+  s->yslot_fb = g_yield_slot_ty_fallback; s->yslot_fb2 = g_yield_slot_ty_fallback2;
+  s->brk_var = g_block_brk_var; s->ser_var = g_brk_ser_var; s->brk_ebase = g_block_brk_ebase;
+  s->brk_exc_base = g_block_brk_exc_base; s->brk_rescue_base = g_block_brk_rescue_base;
+}
+static void inline_block_ctx_restore(const InlineBlockCtx *s) {
+  g_block_id = s->block_id; g_block_nren = s->block_nren; g_ytgt_cur = s->ytgt_cur;
+  g_block_param_name = s->block_param_name; g_block_owner_param_name = s->block_owner_param_name;
+  g_yield_block_fallback = s->yfb; g_yield_block_fallback_nren = s->yfb_nren;
+  g_yield_block_fallback_param_name = s->yfb_owner;
+  g_yield_blk_brk_fallback = s->blk_brk_fb; g_yield_blk_brk_efallback = s->blk_brk_efb;
+  g_yield_self_fallback = s->self_fb; g_yield_self_deref_fallback = s->self_deref_fb;
+  g_yield_emitting_class_fallback = s->emcls_fb;
+  g_yield_self_fallback2 = s->self_fb2; g_yield_self_deref_fallback2 = s->self_deref_fb2;
+  g_yield_emitting_class_fallback2 = s->emcls_fb2;
+  g_current_scope_is_lowered = s->lowered; g_lowered_blk_name = s->lowered_blk;
+  g_yield_lowered_fallback = s->lowered_fb; g_yield_lowered_blk_fallback = s->lowered_blk_fb;
+  g_yield_proc_ref = s->ypr; g_yield_proc_expr_ref = s->ypr_expr_ref; g_yield_proc_expr = s->ypr_expr;
+  g_yield_slot_ty = s->yslot;
+  g_yield_proc_ref_fallback = s->ypr_fb; g_yield_proc_ref_fallback2 = s->ypr_fb2;
+  g_yield_slot_ty_fallback = s->yslot_fb; g_yield_slot_ty_fallback2 = s->yslot_fb2;
+  g_block_brk_var = s->brk_var; g_brk_ser_var = s->ser_var; g_block_brk_ebase = s->brk_ebase;
+  g_block_brk_exc_base = s->brk_exc_base; g_block_brk_rescue_base = s->brk_rescue_base;
+}
 /* Entry `fe` is the block a splice makes current: its own yields bind its
    lowered context (the spliced block's was what the fallback held), and
    its target, when recorded, becomes the fallback with that target's own
@@ -1312,6 +1369,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      itself, its body's `yield` found no block (LocalJumpError). */
   int fwd_kept = block >= 0 && block == saved_block && g_ytgt_cur >= 0 &&
                  g_ytgt[g_ytgt_cur].blk == block;
+  /* the caller's block context, before the lines below switch to the
+     callee's: the receiver and the arguments are emitted under it */
+  InlineBlockCtx caller_bc;
+  inline_block_ctx_save(&caller_bc);
   if (!fwd_kept) {
     g_yield_block_fallback = saved_block;
     g_yield_block_fallback_nren = saved_bnren;
@@ -1414,6 +1475,18 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
   BlockRetHome saved_brh = block_ret_home_enter(block, saved_block);
+  /* The receiver, the `&callable` and the arguments below are call-site
+     code, and run under the CALLER's block context, as they do under its
+     self and class (deferred the same way further down): a `&block` among
+     them forwards the caller's block, and a `yield` in one runs it. The
+     callee's context, set up above, is put back for the body once they are
+     bound. Emitted under the callee's, `note(each_item(&block))` in a
+     method spliced with a literal block saw no block current (the blockless
+     `note` had none), took `block` for a real proc local and read an
+     undeclared `lv_block` for the inner inline's block_given?. */
+  InlineBlockCtx callee_bc;
+  inline_block_ctx_save(&callee_bc);
+  inline_block_ctx_restore(&caller_bc);
 
   if (as_expr) buf_puts(b, "({\n");
   else { emit_indent(b, indent); buf_puts(b, "{\n"); }
@@ -1505,6 +1578,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   emit_inline_bind_params(c, m, args, argv, argc, &L, alias_mask, tag, saved_nren, din, b);
   arg_layout_free(&L);
   inl_dflt_leave(sv_dflt);
+  /* the call-site code is bound: the body runs under the callee's block context */
+  inline_block_ctx_restore(&callee_bc);
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the
      self binding and the emitting-class must move together, and only here

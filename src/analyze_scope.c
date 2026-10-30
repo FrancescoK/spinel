@@ -5556,6 +5556,32 @@ static TyKind lit_takes_general_hash(Compiler *c, const LocalVar *lv, int vnode,
   return TY_POLY_POLY_HASH;
 }
 
+/* The type a write of `vnode` brings to the global `rn` (slot `lv`), for a
+   plain `$g = v` and for `$g ||= v` / `$g &&= v` alike. An empty `{}` /
+   `Hash.new` RHS leaves the value UNKNOWN (no element type): adopt the
+   variant implied by the global's `[]=` writes so it gets a slot. An empty
+   `[]` RHS is as untyped; a global still needs a concrete slot to be
+   declared and iterated, so give it a poly array (it can hold anything
+   pushed later) (#3263). */
+static TyKind gvar_write_value_type(Compiler *c, const char *rn, LocalVar *lv, int vnode, int *changed) {
+  const NodeTable *nt = c->nt;
+  TyKind vt = infer_type(c, vnode);
+  if (!ty_is_hash(vt) && rn && node_is_empty_hash_producer(c, vnode)) {
+    TyKind hv = slot_hash_variant_from_writes(c, NK_GlobalVariableReadNode, rn, hash_new_default_arg(c, vnode));
+    if (ty_is_hash(hv)) vt = hv;
+  }
+  if (rn) {
+    TyKind hv = fallback_hash_variant(c, vnode, NK_GlobalVariableReadNode, rn, changed);
+    if (ty_is_hash(hv)) vt = hv;
+  }
+  if (vt == TY_UNKNOWN && rn && nt_kind(nt, vnode) == NK_ArrayNode) {
+    int en = 0; nt_arr(nt, vnode, "elements", &en);
+    if (en == 0) vt = TY_POLY_ARRAY;
+  }
+  if (lv) vt = empty_container_write(c, vnode, vt, lv->type);
+  return lit_takes_general_hash(c, lv, vnode, vt, changed);
+}
+
 /* Set while the store passes below run again after the late nullable marks
    (infer_changed_store_types): they then join only the stores whose input
    has widened since these types, and leave the rest as they settled. */
@@ -5578,29 +5604,7 @@ int infer_global_const_types(Compiler *c) {
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
       int vnode = nt_ref(nt, id, "value");
-      vt = infer_type(c, vnode);
-      /* an empty `{}`/`Hash.new` RHS leaves vt UNKNOWN (no element type); adopt
-         the variant implied by the global's `[]=` writes so it gets a slot. */
-      if (!ty_is_hash(vt) && rn && node_is_empty_hash_producer(c, vnode)) {
-        TyKind hv = slot_hash_variant_from_writes(c, NK_GlobalVariableReadNode, rn, hash_new_default_arg(c, vnode));
-        if (ty_is_hash(hv)) vt = hv;
-      }
-      if (rn) {
-        TyKind hv = fallback_hash_variant(c, vnode, NK_GlobalVariableReadNode, rn, &changed);
-        if (ty_is_hash(hv)) vt = hv;
-      }
-      /* an empty `[]` RHS leaves vt UNKNOWN (no element type); a global still
-         needs a concrete slot to be declared and iterated, so give it a poly
-         array (it can hold anything pushed later) (#3263). */
-      if (vt == TY_UNKNOWN && rn) {
-        NodeKind vnk = nt_kind(nt, vnode);
-        if (vnk == NK_ArrayNode) {
-          int en = 0; nt_arr(nt, vnode, "elements", &en);
-          if (en == 0) vt = TY_POLY_ARRAY;
-        }
-      }
-      if (lv) vt = empty_container_write(c, vnode, vt, lv->type);
-      vt = lit_takes_general_hash(c, lv, vnode, vt, &changed);
+      vt = gvar_write_value_type(c, rn, lv, vnode, &changed);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;
@@ -5625,8 +5629,13 @@ int infer_global_const_types(Compiler *c) {
       const char *nm = nt_str(nt, id, "name");
       const char *rn = nm ? comp_resolve_gvar(c, nm + 1) : NULL;
       if (rn) lv = comp_gvar(c, rn);
-      vt = infer_type(c, nt_ref(nt, id, "value"));
-      vt = lit_takes_general_hash(c, lv, nt_ref(nt, id, "value"), vt, &changed);
+      /* `$g ||= []` writes the slot as `$g = []` does: typed only by its
+         UNKNOWN value, the global `$stores = nil; $stores ||= []` stayed
+         nil-typed, so `($stores || []).each` was typed from the literal
+         alone while the slot, boxed, held the array it was later pushed to;
+         the typed dispatch assigned another arm's object into the array
+         slot and the C did not build. */
+      vt = gvar_write_value_type(c, rn, lv, nt_ref(nt, id, "value"), &changed);
       if (vt == TY_NIL) {
         if (lv && nil_write_type(lv->type) != lv->type) { lv_set_type(lv, nil_write_type(lv->type)); changed = 1; }
         continue;

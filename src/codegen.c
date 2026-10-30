@@ -12323,6 +12323,22 @@ void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b) {
     return;
   }
   if (ci->ary_root > 0) { buf_printf(b, "sp_%s__alloc()", ci->c_name); return; }   /* #7449 */
+  /* A subclass of a native class is not pooled (#9269): its constructor
+     allocates it with the native finalizer, which frees what the object
+     holds, and defines no pool. Allocated through SP_POOL_NEW here, a
+     StringIO extended with a module (a singleton link below StringIO) named
+     a pool nothing declares in the Class#allocate switch, and the C did not
+     build. */
+  if (ci->nsub_root > 0) {
+    const char *fin = c->classes[ci->nsub_root - 1].native_free;
+    buf_printf(b, "({ sp_%s *_t%d = (sp_%s *)sp_gc_alloc(sizeof(sp_%s), %s, sp_%s__gc_scan);"
+                  " _t%d->cls_id = %d;",
+               ci->c_name, t, ci->c_name, ci->c_name, fin ? fin : "NULL", ci->c_name, t, cid);
+    char lv[32]; snprintf(lv, sizeof lv, "_t%d->", t);
+    emit_ivar_nil_inits(c, b, ci, lv, " ", ";");
+    buf_printf(b, " _t%d; })", t);
+    return;
+  }
   if (is_val) {
     buf_printf(b, "({ sp_%s _t%d = {0}; _t%d.cls_id = %d;", ci->c_name, t, t, cid);
     char lv[32]; snprintf(lv, sizeof lv, "_t%d.", t);
