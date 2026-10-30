@@ -80,7 +80,7 @@ int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi) {
    not answer itself, that call `call` runs */
 static void cplan_object_reopen(Compiler *c, int call, const char *name, CallPlan *p) {
   if (builtin_object_method_known(name)) return;
-  int oci = object_reopen_class(c);
+  int oci = comp_core_class(c, CORE_OBJECT);
   int omi = oci >= 0 ? call_target(c, call, oci, name, 0, NULL) : -1;
   if (omi >= 0) cplan_set(p, omi, oci, UC_REOPEN, CP_DIRECT);
 }
@@ -92,7 +92,7 @@ static void cplan_object_reopen(Compiler *c, int call, const char *name, CallPla
    block). */
 int cplan_exc_object_method(Compiler *c, int call, const char *name) {
   if (!is_gated_exception_accessor(name)) return -1;
-  int oc = object_reopen_class(c);
+  int oc = comp_core_class(c, CORE_OBJECT);
   int mi = oc >= 0 ? call_target(c, call, oc, name, CT_OWN, NULL) : -1;
   if (mi < 0 || comp_method_vis_declared(c, oc, name, NULL) == SP_VIS_PRIVATE ||
       c->scopes[mi].nparams != 0 || c->scopes[mi].yields) return -1;
@@ -1173,7 +1173,7 @@ void ct_version_classes(Compiler *c, int id, const char *nm, CtClassFn fn, void 
      its writes may bind there, when the record can list them */
   int *rcs = NULL, nrc = rk == NK_ConstantReadNode && rc < 0 ? elab_class_candidates(c, r, &rcs) : -1;
   TyKind rt = r >= 0 && rk != NK_SelfNode && !cref ? comp_ntype(c, r) : TY_UNKNOWN;
-  int oc = object_reopen_class(c);
+  int oc = comp_core_class(c, CORE_OBJECT);
   if (r < 0 || rk == NK_SelfNode) {
     Scope *sc = comp_scope_of(c, id);
     int self_cls = sc && sc->class_id >= 0 ? sc->class_id : c->node_cbody[id];

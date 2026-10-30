@@ -1377,6 +1377,7 @@ typedef struct {
                            strlen would end it there (#nul symbols) */
   int nsymbols, csymbols;
 
+  int core_cls[CORE_N];     /* first class of each core name, -1 before creation */
   ClassInfo *classes;
   int nclasses, cclasses;
   int toplevel_class;
@@ -1935,6 +1936,9 @@ int const_seg_builtin(Compiler *c, int id);
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
 int comp_toplevel_class_make(Compiler *c);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
+/* The first-created class for a CORE_* slot, -1 if no class has been made
+   or the slot is negative. */
+int        comp_core_class(const Compiler *c, int k);   /* CORE_* or a negative slot; -1 if none */
 int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
 int        const_name_resolves_top_level(Compiler *c, const char *cn);
@@ -2019,8 +2023,6 @@ const char *time_strict_parser_call(Compiler *c, int id);
    directly in); ignored for constant receivers. */
 int        class_eval_reopen_class(Compiler *c, int id, int enclosing_class);
 int        class_reopen_cmethod(Compiler *c, int call, int recv, const char *name); /* a method the program adds to Class, run by `call` (-1: no call) */
-int        class_reopen_class(Compiler *c);   /* the module that holds the program's methods of Class (`class Class`), -1 for none */
-int        object_reopen_class(Compiler *c);  /* the class that holds the program's methods of Object and Kernel, -1 for none */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_member_intern(ClassInfo *ci, const char *name);
@@ -2110,7 +2112,7 @@ const int *comp_name_reader_owners(Compiler *c, const char *name, int *n);
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */
 static inline int comp_object_defines(Compiler *c, const char *name) {
-  int oc = comp_class_index(c, "Object");
+  int oc = comp_core_class(c, CORE_OBJECT);
   return oc >= 0 && comp_method_in_chain(c, oc, name, NULL) >= 0;
 }
 /* does Object's program method of the name answer call id for the receivers no class arm of its

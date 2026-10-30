@@ -1064,25 +1064,13 @@ int class_eval_reopen_class(Compiler *c, int id, int enclosing_class) {
   return ci;
 }
 
-/* A method added to Class is a class method of every class: the top-level
-   `class Class` / `Class.class_eval { }` body becomes this module, and
-   register_extends extends it into every root class, whose subclasses inherit. */
-static const char *const class_reopen_mod = "Class__reopen";
-
-int class_reopen_class(Compiler *c) { return comp_class_index(c, class_reopen_mod); }
-
-/* The class that holds the program's methods of Object (`class Object`, and
-   Kernel's, which the plan asks there): every lookup but BasicObject's ends
-   in it. -1 for none. */
-int object_reopen_class(Compiler *c) { return comp_class_index(c, "Object"); }
-
 int is_class_const(const NodeTable *nt, int id) {
   return id >= 0 && nt_kind(nt, id) == NK_ConstantReadNode &&
          nt_str(nt, id, "name") && sp_streq(nt_str(nt, id, "name"), "Class");
 }
 
 int class_reopen_cmethod(Compiler *c, int call, int recv, const char *name) {
-  int cm = class_reopen_class(c);
+  int cm = comp_core_class(c, CORE_CLASS_REOPEN);
   if (cm < 0 || !name) return -1;
   if (recv >= 0) {
     NodeKind rk = nt_kind(c->nt, recv);
@@ -1108,7 +1096,7 @@ void desugar_class_reopen(Compiler *c) {
     if (k != NK_ClassNode && k != NK_ModuleNode && k != NK_ConstantWriteNode) continue;
     int cp = k == NK_ConstantWriteNode ? id : nt_ref(nt, id, "constant_path");
     const char *cn = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-    if (cn && sp_streq(cn, class_reopen_mod))
+    if (cn && sp_streq(cn, CLASS_REOPEN_NAME))
       unsupported_feature(c, id, "the constant name Class__reopen is reserved by the compiler");
   }
   int body = nt_ref(nt, nt->root_id, "statements");
@@ -1123,7 +1111,7 @@ void desugar_class_reopen(Compiler *c) {
         unsupported_feature(c, s, "`class Class < ...` is not supported: reopen Class without a superclass");
       nt_node_set_type(nt, s, "ModuleNode");
       nt_node_set_str(nt, cp, "qc_orig_name", nt_str(nt, cp, "name"));   /* the name the program wrote */
-      nt_node_set_str(nt, cp, "name", class_reopen_mod);
+      nt_node_set_str(nt, cp, "name", CLASS_REOPEN_NAME);
       continue;
     }
     if (nt_kind(nt, s) != NK_CallNode || !is_class_eval_name(nt_str(nt, s, "name"))) continue;
@@ -1150,7 +1138,7 @@ void desugar_class_reopen(Compiler *c) {
     nt_node_set_ref(nt, s, "constant_path", recv);
     nt_node_set_ref(nt, s, "body", bbody);
     nt_node_set_str(nt, recv, "qc_orig_name", nt_str(nt, recv, "name"));
-    nt_node_set_str(nt, recv, "name", class_reopen_mod);
+    nt_node_set_str(nt, recv, "name", CLASS_REOPEN_NAME);
   }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
@@ -7661,7 +7649,7 @@ void desugar_module_prepends(Compiler *c) {
 
 void register_extends(Compiler *c) {
   int did_clone = 0;
-  int cls_mod = class_reopen_class(c);
+  int cls_mod = comp_core_class(c, CORE_CLASS_REOPEN);
   int nseen = 0, capseen = 8;
   int *seen = malloc(sizeof(int) * (size_t)capseen);
   if (!seen) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
