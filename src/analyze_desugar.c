@@ -13020,19 +13020,6 @@ int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk) {
   return call;
 }
 
-/* `super(<args>)` with a dispatcher's parameters passed on, as
-   disp_forward_call passes them to a named callee: the hidden method a
-   later include's guard entry runs until the include has run, which
-   reaches what the class answered before it (analyze_scope.c,
-   inc_super_behind) */
-int disp_super_call(NodeTable *nt, int ar, int blk) {
-  int call = disp_forward_call(nt, "super", ar, blk);
-  int sup = nt_new_node(nt, "SuperNode");
-  nt_node_set_ref(nt, sup, "arguments", nt_ref(nt, call, "arguments"));
-  nt_node_set_ref(nt, sup, "block", nt_ref(nt, call, "block"));
-  return sup;
-}
-
 /* A dispatcher: a def named `name` (on self when sg) at `like`'s place,
    whose body is
 

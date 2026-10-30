@@ -6773,23 +6773,30 @@ static int prepend_cell(Compiler *c, int *cell);
 static void prepend_copy_name(Compiler *c, int mi);
 /* The method a later include's copy of `name` stands in front of, when
    the class answered `name` with nothing of its own before the include:
-   a hidden `def <shadow>(*a, **k, &b) = super(*a, **k, &b)` in class ci,
-   at like's place, so that until the include has run a call reaches what
-   the class's superclass answers, or raises NoMethodError, as in CRuby.
-   The guard entry's else arm calls it by its hidden name. */
+   a hidden `def <shadow>(<the copy's parameters>) = super` in class ci,
+   at like's place (the module method's def), so that until the include has
+   run a call reaches what the class's superclass answers, or raises
+   NoMethodError, as in CRuby. With the module method's own parameters the
+   guard entry keeps the method's arity, as a later prepend's does: a call
+   that passes them by position reaches it as it reached the method. The
+   entry's else arm calls it by its hidden name. */
 static int inc_super_behind(Compiler *c, int ci, const char *name, int like) {
   NodeTable *nt = (NodeTable *)c->nt;
   char shadow[320];
   comp_shadow_name(c, ci, name, shadow, sizeof shadow);
-  int sup = disp_super_call(nt, -1, 1);
+  int line = (int)nt_int(nt, like, "node_line", 0);
+  int sup = nt_new_node(nt, "ForwardingSuperNode");
+  nt_node_set_ref(nt, sup, "block", -1);
+  nt_node_set_int(nt, sup, "node_line", line);
   /* (the def keeps the program's name, as a renamed copy's does: its
      super is the superclass's method of that name) */
-  int def = disp_def_build(nt, like, name, 0, -1, 1, NULL, 0, sup);
-  /* (no arms: the body is the super alone, not an if-chain's else) */
+  int def = disp_def_build(nt, like, name, 0, 0, 0, NULL, 0, sup);
+  int lp = nt_ref(nt, like, "parameters");
+  int params = lp >= 0 ? nt_clone_subtree(nt, lp) : -1;
+  nt_node_set_ref(nt, def, "parameters", params);
   int body = nt_new_node(nt, "StatementsNode");
   nt_node_set_arr(nt, body, "body", &sup, 1);
-  nt_node_set_int(nt, body, "node_line", (int)nt_int(nt, like, "node_line", 0));
-  nt_node_set_int(nt, sup, "node_line", (int)nt_int(nt, like, "node_line", 0));
+  nt_node_set_int(nt, body, "node_line", line);
   nt_node_set_ref(nt, def, "body", body);
   int e = c->nscopes;
   comp_grow_node_arrays(c);
@@ -6856,7 +6863,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id, int guard, i
       if (guarded) behind = own;
       own = -1;
     }
-    else if (guarded && own < 0 && !is_builtin_reopen_name(c->classes[ci].name))
+    else if (guarded && own < 0)
       behind = inc_super_behind(c, ci, src->name, src->def_node);
     /* A builtin class's own method comes before an included module's, as
        the class's own def does (`class String; include M; end` with M#size:
@@ -7108,7 +7115,12 @@ static int list_has_stmt(const NodeTable *nt, int list, int stmt) {
 
 void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
-  int late = include_late_stmt(c, ci, body_node), cell = 0, cell_stmt = -1;
+  /* (a core class's or module's reopening keeps its includes as they were:
+     the core's methods are not the program's copies a guard entry can
+     hold, Enumerable's above all, which is materialized on its own) */
+  const char *cn = c->classes[ci].name;
+  int core = is_builtin_reopen_name(cn) || is_builtin_module_name(cn);
+  int late = core ? -1 : include_late_stmt(c, ci, body_node), cell = 0, cell_stmt = -1;
   int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
   if ((sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) &&
