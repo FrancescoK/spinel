@@ -3793,6 +3793,17 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
             r = ty_unify(r, (TyKind)c->scopes[cmi].ret);
         }
       }
+      /* A call alias (`call`, `()`, `yield`, `[]`) has a pre-arm for a Proc
+         or a Method ahead of the user arms (PB_CALLABLE), into the same
+         result slot, and its answer is boxed. A `[]` of no argument, which
+         no container takes, had only the user return to type the slot:
+         `[-> { 5 }, Table.new][0][]` read the Proc's Integer back as
+         Table#[]'s String and crashed. A receiver the facts hold to program
+         objects, or to no Proc (the `pr` bit), carries none. */
+      if (found && !an_builtin_only && rt == TY_POLY && is_call_alias(name)) {
+        const ClsSet *cs = cls_fact_node(c, recv);
+        if (!cs || cs->all || cs->pr) { *out = TY_POLY; return 1; }
+      }
       /* The receiver is a union. When it provably carries a builtin Array or
          Hash (see infer_container_flow), a container read's value is the user
          return OR the builtin answer -- pinning it to the user return left the
