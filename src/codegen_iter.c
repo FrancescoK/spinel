@@ -5126,7 +5126,12 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp;
   view_bind(recv, "_t%d", ta);
   Buf body; memset(&body, 0, sizeof body);
+  /* a boxed `each` answers from the walk it runs (sp_poly_each_walk_answer) */
+  int twres = rr.kind == RK_BOXED && is_each_name(name) ? ++g_tmp : 0;
+  g_enum_walk_res = twres;
   int ok = emit_iteration_stmt(c, id, &body, 0);
+  int walked = twres && g_enum_walk_res == 0;
+  g_enum_walk_res = 0;
   view_unbind(g_n_argov - 1);
   if (!ok) { free(body.p); return 0; }
   /* The original receiver is read twice, once under the hop and once as the
@@ -5143,6 +5148,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      whether it is collectable), so this rooted almost nothing. */
   if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   else if (needs_root(rt)) buf_printf(b, rr.kind == RK_BOXED ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
+  if (walked) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); ", twres, twres);
   /* a String Range is held by value: its two ends */
   else if (rt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   buf_puts(b, body.p ? body.p : "");
@@ -5154,6 +5160,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
   /* a boxed Enumerator's `each { }` answers its walk's result -- the
      collection an `each` Enumerator was made from -- not the Enumerator */
+  else if (walked) buf_printf(b, " _t%d; })", twres);
   else if (rr.kind == RK_BOXED && nt_str(nt, id, "name") && is_each_name(nt_str(nt, id, "name")))
     buf_printf(b, " sp_poly_each_answer(_t%d); })", ta);
   else buf_printf(b, " _t%d; })", ta);
@@ -7260,6 +7267,10 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     int pv_half = sp_streq(name, "each_value") ? 1 :
                   sp_streq(name, "each_key") ? 0 : -1;
     int is_ewi = sp_streq(name, "each_with_index");
+    /* the value form's answer (emit_iter_value_expr): an `each` reads it
+       from the walk it ran, so a generator's body runs once */
+    int twres = is_each_name(name) ? g_enum_walk_res : 0;
+    if (twres) g_enum_walk_res = 0;
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
@@ -7454,6 +7465,12 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
+    if (twres) {
+      Buf ob; memset(&ob, 0, sizeof ob); emit_expr(c, recv, &ob);
+      emit_indent(b, indent);
+      buf_printf(b, "_t%d = sp_poly_each_walk_answer(%s, _t%d);\n", twres, ob.p ? ob.p : "sp_box_nil()", ta);
+      free(ob.p);
+    }
     return 1;
   }
   return -1;
