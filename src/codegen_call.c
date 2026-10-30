@@ -24358,7 +24358,13 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      (operand_held_for_later). */
   int held[nmax], nheld = 0;
   operands_held_for_later(c, operand, nop, recv >= 0, held);
-  for (int i = 0; i < nop; i++) nheld += held[i];
+  int nheld_value = 0;
+  for (int i = 0; i < nop; i++) {
+    nheld += held[i];
+    /* (a class read held only for its effect runs first with the operands
+       before an unbound one, emit_operands_before_unbound) */
+    if (held[i] && !an_const_read_keeps_class(c, operand[i])) nheld_value++;
+  }
   int effects = 0;
   for (int i = 0; i < nop; i++)
     if (!repr_of(c, operand[i]).head_held && subtree_may_reassign_state(c, operand[i])) effects++;
@@ -24541,8 +24547,12 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
      call after the bound operands. */
   if (unb >= 0) {
     /* (an argument held for a later one binds the value operands beside
-       it as a copy at risk does, in order) */
-    if (!ncand && !nheld) return emit_operands_before_unbound(c, id, operand, nop, recv >= 0, unb, b);
+       it as a copy at risk does, in order; a class read held only for its
+       effect goes on to that binding when the ordering declines) */
+    if (!ncand && !nheld_value) {
+      int done = emit_operands_before_unbound(c, id, operand, nop, recv >= 0, unb, b);
+      if (done || !nheld) return done;
+    }
     if (unb_lit) return 0;
   }
   /* Operands that are all pure reads -- `m.data[i * m.cols + j]`, two readers
