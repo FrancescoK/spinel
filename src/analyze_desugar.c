@@ -10411,6 +10411,20 @@ int desugar_sort_by_with_index_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
+/* Does the program define its own find_index (on a class of its own, or
+   in an Enumerable reopen, which replaces the builtin definition)? Then a
+   find_index call keeps its route to that definition, block and all. These
+   passes run before the classes are registered, so it reads the defs. */
+static int find_index_program_own(const NodeTable *nt) {
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    if (!dn || nt_int(nt, d, "node_bi", 0)) continue;
+    /* an Enumerable reopen's own is renamed onto the generic dispatch */
+    if (sp_streq(dn, "find_index") || strncmp(dn, "__enum_find_index__", 19) == 0) return 1;
+  }
+  return 0;
+}
+
 /* 1 = route whatever the call's shape; 2 = only with a block, because the
    blockless form answers an Enumerator that keeps its source (`(1..6)
    .each_slice(2)` inspects as `1..6:each_slice(2)`, not as its elements). */
@@ -10437,6 +10451,7 @@ static int enum_via_to_a_name(const char *n) {
 int desugar_enumerable_via_to_a(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
+  int fi_own = -1;  /* find_index_program_own, read once when needed */
   int n0 = nt->count;
   int *calls, ncalls = an_calls_named_if(c, enum_via_to_a_name, n0, &calls);
   for (int q = 0; q < ncalls; q++) {
@@ -10469,9 +10484,10 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        endless Range. A block beside the value is not used, so
        `find_index(v) { }` is the value form too. */
     if (sp_streq(nm, "find_index") && nt_ref(nt, id, "block") >= 0) {
-      int fa = nt_ref(nt, id, "arguments"), fac = 0;
-      if (fa >= 0) nt_arr(nt, fa, "arguments", &fac);
+      int fac = 0; call_args(nt, id, &fac);
       if (fac == 0) continue;
+      if (fi_own < 0) fi_own = find_index_program_own(nt);
+      if (fi_own) continue;
     }
     /* A Range's blockless minmax is [min, max] off its endpoints, its own
        arm (sp_range_minmax_poly): the hop built the whole member array to
@@ -14163,6 +14179,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
   int *defcls = (int *)malloc(sizeof(int) * 2 * (size_t)(c->nclasses + 1));
   if (!defcls) { free(chained); free(in_default); return 0; }
   int *exact = defcls + c->nclasses + 1;
+  int fi_own = -1;  /* find_index_program_own, read once when needed */
   for (int id = 0; chained && id < n0; id++) {
     if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") < 0) continue;
     const char *nm = nt_str(nt, id, "name");
@@ -14276,11 +14293,12 @@ int desugar_builtin_enum_calls(Compiler *c) {
        rewrite target. */
     if (sp_streq(name, "find_index") && nt_ref(nt, id, "block") < 0) continue;
     /* find_index(v) { } is the value form too: CRuby ignores the block
-       (with a warning), and the definition has no parameter for v */
+       (with a warning), and the definition has no parameter for v. A
+       program's own find_index (an Enumerable reopen) keeps the call. */
     if (sp_streq(name, "find_index")) {
-      int fa = nt_ref(nt, id, "arguments"), fac = 0;
-      if (fa >= 0) nt_arr(nt, fa, "arguments", &fac);
-      if (fac > 0) continue;
+      int fac = 0; call_args(nt, id, &fac);
+      if (fac > 0 && fi_own < 0) fi_own = find_index_program_own(nt);
+      if (fac > 0 && !fi_own) continue;
     }
     /* reduce/inject without a block is the symbol form (`reduce(:+)`), the
        seeded form (`reduce(seed)`, `reduce(seed, :+)`), or the bare argless
