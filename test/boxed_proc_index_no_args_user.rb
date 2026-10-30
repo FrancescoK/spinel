@@ -16,3 +16,18 @@ p vals[1][:x]
 def nine = 9
 ms = [method(:nine), Table.new]
 p ms[0][], ms[1][]
+
+# a class with a class method of the name, beside a Proc and a Method: the
+# class value takes its class method, and the Proc or the Method is called
+class Lookup
+  def self.[](k = :first) = "lookup #{k}"
+end
+class Job
+  def self.call(x = 1) = "job #{x}"
+end
+ls = [Lookup, -> { 6 }, method(:nine)]
+ls.each { |v| p v[] }
+p ls[0][:y]
+js = [Job, -> { 7 }, method(:nine)]
+js.each { |v| p v.call }
+p js[0].call(2)

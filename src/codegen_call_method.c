@@ -2186,7 +2186,10 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      argument, which the index paths, all of one argument or more, never
      take: `fs[0][]` raised NoMethodError for a Proc. A String, an Array or
      a Hash there has raised its ArgumentError already (the arity guard),
-     and a program class with a `[]` of its own keeps the dispatch. */
+     and a program class with a `[]` of its own keeps the dispatch. So does
+     one with a class method of the name: its class-value dispatch tests for
+     a Class first and emits the call again for anything else
+     (g_cls_tag_skip), and there the Proc or the Method is called here. */
   int is_aref0 = sp_streq(name, "[]") && argc == 0;
   if (recv >= 0 &&
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield") || is_aref0) &&
@@ -2194,7 +2197,10 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
       int umi = call_target(c, id, _k, name, CT_OWN, NULL);
-      if ((umi >= 0 && (is_aref0 || argc >= c->scopes[umi].nrequired)) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
+      int cmi = g_cls_tag_skip != id ? call_target(c, id, _k, name, CT_CMETHOD, NULL) : -1;
+      if ((umi >= 0 && (is_aref0 || argc >= c->scopes[umi].nrequired)) ||
+          (cmi >= 0 && (is_aref0 || argc >= c->scopes[cmi].nrequired)) ||
+          (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
         has_user_call = 1;
     }
     /* A call of any count: the slots are sized for it, and an argument past
