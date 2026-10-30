@@ -2017,7 +2017,7 @@ static int emit_poly_array_call(Compiler *c, int id, Buf *b, const NodeTable *nt
 
 /* A kind-named typed Array's block iterators and folds: an index query with a block, find and detect, map!, the in-place filters, the quantifiers, count, sum (emit_kind_array_call's arms, in their order) */
 static int emit_kind_array_iter_call(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, TyKind rt, const char *k, int block, int *out) {
-  if (is_index_query(name) && block >= 0 &&
+  if (is_index_query(name) && block >= 0 && argc == 0 &&
       emit_array_block_index(c, id, recv, rt, k, name, block, b))
     { *out = 1; return 1; }
   /* find(ifnone) { |x| cond } on a typed array: the element (boxed) or
@@ -4270,7 +4270,7 @@ static int emit_typed_array_call(Compiler *c, int id, Buf *b, const NodeTable *n
      migration) is exactly what raced the new dispatch and corrupted an
      unrelated poly call the moment Set was merely required; drop it here
      too rather than leave a second copy of that trap. */
-  if (rt == TY_POLY_ARRAY && sp_streq(name, "index") &&
+  if (rt == TY_POLY_ARRAY && sp_streq(name, "index") && argc == 0 &&
       nt_ref(nt, id, "block") >= 0) {
     int fblock = nt_ref(nt, id, "block");
     const char *bp = block_param_name(c, fblock, 0); if (bp) bp = rename_local(bp);

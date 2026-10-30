@@ -1817,12 +1817,12 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      sibling block name had a poly rule; this family had none, and the call
      fell through untyped to the unresolved-call raise (#3409). */
   /* The two-argument form is String's alone (a start offset for index, a stop
-     for rindex); it answered nothing and raised (#4149). */
+     for rindex); it answered nothing and raised (#4149). A block beside an
+     argument is not used: the value form, block or not. */
   if (recv >= 0 && rt == TY_POLY &&
       (argc == 0 ? nt_ref(nt, id, "block") >= 0
-                 : ((argc == 1 ||
-                     (argc == 2 && !sp_streq(name, "find_index"))) &&
-                    nt_ref(nt, id, "block") < 0)) &&
+                 : (argc == 1 ||
+                    (argc == 2 && !sp_streq(name, "find_index")))) &&
       is_index_query(name) &&
       !an_user_defines_or_reads(c, name))
     { *out = TY_POLY; return 1; }

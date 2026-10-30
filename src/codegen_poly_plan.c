@@ -2922,14 +2922,14 @@ void poly_specials_n(Compiler *c, int id, const char *name, int argc, const int 
   /* index / rindex / find_index with a VALUE argument on a poly value that
      is an array at run time. include? has had this arm for a long time; the
      index family answering the position rather than a bool was simply never
-     added, so the call raised NoMethodError naming Array (#3409). */
-  int is_arr_index = (is_index_query(name) && argc == 1 &&
-                      nt_ref(nt, id, "block") < 0) ||
+     added, so the call raised NoMethodError naming Array (#3409). A block
+     beside the value is not used (CRuby warns "given block not used"), so
+     these builtin arms take the call with or without one. */
+  int is_arr_index = (is_index_query(name) && argc == 1) ||
                      /* the two-argument form is String's alone -- Array#index
                         takes one argument -- so only the default arm below
                         answers it, and the array cases stay out (#4149). */
-                     ((is_string_index(name)) &&
-                      argc == 2 && nt_ref(nt, id, "block") < 0);
+                     ((is_string_index(name)) && argc == 2);
   /* push/<</append on a poly value that is actually a builtin array: the
      array-mutate statement path skips it when a user class also defines the
      name (the value could be that object), so the switch needs a builtin-array

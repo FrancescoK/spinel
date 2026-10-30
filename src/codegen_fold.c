@@ -6776,6 +6776,8 @@ int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   if (repr_of(c, recv).kind != RK_BOXED) return 0;
+  /* index(v) { } is the value form: the block is not used */
+  { int fac = 0; call_args(nt, id, &fac); if (fac > 0) return 0; }
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
