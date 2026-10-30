@@ -3987,14 +3987,26 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
 
 /* ---- methods ---- */
 
+/* Is scope `s` a class's initialize, under any of the names the analysis
+   files one under? Its own; an included module's copy kept behind a later
+   one for its super ("__inc N initialize") or a prepended module's
+   ("__prep_N_initialize"), both of which comp_prep_user_name strips; and
+   the proc-form clone of any of these ("...#pf", make_yield_proc_forms).
+   Each is the same kind of body, run for its writes to self, and what it
+   answers is discarded: typed by its last expression instead, a copy whose
+   `return super unless $flag` guard (mixin_guard_body) or trailing
+   `super(...)` reached a void initialize came out as `return <void call>`. */
+static int scope_is_initialize(const Scope *s) {
+  if (s->class_id < 0 || !s->name) return 0;
+  const char *u = comp_prep_user_name(s->name);
+  size_t n = strlen(u);
+  if (n > 3 && strcmp(u + n - 3, "#pf") == 0) n -= 3;
+  return n == 10 && strncmp(u, "initialize", 10) == 0;
+}
+
 int method_is_void(Scope *s) {
-  /* initialize is always void (mutates *self); else by return type. Its
-     proc-form clone ("initialize#pf", make_yield_proc_forms) is the same
-     body under another name, and its constructor discards what it answers:
-     typed by its last expression instead, a trailing `super(...)` into the
-     parent's void initialize came out as `return <void call>`. */
-  if (s->class_id >= 0 && s->name &&
-      (sp_streq(s->name, "initialize") || sp_streq(s->name, "initialize#pf"))) return 1;
+  /* initialize is always void (mutates *self); else by return type */
+  if (scope_is_initialize(s)) return 1;
   return !is_scalar_ret(s->ret);
 }
 
