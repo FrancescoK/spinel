@@ -1716,6 +1716,17 @@ void compute_instantiated(Compiler *c, int early) {
        (rb_exc_new2 through sp_cext_exception_new_fn), with no `.new` here */
     if (c->n_cext_extensions && class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
   }
+  /* A singleton class's constructor stamps its objects with the parent's id
+     until the singleton's first method runs (ctor_cls_id), and each `extend`
+     moves the object up one link of the chain (sg_chain_link, whose parent is
+     the previous link), so an object whose exact class is the original class,
+     or any link below the last, exists wherever the last link is built. */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated || !c->classes[k].is_singleton_of) continue;
+    for (int p = c->classes[k].parent; p >= 0 && p < c->nclasses && c->classes[p].is_singleton_of; p = c->classes[p].parent)
+      c->classes[p].instantiated = 1;
+    c->classes[c->classes[k].is_singleton_of - 1].instantiated = 1;
+  }
   for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
   comp_touch_global();   /* instantiated and ctor_reachable moved: inference reads them (respond_to? on a box, the plans) */
