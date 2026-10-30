@@ -1,0 +1,32 @@
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+fx0
+uninitialized constant Outer::HOLDER
+assigned
+array
+2
+hash
+2
+insert
+3
+unshift
+2
+print
+Target::Child
+[nil]
+middle
+3
+fx1
+2
+fx1
+Target::Child
+/a1/
+fx0
+fx1
+3
