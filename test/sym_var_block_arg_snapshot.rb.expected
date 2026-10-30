@@ -7,3 +7,8 @@
 6
 ["XY"]
 ["xy"]
+[:downcase, "ab"]
+[:upcase, :downcase, "cd"]
+[:upcase, :swapcase, "Cd"]
+[[:upcase], :downcase, "cd"]
+[{k: :upcase}, :swapcase, "Cd"]

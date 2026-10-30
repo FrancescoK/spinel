@@ -42050,6 +42050,24 @@ static int bo_may_act(const NodeTable *nt, int e) {
     return 1;
   }
 }
+static int rr_writes_var(const NodeTable *nt, int n, const char *pfx, const char *name);
+/* Does `e` read a local in its own evaluation (`s`, `[s]`, `{k: s}`)? A
+   block, a lambda or a def reads its locals when it runs. */
+static int bo_reads_local(const NodeTable *nt, int e) {
+  if (e < 0) return 0;
+  NodeKind k = nt_kind(nt, e);
+  if (k == NK_LocalVariableReadNode) return 1;
+  if (k == NK_DefNode || k == NK_LambdaNode || k == NK_BlockNode) return 0;
+  int nr = nt_num_refs(nt, e);
+  for (int i = 0; i < nr; i++)
+    if (bo_reads_local(nt, nt_ref_at(nt, e, i))) return 1;
+  int na = nt_num_arrs(nt, e);
+  for (int i = 0; i < na; i++) {
+    int m = 0; const int *ids = nt_arr_at(nt, e, i, &m);
+    for (int j = 0; j < m; j++) if (bo_reads_local(nt, ids[j])) return 1;
+  }
+  return 0;
+}
 /* A copy of call `id`'s fields into a fresh node of its kind, a CallNode or a
    SuperNode (the children are shared, not cloned). Each caller makes `id`
    the parentheses that run the copy as their last statement, so the copy
@@ -42090,7 +42108,11 @@ static void desugar_block_arg_order(Compiler *c) {
     int pn = 0; const int *ps = pb >= 0 ? nt_arr(nt, pb, "body", &pn) : NULL;
     int seq = ps && pn >= 2 &&
               (nt_kind(nt, ps[pn - 1]) == NK_LambdaNode || is_proc_create(c, ps[pn - 1]));
-    if (!seq && !bo_may_act(nt, be)) continue;
+    /* `&s` reads s after the operands ahead of it, and one of them may
+       rebind it (`m((s = :downcase), &s)`): a block made from it keeps what
+       it read, so s is read in its turn */
+    int lread = nt_kind(nt, be) == NK_LocalVariableReadNode;
+    if (!seq && !lread && !bo_may_act(nt, be)) continue;
     int recv = nt_ref(nt, id, "receiver");
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av0 = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -42108,6 +42130,13 @@ static void desugar_block_arg_order(Compiler *c) {
       }
       else ahead |= bo_may_act(nt, av0[k]);
     }
+    if (lread && !seq && !bo_may_act(nt, be)) {
+      const char *bn = nt_str(nt, be, "name");
+      int rebinds = bn && rr_writes_var(nt, recv, "LocalVariable", bn);
+      for (int k = 0; bn && k < an && !rebinds; k++) rebinds = rr_writes_var(nt, av0[k], "LocalVariable", bn);
+      if (!rebinds) continue;
+    }
+    else lread = 0;
     if (!plain || (!ahead && !seq)) continue;
     Scope *sc = comp_scope_of(c, id);
     if (!sc) continue;
@@ -42118,14 +42147,17 @@ static void desugar_block_arg_order(Compiler *c) {
     int stm[256]; int ns = 0, serial = 0;
     char tn[64];
     /* one `__bo_<id>_<k> = e` statement; answers the read that replaces e */
-    #define BO_HOIST(E) ({ int _e = (E), _r = _e; if (ns < 255 && _e >= 0 && (seq || bo_may_act(nt, _e))) { \
+    #define BO_HOIST(E) ({ int _e = (E), _r = _e; if (ns < 255 && _e >= 0 && (seq || bo_may_act(nt, _e) || \
+        (lread && bo_reads_local(nt, _e)))) { \
         snprintf(tn, sizeof tn, "__bo_%s_%d", comp_node_tag(c, id), serial++); \
         int _w = nt_new_node(nt, "LocalVariableWriteNode"); \
         int _rd = nt_new_node(nt, "LocalVariableReadNode"); \
         nt_node_set_str(nt, _w, "name", tn); nt_node_set_ref(nt, _w, "value", _e); \
         nt_node_set_str(nt, _rd, "name", tn); \
         stm[ns++] = _w; scope_local_intern(sc, tn); _r = _rd; } _r; })
-    /* A sequence can reassign even a plain read. Capture its receiver and
+    /* A sequence can reassign even a plain read, and so can an operand
+       that rebinds `&s`'s s, under an operand that reads it (`[s]`; a
+       literal with no read it cannot). Capture the receiver and
        arguments before it, inside the call's own evaluation site. */
     int nrecv = BO_HOIST(recv);
     for (int k = 0; k < an; k++) {
