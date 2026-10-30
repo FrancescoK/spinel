@@ -92,7 +92,7 @@ int sh_may_hold(const Compiler *c, TyKind t) {
 static int sh_ivar_owner(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
   if (s && s->class_id >= 0) return s->class_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 
 static int sh_method_index(Compiler *c, int node) {

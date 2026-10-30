@@ -121,6 +121,7 @@ Compiler *comp_new(const NodeTable *nt) {
   Compiler *c = calloc(1, sizeof(Compiler));
   if (!c) return NULL;
   c->nt = nt;
+  c->toplevel_class = -1;
   int n = nt->count > 0 ? nt->count : 1;
   c->ntype = calloc((size_t)n, sizeof(TyKind));
   c->norigin = malloc((size_t)n * sizeof(int));
@@ -1044,6 +1045,12 @@ ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node) {
   ci->parent = -1;
   ci->enclosing_class = -1;
   return ci;
+}
+
+/* The compiler's top-level pseudo-class is made only when first needed. */
+int comp_toplevel_class_make(Compiler *c) {
+  if (c->toplevel_class < 0) c->toplevel_class = comp_class_new(c, "Toplevel", -1)->idx;
+  return c->toplevel_class;
 }
 
 /* can a computed instance_variable_set reach an instance of some class (or
@@ -4063,7 +4070,7 @@ int comp_ivar_owner(Compiler *c, int node) {
      ivars (strbuf_ivar_owner): the same rules make it the handle */
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 
 /* The variable a site names, by the read kind, name and key the String
@@ -4206,7 +4213,7 @@ static void vsite_build(Compiler *c, int toplevel) {
   c->vs_built = 1;
 }
 static void vsite_sync(Compiler *c) {
-  int toplevel = comp_class_index(c, "Toplevel");
+  int toplevel = c->toplevel_class;
   if (!c->vs_built || !comp_scope_index_is_frozen() || c->vs_version != c->nt->version ||
       c->vs_nodes != c->nt->count || c->vs_gen != comp_scope_index_gen() || c->vs_toplevel != toplevel)
     vsite_build(c, toplevel);
@@ -4392,7 +4399,7 @@ static int comp_method_index_1(Compiler *c, const char *name) {
      the lookup has to consult it here or the alias resolves to nothing
      (#3730). */
   {
-    int tl = name ? comp_class_index(c, "Toplevel") : -1;
+    int tl = name ? c->toplevel_class : -1;
     if (tl >= 0) {
       /* ... its instance aliases, and the main object's singleton ones
          (`class << self; alias d c; end` at the top level) */

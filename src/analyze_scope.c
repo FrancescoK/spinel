@@ -4272,7 +4272,7 @@ void register_aliases(Compiler *c) {
       for (int j = i + 1; !a[i].sg && j < n && a[j].cls == a[i].cls && a[j].sg == a[i].sg && !later; j++)
         later = a[j].kind != LR_ALIAS && sp_streq(a[j].name, a[i].name);
       if (later) continue;
-      if (top && tl < 0 && (tl = comp_class_index(c, "Toplevel")) < 0) { comp_class_new(c, "Toplevel", -1); tl = c->nclasses - 1; }
+      if (top && tl < 0) tl = comp_toplevel_class_make(c);
       alias_register(c, &c->classes[top ? tl : a[i].cls], a[i].name, a[i].target, a[i].node, a[i].sg);
     }
   free(a);
@@ -9165,8 +9165,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     Scope *s = comp_scope_of(c, id);
     if (!nt_str(nt, id, "name") || s->class_id >= 0) continue;
     if (c->node_cbody && id < c->node_cap && c->node_cbody[id] >= 0) continue;
-    int tl_idx = comp_class_index(c, "Toplevel");
-    if (tl_idx < 0) { comp_class_new(c, "Toplevel", -1); tl_idx = c->nclasses - 1; }
+    int tl_idx = comp_toplevel_class_make(c);
     if (cvar_note_write(c, tl_idx, id, nil_only)) changed = 1;
   }
   /* Pass 4: a subclass can have interned a name before its superclass
@@ -9242,7 +9241,7 @@ typedef struct { int n, cap; int *cls; const char **nm; } NilWrites;
 int poly_ivar_set_class(Compiler *c, int k) {
   ClassInfo *pk = &c->classes[k];
   if (pk->is_data || pk->is_native_class || pk->is_singleton_of) return 0;
-  if (!pk->name || sp_streq(pk->name, "Toplevel") || comp_class_is_module(c, pk)) return 0;
+  if (!pk->name || pk->idx == c->toplevel_class || comp_class_is_module(c, pk)) return 0;
   /* a reopened builtin's instances are the runtime's own structs, which
      have no room for the program's ivars */
   if (is_builtin_reopen(pk->name)) return 0;
@@ -10588,7 +10587,7 @@ static int infer_ivar_set_call(Compiler *c, int id, NilWrites *writes) {
           scid = s ? s->class_id : -1;
           if (scid < 0 && id < c->node_cap && c->node_cbody[id] >= 0) scid = c->node_cbody[id];
           /* main: its ivars are the top-level statics, the rest its table */
-          if (scid < 0 && s && !s->is_cmethod) scid = comp_class_index(c, "Toplevel");
+          if (scid < 0 && s && !s->is_cmethod) scid = c->toplevel_class;
         }
         TyKind vt = infer_type(c, sav[1]);
         int any = 0;
@@ -10840,8 +10839,7 @@ int infer_ivar_types(Compiler *c) {
       int cid = c->node_cbody[id];
       if (cid < 0) {
         int old_nc = c->nclasses;
-        cid = comp_class_index(c, "Toplevel");
-        if (cid < 0) { comp_class_new(c, "Toplevel", -1); cid = c->nclasses - 1; }
+        cid = comp_toplevel_class_make(c);
         if (c->nclasses != old_nc) changed = 1;
       }
       ClassInfo *ci = &c->classes[cid];
@@ -10872,7 +10870,7 @@ int infer_ivar_types(Compiler *c) {
          it to the enclosing class-body rather than the Toplevel pseudo-class. */
       if (cls_id2 < 0 && c->node_cbody[id] >= 0) cls_id2 = c->node_cbody[id];
       if (nil_write) {
-        nil_write_note(&nilw, cls_id2 >= 0 ? cls_id2 : comp_class_index(c, "Toplevel"), nm);
+        nil_write_note(&nilw, cls_id2 >= 0 ? cls_id2 : c->toplevel_class, nm);
         /* the transplanted copies of this method (see below) */
         if (s->class_id >= 0 && s->def_node >= 0) {
           int use_idx = dn_head && dn_nscopes == c->nscopes && s->def_node < dn_count;
@@ -10912,8 +10910,7 @@ int infer_ivar_types(Compiler *c) {
       if (cls_id2 < 0) {
         /* Top-level method: track ivars in the Toplevel pseudo-class */
         int old_nc = c->nclasses;
-        cls_id2 = comp_class_index(c, "Toplevel");
-        if (cls_id2 < 0) { comp_class_new(c, "Toplevel", -1); cls_id2 = c->nclasses - 1; }
+        cls_id2 = comp_toplevel_class_make(c);
         if (c->nclasses != old_nc) changed = 1;  /* new class created, need another pass */
       }
       ClassInfo *ci = &c->classes[cls_id2];

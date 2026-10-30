@@ -1146,7 +1146,7 @@ void compute_instantiated(Compiler *c, int early) {
   if (disable)
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
-      if (sp_streq(c->classes[k].name, "Toplevel")) continue;
+      if (k == c->toplevel_class) continue;
       /* a module has no instances, whatever `klass.new` can reach */
       { int dn = c->classes[k].def_node;
         if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) continue; }
@@ -18617,7 +18617,7 @@ static int hash_key_slot_of(Compiler *c, int id, HashKeySlot *out) {
   out->kind = kind; out->nm = nm; out->kbits = out->vbits = 0; out->cls = -1; out->sc = NULL;
   if (kind == 3) out->sc = s;
   else if (kind == 0) {
-    out->cls = s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    out->cls = s->class_id >= 0 ? s->class_id : c->toplevel_class;
     if (out->cls < 0) return -1;
     if (class_ivar_pinned(&c->classes[out->cls], nm)) return -1;   /* --rbs seed */
   }
@@ -19812,7 +19812,7 @@ void an_byref_eligible_scopes(Compiler *c, char *elig) {
        still holds, so no override or dispatch sees a different ABI. A class
        whose instances reach the method through a poly dispatch is fine: those
        arms fill their arguments through the same emitter. */
-    if (s->class_id >= 0 && !s->is_cmethod && comp_class_index(c, "Toplevel") != s->class_id &&
+    if (s->class_id >= 0 && !s->is_cmethod && c->toplevel_class != s->class_id &&
         (c->classes[s->class_id].is_struct || c->classes[s->class_id].is_native_class ||
          c->classes[s->class_id].is_value_type)) continue;
     /* An OPTIONAL parameter beside the lent one is not an ABI difference, and
@@ -20460,7 +20460,7 @@ static void sb_mut_tabs_sync(Compiler *c) {
      only answers once that class has been seeded -- a fact that arrives
      independently of the scope-index epoch, so it joins the stamp rather than
      being resolved once and cached wrong (the #3227 P4 top-level case). */
-  int toplevel = comp_class_index(c, "Toplevel");
+  int toplevel = c->toplevel_class;
   /* nt->version as well as count: a rename pass rewrites a call's `name` in
      place (nt_set_str) without growing the table, and this index is keyed by
      name. Worst case the version churns and we rebuild per query -- one
@@ -20657,7 +20657,7 @@ static int an_static_self(Compiler *c, int node) {
   if (!s) return -1;
   if (s->is_cmethod) return s->class_id;
   if (s->class_id >= 0) return -1;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 /* The ivar a method of class `sc` (a class method when `cm`, else a
    top-level method) reads or memoizes (`def buf = (@buf ||= +"")`), owned
@@ -23843,7 +23843,7 @@ static int share_static_container(Compiler *c, int kind, const char *name) {
     /* a class variable is every class's of the name, as the facts key it;
        a top-level one (CRuby raises RuntimeError on its access) is left to
        the seal's refusal */
-    int any = 0, tl = comp_class_index(c, "Toplevel");
+    int any = 0, tl = c->toplevel_class;
     if (tl >= 0 && comp_cvar_index(&c->classes[tl], grn) >= 0) return 0;
     for (int k = 0; k < c->nclasses; k++) {
       ClassInfo *ci = &c->classes[k];
@@ -27333,7 +27333,7 @@ static int param_borrow_loud_ex(Compiler *c, int n, int *tg, int *ntg) {
   case NK_InstanceVariableAndWriteNode: case NK_InstanceVariableOperatorWriteNode: {
     const char *nm = nt_str(nt, n, "name");
     Scope *s = comp_scope_of(c, n);
-    int cid = s && s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int cid = s && s->class_id >= 0 ? s->class_id : c->toplevel_class;
     int iv = nm && cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
     return iv < 0 || !param_borrow_scalar_ty(c->classes[cid].ivar_types[iv]);
   }
@@ -27431,7 +27431,7 @@ static int param_borrow_handle_read(Compiler *c, int a) {
     Scope *s = comp_scope_of(c, a);
     /* a class method's @x is the class's own ivar, another slot */
     if (!nm || !s || s->is_cmethod) return 0;
-    int cid = s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int cid = s->class_id >= 0 ? s->class_id : c->toplevel_class;
     int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF && c->classes[cid].ivar_str_shared[iv];
   }
@@ -27938,7 +27938,7 @@ static int poly_store_place(Compiler *c, int id, NodeKind rk, const char *nm) {
   if (rk == NK_InstanceVariableReadNode || rk == NK_InstanceVariableWriteNode)
     return cid < 0 ? -1 : cid * 2 + (s->is_cmethod ? 1 : 0);
   if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
-  if (cid < 0) cid = comp_class_index(c, "Toplevel");
+  if (cid < 0) cid = c->toplevel_class;
   if (cid < 0 || cid >= c->nclasses) return -1;
   return comp_cvar_owner(c, cid, nm);
 }
@@ -34437,7 +34437,7 @@ int nullable_elem_ivar_in(Compiler *c, int cid, const char *nm, ClassInfo **out)
 static int nullable_elem_ivar(Compiler *c, int at, ClassInfo **out) {
   Scope *s = comp_scope_of(c, at);
   int cid = s ? s->class_id : -1;
-  if (cid < 0) cid = comp_class_index(c, "Toplevel");
+  if (cid < 0) cid = c->toplevel_class;
   return nullable_elem_ivar_in(c, cid, nt_str(c->nt, at, "name"), out);
 }
 
@@ -35691,7 +35691,7 @@ static int cvar_slot(Compiler *c, int id, ClassInfo **cio) {
   Scope *s = comp_scope_of(c, id);
   int cid = s ? s->class_id : -1;
   if (cid < 0 && c->node_cbody && id < c->node_cap) cid = c->node_cbody[id];
-  if (cid < 0) cid = comp_class_index(c, "Toplevel");
+  if (cid < 0) cid = c->toplevel_class;
   if (cid < 0 || cid >= c->nclasses || !nm) return -1;
   *cio = &c->classes[cid];
   return comp_cvar_index(*cio, nm);
@@ -37224,7 +37224,7 @@ int nullable_int_value(Compiler *c, int v) {
        a receiver of no class of the program's has none: nil */
     if (ie_nonobj_node(v)) return 1;
     if (ie_class_of(c, v) >= 0) cid = ie_class_of(c, v);
-    if (cid < 0) cid = comp_class_index(c, "Toplevel");
+    if (cid < 0) cid = c->toplevel_class;
     if (cid < 0 || cid >= c->nclasses) return 0;
     ClassInfo *ci = &c->classes[cid];
     int iv = comp_ivar_index(ci, nt_str(nt, v, "name"));
@@ -38630,7 +38630,7 @@ static int wnh_boxed_target(Compiler *c, int w) {
     return lv && lv->type == TY_POLY;
   }
   if (nt_kind(nt, w) == NK_InstanceVariableWriteNode) {
-    int cid = ws->class_id >= 0 ? ws->class_id : comp_class_index(c, "Toplevel");
+    int cid = ws->class_id >= 0 ? ws->class_id : c->toplevel_class;
     int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], wn) : -1;
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_POLY;
   }
@@ -39479,7 +39479,7 @@ static void mark_nullable_int_locals(Compiler *c) {
   /* A Float ivar initialize need not assign holds the constructor's nil seed
      (its nil byte, emit_ivar_nil_inits) until its first write, so a local
      copied from it can hold nil too. */
-  int toplevel_cid = comp_class_index(c, "Toplevel");
+  int toplevel_cid = c->toplevel_class;
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     if (ci->is_struct) continue;
@@ -39803,7 +39803,7 @@ static void mark_nullable_int_locals(Compiler *c) {
       int cid = s ? s->class_id : -1;
       /* inside `r.instance_eval { @x = nil }` the ivar is the receiver's */
       if (ie_class_of(c, id) >= 0) cid = ie_class_of(c, id);
-      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid < 0) cid = c->toplevel_class;
       if (cid < 0 || cid >= c->nclasses) continue;
       ClassInfo *ci = &c->classes[cid];
       int iv = comp_ivar_index(ci, nt_str(nt, id, "name"));
@@ -39852,7 +39852,7 @@ static void mark_nullable_int_locals(Compiler *c) {
             Scope *s = comp_scope_of(c, t);
             int cid = s ? s->class_id : -1;
             if (ie_class_of(c, t) >= 0) cid = ie_class_of(c, t);
-            if (cid < 0) cid = comp_class_index(c, "Toplevel");
+            if (cid < 0) cid = c->toplevel_class;
             if (cid >= 0 && cid < c->nclasses) { ci = &c->classes[cid]; iv = comp_ivar_index(ci, nt_str(nt, t, "name")); }
           }
           else {
@@ -43091,7 +43091,7 @@ static void rewrite_prepended_builtin_supers(Compiler *c) {
     Scope *s = &c->scopes[si];
     if (!s->is_prepend_copy || s->is_cmethod || !s->name || s->class_id < 0) continue;
     const char *cn = c->classes[s->class_id].name;
-    if (!cn || !is_builtin_reopen_name(cn) || sp_streq(cn, "Object") || sp_streq(cn, "Toplevel")) continue;
+    if (!cn || !is_builtin_reopen_name(cn) || sp_streq(cn, "Object") || s->class_id == c->toplevel_class) continue;
     if (super_reach(c, s) >= 0) continue;
     int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
     if (k == NK_ForwardingSuperNode) {
@@ -48995,7 +48995,7 @@ static void an_phase_post_fixpoint(Compiler *c) {
     if (en != 0) continue;
     Scope *s = comp_scope_of(c, id);
     int cls_id_bs = s->class_id;
-    if (cls_id_bs < 0) cls_id_bs = comp_class_index(c, "Toplevel");
+    if (cls_id_bs < 0) cls_id_bs = c->toplevel_class;
     if (cls_id_bs < 0) continue;
     ClassInfo *ci = &c->classes[cls_id_bs];
     int iv = comp_ivar_index(ci, nt_str(c->nt, id, "name"));
@@ -51503,7 +51503,7 @@ static int native_str_handle_read(Compiler *c, int a) {
     Scope *s = comp_scope_of(c, a);
     /* a class method's @x is the class's own ivar, another slot */
     if (!nm || !s || s->is_cmethod) return 0;
-    int cid = s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int cid = s->class_id >= 0 ? s->class_id : c->toplevel_class;
     int iv = cid >= 0 ? comp_ivar_index(&c->classes[cid], nm) : -1;
     return iv >= 0 && c->classes[cid].ivar_types[iv] == TY_STRBUF;
   }
@@ -51785,7 +51785,7 @@ static void an_phase_value_types(Compiler *c) {
     ClassInfo *ci = &c->classes[i];
     if (ci->is_struct || ci->cext_extension) continue;
     if (ci->def_node < 0) continue;                /* synthetic / Toplevel */
-    if (!ci->name || sp_streq(ci->name, "Toplevel")) continue;
+    if (!ci->name || i == c->toplevel_class) continue;
     if (ci->nivars < 1 || ci->nivars > 8) continue;
     if (ci->nwriters > 0) continue;
     if (ci->parent >= 0) continue;                 /* explicit user superclass */

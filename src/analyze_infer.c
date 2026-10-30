@@ -6733,7 +6733,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
         TyKind uni = TY_UNKNOWN;
         for (int ci = 0; ci < c->nclasses; ci++) {
           if (!c->classes[ci].instantiated && !class_value_escapes(c, ci) &&
-              ci != comp_class_index(c, "Toplevel")) continue;
+              ci != c->toplevel_class) continue;
           int iv = comp_ivar_index(&c->classes[ci], sym);
           if (iv < 0 || (c->classes[ci].is_struct && iv < c->classes[ci].nmembers)) continue;
           TyKind t = ivar_value_ty(&c->classes[ci], iv);
@@ -11067,7 +11067,7 @@ TyKind infer_uncached(Compiler *c, int id) {
         (nk == NK_InstanceVariableOrWriteNode || nk == NK_InstanceVariableAndWriteNode ||
          nk == NK_InstanceVariableOperatorWriteNode ||
          (nk == NK_InstanceVariableWriteNode && infer_type(c, nt_ref(nt, id, "value")) == TY_UNKNOWN))) {
-      int tl = comp_class_index(c, "Toplevel");
+      int tl = c->toplevel_class;
       int tiv = tl >= 0 && nm ? comp_ivar_index(&c->classes[tl], nm) : -1;
       TyKind tt = tiv >= 0 ? ivar_value_ty(&c->classes[tl], tiv) : TY_UNKNOWN;
       if (tt != TY_UNKNOWN) return tt;
@@ -11298,7 +11298,7 @@ TyKind infer_uncached(Compiler *c, int id) {
       }
       if (npk > 0) return pr;
     }
-    if (cls_id < 0) cls_id = comp_class_index(c, "Toplevel");
+    if (cls_id < 0) cls_id = c->toplevel_class;
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];
     int iv = nm ? comp_ivar_index(ci, nm) : -1;

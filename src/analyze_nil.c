@@ -938,7 +938,7 @@ static int nf_elem_slot_op(NF *f, int v, int bits) {
   case NK_InstanceVariableOrWriteNode: case NK_InstanceVariableAndWriteNode: {
     /* a class method's ivar is the class's own slot: no family's */
     Scope *s = comp_scope_of(c, v);
-    int cls = !s || s->is_cmethod ? -1 : s->class_id >= 0 ? s->class_id : comp_class_index(c, "Toplevel");
+    int cls = !s || s->is_cmethod ? -1 : s->class_id >= 0 ? s->class_id : c->toplevel_class;
     return nf_elem_ivar_op(f, cls, nm, bits);
   }
   case NK_ClassVariableReadNode: case NK_ClassVariableWriteNode: case NK_ClassVariableOrWriteNode:

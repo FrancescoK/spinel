@@ -39,7 +39,7 @@ int holder_scope_class(const Compiler *c, int node, int body) {
   Scope *s = comp_scope_of((Compiler *)c, node);
   if (!s) return -1;
   int k = s->class_id >= 0 ? s->class_id : body;
-  if (k < 0) k = comp_class_index((Compiler *)c, "Toplevel");
+  if (k < 0) k = c->toplevel_class;
   return k;
 }
 

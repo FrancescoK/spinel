@@ -11719,7 +11719,7 @@ static TyKind write_slot_ty_of(Compiler *c, int id, NodeKind kind) {
     Scope *ws = comp_scope_of(c, w);
     int cid = ws ? ws->class_id : -1;
     if (kind == NK_ClassVariableOrWriteNode) {
-      if (cid < 0) cid = comp_class_index(c, "Toplevel");
+      if (cid < 0) cid = c->toplevel_class;
       if (cid < 0) return TY_UNKNOWN;
       cid = comp_cvar_owner(c, cid, vn);
       int idx = comp_cvar_index(&c->classes[cid], vn);
@@ -28484,7 +28484,7 @@ int emit_reopen_own_call(Compiler *c, int id, int dispatch_cid, Buf *b) {
   const char *name = nt_str(nt, id, "name");
   if (!name || dispatch_cid < 0 || dispatch_cid >= c->nclasses) return 0;
   const char *cn = c->classes[dispatch_cid].name;
-  if (!cn || !is_builtin_reopen(cn) || sp_streq(cn, "Toplevel")) return 0;
+  if (!cn || !is_builtin_reopen(cn) || dispatch_cid == c->toplevel_class) return 0;
   if (nt_ref(nt, id, "block") >= 0) return 0;
   Scope *self = comp_scope_of(c, id);
   if (!self || self->is_cmethod) return 0;

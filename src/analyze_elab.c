@@ -4957,7 +4957,7 @@ static void lr_check_name(Compiler *c, ClassInfo *k, int cls, int sg, const char
 void elab_check_surface(Compiler *c) {
   LoadRecord *r = c->lrec;
   if (!r || !r->recorded) return;
-  int tl = comp_class_index(c, "Toplevel");
+  int tl = c->toplevel_class;
   for (int cls = LR_MAIN; cls < c->nclasses; cls++)
     for (int sg = 0; sg < 2 && lr_class(r, cls) && (cls >= 0 || tl >= 0); sg++) {
       ClassInfo *k = &c->classes[cls >= 0 ? cls : tl];
