@@ -16883,6 +16883,18 @@ static int emit_poly_index_call(Compiler *c, int id, Buf *b, const NodeTable *nt
     { *out = 1; return 1; }
   }
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "[]") && argc == 1) {
+    /* An argument a length dispatch's arm reads from a boxed splat operand
+       (splat_operand_read): the read is the Array the splat makes of the
+       value (sp_splat_to_array), never a user object, so a class's own []
+       is no candidate. Taking the per-class dispatch for it found no arm and
+       raised NoMethodError for an Array (`o.send(name, *args)` with a user
+       `def [](k)` anywhere in the program). */
+    if (nt_kind(nt, recv) == NK_LocalVariableReadNode && nt_int(nt, recv, "splat_view", 0) &&
+        repr_of(c, recv).kind == RK_BOXED && nt_kind(nt, argv[0]) == NK_IntegerNode) {
+      buf_puts(b, "sp_poly_arr_get_hash("); emit_expr(c, recv, b);
+      buf_puts(b, ", "); emit_int_expr(c, argv[0], b); buf_puts(b, ")");
+      { *out = 1; return 1; }
+    }
     /* `@table[i][j]` dispatch table narrowed to int (poly_double_index_int):
        call the entry (bound method / int array) for an unboxed int result. */
     if (repr_of(c, id).as_ty == TY_INT) {

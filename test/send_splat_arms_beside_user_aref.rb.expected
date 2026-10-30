@@ -1,0 +1,9 @@
+"box 1"
+"add \"milk\""
+"add 1"
+"delete milk force=false"
+"delete milk force=true"
+"put milk"
+"add \"eggs\""
+"add \"tea\""
+wrong number of arguments (given 0, expected 1)
