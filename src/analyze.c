@@ -1671,8 +1671,11 @@ void compute_instantiated(Compiler *c, int early) {
        scope), so it must not mark the class instantiated. */
     if (recv < 0 && sp_streq(name, "new")) {
       Scope *encl = comp_scope_of(c, id);
+      /* the singleton method is inherited: it builds the receiving class,
+         this one or a descendant (cmethod_super_receiving_class) */
       if (encl && encl->class_id >= 0 && encl->is_cmethod && encl->reachable)
-        c->classes[encl->class_id].instantiated = 1;
+        for (int k = 0; k < c->nclasses; k++)
+          if (k == encl->class_id || is_descendant(c, k, encl->class_id)) c->classes[k].instantiated = 1;
     }
     /* raise Cls / raise Cls, msg : constructs an instance of Cls */
     if (recv < 0 && sp_streq(name, "raise")) {
