@@ -1272,10 +1272,10 @@ PKG_TESTS := $(filter-out packages/ffi/test/%.rb packages/fiddle/test/%.rb,$(PKG
 endif
 ifeq ($(SPINEL_INT_BITS),32)   # the same first-line marker as test/*.rb
 PKG_TESTS := $(filter-out $(shell grep -l '^\# spinel: int64' packages/*/test/*.rb),$(PKG_TESTS))
+endif
 # sqlite3's tests need its extension, built only where libsqlite3 is
 ifneq ($(SQLITE3_AVAILABLE),yes)
 PKG_TESTS := $(filter-out packages/sqlite3/test/%.rb,$(PKG_TESTS))
-endif
 endif
 ifneq ($(TEST_SKIP),)
 PKG_TESTS := $(filter-out $(TEST_SKIP),$(PKG_TESTS))
