@@ -3368,8 +3368,23 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
   return 0;
 }
 
-/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
-static int emit_constant_value(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+/* The NameError raise of a constant defined nowhere, valued as a Class
+   placeholder. `checks` is the text of the parents' presence checks (it opens
+   a comma expression and ends with ", "), or empty: they go into the message
+   operand, which C evaluates before the raise, so an unset parent's NameError
+   still comes first and the raise stays at the head of the text. */
+static void emit_const_undefined_raise(Buf *b, const char *checks, const char *name) {
+  buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+  if (checks && checks[0]) buf_printf(b, "%s\"uninitialized constant %s\")", checks, name);
+  else buf_printf(b, "\"uninitialized constant %s\"", name);
+  buf_puts(b, "), ((sp_Class){-1}))");
+}
+
+/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order).
+   `checks` holds the parents' presence checks of a path: the raise of an
+   undefined path takes them and empties the buffer, any other form leaves
+   them to the caller. */
+static int emit_constant_value(Compiler *c, int id, Buf *b, Buf *checks, const NodeTable *nt, const char *ty, int slot) {
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
@@ -3457,7 +3472,7 @@ static int emit_constant_value(Compiler *c, int id, Buf *b, const NodeTable *nt,
              NameError is legal Ruby, and ruby/spec does exactly that. */
           if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
             warn_undefined_constant(c, id, nm);
-          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
+          emit_const_undefined_raise(b, NULL, nm);
         }
       }
     }
@@ -3782,7 +3797,8 @@ static int emit_constant_value(Compiler *c, int id, Buf *b, const NodeTable *nt,
             if (miss[0]) snprintf(fullname, sizeof fullname, "%s", miss);
             break;
           } }
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
+      emit_const_undefined_raise(b, checks->p, fullname);
+      checks->len = 0;
     }
     return 1;
   }
@@ -3812,9 +3828,15 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   if (!nt_kind_is_constant(nt_kind(nt, id))) return 0;
   int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
   int dynamic = nt_kind(nt, par) == NK_ConstantReadNode && an_const_read_is_value(c, par);
-  int effect = !dynamic && !view_const_read_done(c, id) ? emit_const_read_prefix(c, par, b) : 0;
-  int result = emit_constant_value(c, id, b, nt, ty, slot);
-  if (effect) buf_puts(b, ")");
+  Buf pre = {0};
+  int effect = !dynamic && !view_const_read_done(c, id) ? emit_const_read_prefix(c, par, &pre) : 0;
+  if (!effect) return emit_constant_value(c, id, b, &pre, nt, ty, slot);
+  Buf v = {0};
+  int result = emit_constant_value(c, id, &v, &pre, nt, ty, slot);
+  /* checks no raise took lead the value; a raise that took them is the value */
+  if (pre.len) buf_printf(b, "%s%s)", pre.p, v.p ? v.p : "");
+  else buf_puts(b, v.p ? v.p : "");
+  free(pre.p); free(v.p);
   return result;
 }
 
