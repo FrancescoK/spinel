@@ -944,6 +944,7 @@ int desugar_interp_elided_to_s(Compiler *c);
 int desugar_array_first_last(Compiler *c);
 int desugar_enum_iter_splat_args(Compiler *c);
 int desugar_index_value_block_pass(Compiler *c);
+int desugar_value_form_drop_block(Compiler *c);
 int desugar_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_enum_pair_lone_param(Compiler *c);

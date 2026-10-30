@@ -14109,7 +14109,8 @@ int desugar_builtin_splat_forward(Compiler *c) {
   return changed;
 }
 
-/* `recv.index(v, &expr)` (rindex, find_index): with a value the block is
+/* `recv.index(v, &expr)` (rindex, find_index, and count, any?, all?, none?,
+   one?): with a value the block is
    not used, so the emitters of the value form left `expr` out, and a
    `def mk = (puts "made"; proc { })` in `a.index(2, &mk)` never ran. CRuby
    evaluates it once, after the receiver and the value. It is bound to a
@@ -14130,7 +14131,7 @@ static int value_arg_pure(const NodeTable *nt, int n) {
          k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode;
 }
 int desugar_index_value_block_pass(Compiler *c) {
-  static const char *const names[] = { "index", "rindex", "find_index", NULL };
+  static const char *const names[] = { "index", "rindex", "find_index", "count", "any?", "all?", "none?", "one?", NULL };
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
   int *calls, ncalls = an_calls_named_any(c, names, n0, &calls);
@@ -14197,6 +14198,84 @@ int desugar_index_value_block_pass(Compiler *c) {
       nt_node_set_int(nt, j, "node_line", line);
       nt_node_set_int(nt, j, "node_file", file);
     }
+    changed = 1;
+  }
+  free(calls);
+  return changed;
+}
+
+/* `recv.count(v) { }` (any?, all?, none?, one?): with a value CRuby does
+   not call the block (it warns), and counts or tests by the value. The
+   value form's emitters take no block, so `[3, 2].count(2) { }` raised
+   NoMethodError and `[3, 2].any?(2) { false }` used the block. The block is
+   dropped when no method of the program can take the call: no def of the
+   name or of method_missing, and no alias, alias_method, define_method,
+   attr_* or Struct / Data member that names it (or names a method only the
+   run time knows). A `&expr` that is not a
+   plain read was bound to a local by desugar_index_value_block_pass, so
+   what is dropped is a literal block or a read. */
+static int value_block_lit_is(const NodeTable *nt, int n, const char *name) {
+  NodeKind k = nt_kind(nt, n);
+  const char *v = k == NK_SymbolNode ? nt_str(nt, n, "value") : k == NK_StringNode ? nt_str(nt, n, "content") : NULL;
+  return v ? sp_streq(v, name) : 1;  /* a name only the run time knows may be it */
+}
+static int value_block_name_free(Compiler *c, const char *name) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  static const char *const binders[] = { "define_method", "define_singleton_method", "alias_method", "attr",
+                                         "attr_reader", "attr_accessor", "attr_writer", "new", "define", NULL };
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    const char *dn = nt_str(nt, d, "name");
+    if (dn && !nt_int(nt, d, "node_bi", 0) && (sp_streq(dn, name) || sp_streq(dn, "method_missing"))) return 0;
+  }
+  NT_FOREACH_KIND(nt, NK_AliasMethodNode, a)
+    if (!nt_int(nt, a, "node_bi", 0) && value_block_lit_is(nt, nt_ref(nt, a, "new_name"), name)) return 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, k) {
+    const char *cn = nt_str(nt, k, "name");
+    if (!cn || nt_int(nt, k, "node_bi", 0)) continue;
+    int w = 0;
+    while (binders[w] && !sp_streq(binders[w], cn)) w++;
+    if (!binders[w]) continue;
+    int an = 0; const int *av = call_args(nt, k, &an);
+    /* Struct.new / Data.define name members; another `new` takes values */
+    if (w >= 7) {
+      int rc = nt_ref(nt, k, "receiver");
+      const char *rn = rc >= 0 && nt_kind(nt, rc) == NK_ConstantReadNode ? nt_str(nt, rc, "name") : NULL;
+      if (!rn || !sp_streq(rn, w == 7 ? "Struct" : "Data")) continue;
+    }
+    /* define_method and alias_method name the method first; the others name one in each argument */
+    int last = w <= 2 ? (an > 0 ? 1 : 0) : an;
+    for (int i = 0; i < last; i++) {
+      NodeKind ak = nt_kind(nt, av[i]);
+      if (ak == NK_KeywordHashNode || ak == NK_BlockArgumentNode) continue;
+      if (value_block_lit_is(nt, av[i], name)) return 0;
+    }
+  }
+  return !comp_name_reader_any(c, name);
+}
+int desugar_value_form_drop_block(Compiler *c) {
+  static const char *const names[] = { "count", "any?", "all?", "none?", "one?", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int changed = 0, nok[5] = { -1, -1, -1, -1, -1 };
+  int *calls, ncalls = an_calls_named_any(c, names, nt->count, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
+    if (nt_kind(nt, id) != NK_CallNode || nt_int(nt, id, "node_bi", 0)) continue;
+    int blk = nt_ref(nt, id, "block");
+    if (blk < 0 || nt_ref(nt, id, "receiver") < 0) continue;
+    if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
+      int ex = nt_ref(nt, blk, "expression");
+      if (ex < 0 || !value_block_pass_pure(nt, ex)) continue;
+    } else if (nt_kind(nt, blk) != NK_BlockNode) continue;
+    int argc = 0; const int *av = call_args(nt, id, &argc);
+    if (argc != 1 || nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode ||
+        nt_kind(nt, av[0]) == NK_BlockArgumentNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    int w = 0;
+    while (names[w] && !sp_streq(names[w], nm)) w++;
+    if (!names[w]) continue;
+    if (nok[w] < 0) nok[w] = value_block_name_free(c, nm);
+    if (!nok[w]) continue;
+    nt_node_set_ref(nt, id, "block", -1);
     changed = 1;
   }
   free(calls);
