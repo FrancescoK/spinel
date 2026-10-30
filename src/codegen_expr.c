@@ -522,6 +522,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else buf_printf(&conv, "sp_%sArray_inspect(_t%d)", array_kind(t), ntv);
         buf_puts(&conv, " : sp_str_empty; })");
       }
+      else if (ty_is_object(t) && comp_ary_is_str(c, ty_object_class(t))) {
+        /* a String subclass instance is a String: its bytes, with no #to_s
+           call -- CRuby's rb_obj_as_string takes any T_STRING as it is, so
+           a `def to_s` of the subclass does not run here (`"#{sb}"`), while
+           its answer, the instance again for a SafeBuffer's `self`, reads
+           the same way (`"#{sb.to_s}"`); called through the struct's own
+           #to_s, the instance's pointer landed in the const char * and the
+           C did not build. A part that may be nil is nil's to_s, the empty
+           String. */
+        int to = ++g_tmp;
+        buf_printf(&conv, "({ sp_String *_t%d = (sp_String *)(", to);
+        EMIT_IV();
+        buf_printf(&conv, "); _t%d ? sp_strbuf_read(_t%d) : sp_str_empty; })", to, to);
+      }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
         /* a poly-returning to_s (String unioned with e.g. nil) yields a boxed
