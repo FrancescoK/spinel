@@ -282,6 +282,21 @@ static int plan_slot_oint(Compiler *c, int id, TyKind ret) { return is_scalar_re
 static void plan_put_plain(int so, TyKind ret, const char *text, Buf *b) { if (so) buf_printf(b, "%s(%s)", oint_of(ret), text); else buf_puts(b, text); }
 static void plan_put_boxed(Compiler *c, int so, TyKind slotty, const char *text, Buf *b) { if (so) buf_printf(b, "%s(%s)", oint_unbox(slotty), text); else emit_unbox_text(c, slotty, text, b); }
 
+/* An arm whose method answers an instance of a String subclass (a
+   SafeBuffer's `def to_s; self; end`) into a String slot: the slot takes the
+   instance's bytes, as a String slot reads such an instance anywhere else
+   (emit_obj_conv), or the instance itself as the handle, since its struct
+   begins with its String. The call's type is the String the other arms
+   answer, and the raw struct pointer did not build. 0 when the pair is not
+   that one. */
+static int plan_put_strsub(Compiler *c, TyKind ret, TyKind mret, const char *call, Buf *b) {
+  if (!ty_is_object(mret) || !comp_ary_is_str(c, ty_object_class(mret))) return 0;
+  if (ret == TY_STRING) buf_printf(b, "sp_strbuf_read((sp_String *)(%s))", call);
+  else if (ret == TY_STRBUF) buf_printf(b, "(sp_String *)(%s)", call);
+  else return 0;
+  return 1;
+}
+
 /* so: the call's result slot is an oint (plan_slot_oint), one slot for
    every arm */
 /* Class k's struct text after its name, through the line of field
@@ -633,6 +648,9 @@ static void emit_poly_user_arm0(Compiler *c, int id, const char *name, TyKind re
       else if (so && method_ret_is_oint(&c->scopes[pf9 ? pfi9 : mi])) buf_puts(b, call);
       /* an oint answer into a plain slot: unwrapped */
       else if (method_ret_is_oint(&c->scopes[pf9 ? pfi9 : mi])) buf_printf(b, "%s(%s)", oint_arg(cret9), call);
+      /* a String subclass instance into the String slot: its bytes (the
+         plan records this pair as the plain store it was) */
+      else if (plan_put_strsub(c, ret, cret9, call, b)) {}
       else plan_put_plain(so, ret, call, b);
     }
     buf_puts(b, pdpre.p ? "; } break;" : "; break;");
@@ -1543,6 +1561,9 @@ int emit_poly_user_arm_n(Compiler *c, int id, int k, const char *call, TyKind mr
     else if (ms && ms->ret == mret && method_ret_is_oint(ms)) {
       if (so) buf_puts(b, call); else buf_printf(b, "%s(%s)", oint_arg(mret), call);
     }
+    /* a String subclass instance into the String slot: its bytes (as the
+       zero-argument arm) */
+    else if (plan_put_strsub(c, ret, mret, call, b)) {}
     else plan_put_plain(so, ret, call, b);
   }
   buf_puts(b, "; break;");
