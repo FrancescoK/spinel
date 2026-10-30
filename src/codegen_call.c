@@ -9966,6 +9966,12 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
     int is_stat_reader = boxed_stat_reader(name);
     if (ncand > 0 || name_taken || is_lengthlike || is_pred || is_class_named || is_class_reflect || is_ostruct || is_io_rewind || is_poly_to_a || is_poly_to_h || is_stat_reader) {
       TyKind ret = repr_of(c, id).as_ty;
+      /* A call typed as no value (unknown, void, nil) answers boxed: every
+         other emitter renders such a value as an sp_RbVal (an untyped
+         left of `||`, an interpolation part), and its consumers evaluate
+         it for its effect. The slot was an sp_int dummy the arms assigned
+         their Strings and pointers into. */
+      if (!is_scalar_ret(ret)) ret = TY_POLY;
       /* (one representation: a String answer of either face is collected in
          a bytes slot, the arms answering bytes (a user arm's published
          handle as its view, emit_strbuf_pickup), and taken as the handle
@@ -10117,6 +10123,8 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       is_cover = ps.cover; is_gcdlcm = ps.gcdlcm; is_pfirstn = ps.pfirstn;
       Repr rr = repr_of(c, id);
       TyKind ret = rr.as_ty;
+      /* a call typed as no value answers boxed (as the zero-argument dispatch) */
+      if (!is_scalar_ret(ret)) ret = TY_POLY;
       /* (one representation: a String answer of either face is collected in
          a bytes slot, the arms answering bytes (a user arm's published
          handle as its view, emit_strbuf_pickup), and taken as the handle

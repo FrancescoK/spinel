@@ -1,0 +1,4 @@
+digest: NoMethodError cookies_digest
+digest_if: NoMethodError cookies_digest
+rotations: NoMethodError cookies_digest
+raw: NoMethodError cookies_digest

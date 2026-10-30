@@ -4760,6 +4760,17 @@ int logic_value_handle(Compiler *c, int v) {
          repr_of(c, u).as_ty == TY_STRING;
 }
 
+/* Is `node` a call over a boxed receiver that the inference left untyped?
+   Its emission is the poly dispatch, which holds the answer of a call typed
+   as no value boxed (emit_poly_method_dispatch), or the boxed unresolved
+   token: an sp_RbVal either way. */
+static int untyped_boxed_call(Compiler *c, int node) {
+  node = nt_paren_single(c->nt, node);
+  if (node < 0 || nt_kind(c->nt, node) != NK_CallNode || comp_ntype(c, node) != TY_UNKNOWN) return 0;
+  int recv = nt_ref(c->nt, node, "receiver");
+  return recv >= 0 && repr_of(c, recv).kind == RK_BOXED;
+}
+
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
 static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {
@@ -4882,6 +4893,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        around the chain type-checks, and a chain nested in another reads as
        diverging too (#7164). */
     Buf lunk; memset(&lunk, 0, sizeof lunk);
+    /* the untyped left is a call over a boxed receiver: its text is boxed */
+    int lboxed = 0;
     if (lt == TY_UNKNOWN) {
       emit_expr(c, left, &lunk);
       if (text_diverges(lunk.p ? lunk.p : "")) {
@@ -4890,6 +4903,14 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
         free(lunk.p);
         return 1;
       }
+      /* A call over a boxed receiver the inference left untyped is the poly
+         dispatch, whose answer is boxed when its type is no value (every
+         candidate for the name unsettled: a method in a module nothing
+         includes, whose body is a deferred refusal), as the unresolved
+         token is: hold the left boxed and test its truth. Declared at the
+         result's type, `request.cookies_digest || "SHA1"` put the sp_RbVal
+         in a `const char *` and read it as always truthy. */
+      if (untyped_boxed_call(c, left)) { lt = TY_POLY; lboxed = 1; }
     }
     const char *ltxt = lunk.p ? lunk.p : "";
     /* an Integer or Float left that can be nil is held as its oint (lo);
@@ -4920,6 +4941,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        when the left itself is unknown) rather than assigning the raw token. A
        normal left emits unchanged. */
     else if (lt == TY_UNKNOWN) emit_unresolved_coerced_text(c, left, res, ltxt, b);
+    else if (lboxed) buf_puts(b, ltxt);   /* the boxed dispatch, emitted above */
     else if (lo) emit_oint_expr(c, left, lt, b);
     else if (lt_hbox) emit_boxed(c, left, b);
     else if (lhandle) emit_strbuf_handle_of(c, left, b);
@@ -4999,7 +5021,13 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                 plain type: wrapped where the result is an oint */ \
              else if (lt_falsy_const && oint_kind(res) && ro) buf_puts((TB), oint_nil(res)); /* a nil left's value is nil */ \
              else if (lt == TY_UNKNOWN && oint_kind(res) && ro) buf_printf((TB), "%s(_t%d)", oint_of(res), t); \
-             else if (lt == TY_POLY && ty_is_hash(res)) { \
+             /* a boxed left kept in a typed result (a Hash's; the boxed
+                dispatch of an untyped left beside a String right) is
+                unboxed to it, as its oint where the result is one */ \
+             else if (lt == TY_POLY && res != TY_POLY && ro && oint_kind(res)) { \
+               char kept[32]; snprintf(kept, sizeof kept, "_t%d", t); \
+               emit_unbox_nilable_text(c, res, kept, (TB)); } \
+             else if (lt == TY_POLY && res != TY_POLY) { \
                char kept[32]; snprintf(kept, sizeof kept, "_t%d", t); \
                emit_unbox_text(c, res, kept, (TB)); } \
              else buf_printf((TB), "_t%d", t); } \
