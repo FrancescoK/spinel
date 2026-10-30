@@ -1010,10 +1010,22 @@ void ren_copy_free(RenCopy *k) {
 }
 
 RenPark ren_park(int from) {
-  RenPark p = { g_nren, from, { NULL, NULL, 0 }, -1 };
+  RenPark p = { g_nren, from, { NULL, NULL, 0 }, -1, -1 };
   /* from 0: a C function body of its own, which cannot name the open
-     splices' slots either (view_splice_next) */
-  if (from == 0) p.fence = view_push_fn();
+     splices' slots either (view_splice_next). Nor is it inside the poly
+     dispatch arm its call site may sit in: the arm context (g_arm) is the
+     call's, under which no user class owns a name, and a proc body
+     emitted there -- the `&block` a dispatch's default arm hands on to a
+     Class value's method -- took every builtin shortcut for its own calls
+     while the inference had typed them by the program's classes
+     (`h.keys` on a boxed receiver came out as a raw sp_PolyArray * into
+     an sp_RbVal slot, and the C did not compile). The body starts from
+     the plain context, as a function of its own does. */
+  if (from == 0) {
+    p.arm = view_push_arm(-1, -1, 0);
+    g_arm.send_split = -1;
+    p.fence = view_push_fn();
+  }
   ren_copy_out(&p.k, from, g_nren - from);
   g_nren = from;
   return p;
@@ -1021,6 +1033,7 @@ RenPark ren_park(int from) {
 
 void ren_unpark(RenPark *p) {
   if (p->fence >= 0) view_pop(NULL, p->fence);
+  if (p->arm >= 0) view_pop(NULL, p->arm);
   g_nren = p->sv;
   ren_copy_in(&p->k, p->from);
   ren_copy_free(&p->k);
