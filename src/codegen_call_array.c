@@ -1828,6 +1828,29 @@ static int prepare_concat_operands(Compiler *c, const int *argv, int argc, Conca
   return 1;
 }
 
+/* A literal or a nested call may put construction in g_pre. Keep that
+   prelude beside this input's value, ahead of the next input, rather
+   than hoisting all argument construction ahead of the receiver hold. */
+static void emit_concat_hold(Compiler *c, int node, TyKind type, int boxed, int fresh, int t, Buf *b) {
+  Buf pre = {0}, value = {0};
+  Buf *saved_pre = g_pre;
+  int saved_indent = g_indent;
+  g_pre = &pre;
+  g_indent = 0;
+  if (fresh) emit_fresh_lift_recv(c, node, &value);
+  else if (boxed) emit_boxed(c, node, &value);
+  else emit_expr(c, node, &value);
+  g_pre = saved_pre;
+  g_indent = saved_indent;
+  if (pre.p) buf_puts(b, pre.p);
+  if (boxed) buf_puts(b, " sp_RbVal");
+  else emit_ctype(c, type, b);
+  buf_printf(b, " _t%d = %s; SP_GC_ROOT%s(_t%d);", t,
+             value.p ? value.p : boxed ? "sp_box_nil()" : "NULL", boxed ? "_RBVAL" : "", t);
+  free(pre.p);
+  free(value.p);
+}
+
 /* The caller has admitted builtin Array#concat, through its typed route
    or a guarded builtin arm. Hold arguments, then guard before the boxed
    conversions performed here; already-desugared direct conversions are
@@ -1846,21 +1869,10 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   int tr = ++g_tmp, base = g_tmp + 1;
   g_tmp += argc;
   int lengths = g_tmp + 1; g_tmp += argc;
-  buf_printf(b, "({ sp_%sArray *_t%d = ", k, tr);
-  if (fresh) emit_fresh_lift_recv(c, recv, b);
-  else emit_expr(c, recv, b);
-  buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
-  for (int i = 0; i < argc; i++) {
-    if (op[i].boxed) {
-      buf_printf(b, " sp_RbVal _t%d = ", base + i); emit_boxed(c, argv[i], b);
-      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", base + i);
-    }
-    else {
-      emit_ctype(c, op[i].repr.as_ty, b);
-      buf_printf(b, " _t%d = ", base + i); emit_expr(c, argv[i], b);
-      buf_printf(b, "; SP_GC_ROOT(_t%d);", base + i);
-    }
-  }
+  buf_puts(b, "({ ");
+  emit_concat_hold(c, recv, rt, 0, fresh, tr, b);
+  for (int i = 0; i < argc; i++)
+    emit_concat_hold(c, argv[i], op[i].repr.as_ty, op[i].boxed, 0, base + i, b);
   /* Argument expressions have run. This guard precedes the boxed
      conversions below, even for an empty concat. Nonempty appends test
      frozen again if a callback has frozen the receiver. */
