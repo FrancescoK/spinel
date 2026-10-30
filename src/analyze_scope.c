@@ -7117,11 +7117,24 @@ void register_includes(Compiler *c) {
 }
 
 int cmethod_needs_specialization(Compiler *c, int mi, int ci, int def_cls, int *has_new);
-static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, const char *guard);
+/* The table answers the general entry. Copies keep their own super
+   chain under a shadow name; argument-specific entries stay hidden. */
+static void prepend_copy_name(Compiler *c, int mi) {
+  Scope *m = &c->scopes[mi];
+  ClassInfo *cl = &c->classes[m->class_id];
+  char shadow[320], key[340], renamed[340];
+  comp_prep_shadow_name(cl, m->name, shadow, sizeof shadow);
+  snprintf(key, sizeof key, "%s%s", m->is_cmethod ? "self." : "", m->name);
+  snprintf(renamed, sizeof renamed, "%s%s", m->is_cmethod ? "self." : "", shadow);
+  for (int k = 0; k < cl->nprep_chain; k++)
+    if (sp_streq(cl->prep_from[k], key)) { free(cl->prep_from[k]); cl->prep_from[k] = strdup(renamed); break; }
+  free(m->name);
+  m->name = strdup(shadow);
+}
+static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int cell, int behind);
 static int prepend_late_stmt(Compiler *c, int ci, int body);
-static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line);
-static const char *mixin_flag_name(Compiler *c, char flag[64]);
-static void mixin_guard_flag_write(Compiler *c, int list, int after, const char *flag);
+static int prepend_cell(Compiler *c, int *cell);
+static void prepend_cell_write(Compiler *c, int late, int list, int after, int cell);
 
 /* attr_reader/attr_accessor/attr_writer and alias_method in a MODULE body
    belong to every class that includes it, just like a plain def. The transplant
@@ -7403,10 +7416,11 @@ static void extend_alias_refuse_own(Compiler *c, int mod_id, int ci, const char 
 /* `prepend`: the module goes in front of the class's own class methods
    (`singleton_class.prepend M`), as a later extend goes in front of an
    earlier one's copy.
-   `flag`: the flag buffer of a prepend that a later top-level reopening
-   makes (prepend_late_stmt), NULL otherwise; the copies hand the call to the
-   class's own method until that statement has run, as a prepend's do. */
-static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int prepend, char flag[64]) {
+   `cell`: the run-time cell of a prepend that a later top-level reopening
+   makes (prepend_late_stmt), NULL otherwise; a call reaches the copies once
+   that statement has run and the method behind them until then, as a
+   prepend's do (Scope.mixin_guarded). */
+static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int prepend, int *cell) {
   int did_clone = 0;
   int snap = c->nscopes;
   for (int ms = 0; ms < snap; ms++) {
@@ -7426,7 +7440,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
        copied in under a shadow name, in front of any module extended
        earlier. With no super there, nothing can reach the copy. */
     char *own_name = NULL;
-    const char *guard = NULL;
+    int guard = 0, behind_mi = -1;
     char behind[256] = "";
     if (own >= 0 && !c->scopes[own].is_extend_copy && !prepend) {
       extend_alias_refuse_own(c, mod_id, ci, src->name);
@@ -7434,7 +7448,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       ClassInfo *cif = &c->classes[ci];
       char key[320];
       snprintf(behind, sizeof behind, "__inc %d %s", cif->prep_shadow_count++, src->name);
-      snprintf(key, sizeof key, "self.%s", src->name);
+      snprintf(key, sizeof key, "self.%s", c->scopes[own].name);
       for (int kk = 0; kk < cif->nprep_chain; kk++)
         if (sp_streq(cif->prep_from[kk], key)) {
           free(cif->prep_from[kk]);
@@ -7456,7 +7470,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       ClassInfo *cif = &c->classes[ci];
       char shadow[256], key[320];
       snprintf(shadow, sizeof shadow, "__inc %d %s", cif->prep_shadow_count++, src->name);
-      snprintf(key, sizeof key, "self.%s", src->name);
+      snprintf(key, sizeof key, "self.%s", c->scopes[own].name);
       for (int kk = 0; kk < cif->nprep_chain; kk++)
         if (sp_streq(cif->prep_from[kk], key)) {
           free(cif->prep_from[kk]);
@@ -7467,9 +7481,11 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(shadow);
       int reached = scope_body_has_super(c, ms);
-      if (prepend && flag) {
-        /* the copy's own super reaches the method it stands in front of */
-        guard = mixin_flag_name(c, flag);
+      if (prepend && cell) {
+        /* the copy's own super reaches the method it stands in front of,
+           and so does a call until the prepend has run */
+        guard = prepend_cell(c, cell);
+        behind_mi = own;
         reached = 1;
       }
       if (reached) comp_cprep_chain_add(cif, src->name, shadow);
@@ -7488,12 +7504,12 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
       if (!reached) { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       src = &c->scopes[ms];
     }
-    else if (prepend && flag && c->classes[ci].parent >= 0 &&
-             comp_cmethod_in_chain(c, c->classes[ci].parent, src->name, NULL) >= 0)
+    else if (prepend && cell && c->classes[ci].parent >= 0 &&
+             (behind_mi = comp_cmethod_in_chain(c, c->classes[ci].parent, src->name, NULL)) >= 0)
       /* no class method of the class's own, but one it inherits: until the
          reopening's statement has run, a call reaches that one, which the
          copy's super reaches */
-      guard = mixin_flag_name(c, flag);
+      guard = prepend_cell(c, cell);
     /* Always a clone re-walked against `ci`, as include does: a shared
        body kept the module's attribution, so `self`, the block and the
        parameter types resolved against the module, not the class.
@@ -7516,7 +7532,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         NT_FOREACH_KIND(nt2, ow[k], ivid)
           if (c->nscope[ivid] == ms && nt_str(nt2, ivid, "name"))
             comp_ivar_intern(&c->classes[ci], nt_str(nt2, ivid, "name")); }
-    specialize_cmethod_for(c, ms, mod_id, ci, guard);
+    specialize_cmethod_for(c, ms, mod_id, ci, guard, behind_mi);
     src = &c->scopes[ms];  /* realloc-safe */
     { int cp = comp_cmethod_in_class(c, ci, src->name);
       if (cp >= 0) c->scopes[cp].is_extend_copy = 1;
@@ -7530,6 +7546,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         free(c->scopes[own].name);
         c->scopes[own].name = own_name;
       } }
+    if (guard) prepend_copy_name(c, comp_cmethod_in_class(c, ci, src->name));
     did_clone = 1;
     /* a module_function stays callable on the module itself
        (`Coordinates.countdown(1)`), so its source is not dead */
@@ -7701,9 +7718,9 @@ void register_extends(Compiler *c) {
     BodyMix *mx = body_mixins(c, ci, body, 1u << LR_EXTEND | 1u << LR_SG_PREPEND, &n);
     /* a singleton prepend in a reopening (prepend_late_stmt, asked once, at
        the first): its copies answer as the class's own until the prepend
-       has run, each prepend's by a flag of its own */
+       has run, each prepend's by a cell of its own */
     int late = -2;
-    char flag[64] = "";
+    int cell = 0;
     for (int j = 0; j < n; j++) {
       int s = mx[j].stmt, mod_id = mx[j].mod;
       /* extending a module the class already extends is a no-op: it stays
@@ -7729,13 +7746,13 @@ void register_extends(Compiler *c) {
           inherited = class_extends_module(c, p, mod_id);
         int sprep = mx[j].kind == LR_SG_PREPEND;
         if (sprep && late == -2) late = prepend_late_stmt(c, ci, body);
-        did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? flag : NULL);
+        did_clone |= extend_class_with(c, ci, mod_id, inherited, sprep, sprep && late >= 0 ? &cell : NULL);
       }
-      /* after the call's last module, the write that sets the flag its
+      /* after the call's last module, the write that sets the cell its
          copies read */
-      if (flag[0] && (j + 1 == n || mx[j + 1].stmt != s)) {
-        mixin_guard_flag_write(c, body, s, flag);
-        flag[0] = 0;
+      if (cell && (j + 1 == n || mx[j + 1].stmt != s)) {
+        prepend_cell_write(c, late, body, s, cell);
+        cell = 0;
       }
     }
     free(mx);
@@ -7991,8 +8008,8 @@ static int body_tail_is_bare_new(const NodeTable *nt, int body) {
   int r = nt_ref(nt, tail, "receiver");
   return nm && sp_streq(nm, "new") && (r < 0 || nt_kind(nt, r) == NK_SelfNode);
 }
-static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, const char *guard) {
-  if (comp_cmethod_in_class(c, ci, c->scopes[mi].name) >= 0) return;
+static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int cell, int behind) {
+  if (!cell && comp_cmethod_in_class(c, ci, c->scopes[mi].name) >= 0) return;
   NodeTable *nt = (NodeTable *)c->nt;
   int has_new = 0;
   (void)cmethod_needs_specialization(c, mi, ci, def_cls, &has_new);
@@ -8000,12 +8017,6 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, con
   int new_body = src_body >= 0 ? nt_clone_subtree(nt, src_body) : -1;
   if (src_body >= 0 && new_body < 0) return;  /* clone failed: skip */
   comp_grow_node_arrays(c);
-  /* a copy a later top-level reopening makes hands the call to the class's
-     own method until that statement has run (mixin_guard_body) */
-  if (guard) {   /* an empty method's copy too, whose body is the guard */
-    new_body = mixin_guard_body(nt, new_body, guard, (int)nt_int(nt, c->scopes[mi].def_node, "node_line", 0));
-    comp_grow_node_arrays(c);
-  }
   Scope *src = &c->scopes[mi];
   Scope *dst = comp_scope_new(c, src->name, src->def_node);
   src = &c->scopes[mi];  /* realloc-safe */
@@ -8014,6 +8025,10 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, con
   if (new_body >= 0) walk_scope(c, new_body, dst_idx, ci);
   { dst->class_id = ci; comp_touch_scope(dst->idx); }
   { dst->is_cmethod = 1; comp_touch_scope(dst->idx); }
+  /* a copy a later top-level reopening makes: a call reaches the method
+     behind it until that statement has run (Scope.mixin_guarded) */
+  dst->mixin_guarded = cell;
+  dst->guard_behind = behind;
   dst->yields = src->yields;
   dst->nrequired = src->nrequired;
   dst->rest_idx = src->rest_idx;
@@ -8054,7 +8069,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, con
     if (sub_def == ci) continue;
     int sub_new = 0;
     if (cmethod_needs_specialization(c, sub_mi, ci, sub_def, &sub_new))
-      specialize_cmethod_for(c, sub_mi, sub_def, ci, NULL);
+      specialize_cmethod_for(c, sub_mi, sub_def, ci, 0, -1);
   }
 }
 
@@ -8191,7 +8206,7 @@ static void specialize_super_cmethod(Compiler *c, int own, int snap) {
     if (pm < 0 || pdef < 0 || !cmethod_reaches_class_ivar(c, pm, pdef, 0)) break;
     char behind[256];
     snprintf(behind, sizeof behind, "__inc %d %s", c->classes[ci].prep_shadow_count++, own_name);
-    specialize_cmethod_for(c, pm, pdef, ci, NULL);
+    specialize_cmethod_for(c, pm, pdef, ci, 0, -1);
     int cp = comp_cmethod_in_class(c, ci, own_name);
     if (cp < 0 || cp == own || cp == cur) break;
     free(c->scopes[cp].name);
@@ -8273,7 +8288,7 @@ void specialize_inherited_cls_new(Compiler *c) {
           }
           int has_new = 0;
           if (cmethod_needs_specialization(c, mi, k, def_cls, &has_new))
-            specialize_cmethod_for(c, mi, def_cls, k, NULL);
+            specialize_cmethod_for(c, mi, def_cls, k, 0, -1);
         }
       }
       continue;
@@ -8319,7 +8334,7 @@ void specialize_inherited_cls_new(Compiler *c) {
     if (!cmethod_needs_specialization(c, mi, ci, def_cls, &has_new)) continue;
     /* Clone mi for ci and, transitively, the inherited intermediates it reaches
        (#1451). nscopes growth below stands in for the old did_clone flag. */
-    specialize_cmethod_for(c, mi, def_cls, ci, NULL);
+    specialize_cmethod_for(c, mi, def_cls, ci, 0, -1);
   }
   /* A Class value the analysis cannot pin (`CONTAINERS.fetch(ext).open`)
      runs an inherited class method on whichever class it holds, so its bare
@@ -8346,7 +8361,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       tgt = nt2; tgt[ntgt++] = k;
     }
     if (ntgt > 0 && name_called_on_dynamic_recv(c, mi, tgt, ntgt, node_count, &an))
-      for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t], NULL);
+      for (int t = 0; t < ntgt; t++) specialize_cmethod_for(c, mi, def_cls, tgt[t], 0, -1);
     free(tgt);
   }
   /* a class's own class method whose super reaches its parent's */
@@ -8493,83 +8508,32 @@ static int prepend_late_stmt(Compiler *c, int ci, int body) {
   }
   return -1;
 }
-/* The body of a method a later prepend copies in front of the class's own
-   (prepend_late_stmt), with `return super unless $flag` ahead of it: until
-   the reopening's statement has run and set the flag, a call reaches the
-   method the class had then, as in CRuby. Spinel has one method chain per
-   class, the last, so the call reaches this copy either way, and the
-   copy's super is the class's own method, renamed by the prepend. An
-   empty body (-1) becomes the guard alone, which answers nil once the
-   flag is set. */
-static int mixin_guard_body(NodeTable *nt, int body, const char *flag, int line) {
-  int rd = nt_new_node(nt, "GlobalVariableReadNode");
-  nt_node_set_str(nt, rd, "name", flag);
-  int sup = nt_new_node(nt, "ForwardingSuperNode");
-  int args = nt_new_node(nt, "ArgumentsNode");
-  nt_node_set_arr(nt, args, "arguments", &sup, 1);
-  int ret = nt_new_node(nt, "ReturnNode");
-  nt_node_set_ref(nt, ret, "arguments", args);
-  int then = nt_new_node(nt, "StatementsNode");
-  nt_node_set_arr(nt, then, "body", &ret, 1);
-  int un = nt_new_node(nt, "UnlessNode");
-  nt_node_set_ref(nt, un, "predicate", rd);
-  nt_node_set_ref(nt, un, "statements", then);
-  int made[] = { rd, sup, args, ret, then, un };
-  for (int i = 0; i < 6; i++) nt_node_set_int(nt, made[i], "node_line", line);
-  if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) {
-    int bn = 0;
-    const int *bb = nt_arr(nt, body, "body", &bn);
-    int *nb = malloc(sizeof(int) * (size_t)(bn + 1));
-    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-    nb[0] = un;
-    memcpy(nb + 1, bb, sizeof(int) * (size_t)bn);
-    nt_node_set_arr(nt, body, "body", nb, bn + 1);
-    free(nb);
-    return body;
-  }
-  int seq = nt_new_node(nt, "StatementsNode");
-  int two[] = { un, body };
-  nt_node_set_arr(nt, seq, "body", two, body >= 0 ? 2 : 1);
-  nt_node_set_int(nt, seq, "node_line", line);
-  return seq;
+/* The cell a later prepend's statement sets, numbered on first use: the
+   guard entries of the copies it makes read it (Scope.mixin_guarded) */
+static int prepend_cell(Compiler *c, int *cell) {
+  if (!*cell) *cell = ++c->n_prepend_cells;
+  return *cell;
 }
-/* The flag a body's guarded copies read, named on first use. */
-static const char *mixin_flag_name(Compiler *c, char flag[64]) {
-  if (!flag[0]) snprintf(flag, 64, "$__spinel_mixin_ran_%d", ++c->n_mixin_flags);
-  return flag;
-}
-/* ...and the write that sets the flag, after statement `after` of statement
-   list `list`, which the load record records (the global's readers ask
-   it) */
-static void mixin_guard_flag_write(Compiler *c, int list, int after, const char *flag) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  int root = list, n = 0, j = 0;
-  const int *st = nt_arr(nt, root, "body", &n);
-  while (j < n && st[j] != after) j++;
-  int line = (int)nt_int(nt, st[j], "node_line", 0);
-  int tv = nt_new_node(nt, "TrueNode");
-  int w = nt_new_node(nt, "GlobalVariableWriteNode");
-  nt_node_set_str(nt, w, "name", flag);
-  nt_node_set_ref(nt, w, "value", tv);
-  nt_node_set_int(nt, tv, "node_line", line);
-  nt_node_set_int(nt, w, "node_line", line);
-  st = nt_arr(nt, root, "body", &n);
-  int *ns = malloc(sizeof(int) * (size_t)(n + 1));
-  if (!ns) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  memcpy(ns, st, sizeof(int) * (size_t)(j + 1));
-  ns[j + 1] = w;
-  memcpy(ns + j + 2, st + j + 1, sizeof(int) * (size_t)(n - j - 1));
-  nt_node_set_arr(nt, root, "body", ns, n + 1);
-  free(ns);
-  comp_gvar_intern(c, flag + 1);
-  comp_grow_node_arrays(c);
-  elab_record_write(c, w);
+/* ...the writes of a later prepend's cell (ver_cell_put), each recorded
+   as the load record records a write (the global's readers ask it): 1
+   after statement `after` of list `list`, the prepend's, and 0 ahead of
+   the first statement of the file of `late`, the top-level statement that
+   makes it, so that the cell holds an Integer wherever a guard entry
+   reads it */
+static void prepend_cell_write(Compiler *c, int late, int list, int after, int cell) {
+  int f, rank, n = 0;
+  char name[32];
+  ver_prepend_cell_name(cell, name);
+  elab_record_write(c, ver_cell_put(c, name, list, after, 1, 1));
+  elab_top_place(c, late, &f, &rank);
+  const int *st = f >= 0 ? nt_arr(c->nt, prog_root_stmts(c, f), "body", &n) : NULL;
+  if (n) elab_record_write(c, ver_cell_put(c, name, prog_root_stmts(c, f), st[0], 0, 0));
 }
 
 static void process_prepend_body(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
   int late = prepend_late_stmt(c, ci, body);
-  char flag[64] = "";
+  int cell = 0;
   /* a module's prepend goes wherever the module is mixed in, which brings
      it in front of the module (body_mixins) */
   if (comp_class_is_module(c, &c->classes[ci])) return;
@@ -8597,12 +8561,11 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
         if (active_mi >= 0) {
           Scope *active = &c->scopes[active_mi];
           char shadow[256];
-          snprintf(shadow, sizeof shadow, "__prep_%d_%s",
-                   c->classes[ci].prep_shadow_count++, method_name);
+          comp_prep_shadow_name(&c->classes[ci], method_name, shadow, sizeof shadow);
           /* Rename any existing chain entry for method_name to use shadow. */
           ClassInfo *cif = &c->classes[ci];
           for (int kk = 0; kk < cif->nprep_chain; kk++) {
-            if (sp_streq(cif->prep_from[kk], method_name)) {
+            if (sp_streq(cif->prep_from[kk], active->name)) {
               free(cif->prep_from[kk]);
               cif->prep_from[kk] = strdup(shadow);
               break;
@@ -8649,12 +8612,6 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
               desugar_included_self_class(c, nb, c->classes[ci].name);
               desugar_included_bare_builtin(c, nb, c->classes[ci].name);
             }
-            if (nb >= 0 && guard) {
-              nb = mixin_guard_body((NodeTable *)nt, nb, mixin_flag_name(c, flag), (int)nt_int(nt, sc->def_node, "node_line", 0));
-              comp_grow_node_arrays(c);
-              sc = &c->scopes[ms_i]; dst = &c->scopes[dst_i];
-              dst->mixin_guarded = 1;
-            }
             if (nb >= 0) { { dst->body = nb; comp_touch_scope(dst->idx); } walk_scope(c, nb, dst_i, ci); }
             else { dst->body = sc->body; comp_touch_scope(dst->idx); }
           }
@@ -8664,6 +8621,9 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           { dst->is_cmethod = 0; comp_touch_scope(dst->idx); }
           dst->is_include_copy = 1;
           dst->is_prepend_copy = 1;
+          /* a call reaches the method behind it until the reopening's
+             statement has run (Scope.mixin_guarded) */
+          if (guard) { dst->mixin_guarded = prepend_cell(c, &cell); dst->guard_behind = active_mi; }
           { dst->origin_module_ci = mod_id + 1; comp_touch_scope(dst->idx); }   /* #owner names the module */
           { dst->reachable = sc->reachable; comp_touch_scope(dst->idx); }
           dst->yields = sc->yields;
@@ -8683,15 +8643,16 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           intern_scope_ivars(c, ms_i, ci);
           sc = &c->scopes[ms_i];
           sc->is_transplanted_source = 1;
+          if (guard) prepend_copy_name(c, dst_i);
         }
       }
     }
     free(mx);
   }
-  if (flag[0]) {   /* after the reopening's statement, in its file's top level */
+  if (cell) {   /* after the reopening's statement, in its file's top level */
     int f, rank;
     elab_top_place(c, late, &f, &rank);
-    mixin_guard_flag_write(c, prog_root_stmts(c, f), late, flag);
+    prepend_cell_write(c, late, prog_root_stmts(c, f), late, cell);
   }
 }
 

@@ -205,9 +205,9 @@ src/codegen_call.c rt_probe_unfounded a Symbol argument's method (respond_to?)
 src/codegen_call_class.c emit_call_reflection_arms =qm a Symbol argument's method
 src/codegen_call_class.c emit_refl_im_params a reflected method's name
 src/codegen_call_class.c emit_refl_method_defined a reflected method's name
-src/codegen_call_method.c emit_call_method_obj_arms =disp a Method object's method
+src/codegen_call_method.c emit_method_obj_target =disp arity metadata for a boxed receiver's method, not an invocation target
 src/codegen_call_method.c emit_op_method_arity a Symbol argument's method
-src/codegen_call_method.c emit_op_method_source_location a Symbol argument's method
+src/codegen_call_method.c emit_method_source_target a Symbol argument's method
 src/codegen_call_method.c emit_op_method_super_method super, by the Method object's own name
 src/codegen_call_object.c emit_blank_slate_defined_ask a Symbol argument's method
 src/codegen_stmt.c emit_call_stmt =mn a visibility call's Symbol argument
@@ -273,3 +273,7 @@ src/codegen_stmt.c strbuf_route_operand the String sharing routes
 src/codegen_stmt.c strbuf_self_route_slot the String sharing routes
 src/codegen_stmt.c strbuf_tail_plain the String sharing routes
 src/codegen_util.c strbuf_reader_field_boxed the String sharing routes
+
+# Guard construction and callback reach read the table, not an ordinary call.
+src/analyze_pass.c cr_mark_implied the implicit-callback rows' method-table names
+src/call_plan.c ver_entries_build the current own body of each public name before entries are installed

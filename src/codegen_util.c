@@ -6890,6 +6890,7 @@ static int mc_name_fixed(const char *nm) {
    an entry's or main's own method's with its number, in a buffer of its
    size the caller frees */
 static char *mc_version_name(const Scope *s) {
+  if (s->entry == ENTRY_TABLE) return strdup(s->name);   /* the table answer keeps the name fixed callbacks call */
   const char *fmt = s->entry && !s->version_n ? (s->class_id < 0 ? "%s__entry" : "%s#entry")
                   : s->entry ? (s->class_id < 0 ? "%s__entry%d" : "%s#entry%d")
                   : s->main_n ? "%s__main%d"
@@ -7015,7 +7016,7 @@ void mc_number_versions(Compiler *c) {
   free(dn.ix.slot);
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
-  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && a->entry == b->entry && sp_streq(a->name, b->name);
+  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && (a->entry == ENTRY_DISPATCH) == (b->entry == ENTRY_DISPATCH) && sp_streq(a->name, b->name);
 }
 static const char *const mc_class_helpers[] = { "_alloc", "_dup", "_gc_scan", NULL };
 /* A method whose name another has, as *first and *later; *first is -1 when
@@ -7203,7 +7204,7 @@ static void shadow_tab_build(Compiler *c, int raw) {
   if (!g_shadow_tab || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = n - 1; k >= 0; k--) {
     Scope *sc = &c->scopes[k];
-    if (!sc->name || sc->entry) continue;   /* (an entry shadows no method of its name) */
+    if (!sc->name || sc->entry == ENTRY_DISPATCH) continue;   /* a hidden entry shadows no method; the public guard does */
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
@@ -7265,7 +7266,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
   for (int k = s + 1; k < c->nscopes; k++) {
     Scope *o = &c->scopes[k];
     if (o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
-        o->name && !o->entry && sp_streq(o->name, sc->name)) return 1;
+        o->name && o->entry != ENTRY_DISPATCH && sp_streq(o->name, sc->name)) return 1;
   }
   return 0;
 }
