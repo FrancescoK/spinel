@@ -90,3 +90,26 @@ def hidden_sends(obj, hidden)
 end
 hidden_sends(k, :"__prep 0 m")
 hidden_sends(k, ["__prep", "0", "m"].join(" "))
+
+# Bare and boxed sends also treat the hidden spelling as absent.
+module HiddenSendLayer
+  def m = "L " + super
+end
+class HiddenSendSubject
+  def m = "k"
+  def bare
+    send(:"__prep 0 m")
+  rescue NoMethodError
+    "absent"
+  end
+end
+hidden_subject = HiddenSendSubject.new
+class HiddenSendSubject; prepend HiddenSendLayer; end
+p hidden_subject.bare
+[hidden_subject, 1].each do |obj|
+  begin
+    p obj.send(:"__prep 0 m")
+  rescue NoMethodError
+    puts "absent"
+  end
+end

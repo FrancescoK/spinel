@@ -2394,6 +2394,7 @@ int cls_value_owns_name(Compiler *c, int id, const char *name) {
 }
 
 int diag_user_defines(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   return recv_user_defines(c, name) || comp_method_index(c, name) >= 0;
 }
 
@@ -2401,6 +2402,7 @@ int diag_user_defines(Compiler *c, const char *name) {
    is a private method of Object that no explicit receiver reaches, so it
    leaves a builtin's arm in place (`def uniq(o) = o.uniq`). */
 int recv_user_defines(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   /* inside a poly dispatch's builtin arm the value is not a user object: the
      arm re-enters the call's emission for a genuine Array or Hash, and the
      user class owning the name (a Set#flatten) is not a candidate there */
@@ -2604,6 +2606,7 @@ static int user_defines_or_reads_walk(Compiler *c, const char *name) {
 static char **udrc_name; static unsigned char *udrc_ans; static int udrc_cap, udrc_n;
 static unsigned udrc_gen, udrc_shape; static int udrc_nscopes = -1, udrc_nclasses = -1;
 int user_defines_or_reads(Compiler *c, const char *name) {
+  if (comp_name_is_prep_shadow(name)) return 0;
   if (g_poly_builtin_arm) return 0;
   if (!name || !comp_scope_index_is_frozen()) return user_defines_or_reads_walk(c, name);
   if (udrc_gen != comp_scope_index_gen() || udrc_shape != comp_class_shape_gen() ||

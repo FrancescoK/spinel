@@ -2980,7 +2980,8 @@ int an_zero_arg_builtin_shadowed(Compiler *c, const char *name, int argc) {
 }
 int an_user_defines_method(Compiler *c, const char *name) {
   if (an_builtin_only_p()) return 0;   /* deriving the builtin-only answer (#3459) */
-  if (!name) return 0;
+  /* Copied bodies are call-plan targets, not Ruby method names. */
+  if (!name || comp_name_is_prep_shadow(name)) return 0;
   if (!comp_scope_index_is_frozen()) {
     /* scope shape may still change without the counts moving (renames);
        don't consult or populate the memo outside the frozen fixpoint. */

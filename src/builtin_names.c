@@ -666,8 +666,8 @@ int is_method_owner_query(const char *n) {
 
 int is_instance_method_name(const char *n) { return n && (sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method")); }
 int is_method_object_maker(const char *n) {
-  return sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
-         sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method");
+  return n && (sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
+               sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method"));
 }
 
 int is_constant_or_object_reflection(const char *n) {
