@@ -39,3 +39,9 @@ nil
 0
 1
 0
+2
+1
+Enumerator
+"box [] true"
+"box [6] true"
+"box [6, 7] true"

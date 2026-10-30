@@ -71,3 +71,18 @@ p [5, 6].find_index(*[5], &pr)
 p [5, 6].find_index(*e) { |x| break 42 if x == 6; false }
 p [1, 2, 3].map { |i| [5, 6, 7].find_index(*e) { |x| x == 4 + i } }
 [[5, 6], (5..6)].each { |r| p r.find_index(*e) { |x| x == 6 }; p r.find_index(*[5]) { false } }
+
+# a `&b` that holds nil: the call with no arguments answers an Enumerator
+def k(*a, &b) = [5, 6, 7].find_index(*a, &b)
+p k { |x| x == 7 }
+p k(6)
+p k.class
+
+# a class's own index keeps the block at every count
+class Box
+  def index(*a) = "box #{a.inspect} #{block_given? ? yield(6) : '-'}"
+end
+def call(o, *a) = o.index(*a) { |x| x == 6 }
+p call(Box.new)
+p call(Box.new, 6)
+p call(Box.new, 6, 7)

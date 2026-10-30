@@ -41255,6 +41255,15 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
      is the block's form and one element the value's, which leaves the block
      unused. So the block goes on the arm with no arguments. */
   int vob = blk >= 0 && splat_value_or_block_name(cnm);
+  /* A `&b` may hold nil, and then the call with no arguments answers an
+     Enumerator: that arm tests it, `b ? r.m(&b) : r.m`, or block_given?
+     for an anonymous `&`. A `&` of anything but a local keeps its splat. */
+  int vob_test = 0;
+  if (vob && nt_kind(nt, blk) == NK_BlockArgumentNode) {
+    int bx = nt_ref(nt, blk, "expression");
+    if (bx < 0 || nt_kind(nt, bx) == NK_LocalVariableReadNode) vob_test = 1;
+    else vob = 0;
+  }
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
      beside a replacement, as CRuby does, so their two-argument arm is the
@@ -41347,6 +41356,9 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
        counts the receivers have, and only a list past the cap raises the
        variadic names' NotImplementedError */
     if (urest) { mhi = hi; hi = 8; }
+    /* a method of the program's own of the name may read the block at any
+       count: the call keeps its splat */
+    if (vob && nuser > 0) return 0;
   }
   int idx = (is_string_index(cnm)) && call_target(c, id, -1, cnm, CT_TOP, NULL) < 0;
   for (int si = 0; idx && si < c->nscopes; si++)
@@ -41614,6 +41626,18 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     }
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
     if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
+    if (vob_test && m == 0) {
+      int bx = nt_ref(nt, blk, "expression");
+      int test = bx >= 0 ? nt_clone_subtree(nt, bx) : sd_call(nt, "block_given?", -1, NULL, 0);
+      int bare = nt_new_node(nt, "CallNode");
+      nt_node_set_str(nt, bare, "name", cnm);
+      if (nt_str(nt, id, "send_blind")) nt_node_set_str(nt, bare, "send_blind", "1");
+      if (nt_str(nt, id, "vis_enforce")) nt_node_set_str(nt, bare, "vis_enforce", "1");
+      nt_node_set_ref(nt, bare, "receiver", nt_clone_subtree(nt, recv));
+      nt_node_set_ref(nt, bare, "arguments", -1);
+      nt_node_set_ref(nt, bare, "block", -1);
+      cl = sd_if(nt, test, cl, bare);
+    }
     int ard = splat_operand_read(c, nt, anm, adepth, aview);
     int alen = nt_new_node(nt, "CallNode");
     nt_node_set_str(nt, alen, "name", "length");
