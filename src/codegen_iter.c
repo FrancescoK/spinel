@@ -4983,11 +4983,9 @@ void set_enum_walk_result(int tmp) { g_enum_walk_res = tmp; }
    (cplan_each_split), the receiver is read once into a temp, the kinds the
    dispatch's enum-proc arm serves walk inline, as the call emits in a
    program with no such class, and any other value takes the dispatch. An
-   Enumerator is not among them: the inline walk of a generator runs its
-   body, and reading the walk's answer (sp_poly_each_answer) runs it again.
-   Each
-   arm is emitted under an arm view naming the call (ArmCtx.each_inline,
-   each_dispatch), so neither splits it again. */
+   Enumerator's walk answers from the walk it ran (sp_poly_each_walk_answer),
+   as the dispatch's does. Each arm is emitted under an arm view naming the
+   call (ArmCtx.each_inline, each_dispatch), so neither splits it again. */
 int each_split_applies(Compiler *c, int id) {
   /* none inside a split's dispatch arm: its block is a proc of its own, so
      a boxed `each` in it split there as well as in the inline arm, and the
@@ -5032,7 +5030,7 @@ static int emit_each_split(Compiler *c, int id, int as_value, Buf *b, int indent
   view_unbind(g_n_argov - 1);
   if (ok && as_value) {
     buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); (", t, rb.p ? rb.p : "sp_box_nil()", t);
-    emit_penum_kind_test(b, t, 0);
+    emit_penum_kind_test(b, t);
     buf_printf(b, ") ? %s : ({ %s %s; }); })", ib.p ? ib.p : "sp_box_nil()", dp.p ? dp.p : "",
                db.p ? db.p : "sp_box_nil()");
   }
@@ -5040,7 +5038,7 @@ static int emit_each_split(Compiler *c, int id, int as_value, Buf *b, int indent
     emit_indent(b, indent); buf_puts(b, "{\n");
     emit_indent(b, indent + 1);
     buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", t, rb.p ? rb.p : "sp_box_nil()", t);
-    emit_indent(b, indent + 1); buf_puts(b, "if ("); emit_penum_kind_test(b, t, 0); buf_puts(b, ") {\n");
+    emit_indent(b, indent + 1); buf_puts(b, "if ("); emit_penum_kind_test(b, t); buf_puts(b, ") {\n");
     buf_puts(b, ib.p ? ib.p : "");
     emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
     buf_puts(b, db.p ? db.p : "");

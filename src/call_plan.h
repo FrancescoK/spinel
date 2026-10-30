@@ -325,8 +325,7 @@ typedef enum {
   PB_FACE_STR_BANG,
   PB_IO_TIMEOUT,
   /* a boxed receiver's `each { }` beside a program's own each: the kinds
-     PB_ENUM_PROC serves, but an Enumerator, walk inline at the call
-     (cplan_each_split) */
+     PB_ENUM_PROC serves walk inline at the call (cplan_each_split) */
   PB_ENUM_INLINE,
   PB_NFAMILIES
 } PolyFamily;
