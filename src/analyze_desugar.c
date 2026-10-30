@@ -13327,6 +13327,7 @@ int desugar_builtins(Compiler *c) {
     if (nt_kind(nt, id) != NK_CallNode || (id < n0 && in_generic[id]) || nt_int(nt, id, "enum_dead_arm", 0)) continue;
     const char *cn0 = nt_str(nt, id, "name");
     int send_site = 0;   /* cn0 is a literal send's name */
+    int each_site = 0;   /* cn0 is the inner call's name, on the outer each */
     /* `enum.with_object(memo)` is renamed to each_with_object by the
        Enumerator desugar inside the fixpoint, after this pass: give it its
        copy under the name it will have. `recv.m(args).each { blk }` becomes
@@ -13334,7 +13335,7 @@ int desugar_builtins(Compiler *c) {
        node takes a copy of the inner's name. */
     if (cn0 && sp_streq(cn0, "each") && nt_ref(nt, id, "block") >= 0) {
       int er = nt_ref(nt, id, "receiver");
-      if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) cn0 = nt_str(nt, er, "name");
+      if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) { cn0 = nt_str(nt, er, "name"); each_site = 1; }
     }
     if (cn0 && sp_streq(cn0, "with_object")) cn0 = "each_with_object";
     /* Array#index with a block and no argument is find_index, renamed so in
@@ -13372,8 +13373,10 @@ int desugar_builtins(Compiler *c) {
     if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name_off_class(nt, n0, alias->name)) {
       /* (a send keeps its own name until desugar_public_send_recv
          retargets it, which renames it so: renamed here, `a.send(:detect)`
-         was a call of find with :detect for its argument) */
-      if (!send_site) {
+         was a call of find with :detect for its argument; an outer each
+         keeps its own too, the inner call is renamed where it is visited,
+         and renamed here `c.collect_concat.each { }` called flat_map on c) */
+      if (!send_site && !each_site) {
         nt_node_set_str(nt, id, "orig_name", cn0);
         nt_node_set_str(nt, id, "name", alias->target);
       }
