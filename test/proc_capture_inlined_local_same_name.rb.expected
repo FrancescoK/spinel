@@ -1,0 +1,5 @@
+leaf a
+blk
+leaf b
+blk
+{blocks: :c, options: {constraints: {}}}

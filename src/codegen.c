@@ -9096,7 +9096,14 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
          `keep { i }; i += 100; keep { i }` had the second fill copy the
          loop's stale slot over the 100 the first proc was to see. */
       emit_indent(g_pre, g_indent);
-      if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, caps.v[i]))
+      /* The enclosing proc's capture of the name is this proc's too -- unless
+         the name is renamed here: then it is an INLINED callee's local that
+         only shares the spelling. A yielding `scope` method with a local
+         `block` inlined inside a proc capturing the caller's `&block` had
+         its nested `each` proc filled from the enclosing capture's cell, a
+         Proc's where a boxed value's was declared (incompatible pointer
+         types in the C), and a read of the wrong variable. */
+      if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, caps.v[i]) && sp_streq(cap_rn[i], caps.v[i]))
         buf_printf(g_pre, "_t%d->c_%s = ((%s *)_cap)->c_%s;\n", tc, caps.v[i], g_cap_struct, caps.v[i]);
       else if (lv && lv->is_cell)
         /* the rename resolved above, before the fiber body's own emission
@@ -10916,7 +10923,10 @@ else if (orecv >= 0 && onm) {
       for (int i = 0; i < ncap; i++) {
         /* no shadow publish here either: see the fiber/thread fill above */
         emit_indent(g_pre, g_indent);
-        if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, caps.v[i]))
+        /* (a name renamed here is an INLINED callee's local that only shares
+           the spelling with the enclosing capture's: see the fill above) */
+        if (g_cap_struct && g_cap_names && nameset_has(g_cap_names, caps.v[i]) &&
+            sp_streq(rename_local(caps.v[i]), caps.v[i]))
           buf_printf(g_pre, "_capv_%s->c_%s = ((%s *)_cap)->c_%s;\n", pid, caps.v[i], g_cap_struct, caps.v[i]);
         else
           /* as the sibling site above, minus a shim's shadow rename: it names no cell */
