@@ -1729,6 +1729,13 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       int bk = nt_ref(c->nt, id, "block");
       int bx = bk >= 0 && nt_kind(c->nt, bk) == NK_BlockArgumentNode ? nt_ref(c->nt, bk, "expression") : -2;
       int proc_ref = ac == 1 && bx != -2 && (bx < 0 || nt_kind(c->nt, bx) != NK_SymbolNode);
+      /* so is a body passed as the second argument in a class body
+         (`define_method(:a, l)`, a Proc or Method the run time holds):
+         compiled as a plain proc of the body it sat in, its ivars read the
+         class's slots where the defined method's read the instance's. (In a
+         method body the define_method is refused as one; see codegen's
+         "in a method body" rule) */
+      if (ac == 2 && bx == -2 && scope_idx == 0) proc_ref = 1;
       if (ac > 0 && (proc_ref || (nt_kind(c->nt, av[0]) != NK_SymbolNode && nt_kind(c->nt, av[0]) != NK_StringNode)) &&
           !an_user_define_method(c)) {
         NodeTable *nt = (NodeTable *)c->nt;
