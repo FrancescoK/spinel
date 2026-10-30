@@ -16923,12 +16923,16 @@ static TyKind isa_narrow_type(Compiler *c, const char *cn, const Scope *s) {
           !k->is_builtin_const && !k->is_native_class && k->ary_root <= 0 &&
           !class_has_subclass(c, ci)))
       return TY_UNKNOWN;
+    /* Not when a user is_a?/kind_of? can answer true for another class. */
+    if (an_user_defines_or_reads(c, "is_a?") || an_user_defines_or_reads(c, "kind_of?"))
+      return TY_UNKNOWN;
     /* Not one with a mixin on its chain: narrowing runs after the fixpoint,
        too late to bring in a module's methods (Enumerable#min) for the
        narrowed call, which then has no method to bind. */
     for (int a = ci; a >= 0; a = c->classes[a].parent) {
       const ClassInfo *ak = &c->classes[a];
-      if (ak->nincluded_mods || ak->enum_inc_at || ak->cmp_inc_at ||
+      if (ak->nincluded_mods || ak->nincluded_mod_names ||
+          ak->enum_inc_at || ak->cmp_inc_at ||
           ak->cmp_prepended || ak->enum_prepended)
         return TY_UNKNOWN;
     }
