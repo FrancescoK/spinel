@@ -31,11 +31,3 @@ p ls[0][:y]
 js = [Job, -> { 7 }, method(:nine)]
 js.each { |v| p v.call }
 p js[0].call(2)
-
-# a class method of the name that nothing calls leaves the Proc's call alone
-class Unused
-  def self.[](k = :first) = "unused #{k}"
-  def self.call = "unused"
-end
-us = [-> { 8 }, method(:nine)]
-p us[0][], us[0].call, us[1][], us[1].call
