@@ -399,18 +399,26 @@ printf 'include Helpers\n' > "$tmp/mixin/lib.rb"
 printf 'module Helpers\n  LEVEL = 1\nend\nrequire_relative "lib"\np LEVEL\n' > "$tmp/mixin/main.rb"
 refused mixin "a top-level include in a required file"
 # an include in a required file after a call its module's method would
-# answer early: refused as in one file (refuse_mixin_after_calls reads the
-# statements in load order)
+# answer early: the call reaches what the class had then, as in one file
+# (the include's copies are guarded until its statement has run; the
+# statements are read in load order)
 mkdir "$tmp/late_include"
 printf 'module Loud\n  def speak = "LOUD"\nend\nclass Dog\nend\nd = Dog.new\nbegin\n  puts d.speak\nrescue NoMethodError\n  puts "no speak yet"\nend\nclass Dog\n  include Loud\nend\n' > "$tmp/late_include/lib.rb"
 printf 'require_relative "lib"\n' > "$tmp/late_include/main.rb"
-refused late_include "a later statement mixes module Loud into class Dog"
 # a file a method requires, once that method may run ahead of the include,
-# as a call in its body may (refuse_mixin_after_calls)
+# as a call in its body may
 mkdir "$tmp/late_include_method"
 printf 'p C.new.tag\n' > "$tmp/late_include_method/lib.rb"
 printf 'module M\n  def tag = "m"\nend\nclass C\nend\ndef load_plugin\n  require_relative "lib"\nend\nbegin\n  load_plugin\nrescue NoMethodError\n  puts "no tag yet"\nend\nclass C\n  include M\nend\n' > "$tmp/late_include_method/main.rb"
-refused late_include_method "a later statement mixes module M into class C"
+for d in late_include late_include_method; do
+  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then
+    "$tmp/$d/bin" >"$tmp/$d/out" 2>&1 || fail "$d exits $?"
+    case $d in late_include) want='no speak yet' ;; *) want='no tag yet' ;; esac
+    printf '%s\n' "$want" | cmp -s - "$tmp/$d/out" || { fail "$d called the module's method before its include ran"; cat "$tmp/$d/out"; }
+  else
+    fail "$d did not compile"; sed -n 1,3p "$tmp/$d/cc"
+  fi
+done
 
 # A require whose path no expression tells may name any file of the program,
 # so a file it might run first has no fixed place: a file whose require is

@@ -1,0 +1,7 @@
+no behavior yet
+[:stderr]
+"x:stderr"
+"y/stderr"
+[:other]
+"other:x"
+"other/y"
