@@ -2313,8 +2313,6 @@ int a_super_target(Compiler *c, Scope *m);
 int an_arg_is_shared_handle(Compiler *c, int node);
 int an_super_object_text(Compiler *c, int n, int mi);
 int an_user_defines_method(Compiler *c, const char *name);
-/* an Enumerable reopen of the program defines find_index (analyze_desugar.c) */
-int find_index_program_own(const NodeTable *nt);
 int an_scopes_named_first(Compiler *c, const char *nm);
 int an_scopes_named_next(Compiler *c, const char *nm, int s);
 int block_given_tail_then_last(Compiler *c, int last);
