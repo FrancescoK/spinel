@@ -1918,9 +1918,12 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
       /* The checked Array's numeric kinds retain the iterator's inline
          nil-aware reads. Other kinds need the Array getter: the generic
          iterator does not handle Symbol Arrays. */
-      buf_printf(&el, "(_t%d.cls_id == SP_BUILTIN_INT_ARRAY ? sp_IntArray_box_elem((sp_IntArray *)_t%d.v.p, _t%d)"
+      /* Keep the compatible Integer read on the hot path of an Integer
+         destination, rather than the Float/error arms of the boxed read. */
+      const char *likely = rt == TY_INT_ARRAY ? "SP_LIKELY" : "";
+      buf_printf(&el, "(%s(_t%d.cls_id == SP_BUILTIN_INT_ARRAY) ? sp_IntArray_box_elem((sp_IntArray *)_t%d.v.p, _t%d)"
                       " : _t%d.cls_id == SP_BUILTIN_FLT_ARRAY ? sp_FloatArray_box_elem((sp_FloatArray *)_t%d.v.p, _t%d)"
-                      " : sp_poly_arr_get(_t%d, _t%d))", tv, tv, ti, tv, tv, ti, tv, ti);
+                      " : sp_poly_arr_get(_t%d, _t%d))", likely, tv, tv, ti, tv, tv, ti, tv, ti);
     }
     else if (at == TY_POLY_ARRAY) buf_printf(&el, "sp_PolyArray_get(_t%d, _t%d)", tv, ti);
     else {
