@@ -3246,7 +3246,7 @@ void register_singleton_defs(Compiler *c) {
          `extend` stays refused: a module's own hooks and includes are not
          carried onto the object (sg_transplant_module). Let the usual
          untraceable receiver path reject methods that need a real self. */
-      int oci = comp_class_index(c, "Object"), bci = comp_class_index(c, "BasicObject");
+      int oci = comp_core_class(c, CORE_OBJECT), bci = comp_core_class(c, CORE_BASIC_OBJECT);
       if (parent_ci == -2 && wnode >= 0 && !is_extend &&
           (oci < 0 || comp_method_in_class(c, oci, "initialize") < 0) &&
           (bci < 0 || comp_method_in_class(c, bci, "initialize") < 0))
@@ -6230,8 +6230,8 @@ static void mark_anon_superclass_reflection(Compiler *c) {
 static void mark_array_subclasses(Compiler *c) {
   /* the program's reopens of Array and Hash, which a subclass's chain
      reaches above its root */
-  int aro = comp_class_index(c, "Array"), hro = comp_class_index(c, "Hash");
-  int sro = comp_class_index(c, "String");
+  int aro = comp_core_class(c, CORE_ARRAY), hro = comp_core_class(c, CORE_HASH);
+  int sro = comp_core_class(c, CORE_STRING);
   for (int i = 0; i < c->nclasses; i++) {
     int r = i;
     for (int g = 0; c->classes[r].parent >= 0 && c->classes[r].parent != r &&

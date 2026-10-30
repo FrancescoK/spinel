@@ -343,7 +343,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
       if (r >= 0 && rt != TY_POLY && rt != TY_UNKNOWN && !ty_is_object(rt) && !oint_kind(rt) &&
           rt != TY_BIGINT && rt != TY_RATIONAL && rt != TY_STRING && rt != TY_SYMBOL && rt != TY_TIME &&
           !ty_is_array(rt)) {
-        int oc = comp_class_index(c, "Object");
+        int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 ? call_target(c, node, oc, nm, 0, NULL) : -1;
         if (omi >= 0) return method_ret_is_oint(&c->scopes[omi]);
       }

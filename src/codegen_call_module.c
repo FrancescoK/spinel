@@ -1950,7 +1950,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
         /* A boxed endpoint may hold a path, including a shared String handle,
            or a stream. Check its kind before reading the payload as sp_File. */
         if (a0_poly || a1_poly) {
-          int sio_cid = comp_class_index(c, "StringIO");
+          int sio_cid = comp_core_class(c, CORE_STRINGIO);
           int td = ++g_tmp;
           buf_printf(b, "({ const char *_t%d = ", td);
           if (a0_poly) {

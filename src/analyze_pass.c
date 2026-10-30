@@ -11310,7 +11310,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
        parameters -- a nil among them included (`12.enc(nil)` into a plain
        Integer parameter was refused at the store). */
     if (name && !ty_is_object(rt) && rt != TY_POLY && rt != TY_UNKNOWN && rt != TY_VOID && rt != TY_NIL) {
-      int oci4 = comp_class_index(c, "Object");
+      int oci4 = comp_core_class(c, CORE_OBJECT);
       int mi4 = oci4 >= 0 ? call_target(c, id, oci4, name, CT_OWN, NULL) : -1;
       if (mi4 >= 0) {
         int a4 = nt_ref(nt, id, "arguments"); int ac4 = 0;
@@ -11334,7 +11334,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
          short of: the call reaches it (codegen's Object fallback), so its
          arguments type it (#5779) */
       if (mi3 < 0) {
-        int oci3 = comp_class_index(c, "Object");
+        int oci3 = comp_core_class(c, CORE_OBJECT);
         if (oci3 >= 0 && oci3 != cid3) mi3 = call_target(c, id, oci3, name, CT_OWN, NULL);
       }
       changed |= bound_name != name && is_eq_op(name) ? bind_delegated_params(c, id, mi3)
@@ -11425,7 +11425,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
                 ? call_target(c, id, bci, name, 0, NULL) : -1;
       if (bmi >= 0) { changed |= bind_call_params(c, id, bmi); continue; }
       /* Without one, the call reaches Object's universal fallback. */
-      int ocb = comp_class_index(c, "Object");
+      int ocb = comp_core_class(c, CORE_OBJECT);
       int omb = ocb >= 0 ? call_target(c, id, ocb, name, 0, NULL) : -1;
       if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
     }
@@ -18094,7 +18094,7 @@ static int scope_tail_unresolved_call(Compiler *c, int s) {
       if (bc >= 0 && (call_target(c, last, bc, nm, 0, NULL) >= 0 ||
                       comp_reader_in_chain(c, bc, nm, NULL))) return 0;
     }
-    int oc = comp_class_index(c, "Object");
+    int oc = comp_core_class(c, CORE_OBJECT);
     if (oc >= 0 && (call_target(c, last, oc, nm, 0, NULL) >= 0 ||
                     comp_reader_in_chain(c, oc, nm, NULL))) return 0;
   }

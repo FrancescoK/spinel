@@ -977,7 +977,7 @@ static int empty_array_poly_view(Compiler *c, int arg) {
 static int zip_hash_arm_builtin(Compiler *c) {
   static const char *const conv[] = { "to_ary", "method_missing" };
   static const char *const owners[] = { "Hash", "Enumerable", "Object", "Kernel", "BasicObject" };
-  int hc = comp_class_index(c, "Hash");
+  int hc = comp_core_class(c, CORE_HASH);
   if (hc >= 0 && comp_method_in_chain(c, hc, "each", NULL) >= 0) return 0;
   for (size_t q = 0; q < sizeof(conv) / sizeof(conv[0]); q++) {
     if (call_target(c, -1, -1, conv[q], CT_TOP, NULL) >= 0) return 0;
@@ -6681,7 +6681,7 @@ static int emit_hash_merge_misfit(Compiler *c, int id, TyKind rt, Buf *b) {
   if (!is_hash_merge_bang(name) || argc < 1 || !nt_call_args_plain(nt, id)) return 0;
   /* the receiver is a builtin Hash: only a reopening of Hash owns the name
      over it, not a program class of its own with a merge! */
-  int hc_ci = comp_class_index(c, "Hash");
+  int hc_ci = comp_core_class(c, CORE_HASH);
   if (hc_ci >= 0 && call_target(c, id, hc_ci, name, 0, NULL) >= 0) return 0;
   int bad = -1, boxed = 0;
   for (int i = 0; i < argc && bad < 0; i++) {
@@ -13956,8 +13956,8 @@ int emit_value_recv_call(Compiler *c, int id, Buf *b) {
        under ruby/spec's `$~.should`): leave it to the Object reopening
        dispatch, which boxes the receiver -- a nil $~ included -- instead of
        refusing it as a MatchData method this table lacks */
-    else if (comp_class_index(c, "Object") >= 0 &&
-             call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) {
+    else if (comp_core_class(c, CORE_OBJECT) >= 0 &&
+             call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) {
       free(rs.p);
       return 0;
     }
@@ -16399,7 +16399,7 @@ static int emit_poly_call0_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
            this builtin arm is what a Bignum lands on: it raises, as it did
            before sp_poly_ord answered a Bignum, rather than answer the
            builtin value the program overrode. */
-        int ici = sp_streq(name, "ord") ? comp_class_index(c, "Integer") : -1;
+        int ici = sp_streq(name, "ord") ? comp_core_class(c, CORE_INTEGER) : -1;
         if (ici >= 0 && comp_method_in_class(c, ici, "ord") >= 0) {
           int tg = ++g_tmp;
           buf_printf(b, "({ sp_RbVal _t%d = ", tg); emit_expr(c, recv, b);
@@ -19129,7 +19129,7 @@ int emit_poly_call(Compiler *c, int id, Buf *b) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
       ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
        (argc == 0 && comp_ntype(c, id) == TY_ENUMERATOR))) {
-    int oci = comp_class_index(c, "Object");
+    int oci = comp_core_class(c, CORE_OBJECT);
     int has_user = oci >= 0 && call_target(c, id, oci, name, 0, NULL) >= 0;
     if (!g_poly_builtin_arm)
     for (int kk = 0; kk < c->nclasses && !has_user; kk++)

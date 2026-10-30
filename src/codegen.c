@@ -4154,7 +4154,7 @@ static int iter_each_proc_form(Compiler *c, int k) {
      arm, and the normalization walked the object as an empty container
      (#5101) */
   if (mi < 0) {
-    int oc = comp_class_index(c, "Object");
+    int oc = comp_core_class(c, CORE_OBJECT);
     int od = -1;
     if (oc >= 0 && oc != k) {
       mi = comp_method_in_chain(c, oc, "each", &od);
@@ -18776,7 +18776,7 @@ static void reject_define_method_runtime_block(Compiler *c) {
    raised NoMethodError for a name the builtin lacks. */
 static void reject_range_reopen_nonint(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int rci = comp_class_index(c, "Range");
+  int rci = comp_core_class(c, CORE_RANGE);
   if (rci < 0) return;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     int rv = nt_ref(nt, id, "receiver");
@@ -18863,7 +18863,7 @@ int time_parse_refusal(Compiler *c, int id, char *msg, size_t cap) {
   if (rk != NK_ConstantReadNode) return 0;
   const char *rn = nt_str(c->nt, recv, "name");
   if (!rn || !sp_streq(rn, "Time")) return 0;
-  int time_ci = comp_class_index(c, "Time");
+  int time_ci = comp_core_class(c, CORE_TIME);
   if (time_ci >= 0 && call_target(c, id, time_ci, name, CT_CMETHOD, NULL) >= 0) return 0;
   if (!sp_feature_required("time"))
     snprintf(msg, cap,

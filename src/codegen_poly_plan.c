@@ -1712,7 +1712,7 @@ int emit_poly_obj_default0(Compiler *c, int id, const char *name, int argc, TyKi
                            int *blk_tmp0, Buf *b) {
   const NodeTable *nt = c->nt;
   int done = 0;
-  { int obj_cls = comp_class_index(c, "Object");
+  { int obj_cls = comp_core_class(c, CORE_OBJECT);
     if (obj_cls >= 0) {
       int obj_def = -1;
       int obj_mi = call_target(c, id, obj_cls, name, 0, &obj_def);
@@ -1888,7 +1888,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
          Kernel count the program defines. A String reopening's own count
          takes its arm below instead, and so does a Symbol, which has no
          count of its own. */
-      int sci = comp_class_index(c, "String"), dc = -1;
+      int sci = comp_core_class(c, CORE_STRING), dc = -1;
       int str_own = sci >= 0 && call_target(c, id, sci, name, 0, &dc) >= 0 && dc == sci;
       if (!str_own)
         buf_printf(b, "if (_t%d.tag == SP_TAG_STR) _t%d = %ssp_poly_count(_t%d)%s; else ", tv, tr, bopen, tv, bclose);
@@ -2054,7 +2054,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
                   " { sp_Enumerator_rewind((sp_Enumerator *)_t%d.v.p);", tv, tv, tv);
     if (ret == TY_POLY) buf_printf(b, " _t%d = _t%d;", tr, tv);
     buf_puts(b, " }\nelse ");
-    int sio_cid3 = comp_class_index(c, "StringIO");
+    int sio_cid3 = comp_core_class(c, CORE_STRINGIO);
     if (sio_cid3 >= 0)
     {
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d)"
@@ -2179,7 +2179,7 @@ void emit_poly_prearms0(Compiler *c, int id, const char *name, const PolySpecial
      upcase; "nope"; end` has to reach "nope" for a run-time-typed
      receiver too, the way it now does for a concrete one. */
   int str_reopen_owns = 0;
-  { int sci = comp_class_index(c, "String");
+  { int sci = comp_core_class(c, CORE_STRING);
     if (sci >= 0 && call_target(c, id, sci, name, 0, NULL) >= 0) str_reopen_owns = 1; }
   if (argc == 0 && !str_reopen_owns) {
     const BuiltinZeroOp *str_op = bop_zero_find(TY_STRING, name);

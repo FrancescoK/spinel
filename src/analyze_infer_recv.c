@@ -1549,7 +1549,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
   if (recv >= 0 && rt == TY_POLY && sp_streq(name, "cycle") && nt_ref(nt, id, "block") < 0 &&
       ((argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode) ||
        argc == 0)) {
-    int oci = comp_class_index(c, "Object");
+    int oci = comp_core_class(c, CORE_OBJECT);
     int own = oci >= 0 && call_target(c, id, oci, name, 0, NULL) >= 0;
     for (int k = 0; k < c->nclasses && !own && !an_builtin_only_p(); k++)
       if (comp_poly_arm_defines_n(c, k, name, argc) ||

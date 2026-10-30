@@ -1566,13 +1566,13 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
     int idx = comp_class_index(c, P[i].cls);
     if (idx >= 0) buf_printf(b, " : _t%d.tag == %s ? %d", tv, P[i].tag, idx);
   }
-  { int ti = comp_class_index(c, "TrueClass"), fi = comp_class_index(c, "FalseClass");
+  { int ti = comp_core_class(c, CORE_TRUECLASS), fi = comp_core_class(c, CORE_FALSECLASS);
     if (ti >= 0 || fi >= 0)
       buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.b ? %d : %d)", tv, tv,
                  ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff); }
   /* a boxed bool is one of two classes, by its value (blank.rb reopens both) */
   {
-    int ti = comp_class_index(c, "TrueClass"), fi = comp_class_index(c, "FalseClass");
+    int ti = comp_core_class(c, CORE_TRUECLASS), fi = comp_core_class(c, CORE_FALSECLASS);
     if (ti >= 0 || fi >= 0)
       buf_printf(b, " : _t%d.tag == SP_TAG_BOOL ? (_t%d.v.i ? %d : %d)", tv, tv,
                  ti >= 0 ? ti : 0x7fffffff, fi >= 0 ? fi : 0x7fffffff);
@@ -2576,7 +2576,7 @@ int native_class_defines(Compiler *c, const char *name) {
 /* does the program's reopening of String define `name` (as a method or a
    reader)? The only program definition a typed String receiver can reach. */
 int string_reopen_defines(Compiler *c, const char *name) {
-  int si = comp_class_index(c, "String");
+  int si = comp_core_class(c, CORE_STRING);
   return si >= 0 && (comp_method_in_chain(c, si, name, NULL) >= 0 || comp_reader_in_chain(c, si, name, NULL));
 }
 
@@ -3301,7 +3301,7 @@ static int encoding_const_binary(Compiler *c, int node) {
   if (node < 0 || nt_kind(nt, node) != NK_ConstantPathNode) return -1;
   int par = nt_ref(nt, node, "parent");
   const char *nm = nt_str(nt, node, "name");
-  if (par < 0 || !nm || !sp_streq(nt_str(nt, par, "name"), "Encoding") || comp_class_index(c, "Encoding") >= 0 ||
+  if (par < 0 || !nm || !sp_streq(nt_str(nt, par, "name"), "Encoding") || comp_core_class(c, CORE_ENCODING) >= 0 ||
       !const_path_in_closed_builtin(c, node))
     return -1;
   if (sp_streq(nm, "BINARY") || sp_streq(nm, "ASCII_8BIT")) return 1;
@@ -6013,7 +6013,7 @@ int block_next_may_be_nil(Compiler *c, int id, int depth) {
 /* Does the program define `<=>` on Object itself? Every class that has none of
    its own then answers it. */
 int object_defines_cmp(Compiler *c) {
-  int oc = comp_class_index(c, "Object");
+  int oc = comp_core_class(c, CORE_OBJECT);
   return oc >= 0 && comp_method_in_chain(c, oc, "<=>", NULL) >= 0;
 }
 
@@ -6433,10 +6433,10 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
        every receiver the table does not */
     else if ((sp_streq(name, "asctime") || sp_streq(name, "ctime")) &&
              (repr_of(c, id).as_ty == TY_STRING || g_poly_builtin_arm || (repr_of(c, id).as_ty == TY_STRBUF)) &&
-             !(comp_class_index(c, "Object") >= 0 &&
-               call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) &&
-             !(comp_class_index(c, "Kernel") >= 0 &&
-               call_target(c, id, comp_class_index(c, "Kernel"), name, 0, NULL) >= 0))
+             !(comp_core_class(c, CORE_OBJECT) >= 0 &&
+               call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) &&
+             !(comp_core_class(c, CORE_KERNEL) >= 0 &&
+               call_target(c, id, comp_core_class(c, CORE_KERNEL), name, 0, NULL) >= 0))
       ts = "sp_time_strftime((sp_Time *)_tR.v.p, \"%a %b %e %H:%M:%S %Y\")";
     else if ((is_iso8601_alias(name)) &&
              sp_feature_enabled("time"))
@@ -6580,10 +6580,10 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
      held by nothing else while its to_int runs and may allocate. */
   if (sp_streq(name, "curry") && argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode &&
       comp_ntype(c, id) == TY_CURRY &&
-      !(comp_class_index(c, "Object") >= 0 &&
-        call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) &&
-      !(comp_class_index(c, "Kernel") >= 0 &&
-        call_target(c, id, comp_class_index(c, "Kernel"), name, 0, NULL) >= 0)) {
+      !(comp_core_class(c, CORE_OBJECT) >= 0 &&
+        call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) &&
+      !(comp_core_class(c, CORE_KERNEL) >= 0 &&
+        call_target(c, id, comp_core_class(c, CORE_KERNEL), name, 0, NULL) >= 0)) {
     int tv = ++g_tmp, tn = ++g_tmp;
     buf_puts(b, "({ "); tv = hold_operand(c, recv, TY_POLY, 0, tv, 1, " ", b);
     tn = hold_operand(c, argv[0], TY_POLY, 1, tn, 1, " ", b);
@@ -8152,7 +8152,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
      arm's receivers included: the arm is that method, and answers what it
      does */
   if (is_ivar_reflection_name(name) && comp_call_reaches_own_any(c, id, name))
-    bt = (TyKind)c->scopes[call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL)].ret;
+    bt = (TyKind)c->scopes[call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL)].ret;
   /* a writer's arm run for its effect (tr < 0), whose value is its
      argument's temp: the synthesized writers take the argument as it is,
      whatever the analysis recorded for an answer nothing reads */
@@ -8237,7 +8237,7 @@ static int emit_poly_builtin_default_at(Compiler *c, int id, int recv, const cha
   /* the re-entered emission can land on Object's own method, which may
      answer nothing (void): run it for its effect */
   int void_obj = 0;
-  { int oci = comp_class_index(c, "Object");
+  { int oci = comp_core_class(c, CORE_OBJECT);
     int omi = oci >= 0 ? call_target(c, id, oci, name, 0, NULL) : -1;
     void_obj = omi >= 0 && method_is_void(&c->scopes[omi]) && strncmp(ib.p, "sp_Object_", 10) == 0; }
   const char *lb = label ? " default:" : "";
@@ -11195,7 +11195,7 @@ int reopen_self_defaults(Compiler *c, int mi) {
   /* A String default on a receiver that is not one is yielded from the proc
      form's boxed parameter, which a block typed for a String reads back as an
      integer slot (nil, or a frozen String once mutated). */
-  if (m->class_id != comp_class_index(c, "String"))
+  if (m->class_id != comp_core_class(c, CORE_STRING))
     for (int i = 0; i < m->nparams; i++) {
       int d = m->pdefault[i];
       if (d < 0 || !ctor_default_reads_self(c, m, d, 0)) continue;
@@ -11421,7 +11421,7 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
 }
 
 static void emit_reopen_primitive_call(Compiler *c, int id, int ci, int mi, int recv, const char *name, Buf *b) {
-  if (ci == comp_class_index(c, "String") && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
+  if (ci == comp_core_class(c, CORE_STRING) && emit_reopen_block_call(c, id, recv, mi, NULL, b)) return;
   if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
   size_t at = b->len;
   int open = 0;
@@ -17919,7 +17919,7 @@ int class_is_comparable(Compiler *c, int cid) {
     if (c->classes[cur].parent == cur) break;
   }
   /* Object's includes reach every class but a BasicObject descendant */
-  int oc = comp_class_index(c, "Object");
+  int oc = comp_core_class(c, CORE_OBJECT);
   return oc >= 0 && !class_is_blank_slate(c, cid) && comp_comparable_reaches(c, oc);
 }
 /* 1 for a class whose chain reaches a Struct.new class, 2 for a Data.define
@@ -21368,7 +21368,7 @@ static int emit_vis_refusal_x(Compiler *c, int id, Buf *b);
 static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind vrt, int vcid,
                                           const char *vnm, Buf *b) {
   if (!vnm || builtin_object_method_known(vnm)) return 0;
-  int oci = comp_class_index(c, "Object");
+  int oci = comp_core_class(c, CORE_OBJECT);
   if (oci < 0 || call_target(c, id, oci, vnm, CT_OWN, NULL) < 0) return 0;
   int vis = comp_method_vis_declared(c, oci, vnm, NULL);
   if (vis == SP_VIS_PUBLIC) return 0;
@@ -24821,7 +24821,7 @@ int reopen_override_block_ok(Compiler *c, int id) {
   if (nt_kind(c->nt, blk) != NK_BlockNode) return 0;
   const CallPlan *p = cplan_user(c, id);
   return p->via == UC_REOPEN && p->mi >= 0 && c->scopes[p->mi].yields &&
-         c->scopes[p->mi].class_id == comp_class_index(c, "String");
+         c->scopes[p->mi].class_id == comp_core_class(c, CORE_STRING);
 }
 /* emit_reopen_primitive_call, with a plain answer lifted into an oint
    where the node is one (a `&.` left to the plain call) */
@@ -25150,7 +25150,7 @@ int ivar_nil_recv_guard(Compiler *c, int id, int *recv_out) {
   }
   else if (!ty_is_array(rt) && !ty_is_hash(rt) && rt != TY_STRING) return 0;
   /* a method the program adds to NilClass answers for the nil slot */
-  int ncid = comp_class_index(c, "NilClass");
+  int ncid = comp_core_class(c, CORE_NILCLASS);
   if (ncid >= 0 && call_target(c, id, ncid, nm, 0, NULL) >= 0) return 0;
   Scope *s = comp_scope_of(c, recv);
   int cid = s ? s->class_id : -1;
@@ -31744,9 +31744,9 @@ int reopen_yields_known_container(Compiler *c, Scope *m) {
 /* Random, Float, Symbol, Fiber and Thread proc forms take their receiver
    as the raw value. */
 static int reopen_pf_raw_self(Compiler *c, int ci) {
-  return ci == comp_class_index(c, "Random") || ci == comp_class_index(c, "Float") ||
-         ci == comp_class_index(c, "Symbol") || ci == comp_class_index(c, "Fiber") ||
-         ci == comp_class_index(c, "Thread");
+  return ci == comp_core_class(c, CORE_RANDOM) || ci == comp_core_class(c, CORE_FLOAT) ||
+         ci == comp_core_class(c, CORE_SYMBOL) || ci == comp_core_class(c, CORE_FIBER) ||
+         ci == comp_core_class(c, CORE_THREAD);
 }
 /* A reopened builtin's yielding method reached with the call's block: it
    has no symbol of its own, being spliced where it can, so the call goes to
@@ -31776,7 +31776,7 @@ void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv
   else {
     /* Defaults are callee code, with the held receiver as self. */
     int ci = c->scopes[pf].class_id;
-    int boxed = ci != comp_class_index(c, "String") && !reopen_pf_raw_self(c, ci);
+    int boxed = ci != comp_core_class(c, CORE_STRING) && !reopen_pf_raw_self(c, ci);
     buf_puts(&oc, "(");
     open = emit_reopen_recv_args(c, id, pf, nt_ref(nt, id, "receiver"), boxed, NULL, 0, &oc);
   }
@@ -31807,7 +31807,7 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
      boxed one as garbage (the same widening is wrong for a top-level
      method). */
   int pci = c->scopes[mi].class_id;
-  if (reopen_pf_raw_self(c, pci) && pci != comp_class_index(c, "Fiber") && pci != comp_class_index(c, "Thread") &&
+  if (reopen_pf_raw_self(c, pci) && pci != comp_core_class(c, CORE_FIBER) && pci != comp_core_class(c, CORE_THREAD) &&
       reopen_yields_container(c, &c->scopes[mi])) return 0;
   int cblk = nt_ref(nt, id, "block") >= 0 ? resolve_forwarded_block(c, nt_ref(nt, id, "block")) : -1;
   /* a forwarded `&blk` resolves below 0 when the caller passed no block:
@@ -31826,7 +31826,7 @@ int emit_reopen_block_call(Compiler *c, int id, int recv, int mi, const char *bo
     free(rx.p);
     buf_printf(&rb, "_t%d", t);
   }
-  else if (c->scopes[mi].class_id == comp_class_index(c, "String")) {
+  else if (c->scopes[mi].class_id == comp_core_class(c, CORE_STRING)) {
     int t = ++g_tmp;
     Buf rx; memset(&rx, 0, sizeof rx);
     emit_expr(c, recv, &rx);
@@ -32782,7 +32782,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
      a class method the program gives Regexp itself still goes there */
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode && nt_str(nt, recv, "name") &&
       sp_streq(nt_str(nt, recv, "name"), "Regexp")) {
-    int rci = comp_class_index(c, "Regexp");
+    int rci = comp_core_class(c, CORE_REGEXP);
     if ((rci < 0 || call_target(c, id, rci, name, CT_CMETHOD, NULL) < 0) &&
         emit_call_regexp_class_arms(c, id, b, nt, name, recv, argc, argv)) return;
   }

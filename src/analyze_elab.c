@@ -4120,7 +4120,7 @@ int elab_header_entity(Compiler *c, int node, const ElabPos *pos) {
   /* Object's constant of a builtin's name the program has not written yet
      is the builtin's: the header reopens it, at the top level or in
      `class Object` */
-  if (h->want == LR_NEW && (h->owner == LR_MAIN || h->owner == comp_class_index(c, "Object")) &&
+  if (h->want == LR_NEW && (h->owner == LR_MAIN || h->owner == comp_core_class(c, CORE_OBJECT)) &&
       (is_builtin_class_name(h->leaf) || is_builtin_module_name(h->leaf)))
     h->want = LR_BUILTIN;
   if (h->verdict == ELAB_NO && (h->found = lr_later_alias(c, h->owner, h->leaf)) >= 0) h->want = LR_LATER_ALIAS;

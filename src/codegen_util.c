@@ -5417,7 +5417,7 @@ static int plain_int_op(Compiler *c, const char *nm) {
   for (int i = 0; plain_int_ops[i]; i++)
     if (!strcmp(nm, plain_int_ops[i])) {
       /* a program that reopens Integer with the operator owns its answer */
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
     }
   return 0;
@@ -5522,7 +5522,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
     if (comp_ntype(c, recv) != TY_INT &&
         !(g_promote_mode && argc == 0 && !strcmp(nm, "~") && comp_ntype(c, n) == TY_INT)) return 0;
     if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       /* ~ of any word is a number; + and - hand a nil operand's word on
          (+nil raises in CRuby, and in a C int is the identity), so they
@@ -5533,7 +5533,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
        on (plain when the receiver is); abs, succ and pred compute a number */
     if (argc == 0 && (!strcmp(nm, "to_i") || !strcmp(nm, "to_int") || !strcmp(nm, "abs") ||
                       !strcmp(nm, "succ") || !strcmp(nm, "pred"))) {
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       return nm[0] == 't' ? plain_expr(c, recv, depth + 1) : 1;
     }
@@ -7240,7 +7240,7 @@ static int read_is_held(Compiler *c, int node);
    chain of the program's own reopening of Array can be: a `[]` another class
    defines (a Grid's) is never what an Array receiver calls. */
 static int array_index_is_own(Compiler *c) {
-  int ci = comp_class_index(c, "Array");
+  int ci = comp_core_class(c, CORE_ARRAY);
   return ci >= 0 && (comp_method_in_chain(c, ci, "[]", NULL) >= 0 ||
                      comp_reader_in_chain(c, ci, "[]", NULL));
 }
