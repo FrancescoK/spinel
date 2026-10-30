@@ -3462,7 +3462,12 @@ void emit_poly_prearms_n(Compiler *c, const char *name, const PolySpecialsN *ps,
   if (is_ppack && sp_streq(name, "unpack1")) {
     if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_UNPACK1, -1, TY_UNKNOWN, PC_SAME);
     Buf ub; memset(&ub, 0, sizeof ub);
-    buf_printf(&ub, "sp_PolyArray_get(sp_str_unpack(_t%d.v.s, %s), 0)", tv, strarg);
+    /* the format read as the pack arm below reads it: a boxed argument is
+       checked for a String, which CRuby's TypeError wants for anything else
+       (the boxed value went straight into sp_str_unpack's const char * slot) */
+    if (atmp_ty[0] == TY_POLY)
+      buf_printf(&ub, "sp_PolyArray_get(sp_str_unpack(_t%d.v.s, sp_poly_arg_str_chk(_t%d)), 0)", tv, atmp[0]);
+    else buf_printf(&ub, "sp_PolyArray_get(sp_str_unpack(_t%d.v.s, %s), 0)", tv, strarg);
     buf_printf(b, "if (_t%d.tag == SP_TAG_STR) { _t%d = ", tv, tr);
     if (ret == TY_POLY) buf_puts(b, ub.p ? ub.p : "");
     else emit_unbox_text(c, is_scalar_ret(ret) ? ret : TY_INT, ub.p ? ub.p : "", b);
@@ -4770,10 +4775,13 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
        a receiver that is not a number, as CRuby does. */
     /* The numeric surface, from the table beside emit_poly_method_dispatch:
        box the argument the dispatch already hoisted, call the helper the
-       no-user-class path calls, and fit the answer to the slot. */
-    else if (splat_a < 0 && poly_num_arm(name, argc) >= 0) {
+       no-user-class path calls, and fit the answer to the slot. The count
+       is the positional one: a keyword hash is no hoisted argument, and a
+       call of a name here with keywords alone (`xml.div(xmlns: ...) { }`
+       on a boxed builder) read the temp of a positional it never had. */
+    else if (splat_a < 0 && poly_num_arm(name, pos_argc) >= 0) {
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_NUM, -1, TY_UNKNOWN, PC_SAME);
-      int ai = poly_num_arm(name, argc);
+      int ai = poly_num_arm(name, pos_argc);
       Buf ab9; memset(&ab9, 0, sizeof ab9);
       { char an9[32]; snprintf(an9, sizeof an9, "_t%d", atmp[0]);
         if (SP_NUM_ARM[ai].arg_int) {
@@ -4785,7 +4793,7 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
       const char *a9 = ab9.p ? ab9.p : "sp_box_nil()";
       Buf bb9; memset(&bb9, 0, sizeof bb9);
       const char *fn9 = SP_NUM_ARM[ai].fn;
-      if (argc > SP_NUM_ARM[ai].min_argc && SP_NUM_ARM[ai].fn2) {
+      if (pos_argc > SP_NUM_ARM[ai].min_argc && SP_NUM_ARM[ai].fn2) {
         fn9 = SP_NUM_ARM[ai].fn2;
         char bn9[32]; snprintf(bn9, sizeof bn9, "_t%d", atmp[1]);
         if (atmp_ty[1] == TY_POLY) buf_puts(&bb9, bn9);
