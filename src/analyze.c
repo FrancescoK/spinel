@@ -37027,8 +37027,15 @@ int nullable_int_value(Compiler *c, int v) {
     /* a receiverless call resolves as emission does: the class-method chain
        in a class method, then the instance chain, a top-level def last */
     int mi = cn && rcv < 0 ? comp_self_call_mi(c, v, cn) : (cn ? call_target(c, v, -1, cn, CT_TOP, NULL) : -1);
-    /* the builtin's own answer: no method of the program is a target */
-    if (v == g_nn_builtin_call) return 0;
+    /* the builtin's own answer: no method of the program is a target -- the
+       dispatch's builtin arm re-entering its call (g_nn_builtin_call), and
+       a call the desugaring made the builtin's alone (builtin_only: the
+       length probe a splat's arms branch on, `a.length == 1`, as
+       splat_dispatch_on_length writes it). Asked of the program's methods
+       of the name, the probe took the nil a `def length = nil` answers and
+       was emitted as an oint, while its emitter -- the builtin's, by the
+       same mark -- answers the plain sp_int, and the C did not compile. */
+    if (v == g_nn_builtin_call || nt_int(nt, v, "builtin_only", 0)) return 0;
     if (mi < 0 && cn) {
       if (rcv >= 0) {
         TyKind rt = infer_type(c, rcv);
