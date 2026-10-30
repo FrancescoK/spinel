@@ -790,13 +790,20 @@ static int ver_takes(Compiler *c, int s, int n) {
    every version takes that many: each arm's call leaves out what the call
    leaves out, so each version fills its own defaults; else -1, `*r, **k`,
    which hands every version what the call gave */
-static int ver_call_arity(Compiler *c, int id, int rcls, int sg, const char *name, int mi) {
+/* The plain positional arguments call id gives, -1 for a call that hands
+   on what it got (`...`) or a node that is no call: all ver_call_arity
+   reads of the call */
+static int ver_call_n(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
-  ElabVersion vs[VER_MAX_ARMS];
-  int a = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "arguments") : -1, ac = 0, dc;
+  int a = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "arguments") : -1, ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int n = nt_kind(nt, id) == NK_CallNode ? call_plain_argc(c, id) : -1;
   for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_ForwardingArgumentsNode) n = -1;
+  return n;
+}
+static int ver_call_arity(Compiler *c, int id, int rcls, int sg, const char *name, int mi) {
+  ElabVersion vs[VER_MAX_ARMS];
+  int n = ver_call_n(c, id), dc;
   int ar = ver_plain_arity(c, mi), fits = ver_takes(c, mi, n);
   int nv = elab_chain_versions(c, rcls, sg, name, vs, VER_MAX_ARMS);
   for (int i = 0; i < nv; i++) {
@@ -3743,8 +3750,51 @@ int ver_entry_targets(const Compiler *c, int e, int *out) {
   return n;
 }
 typedef struct { int cls, sg, mi, ar; const char *name; } VerNeed;
+/* The part of an ask that a class's chain decides, not the call: whether
+   the chain holds two versions, the method the table answers, and the
+   arity of the entry, for (class, flags, name, the call's plain argument
+   count) of an ask not on main (CT_TOP, which reads the call's own place).
+   A call of a name that no type bounds yet asks every class holding two
+   versions of it, so each was redone per call and class: classes x calls
+   (#10546's an_pre_fixpoint). ok 0: no entry is asked. */
+typedef struct { int cls; unsigned flags; const char *name; int n; int ok, mi, sg, ar; } VerPre;
 /* ...and, to tell the asks that repeat one, an open addressing table over them (ix holds an index into v, -1 free) */
-typedef struct { VerNeed *v; int n; int *ix; unsigned nb; } VerNeeds;
+typedef struct { VerNeed *v; int n; int *ix; unsigned nb; VerPre *pre; int npre; unsigned pnb; } VerNeeds;
+static unsigned ver_pre_hash(int k, unsigned flags, const char *nm, int n) {
+  return ver_mix(sp_strhash(nm) * 31u + (unsigned)(k + 1) * 131u + flags * 7u + (unsigned)(n + 1));
+}
+static const VerPre *ver_pre(Compiler *c, VerNeeds *o, int id, const char *nm, int k, unsigned flags) {
+  ElabVersion vs[VER_MAX_ARMS];
+  int n = ver_call_n(c, id);
+  if (o->npre * 2 >= (int)o->pnb) {
+    unsigned onb = o->pnb; VerPre *op = o->pre;
+    o->pnb = onb ? onb * 2 : 256;
+    if (!(o->pre = calloc(o->pnb, sizeof *o->pre))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (unsigned b = 0; b < onb; b++) {
+      if (!op[b].name) continue;
+      unsigned at = ver_pre_hash(op[b].cls, op[b].flags, op[b].name, op[b].n) & (o->pnb - 1);
+      while (o->pre[at].name) at = (at + 1) & (o->pnb - 1);
+      o->pre[at] = op[b];
+    }
+    free(op);
+  }
+  unsigned at = ver_pre_hash(k, flags, nm, n) & (o->pnb - 1);
+  for (; o->pre[at].name; at = (at + 1) & (o->pnb - 1)) {
+    const VerPre *w = &o->pre[at];
+    if (w->cls == k && w->flags == flags && w->n == n && sp_streq(w->name, nm)) return w;
+  }
+  VerPre p = { k, flags, nm, n, 0, -1, 0, 0 };
+  unsigned fl = flags;
+  if (elab_chain_versions(c, k, (flags & CT_CMETHOD) != 0, nm, vs, VER_MAX_ARMS) >= 2 &&
+      (p.mi = ct_lookup(c, id, k, nm, &fl, NULL)) >= 0 && c->scopes[p.mi].versioned) {
+    p.ok = 1;
+    p.sg = (fl & CT_CMETHOD) != 0;
+    p.ar = ver_call_arity(c, id, k, p.sg, nm, p.mi);
+  }
+  o->pre[at] = p;
+  o->npre++;
+  return &o->pre[at];
+}
 static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   VerNeeds *o = arg;
   ElabVersion vs[VER_MAX_ARMS];
@@ -3752,10 +3802,17 @@ static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags,
   /* (an entry arms two or more versions of the chain: with fewer, or a
      chain the record does not hold, no call is asked. A call on main may
      ask main's chain, which ends in Object's: ct_lookup) */
-  if (elab_chain_versions(c, rcls, (flags & (CT_CMETHOD | CT_TOP)) != 0, nm, vs, VER_MAX_ARMS) < 2) return;
-  if ((mi = ct_lookup(c, id, k, nm, &flags, NULL)) < 0 || !c->scopes[mi].versioned) return;
-  sg = (flags & CT_CMETHOD) != 0;
-  ar = ver_call_arity(c, id, rcls, sg, nm, mi);
+  if (!(flags & CT_TOP)) {
+    const VerPre *p = ver_pre(c, o, id, nm, k, flags);
+    if (!p->ok) return;
+    mi = p->mi; sg = p->sg; ar = p->ar;
+  }
+  else {
+    if (elab_chain_versions(c, rcls, 1, nm, vs, VER_MAX_ARMS) < 2) return;
+    if ((mi = ct_lookup(c, id, k, nm, &flags, NULL)) < 0 || !c->scopes[mi].versioned) return;
+    sg = (flags & CT_CMETHOD) != 0;
+    ar = ver_call_arity(c, id, rcls, sg, nm, mi);
+  }
   if (ver_entry_ix(c, rcls, sg, nm, ar) >= 0) return;
   unsigned at = o->nb ? ver_key_hash(rcls, sg, nm, ar) & (o->nb - 1) : 0;
   for (; o->nb && o->ix[at] >= 0; at = (at + 1) & (o->nb - 1)) {
@@ -3819,7 +3876,7 @@ static void ver_entries_index(Compiler *c) {
 void ver_entries_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   const char *names[2];
-  VerNeeds o = { NULL, 0, NULL, 0 };
+  VerNeeds o = { NULL, 0, NULL, 0, NULL, 0, 0 };
   for (int id = 0, n0 = nt->count; id < n0; id++)
     for (int i = 0, nn = call_node_names(nt, id, names); i < nn; i++)
       if (ct_version_named(c, names[i])) ct_version_classes(c, id, names[i], ver_need, &o);
@@ -3831,7 +3888,7 @@ void ver_entries_build(Compiler *c) {
     }
     c->ver_entries[c->nver_entries++] = (struct VerEntry){ o.v[i].name, o.v[i].cls, o.v[i].sg, o.v[i].ar, e };
   }
-  free(o.v); free(o.ix);
+  free(o.v); free(o.ix); free(o.pre);
   ver_entries_index(c);
   c->ver_built = 1;
 }
