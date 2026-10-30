@@ -2110,6 +2110,12 @@ void emit_autosplat_params(Compiler *c, int block, int np, int elem_temp, int in
 int emit_table_row_params(Compiler *c, int block, TyKind rt, const char *row, Buf *out, int indent);
 int emit_tuple_block_params(Compiler *c, int id, int block, const char *tuple_src, Buf *out);
 int poly_block_call_needs_dispatch(Compiler *c, int id);
+/* Does this emission split a boxed receiver's `each { }` on the receiver's
+   kind (cplan_each_split, outside either of its arms)? (codegen_iter.c) */
+int each_split_applies(Compiler *c, int id);
+/* The condition the dispatch's enum-proc arm tests `_t<tv>` with: an Array,
+   Hash, Range, String Range or Enumerator (codegen_poly_plan.c) */
+void emit_penum_kind_test(Buf *b, int tv);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_pool_fwd(Compiler *c, int cid);
 void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
@@ -2507,8 +2513,11 @@ int view_mark(void);
    view_unwind: the node whose dispatch declines its own re-entry (the
    method dispatch's g_pd_skip, the block dispatch's g_prbd_skip), and
    g_poly_builtin_arm, under which no user class owns a name. send_split
-   prevents a boxed send's class arm from splitting the same call again. */
-typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split; } ArmCtx;
+   prevents a boxed send's class arm from splitting the same call again;
+   each_inline and each_dispatch name the call a boxed `each` split is
+   emitting the inline and the dispatch arm of (cplan_each_split), so
+   neither arm splits it again. */
+typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split, each_inline, each_dispatch; } ArmCtx;
 extern ArmCtx g_arm;
 #define g_pd_skip (g_arm.pd_skip)
 #define g_prbd_skip (g_arm.prbd_skip)

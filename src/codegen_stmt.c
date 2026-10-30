@@ -22069,6 +22069,10 @@ int tail_iter_receiver(Compiler *c, int id) {
   /* a scan's answer is the String it walked, which a boxed read is not: the
      value form checks the boxed subject and answers that String */
   if (is_scan_name(nm) && comp_ntype(c, r) == TY_POLY) return -1;
+  /* a split walk answers the receiver only in its inline arm: the dispatch
+     arm answers what the program's own each does, so the value form reads
+     the call's answer from whichever arm ran */
+  if (each_split_applies(c, id)) return -1;
   return r;
 }
 

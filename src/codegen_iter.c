@@ -4977,6 +4977,76 @@ int iter_recv_bind_once(Compiler *c, int node) {
 static int g_enum_walk_res = 0;
 void set_enum_walk_result(int tmp) { g_enum_walk_res = tmp; }
 
+/* A boxed receiver's `each { }` that the run-time dispatch serves because a
+   class of the program takes a block for `each` built a proc and called
+   the dispatch for every receiver, an Array's too. Where the plan splits it
+   (cplan_each_split), the receiver is read once into a temp, the kinds the
+   dispatch's enum-proc arm serves walk inline, as the call emits in a
+   program with no such class, and any other value takes the dispatch. Each
+   arm is emitted under an arm view naming the call (ArmCtx.each_inline,
+   each_dispatch), so neither splits it again. */
+int each_split_applies(Compiler *c, int id) {
+  return g_arm.each_inline != id && g_arm.each_dispatch != id && g_n_argov < MAX_ARG_OVERRIDE &&
+         cplan_each_split(c, id)->n > 0;
+}
+/* an arm of the split, emitted into `out` under its arm view */
+static int emit_each_split_arm(Compiler *c, int id, int inline_arm, int as_value, Buf *out, int indent) {
+  int va = view_push_arm(g_pd_skip, g_prbd_skip, g_poly_builtin_arm);
+  if (inline_arm) g_arm.each_inline = id; else g_arm.each_dispatch = id;
+  int ok = 1;
+  if (as_value && inline_arm) ok = emit_iter_value_expr(c, id, out);
+  else if (as_value) emit_boxed(c, id, out);
+  else if (inline_arm) ok = emit_iteration_stmt(c, id, out, indent);
+  else emit_stmt(c, id, out, indent);
+  view_pop(c, va);
+  return ok;
+}
+/* both arms over the receiver read once: a statement, or (as_value) the
+   value of whichever arm ran. The dispatch arm's own set-up (its proc, the
+   captures it hands on) goes inside that arm, so the inline arm builds
+   none of it. */
+static int emit_each_split(Compiler *c, int id, int as_value, Buf *b, int indent) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int frame = g_plan_check ? pa_begin(id) : -1;
+  int t = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  view_bind(recv, "_t%d", t);
+  Buf ib, db, dp;
+  memset(&ib, 0, sizeof ib); memset(&db, 0, sizeof db); memset(&dp, 0, sizeof dp);
+  int ok = emit_each_split_arm(c, id, 1, as_value, &ib, indent + 2);
+  if (ok) {
+    Buf *sv_pre = g_pre;
+    if (as_value) g_pre = &dp;
+    emit_each_split_arm(c, id, 0, as_value, &db, indent + 2);
+    g_pre = sv_pre;
+  }
+  view_unbind(g_n_argov - 1);
+  if (ok && as_value) {
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); (", t, rb.p ? rb.p : "sp_box_nil()", t);
+    emit_penum_kind_test(b, t);
+    buf_printf(b, ") ? %s : ({ %s %s; }); })", ib.p ? ib.p : "sp_box_nil()", dp.p ? dp.p : "",
+               db.p ? db.p : "sp_box_nil()");
+  }
+  else if (ok) {
+    emit_indent(b, indent); buf_puts(b, "{\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", t, rb.p ? rb.p : "sp_box_nil()", t);
+    emit_indent(b, indent + 1); buf_puts(b, "if ("); emit_penum_kind_test(b, t); buf_puts(b, ") {\n");
+    buf_puts(b, ib.p ? ib.p : "");
+    emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+    buf_puts(b, db.p ? db.p : "");
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+  free(rb.p); free(ib.p); free(db.p); free(dp.p);
+  if (g_plan_check) {
+    if (ok) { pa_resume(frame); pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ENUM_INLINE, -1, TY_UNKNOWN, PC_SAME);
+              pa_end(c, frame, cplan_each_split(c, id)); }
+    else pa_drop(frame);
+  }
+  return ok;
+}
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4994,6 +5064,8 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   if (nt_kind(nt, block) != NK_BlockNode) return 0;
+  /* the value: the inline walk's answer or the dispatch's */
+  if (each_split_applies(c, id)) return emit_each_split(c, id, 1, b, 0);
   /* `e.each { }` over an Enumerator answers what its underlying each does:
      a generator's body value, a materialized one's collection. The walk
      runs once; the `to_a` hop in front of it is never evaluated. */
@@ -7714,7 +7786,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      method: the loops below walk the receiver as a builtin container, which
      answers empty when the value is the user object. The cls_id dispatch is
      the only emitter with arms for both (#3409). */
-  if (poly_block_call_needs_dispatch(c, id)) return 0;
+  if (g_arm.each_inline != id && poly_block_call_needs_dispatch(c, id))
+    return each_split_applies(c, id) ? emit_each_split(c, id, 0, b, indent) : 0;
 
   /* `e.each { }` on an Enumerator, as a statement: the analysis routed it
      through a `to_a` it marked, which never ends for an endless or generator

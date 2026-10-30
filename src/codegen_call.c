@@ -1055,13 +1055,15 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
         !(es && (es->is_proc_form || es->is_lowered_yield))) return 0; }
   /* Only a class the receiver can hold: an IO::Buffer the program makes
      elsewhere (its `each` yields) sent every boxed Hash's `each` in the
-     program through a proc, where the walk bounds them to builtins. An
-     unbounded receiver still counts every class. */
+     program through a proc, where the walk bounds them to builtins. A
+     class the receiver's class fact keeps out does not count either, as
+     the dispatch has no arm for it (comp_poly_candidates_at). */
   int nk = 0;
   const int *ks = poly_recv_classes(c, id, &nk);
   for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
     int k = ks ? ks[i] : i;
     if (k < 0 || k >= c->nclasses || !c->classes[k].instantiated) continue;
+    if (cls_fact_excludes(c, recv, k)) continue;
     int mi = call_target(c, id, k, name, 0, NULL);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];
@@ -32628,6 +32630,10 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
      whole chain down once here rather than in each emitter -- the guard
      re-enters this same chain on the guarded temp with g_sn_skip set, and that
      pass lowers normally. */
+  /* a boxed receiver's `each { }` that splits on its kind answers from
+     whichever arm runs (emit_iter_value_expr) */
+  if (each_split_applies(c, id) && !sn_guard_pending(c, id) &&
+      emit_or_take_back(c, id, b, emit_iter_value_expr)) return;
   if (!poly_block_call_needs_dispatch(c, id) && !sn_guard_pending(c, id)) {
   if (emit_or_take_back(c, id, b, emit_lazy_size_expr)) return;
   if (emit_or_take_back(c, id, b, emit_lazy_class_expr)) return;
