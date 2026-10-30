@@ -612,6 +612,7 @@ typedef struct {
   int *cls_first, *cls_next;    /* class -> its scopes, scope -> the next */
   unsigned char *weak_done;     /* per scope: its reads counted unreached */
   int all;
+  int typed;                    /* the node types are settled */
 } CrLive;
 
 static int cr_live_gated(Compiler *c, int k) {
@@ -946,12 +947,34 @@ static void cr_live_event(CrLive *lv, const CrRead *r) {
   }
 }
 
+/* The settled types read every method, reached or not: a parameter a call
+   in an unreached method binds (`Frag.matches?(Sel.new)` in a method nothing
+   calls) carries its class into reached code, which then calls the class's
+   methods directly. So reached code typed with an instance of a class opens
+   its instance side. Not entering a nested def. */
+static void cr_live_typed(CrLive *lv, int id) {
+  Compiler *c = lv->c;
+  const NodeTable *nt = c->nt;
+  if (id < 0 || lv->all || nt_kind(nt, id) == NK_DefNode) return;
+  TyKind t = comp_ntype(c, id);
+  int k = ty_is_object(t) ? ty_object_class(t) : ty_is_obj_array(t) ? ty_obj_array_class(t) : -1;
+  if (k >= 0 && k < c->nclasses && lv->held_i[k]) cr_live_instance(lv, k);
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) cr_live_typed(lv, nt_ref_at(nt, id, i));
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int j = 0; j < nn; j++) cr_live_typed(lv, ids[j]); }
+}
+
 /* A reached scope: the classes it names, the calls it makes, whether it
    builds its class, and its calls that find classes by name */
 static void cr_live_scope(CrLive *lv, int s, char **calls, int ncalls) {
   Compiler *c = lv->c;
   if (lv->all) return;
   for (int i = 0; i < lv->nreads[s]; i++) cr_live_event(lv, &lv->reads[s][i]);
+  if (lv->typed && s > 0) {
+    cr_live_typed(lv, c->scopes[s].body);
+    if (c->scopes[s].def_node >= 0) cr_live_typed(lv, nt_ref(c->nt, c->scopes[s].def_node, "parameters"));
+  }
   /* a send whose name is known only at run time can reach any of them */
   for (int i = 0; i < ncalls && !lv->all; i++)
     if (calls[i] && calls[i][0] == '\x02') cr_live_event(lv, &(CrRead){ NULL, calls[i] + 1, -1, CR_DYN_CALL, 0 });
@@ -1116,6 +1139,7 @@ void compute_reachable(Compiler *c, int typed) {
   int qhead = 0, qtail = 0;
   CrLive lv;
   cr_live_begin(&lv, c, queue, &qtail);
+  lv.typed = typed == 2;
   ic_begin(c, typed);
   if (typed == 2) g_cr_typed = &c->ic->class_only;
   else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }

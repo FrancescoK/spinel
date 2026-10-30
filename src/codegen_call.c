@@ -6469,10 +6469,18 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
         buf_printf(&body, "%.*s_t%d", (int)(hit - q), q, tv);
         q = hit + 3;
       }
+      /* with no class of the program built to answer the name, the call is
+         still typed from their returns (the poly dispatch's union in
+         analyze_infer.c): an Integer? or untyped one is the slot this Time
+         answer lands in */
+      TyKind raw = ti ? TY_INT : tb ? TY_BOOL : TY_STRING, want = comp_ntype(c, id);
+      const char *wrap = want == TY_POLY ? ty_box_fn(raw) : ti && node_is_oint(c, id) ? "sp_oint_of" : NULL;
+      if (wrap) buf_printf(b, "%s(", wrap);
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME ? %s"
                     " : (%s)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), %s); })",
                  tv, tv, body.p ? body.p : "0", cty, name, tv, miss);
+      if (wrap) buf_puts(b, ")");
       free(body.p);
       return 1;
     }
