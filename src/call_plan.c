@@ -2903,7 +2903,8 @@ static void cpoly_cases_n(Compiler *c, int id, const char *name, int argc, const
     if (sp_streq(name, "replace") && argc == 1 && splat_a < 0 && ret == TY_POLY) cpoly_family(p, cap, PB_ND_REPLACE);
     else if (is_round_family(name) && argc == 1 && splat_a < 0)
       cpoly_family(p, cap, PB_ND_ROUND);
-    else if (splat_a < 0 && poly_num_arm(name, argc) >= 0) cpoly_family(p, cap, PB_ND_NUM);
+    /* by the positional count, as emit_poly_defaults_n takes the arm */
+    else if (splat_a < 0 && poly_num_arm(name, ps->pos_argc) >= 0) cpoly_family(p, cap, PB_ND_NUM);
     else if (ps->arr_index && !sp_streq(name, "find_index")) cpoly_family(p, cap, PB_ND_STR_INDEX);
     else if (ps->arr_index && argc == 1) cpoly_family(p, cap, PB_ND_FIND_INDEX);
   }
