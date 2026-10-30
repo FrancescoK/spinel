@@ -13691,7 +13691,17 @@ else {
          (g_self_deref "->"): its methods take the object */
       int vptr = comp_ty_value_obj(c, ty_object(cid)) && g_self && sp_streq(selfptr, g_self) &&
                  g_self_deref && sp_streq(g_self_deref, "->");
-      buf_printf(b, vptr ? "%s((*%s)" : "%s(%s", mc_method(c, m), selfptr);
+      /* An Array or Hash subclass instance is a typed pointer to its own
+         struct, and the reopening's method takes the builtin it starts
+         with, boxed: the version entry of a method the subclass and the
+         reopening both define arms a bare call to the reopening's
+         version, and the pointer passed as it was did not compile. Boxed
+         as every boxed use of the instance is (arysub_box_id). */
+      if (!vptr && cid >= 0 && c->classes[cid].ary_root > 0 && reopen_takes_boxed_self(c, defcls)) {
+        buf_printf(b, "%s(", mc_method(c, m));
+        emit_boxed_text(c, ty_object(cid), selfptr, b);
+      }
+      else buf_printf(b, vptr ? "%s((*%s)" : "%s(%s", mc_method(c, m), selfptr);
     }
     else
       buf_printf(b, "%s((sp_%s *)%s", mc_method(c, m), c->classes[defcls].c_name, selfptr);
