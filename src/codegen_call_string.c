@@ -1852,6 +1852,23 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
     buf_printf(b, " sp_int _t%d = (sp_int)sp_str_length(_t%d); sp_int _t%d, _t%d;",
                tn2, to, tb2, tl2);
+    /* slice!(range, n): Ruby has no two-argument overload that takes a
+       Range first -- raises TypeError, after the receiver's own frozen
+       check above (a frozen receiver with a Range first argument still
+       raises FrozenError, not TypeError: CRuby checks mutability before
+       argument shape) and after argv[1]'s own side effect, the same
+       left-to-right order Ruby evaluates both arguments in before
+       raising. Range is the ONLY argv[0] kind the TY_RANGE arm below
+       answers for a plain index; argc == 1 is implied by reaching this
+       `if` with a Range, since argc == 2 is only otherwise possible
+       through span2, checked here first so the TY_RANGE arm no longer
+       sees it. */
+    if (argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      buf_puts(b, " (void)("); emit_expr(c, argv[1], b); buf_puts(b, ");");
+      buf_puts(b, " sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\");"
+                  " (const char *)0; })");
+      return 1;
+    }
     if (comp_ntype(c, argv[0]) == TY_RANGE) {
       int trg = ++g_tmp;
       buf_printf(b, " sp_Range _t%d = sp_range_ix(", trg); emit_expr(c, argv[0], b); buf_puts(b, ")");
