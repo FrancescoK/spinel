@@ -828,7 +828,10 @@ static int ver_takes(Compiler *c, int s, int n) {
    one takes that many: each arm's call leaves out what the call leaves
    out, so each method fills its own defaults; else -1, `*r, **k`, which
    hands every method what the call gave */
-static int ver_arity(Compiler *c, int id, const int *to, int nto) {
+/* The plain positional arguments call id hands the method, -1 for one that
+   hands on what it got (`...`) or makes a Method: all ver_arity reads of
+   the call */
+static int ver_call_n(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   NodeKind kind = nt_kind(nt, id);
   int a = nt_ref(nt, id, "arguments"), ac = 0;
@@ -841,6 +844,10 @@ static int ver_arity(Compiler *c, int id, const int *to, int nto) {
   }
   if (kind == NK_CallNode && is_method_object_maker(nt_str(nt, id, "name"))) n = -1;
   for (int i = 0; i < ac; i++) if (nt_kind(nt, av[i]) == NK_ForwardingArgumentsNode) n = -1;
+  return n;
+}
+static int ver_arity(Compiler *c, int id, const int *to, int nto) {
+  int n = ver_call_n(c, id);
   int ar = ver_plain_arity(c, to[0]), fits = 1;
   for (int i = 0; i < nto; i++) {
     if (ver_plain_arity(c, to[i]) != ar) ar = -1;
@@ -3967,6 +3974,50 @@ static void ver_need_add(VerNeeds *o, VerNeed w) {
     o->ix[at] = o->n - 1;
   }
 }
+/* The part of an ask that a class's chain decides, not the call: whether
+   the chain holds two versions, the method the table answers, and the
+   arity of the entry, for (class, flags, name, the call's plain argument
+   count, ver_call_n) of an ask not on main (CT_TOP, which reads the call's
+   own place). A call of a name that no type bounds yet asks every class
+   holding two versions of it, so each was redone per call and class:
+   classes x calls (#10546's an_pre_fixpoint). ok 0: no entry is asked. */
+typedef struct { int cls; unsigned flags; const char *name; int n; int ok, mi, sg, ar; } VerPre;
+static VerPre *ver_pre_tab; static int ver_pre_n; static unsigned ver_pre_nb;
+static unsigned ver_pre_hash(int k, unsigned flags, const char *nm, int n) {
+  return ver_mix(sp_strhash(nm) * 31u + (unsigned)(k + 1) * 131u + flags * 7u + (unsigned)(n + 1));
+}
+static const VerPre *ver_pre(Compiler *c, int id, const char *nm, int k, unsigned flags) {
+  ElabVersion vs[VER_MAX_ARMS];
+  int n = ver_call_n(c, id);
+  if (ver_pre_n * 2 >= (int)ver_pre_nb) {
+    unsigned onb = ver_pre_nb; VerPre *op = ver_pre_tab;
+    ver_pre_nb = onb ? onb * 2 : 256;
+    if (!(ver_pre_tab = calloc(ver_pre_nb, sizeof *ver_pre_tab))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (unsigned b = 0; b < onb; b++) {
+      if (!op[b].name) continue;
+      unsigned at = ver_pre_hash(op[b].cls, op[b].flags, op[b].name, op[b].n) & (ver_pre_nb - 1);
+      while (ver_pre_tab[at].name) at = (at + 1) & (ver_pre_nb - 1);
+      ver_pre_tab[at] = op[b];
+    }
+    free(op);
+  }
+  unsigned at = ver_pre_hash(k, flags, nm, n) & (ver_pre_nb - 1);
+  for (; ver_pre_tab[at].name; at = (at + 1) & (ver_pre_nb - 1)) {
+    const VerPre *w = &ver_pre_tab[at];
+    if (w->cls == k && w->flags == flags && w->n == n && sp_streq(w->name, nm)) return w;
+  }
+  VerPre p = { k, flags, nm, n, 0, -1, 0, 0 };
+  unsigned fl = flags;
+  if (elab_chain_versions(c, k, (flags & CT_CMETHOD) != 0, nm, vs, VER_MAX_ARMS) >= 2 &&
+      (p.mi = ct_lookup(c, id, k, nm, &fl, NULL)) >= 0 && !c->scopes[p.mi].mixin_guarded && c->scopes[p.mi].versioned) {
+    p.ok = 1;
+    p.sg = (fl & CT_CMETHOD) != 0;
+    p.ar = ver_call_arity(c, id, k, p.sg, nm, p.mi);
+  }
+  ver_pre_tab[at] = p;
+  ver_pre_n++;
+  return &ver_pre_tab[at];
+}
 static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags, void *arg) {
   ElabVersion vs[VER_MAX_ARMS];
   int mi, n = 0, ar, rcls = flags & CT_TOP ? -1 : k, sg;
@@ -3974,10 +4025,17 @@ static void ver_need(Compiler *c, int id, const char *nm, int k, unsigned flags,
      chain the record does not hold, no call is asked. A call on main may
      ask main's chain, which ends in Object's: ct_lookup. A later prepend's
      copy has its guard entries: ver_entries_build) */
-  if (elab_chain_versions(c, rcls, (flags & (CT_CMETHOD | CT_TOP)) != 0, nm, vs, VER_MAX_ARMS) < 2) return;
-  if ((mi = ct_lookup(c, id, k, nm, &flags, NULL)) < 0 || c->scopes[mi].mixin_guarded || !c->scopes[mi].versioned) return;
-  sg = (flags & CT_CMETHOD) != 0;
-  ar = ver_call_arity(c, id, rcls, sg, nm, mi);
+  if (!(flags & CT_TOP)) {
+    const VerPre *p = ver_pre(c, id, nm, k, flags);
+    if (!p->ok) return;
+    mi = p->mi; sg = p->sg; ar = p->ar;
+  }
+  else {
+    if (elab_chain_versions(c, rcls, 1, nm, vs, VER_MAX_ARMS) < 2) return;
+    if ((mi = ct_lookup(c, id, k, nm, &flags, NULL)) < 0 || c->scopes[mi].mixin_guarded || !c->scopes[mi].versioned) return;
+    sg = (flags & CT_CMETHOD) != 0;
+    ar = ver_call_arity(c, id, rcls, sg, nm, mi);
+  }
   VerNeed w = { 0, rcls, sg, mi, ar, nm };
   if (ver_need_has(c, arg, w)) return;
   ct_version(c, id, k, nm, flags, mi, NULL, &n);
@@ -4059,6 +4117,7 @@ void ver_entries_build(Compiler *c) {
     c->ver_entries[c->nver_entries++] = (struct VerEntry){ e >= 0 ? c->scopes[e].name : o.v[i].name, o.v[i].guard, o.v[i].cls, o.v[i].sg, o.v[i].ar, e };
   }
   free(o.v); free(o.ix);
+  free(ver_pre_tab); ver_pre_tab = NULL; ver_pre_n = 0; ver_pre_nb = 0;   /* (the asks' memo lives for one build) */
   ver_entries_index(c);
   /* The table answers the general entry. Copies keep their own super
      chain under a shadow name; argument-specific entries stay hidden. */
