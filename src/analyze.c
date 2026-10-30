@@ -34898,7 +34898,7 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
 static int nullable_int_call_name(const char *nm) {
   if (!nm) return 0;
   static const char *const N[] = {
-    "index", "rindex", "byteindex", "byterindex", "delete_at", "slice!", "pop", "shift",
+    "index", "rindex", "find_index", "byteindex", "byterindex", "delete_at", "slice!", "pop", "shift",
     "delete", "nonzero?", "infinite?", "getbyte", "bsearch", "bsearch_index", "unpack1",
     /* Process::Status: nil when the process did not exit / was not signaled */
     "exitstatus", "termsig", "stopsig",
