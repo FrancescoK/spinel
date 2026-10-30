@@ -283,6 +283,28 @@ static inline int sp_str_eq(const char*a,const char*b){
   for(size_t i=0;i<la;i++)if((unsigned char)a[i]>=0x80)return 0;
   return 1;
 }
+/* The key compare of a Hash's probe loop. A key that matches is walked twice
+   by sp_str_eq, by strcmp and then by memcmp; when both Strings carry their
+   length, the length and one memcmp answer. Only the test for the same String
+   is inline, so a lookup that finds its own key runs the loop it ran; any
+   other pair -- a literal without a header among them -- takes sp_str_eq.
+   Most pairs a probe meets differ in their first byte, where strcmp stopped
+   too, so that byte is tested before the headers are read. */
+static SP_NOINLINE int sp_str_key_eq(const char*a,const char*k){
+  if(!a||!k||*a!=*k)return 0;
+  if(sp_str_has_hdr(a)&&sp_str_has_hdr(k)){
+    uint32_t la=(((const sp_str_hdr*)(a-1))-1)->len,lk=(((const sp_str_hdr*)(k-1))-1)->len;
+    if(la!=SP_STR_LEN_UNSET&&lk!=SP_STR_LEN_UNSET){
+      if(la!=lk||memcmp(a,k,la)!=0)return 0;
+      /* comparable encodings, as sp_str_eq */
+      if(sp_str_is_binary(a)==sp_str_is_binary(k))return 1;
+      for(uint32_t i=0;i<la;i++)if((unsigned char)a[i]>=0x80)return 0;
+      return 1;
+    }
+  }
+  return sp_str_eq(a,k);
+}
+static inline int sp_str_probe_eq(const char*a,const char*k){return a==k||sp_str_key_eq(a,k);}
 /* `s == "lit"` for a literal of n ASCII bytes, none of them NUL, that the
    compiler knows: an inline byte loop where sp_str_eq calls strcmp. The loop
    stops at a's terminator (the literal has no NUL to match it), so it reads
@@ -316,10 +338,33 @@ static inline sp_bool sp_str_eq_cstr(const char *marked, const char *plain) {
    hash together, "caf\xC3\xA9" and "café" are neither. The high-byte question
    is answered inside the walk the hash already makes, so this costs one
    register. */
-static inline uint64_t sp_str_hash_bytes(const char*s,int*saw_high){
+/* The walk stops at the first NUL, which ends a String without a header. One
+   with a header can hold bytes past it ("\0" + packed bytes), and its length
+   carries the walk on (sp_str_hash_walk_on), or every key that agreed up to
+   the NUL hashed alike. */
+static inline const char*sp_str_hash_walk(const char*s,uint64_t*hp,int*hip){
   uint64_t h=14695981039346656037ULL;int hi=0;
   while(*s){unsigned char c=(unsigned char)*s++;hi|=(c>=0x80);h^=c;h*=1099511628211ULL;}
+  *hp=h;*hip=hi;return s;
+}
+/* The byte length of a String with a header that goes on past the NUL at q,
+   else 0 */
+static inline size_t sp_str_hash_past_nul(const char*s,unsigned char m,const char*q){
+  if(m==0xfe||m==0xfc||m==0xfd||m==0xf1||m==0xfb||m==0xfa||m==0xf8){
+    uint32_t l=(((const sp_str_hdr*)(s-1))-1)->len;
+    if(l!=SP_STR_LEN_UNSET&&l>(size_t)(q-s))return l;
+  }
+  return 0;
+}
+static SP_NOINLINE uint64_t sp_str_hash_walk_on(const char*s,const char*q,size_t n,uint64_t h,int*saw_high){
+  int hi=*saw_high;
+  for(const char*e=s+n;q<e;){unsigned char c=(unsigned char)*q++;hi|=(c>=0x80);h^=c;h*=1099511628211ULL;}
   *saw_high=hi;return h;
+}
+static inline uint64_t sp_str_hash_bytes(const char*s,int*saw_high){
+  uint64_t h;const char*q=sp_str_hash_walk(s,&h,saw_high);
+  size_t n=sp_str_hash_past_nul(s,((const unsigned char*)s)[-1],q);
+  return n?sp_str_hash_walk_on(s,q,n,h,saw_high):h;
 }
 static inline uint64_t sp_str_hash_compute(const char*s){
   int hi=0;uint64_t h=sp_str_hash_bytes(s,&hi);
@@ -328,15 +373,31 @@ static inline uint64_t sp_str_hash_compute(const char*s){
 }
 /* Cold path: compute (and, for a heap/heap-frozen string, cache) the FNV
    hash. Kept out-of-line so sp_str_hash's inline fast path -- a cached-hash
-   read -- stays tiny and doesn't bloat every call site's code layout. */
+   read -- stays tiny and doesn't bloat every call site's code layout. A
+   String that goes on past a NUL is hashed by sp_str_hash_miss_nul, a tail
+   call, so this function calls nothing and needs no frame. */
+static SP_NOINLINE uint64_t sp_str_hash_miss_nul(const char*s,unsigned char m){
+  uint64_t h=sp_str_hash_compute(s);
+  if(m==0xfd)return h;
+  sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;
+  hd->hash=h?h:1;
+  return hd->hash;
+}
 static SP_NOINLINE uint64_t sp_str_hash_miss(const char*s,unsigned char m){
-  if(m==0xfe||m==0xfc||m==0xf1||m==0xfa||m==0xf8||m==0xfb){
+  uint64_t h;int hi;const char*q=sp_str_hash_walk(s,&h,&hi);
+  /* one marker test for the three questions a header answers: whether the
+     String goes on past the NUL (an unset length goes to
+     sp_str_hash_miss_nul too, which reads it), whether it is BINARY, and
+     whether it keeps its hash */
+  if(m==0xfe||m==0xfc||m==0xfd||m==0xf1||m==0xfb||m==0xfa||m==0xf8){
     sp_str_hdr*hd=((sp_str_hdr*)(s-1))-1;
-    uint64_t h=sp_str_hash_compute(s);
+    if(SP_UNLIKELY(hd->len>(size_t)(q-s)))return sp_str_hash_miss_nul(s,m);
+    if(hi&&(hd->size&SP_STR_SIZE_BINARY))h^=0x9e3779b97f4a7c15ULL;
+    if(m==0xfd)return h;
     hd->hash=h?h:1;
     return hd->hash;
   }
-  return sp_str_hash_compute(s);
+  return h;
 }
 static inline uint64_t sp_str_hash(const char*s){
   /* nil hashes like any other absent key: a String-keyed lookup with a nil
