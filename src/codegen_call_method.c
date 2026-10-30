@@ -2191,11 +2191,14 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      (cplan_cmethod_arm): its class-value dispatch tests for a Class first
      and emits the call again for anything else (g_cls_tag_skip), and there
      the Proc or the Method is called here. A class method nothing calls has
-     no arm, so it leaves the call here. */
+     no arm, so it leaves the call here. A `class << self` accessor of the
+     name (`attr_accessor :call`) is read by the same dispatch, which comes
+     back here for anything else. */
   int is_aref0 = sp_streq(name, "[]") && argc == 0;
   if (recv >= 0 &&
       (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield") || is_aref0) &&
-      repr_of(c, recv).kind == RK_BOXED) {
+      repr_of(c, recv).kind == RK_BOXED &&
+      (g_cls_tag_skip == id || !cls_value_sg_accessor_named(c, name, argc))) {
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
       int umi = call_target(c, id, _k, name, CT_OWN, NULL);
