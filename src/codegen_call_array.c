@@ -1805,94 +1805,131 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
-/* Array#concat(*arrays) on a poly array (a typed one reads its operand nodes,
-   after the lookup) */
-int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
-  const NodeTable *nt = c->nt;
-  const char *name = x->name;
-  int id = x->id, recv = x->recv, argc;
-  const int *argv = call_args(nt, id, &argc);
-  TyKind rt = x->rt;
-  const char *k = array_kind(rt);
-  int block = nt_ref(nt, id, "block");
-  (void)name; (void)k; (void)block; (void)argv;
-  if (rt != TY_POLY_ARRAY) return 0;
-  /* concat(*arrays): append each argument array's elements onto the receiver
-     in place, return the receiver. Coerce a typed-array argument to poly. */
-  if (rt == TY_POLY_ARRAY && sp_streq(name, "concat")) {
-    int t = ++g_tmp;
-    /* rooted: an argument that allocates can collect a receiver nothing
-       else holds (a method's value) before the frozen check and the appends */
-    buf_printf(b, "({ sp_PolyArray *_t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", t);
-    /* evaluate (and root) every argument left-to-right BEFORE any append, so a
-       side-effecting argument or one that reads the receiver sees pre-mutation
-       state, per Ruby's arg-before-call evaluation order. */
-    int base = g_tmp + 1; g_tmp += argc;
-    int vb = g_tmp + 1; g_tmp += argc;
-    Buf cv = {0, 0, 0};
-    /* the last boxed operand: its #to_ary (and an earlier one's) can change
-       an operand before it, which CRuby has already copied */
-    int last_boxed = -1;
-    for (int ai = 0; ai < argc; ai++) {
-      Repr ar = repr_of(c, argv[ai]);
-      if (ar.elem != TY_INT && ar.elem != TY_STRING && ar.elem != TY_FLOAT &&
-          (ar.kind == RK_BOXED || ar.untyped)) last_boxed = ai;
-    }
-    for (int ai = 0; ai < argc; ai++) {
-      Repr ar = repr_of(c, argv[ai]);
-      const char *from = ar.elem == TY_INT   ? "sp_PolyArray_from_int_array"
-                       : ar.elem == TY_STRING   ? "sp_PolyArray_from_str_array"
-                       : ar.elem == TY_FLOAT ? "sp_PolyArray_from_float_array" : NULL;
-      if (!from && (ar.kind == RK_BOXED || ar.untyped)) {
-        /* a boxed argument (a rest param widened to poly): unbox to the
-           working array through the runtime kind dispatch (#3317); one
-           that is no Array is CRuby's TypeError, not an empty list. It
-           converts after the frozen test below, as CRuby converts it: a
-           frozen receiver raises FrozenError first. */
-        buf_printf(b, " sp_RbVal _t%d = ", vb + ai); emit_boxed(c, argv[ai], b);
-        buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", vb + ai);
-        buf_printf(&cv, " sp_PolyArray *_t%d = sp_poly_set_operand(_t%d); SP_GC_ROOT(_t%d);", base + ai, vb + ai, base + ai);
-        if (ai < last_boxed) buf_printf(&cv, " _t%d = sp_PolyArray_dup(_t%d);", base + ai, base + ai);
-        continue;
-      }
-      if (from) {
-        /* a typed operand is read into the working array in order with the
-           boxed ones' conversions: an earlier operand's #to_ary can change it */
-        emit_ctype(c, comp_ntype(c, argv[ai]), b); buf_printf(b, " _t%d = ", vb + ai); emit_expr(c, argv[ai], b);
-        buf_printf(b, "; SP_GC_ROOT(_t%d);", vb + ai);
-        buf_printf(&cv, " sp_PolyArray *_t%d = %s(_t%d); SP_GC_ROOT(_t%d);", base + ai, from, vb + ai, base + ai);
-        continue;
-      }
-      buf_printf(b, " sp_PolyArray *_t%d = ", base + ai);
-      if (comp_ntype(c, argv[ai]) == TY_VOID) {
-        /* an argument that never returns (a method that only raises):
-           run it for its raise; the empty array after it is never read */
-        buf_puts(b, "((void)("); emit_expr(c, argv[ai], b); buf_puts(b, "), sp_PolyArray_new())");
-      }
-      else emit_expr(c, argv[ai], b);   /* already a poly array */
-      buf_printf(b, "; SP_GC_ROOT(_t%d);", base + ai);
-      /* copied at its turn, as CRuby copies it: a later operand's #to_ary
-         can change it */
-      if (ai < last_boxed) buf_printf(&cv, " _t%d = sp_PolyArray_dup(_t%d);", base + ai, base + ai);
-    }
-    /* ... and its length too: one aliasing the receiver is appended as it
-       was, not as an earlier append grew it (CRuby) */
-    int lb = g_tmp + 1; g_tmp += argc;
-    /* a frozen receiver raises even when every argument is empty */
-    buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, SP_BUILTIN_POLY_ARRAY);", t, t, t);
-    if (cv.p) buf_puts(b, cv.p);
-    free(cv.p);
-    for (int ai = 0; ai < argc; ai++)
-      buf_printf(b, " sp_int _t%d = sp_PolyArray_length(_t%d);", lb + ai, base + ai);
-    for (int ai = 0; ai < argc; ai++) {
-      int ti = ++g_tmp;
-      buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_PolyArray_push(_t%d, sp_PolyArray_get(_t%d, _t%d));",
-                 ti, ti, lb + ai, ti, t, base + ai, ti);
-    }
-    buf_printf(b, " _t%d; })", t);
-    return 1;
+typedef struct {
+  Repr repr;
+  int boxed, snapshot;
+} ConcatOperand;
+
+/* Capture before any later conversion this lowering may perform. Direct
+   synthetic to_ary calls have already run as argument expressions. */
+static int prepare_concat_operands(Compiler *c, const int *argv, int argc, ConcatOperand *out) {
+  int later_conversion = 0;
+  for (int i = argc - 1; i >= 0; i--) {
+    Repr r = repr_array_operand(c, argv[i]);
+    /* Several concrete converters have no per-occurrence planned calls:
+       the global hook would select a later definition at an earlier call.
+       Leave that unsupported surface to the ordinary call path. */
+    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED) return 0;
+    out[i].repr = r;
+    out[i].boxed = r.kind == RK_BOXED || !ty_is_array(r.as_ty);
+    out[i].snapshot = later_conversion;
+    if (out[i].boxed) later_conversion = 1;
   }
-  return 0;
+  return 1;
+}
+
+/* The caller has admitted builtin Array#concat, through its typed route
+   or a guarded builtin arm. Hold arguments, then guard before the boxed
+   conversions performed here; already-desugared direct conversions are
+   argument effects upstream. Capture each operand before later callbacks
+   and append only when all conversions succeed. bulk retains the existing
+   Integer statement append choice; it does not change capture policy. */
+int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const int *argv, int argc, int bulk, Buf *b) {
+  int fresh = an_push_widens_fresh(c, id);
+  if (fresh) rt = TY_POLY_ARRAY;
+  const char *k = arr_kind(rt);
+  if (!k || nt_argv_has_splat(c->nt, argv, argc)) return 0;
+  ConcatOperand *op = (ConcatOperand *)calloc(argc ? argc : 1, sizeof *op);
+  if (!op) { perror("calloc"); exit(1); }
+  if (!prepare_concat_operands(c, argv, argc, op)) { free(op); return 0; }
+  int int_bulk = bulk && argc == 1 && rt == TY_INT_ARRAY && !op[0].boxed && op[0].repr.as_ty == rt;
+  int tr = ++g_tmp, base = g_tmp + 1;
+  g_tmp += argc;
+  int lengths = g_tmp + 1; g_tmp += argc;
+  buf_printf(b, "({ sp_%sArray *_t%d = ", k, tr);
+  if (fresh) emit_fresh_lift_recv(c, recv, b);
+  else emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
+  for (int i = 0; i < argc; i++) {
+    if (op[i].boxed) {
+      buf_printf(b, " sp_RbVal _t%d = ", base + i); emit_boxed(c, argv[i], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", base + i);
+    }
+    else {
+      emit_ctype(c, op[i].repr.as_ty, b);
+      buf_printf(b, " _t%d = ", base + i); emit_expr(c, argv[i], b);
+      buf_printf(b, "; SP_GC_ROOT(_t%d);", base + i);
+    }
+  }
+  /* Argument expressions have run. This guard precedes the boxed
+     conversions below, even for an empty concat. Nonempty appends test
+     frozen again if a callback has frozen the receiver. */
+  buf_printf(b, " if (!_t%d) sp_nil_recv(\"concat\");", tr);
+  buf_printf(b, " if (_t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, array_frozen_cls(rt));
+  for (int i = 0; i < argc; i++) {
+    int tv = base + i;
+    const char *ak = arr_kind(op[i].repr.as_ty);
+    if (op[i].boxed) {
+      buf_printf(b, " _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv);
+      if (op[i].snapshot) {
+        int tc = ++g_tmp;
+        buf_printf(b, " { sp_PolyArray *_t%d = sp_poly_to_poly_array(_t%d);"
+                      " if (_t%d == (sp_PolyArray *)_t%d.v.p) _t%d = sp_PolyArray_dup(_t%d);"
+                      " _t%d = sp_box_poly_array(_t%d); }", tc, tv, tc, tv, tc, tc, tv, tc);
+      }
+      buf_printf(b, " sp_int _t%d = sp_poly_length(_t%d);", lengths + i, tv);
+    }
+    else {
+      /* A typed pointer's NULL is Ruby's nil, not an empty operand. */
+      buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
+      if (op[i].snapshot) buf_printf(b, " _t%d = sp_%sArray_dup(_t%d);", tv, ak, tv);
+      if (!int_bulk) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
+    }
+  }
+  for (int i = 0; i < argc; i++) {
+    int tv = base + i;
+    TyKind at = op[i].repr.as_ty;
+    const char *ak = arr_kind(at);
+    if (int_bulk) {
+      buf_printf(b, " sp_IntArray_append_o(_t%d, _t%d);", tr, tv);
+      continue;
+    }
+    int ti = ++g_tmp;
+    int same = !op[i].boxed && at == rt;
+    int num = rt == TY_INT_ARRAY || rt == TY_FLOAT_ARRAY;
+    buf_printf(b, " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) sp_%sArray_push%s(_t%d, ",
+               ti, ti, lengths + i, ti, k, num ? (same ? "_o" : "_nilable") : "", tr);
+    Buf el = {0};
+    if (same) buf_printf(&el, "sp_%sArray_%s(_t%d, _t%d)", ak, num ? "oget" : "get", tv, ti);
+    else if (op[i].boxed) buf_printf(&el, "sp_poly_arr_get(_t%d, _t%d)", tv, ti);
+    else if (at == TY_POLY_ARRAY) buf_printf(&el, "sp_PolyArray_get(_t%d, _t%d)", tv, ti);
+    else {
+      char get[96];
+      int onum = at == TY_INT_ARRAY || at == TY_FLOAT_ARRAY;
+      snprintf(get, sizeof get, "sp_%sArray_%s(_t%d, _t%d)", ak, onum ? "oget" : "get", tv, ti);
+      if (onum) buf_printf(&el, "%s(%s)", at == TY_INT_ARRAY ? "sp_box_oint" : "sp_box_ofloat", get);
+      else emit_boxed_text(c, ty_array_elem(at), get, &el);
+    }
+    if (same || rt == TY_POLY_ARRAY) buf_puts(b, el.p);
+    else if (rt == TY_INT_ARRAY) buf_printf(b, "sp_poly_elem_i(%s)", el.p);
+    else if (rt == TY_FLOAT_ARRAY) buf_printf(b, "sp_poly_elem_f(%s)", el.p);
+    else emit_unbox_text(c, ty_array_elem(rt), el.p, b);
+    free(el.p);
+    buf_puts(b, ");");
+  }
+  free(op);
+  buf_printf(b, " _t%d; })", tr);
+  return 1;
+}
+
+int emit_op_array_concat(Compiler *c, const BopCtx *x, Buf *b) {
+  /* Inference answers a fresh receiver's widening outside the rows. The
+     typed route below the row calls the same lowering for that case. */
+  if (an_push_widens_fresh(c, x->id)) return 0;
+  int argc;
+  const int *argv = call_args(c->nt, x->id, &argc);
+  /* emit_builtin_op_ex selected the builtin row in the caller's arm. */
+  return emit_builtin_array_concat(c, x->id, x->recv, x->rt, argv, argc, 0, b);
 }
 
 /* Array#index(v) / #find_index(v) / #rindex(v) without a block on a poly
