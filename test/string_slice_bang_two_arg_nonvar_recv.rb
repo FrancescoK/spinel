@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 # slice!(start, length) on a String receiver that is NEITHER a variable
 # (no lvalue to write a mutated copy back to) NOR one of the handful of
 # shapes str_fresh_value recognizes as "no other name holds this value"

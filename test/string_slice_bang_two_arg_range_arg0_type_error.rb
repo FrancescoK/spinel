@@ -1,3 +1,4 @@
+# frozen_string_literal: true
 # String#slice!(range, n) has no two-argument overload that takes a Range
 # first -- Ruby raises TypeError, after the receiver's own frozen check (a
 # frozen receiver still raises FrozenError first, since CRuby checks
