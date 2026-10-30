@@ -3988,8 +3988,13 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
 /* ---- methods ---- */
 
 int method_is_void(Scope *s) {
-  /* initialize is always void (mutates *self); else by return type */
-  if (s->class_id >= 0 && s->name && sp_streq(s->name, "initialize")) return 1;
+  /* initialize is always void (mutates *self); else by return type. Its
+     proc-form clone ("initialize#pf", make_yield_proc_forms) is the same
+     body under another name, and its constructor discards what it answers:
+     typed by its last expression instead, a trailing `super(...)` into the
+     parent's void initialize came out as `return <void call>`. */
+  if (s->class_id >= 0 && s->name &&
+      (sp_streq(s->name, "initialize") || sp_streq(s->name, "initialize#pf"))) return 1;
   return !is_scalar_ret(s->ret);
 }
 
