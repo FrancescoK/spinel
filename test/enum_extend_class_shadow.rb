@@ -1,10 +1,12 @@
 # A class that extends Enumerable keeps the class methods that come ahead
 # of it: an accessor of its singleton class, define_singleton_method, a
 # module extended after it (or before it in one `extend`, or after an
-# earlier body extended Enumerable), a singleton prepend, its own is_a?,
-# but not a module extended before it, nor the body's own instance
-# declarations; a constant names the class its namespace reaches; a body
-# with rescue extends it too; and the class's constants are its own.
+# earlier body extended Enumerable, or one that module includes), a
+# singleton prepend, its own is_a?, but not a module extended before it,
+# nor the body's own instance declarations; a constant names the class its
+# namespace reaches; a body with rescue extends it too; the class's
+# constants are its own; and a class of the program named like the twin
+# is left alone.
 
 class Counter
   extend Enumerable
@@ -150,3 +152,31 @@ class Liar
 end
 p Liar.is_a?(Enumerable)
 p Liar.to_a
+
+module WrappedFirsts
+  def first = :from_firsts
+end
+module Wrapper
+  include WrappedFirsts
+end
+class Wrapped
+  extend Enumerable
+  extend Wrapper
+  def self.each
+    yield 1
+  end
+end
+p Wrapped.first
+p Wrapped.to_a
+class Named
+  class SpinelEnumerableSelf
+    def each = "the program's"
+  end
+  extend Enumerable
+  def self.each
+    yield 4
+    yield 5
+  end
+end
+p Named.map { |x| x * 2 }
+p Named::SpinelEnumerableSelf.new.each
