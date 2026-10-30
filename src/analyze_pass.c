@@ -752,10 +752,10 @@ int lw_shared_first(Compiler *c, const char *name, int scope) {
 int lw_shared_node(int rec) { return lw_shared_ix.node[rec]; }
 int lw_shared_next(int rec) { return lw_shared_ix.next[rec]; }
 
-/* The position of the positional parameter of method scope `sc` that `n`
-   reads, when the body never assigns it (so the read is what the call
-   passed); -1 otherwise. */
-int unassigned_param_read(Compiler *c, Scope *sc, int n) {
+/* The position of the parameter of method scope `sc`, a positional or a
+   declared keyword, that `n` reads, when the body never assigns it (so the
+   read is what the call passed); -1 otherwise. */
+static int unassigned_param_or_kwarg_read(Compiler *c, Scope *sc, int n) {
   const NodeTable *nt = c->nt;
   if (!sc || n < 0 || nt_kind(nt, n) != NK_LocalVariableReadNode || comp_scope_of(c, n) != sc) return -1;
   const char *nm = nt_str(nt, n, "name");
@@ -763,14 +763,20 @@ int unassigned_param_read(Compiler *c, Scope *sc, int n) {
   int k = 0;
   while (k < sc->nparams && !(sc->pnames[k] && sp_streq(sc->pnames[k], nm))) k++;
   if (k >= sc->nparams || k >= 64) return -1;
-  if ((sc->rest_idx >= 0 && k >= sc->rest_idx) || (sc->kwrest_idx >= 0 && k >= sc->kwrest_idx)) return -1;
-  if (callee_param_is_declared_kwarg(c, sc, nm)) return -1;
+  /* a keyword binds by name, wherever it stands after a rest */
+  if (!callee_param_is_declared_kwarg(c, sc, nm) &&
+      ((sc->rest_idx >= 0 && k >= sc->rest_idx) || (sc->kwrest_idx >= 0 && k >= sc->kwrest_idx))) return -1;
   int si = (int)(sc - c->scopes);
   for (int r = lw_shared_first(c, nm, si); r >= 0; r = lw_shared_next(r)) {
     int w = lw_shared_node(r);
     if (comp_scope_of(c, w) == sc && sp_streq(nt_str(nt, w, "name"), nm)) return -1;
   }
   return k;
+}
+/* The same for a positional parameter alone. */
+int unassigned_param_read(Compiler *c, Scope *sc, int n) {
+  int k = unassigned_param_or_kwarg_read(c, sc, n);
+  return k >= 0 && callee_param_is_declared_kwarg(c, sc, sc->pnames[k]) ? -1 : k;
 }
 
 /* Sets bit `k` of `*mask`; 1 when it was clear. */
@@ -3311,8 +3317,8 @@ static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int c
   }
   return changed;
 }
-/* the parameter a merge!'s receiver reads, one the body never assigns and
-   no RBS signature types, or NULL */
+/* the parameter a merge!'s or replace's receiver reads, one the body never
+   assigns and no RBS signature types, or NULL */
 static LocalVar *merge_param_recv(Compiler *c, int recv) {
   if (recv < 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return NULL;
   Scope *sc = comp_scope_of(c, recv);
@@ -3320,17 +3326,17 @@ static LocalVar *merge_param_recv(Compiler *c, int recv) {
   LocalVar *lv = scope_local(sc, nt_str(c->nt, recv, "name"));
   return lv && !lv->rbs_seeded ? lv : NULL;
 }
-/* `obj.merge!(src)` with `src` boxed: when both are parameters the body
-   never assigns, src's position is recorded on obj (store_merge_src), for
-   the binding to check each call's hash for it against obj's container
-   (param_src_misfits). A box from anywhere else is left to the store. */
+/* `obj.merge!(src)` or `obj.replace(src)` with `src` boxed: when both are
+   parameters the body never assigns, src's position is recorded on obj
+   (store_merge_src), for the binding to check each call's hash for it
+   against obj's container (param_src_misfits). A box from anywhere else is left to the store. */
 static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an) {
   LocalVar *lv = merge_param_recv(c, recv);
   if (!lv) return 0;
   Scope *sc = comp_scope_of(c, recv);
   int ch = 0;
   for (int ai = 0; ai < an; ai++)
-    if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_read(c, sc, argv[ai]));
+    if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_or_kwarg_read(c, sc, argv[ai]));
   return ch;
 }
 static void wbas_share_begin(int *changed, int *any);
@@ -3522,6 +3528,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           }
         }
         else if (rpk != NK_InstanceVariableReadNode) continue;
+        /* into a parameter, a boxed other that is a parameter too is checked
+           at the binding, as a merge!'s is */
+        if (ot == TY_POLY) changed |= note_merge_param_srcs(c, recv, argv, an);
         /* A parameter's or an ivar's Hash is held elsewhere too: the
            other's keys and values are the evidence a merge! of it is, and
            the fold below widens the Hash where it is built (a boxed other
@@ -8074,6 +8083,13 @@ static int merged_hash_misfits(Compiler *c, int a, TyKind t, TyKind ct) {
   return 0;
 }
 
+/* The argument a call's layout `L` into `m` hands parameter i as written
+   (layout_plain_arg), or for a keyword the value its hash names, or -1. */
+static int layout_source_arg(Compiler *c, Scope *m, const int *argv, const ArgLayout *L, int i) {
+  if (i >= 0 && i < L->n && L->from[i] == ARG_BY_NAME) return kwh_lookup(c->nt, L->kwh, m->pnames[i]);
+  return layout_plain_arg(c, m, argv, L, i);
+}
+
 /* 1 when a call passing `argv` has parameter `p` store into a container of
    type `ct` a key or value that `ct` cannot hold, where the method takes that
    key or value from another of its parameters (p's store_key_src and
@@ -8088,7 +8104,7 @@ int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *
   for (int j = 0; j < L->n && j < 64; j++) {
     int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
     int ise = (int)((p->store_elems_src >> j) & 1ULL), ism = (int)((p->store_merge_src >> j) & 1ULL);
-    int a = isk || isv || ise || ism ? layout_plain_arg(c, m, argv, L, j) : -1;
+    int a = isk || isv || ise || ism ? layout_source_arg(c, m, argv, L, j) : -1;
     if (a < 0) continue;
     TyKind t = infer_type(c, a);
     if (t == TY_STRBUF) t = TY_STRING;
@@ -8978,13 +8994,13 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
       int ck = unassigned_param_read(c, cs, anode);
       LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
       for (int j = 0; cp && !cp->rbs_seeded && j < L.n && j < 64; j++) {
-        int aj = layout_plain_arg(c, m, argv, &L, j);
+        int aj = layout_source_arg(c, m, argv, &L, j);
         if (aj < 0) continue;
         int cj = unassigned_param_read(c, cs, aj);
         if ((p->store_key_src >> j) & 1ULL) changed |= mask_add(&cp->store_key_src, cj);
         if ((p->store_val_src >> j) & 1ULL) changed |= mask_add(&cp->store_val_src, cj);
         if ((p->store_elems_src >> j) & 1ULL) changed |= mask_add(&cp->store_elems_src, cj);
-        if ((p->store_merge_src >> j) & 1ULL) changed |= mask_add(&cp->store_merge_src, cj);
+        if ((p->store_merge_src >> j) & 1ULL) changed |= mask_add(&cp->store_merge_src, unassigned_param_or_kwarg_read(c, cs, aj));
       }
     }
     if (src_misfit && p->type != TY_POLY) {

@@ -302,9 +302,9 @@ typedef struct {
                        method's own positional parameter j (`a[i, n] = src`),
                        boxed when its callers disagree: the binding checks
                        each call's argument j's elements the same way. */
-  unsigned long long store_merge_src; /* (params, hashes) bit j set: a merge!
-                       or update into this parameter merges the method's own
-                       positional parameter j, boxed when its callers
+  unsigned long long store_merge_src; /* (params, hashes) bit j set: a merge!,
+                       update or replace into this parameter takes the method's
+                       own parameter j, positional or keyword, boxed when its callers
                        disagree: the binding checks each call's hash for it,
                        its keys and values, the same way. */
   int store_rest_src; /* (params, containers) one past the first element of the
@@ -993,6 +993,10 @@ typedef struct {
   int no_instance;     /* such a class whose instance side no reached code
                           opens: its singleton methods may run, but nothing
                           builds one, and its instance methods stay unreached */
+  int inst_below;      /* some proper descendant of this class is instantiated
+                          (compute_instantiated): the class has no objects of
+                          its own, but the methods that descendant inherits
+                          run on it */
   int live_sides;      /* the sides an earlier compute_reachable opened: 1 its
                           singleton methods, 2 its instances; kept open */
   /* Prepend shadow chain: when `prepend M` is called on this class,

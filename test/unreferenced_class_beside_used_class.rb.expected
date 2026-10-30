@@ -1,0 +1,18 @@
+#<Plain:XX @n=1, @s="two">
+[#<Plain:XX @n=1, @s="two">, 1]
+{k: #<Plain:XX @n=1, @s="two">}
+#<Plain:XX>
+#<Shown 7>
+Shown(7)
+Shown(7)
+[#<Shown 7>, 2]
+{#<Shown 7> => #<Shown 7>}
+#<Child inspected>
+parent says Child
+parent says Child
+[#<Child inspected>, 3]
+50
+[#<Single:XX @x=1>, 1]
+[#<SingleKid:XX @x=1>, 1]
+[#<Single:XX @x=1>, 1]
+extra

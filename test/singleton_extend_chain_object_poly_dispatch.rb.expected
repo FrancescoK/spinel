@@ -1,0 +1,16 @@
+[#<Foo:XX @a=1>, 1]
+Foo!
+Foo#show 1
+[#<Foo:XX @a=1>, 1]
+Foo!
+Foo#show 1
+[#<Foo:XX @a=1>, 1]
+Foo!
+Foo#show 1
+[#<Foo:XX @a=1>, 1]
+Foo!
+Foo#show 1
+m3
+[#<Bar:XX @a=1>, 1]
+Foo!
+Bar#show

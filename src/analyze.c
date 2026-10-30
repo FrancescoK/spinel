@@ -612,6 +612,7 @@ typedef struct {
   int *cls_first, *cls_next;    /* class -> its scopes, scope -> the next */
   unsigned char *weak_done;     /* per scope: its reads counted unreached */
   int all;
+  int typed;                    /* the node types are settled */
 } CrLive;
 
 static int cr_live_gated(Compiler *c, int k) {
@@ -946,12 +947,34 @@ static void cr_live_event(CrLive *lv, const CrRead *r) {
   }
 }
 
+/* The settled types read every method, reached or not: a parameter a call
+   in an unreached method binds (`Frag.matches?(Sel.new)` in a method nothing
+   calls) carries its class into reached code, which then calls the class's
+   methods directly. So reached code typed with an instance of a class opens
+   its instance side. Not entering a nested def. */
+static void cr_live_typed(CrLive *lv, int id) {
+  Compiler *c = lv->c;
+  const NodeTable *nt = c->nt;
+  if (id < 0 || lv->all || nt_kind(nt, id) == NK_DefNode) return;
+  TyKind t = comp_ntype(c, id);
+  int k = ty_is_object(t) ? ty_object_class(t) : ty_is_obj_array(t) ? ty_obj_array_class(t) : -1;
+  if (k >= 0 && k < c->nclasses && lv->held_i[k]) cr_live_instance(lv, k);
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) cr_live_typed(lv, nt_ref_at(nt, id, i));
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int j = 0; j < nn; j++) cr_live_typed(lv, ids[j]); }
+}
+
 /* A reached scope: the classes it names, the calls it makes, whether it
    builds its class, and its calls that find classes by name */
 static void cr_live_scope(CrLive *lv, int s, char **calls, int ncalls) {
   Compiler *c = lv->c;
   if (lv->all) return;
   for (int i = 0; i < lv->nreads[s]; i++) cr_live_event(lv, &lv->reads[s][i]);
+  if (lv->typed && s > 0) {
+    cr_live_typed(lv, c->scopes[s].body);
+    if (c->scopes[s].def_node >= 0) cr_live_typed(lv, nt_ref(c->nt, c->scopes[s].def_node, "parameters"));
+  }
   /* a send whose name is known only at run time can reach any of them */
   for (int i = 0; i < ncalls && !lv->all; i++)
     if (calls[i] && calls[i][0] == '\x02') cr_live_event(lv, &(CrRead){ NULL, calls[i] + 1, -1, CR_DYN_CALL, 0 });
@@ -1116,6 +1139,7 @@ void compute_reachable(Compiler *c, int typed) {
   int qhead = 0, qtail = 0;
   CrLive lv;
   cr_live_begin(&lv, c, queue, &qtail);
+  lv.typed = typed == 2;
   ic_begin(c, typed);
   if (typed == 2) g_cr_typed = &c->ic->class_only;
   else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }
@@ -1560,6 +1584,25 @@ void compute_reachable(Compiler *c, int typed) {
    not require the origination site to be reachable), so it only over-marks,
    never under-marks. The poly-dispatch switch reads `instantiated` to skip the
    `case` arm of a class no value can be (codegen_call.c). */
+/* Is the Marshal module read as a value anywhere: a constant read that is not
+   the receiver of Marshal's own dump or load? Any other call on it may answer
+   the module (`Marshal.freeze`, `itself`, `then`, `tap`). Only then can a
+   receiver the types cannot name hold it. */
+static int marshal_read_as_value(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int *par = an_parent_map(nt), ans = 0;
+  for (int id = 0; id < nt->count && !ans; id++) {
+    if (nt_kind(nt, id) != NK_ConstantReadNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!is_marshal_const(nm)) continue;
+    int p = par ? par[id] : -1;
+    const char *meth = p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id ? nt_str(nt, p, "name") : NULL;
+    if (!meth || !(is_marshal_dump(nm, meth) || is_object_loader(nm, meth, 1))) ans = 1;
+  }
+  free(par);
+  return ans;
+}
+
 /* Twice: `early`, before the type fixpoint, so that the return type a poly
    receiver's call unifies over its candidates (analyze_infer.c) leaves out a
    class no reachable code constructs -- a dead FFI wrapper's `Vector2.new`
@@ -1572,7 +1615,7 @@ void compute_reachable(Compiler *c, int typed) {
    un-mark, so an arm codegen drops was never in the inferred union. */
 void compute_instantiated(Compiler *c, int early) {
   const NodeTable *nt = c->nt;
-  int disable = 0;
+  int disable = 0, marshal_val = -1;   /* marshal_val: Marshal is read as a value (found on first need) */
   /* The early pass writes ctor_reachable and leaves `instantiated` as the
      fixpoint has always seen it (unset); the late pass writes both. */
   int *keep = NULL;
@@ -1609,6 +1652,14 @@ void compute_instantiated(Compiler *c, int early) {
       Scope *encl = comp_scope_of(c, id);
       if (rk == NK_ConstantReadNode && rn && sp_streq(rn, "Marshal") && (!encl || encl->reachable)) {
         disable = 1; break;
+      }
+      /* the same on a receiver that may hold the Marshal module (`m.load(s)`
+         with Marshal handed in as an argument), when the program reads
+         Marshal as a value anywhere */
+      if (rk != NK_ConstantReadNode && (!encl || encl->reachable) &&
+          (comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_POLY || comp_ntype(c, recv) == TY_UNKNOWN)) {
+        if (marshal_val < 0) marshal_val = marshal_read_as_value(c);
+        if (marshal_val) { disable = 1; break; }
       }
     }
     /* allocate on the method's own class, or `self.class.new(...)` in one of
@@ -1671,8 +1722,11 @@ void compute_instantiated(Compiler *c, int early) {
        scope), so it must not mark the class instantiated. */
     if (recv < 0 && sp_streq(name, "new")) {
       Scope *encl = comp_scope_of(c, id);
+      /* the singleton method is inherited: it builds the receiving class,
+         this one or a descendant (cmethod_super_receiving_class) */
       if (encl && encl->class_id >= 0 && encl->is_cmethod && encl->reachable)
-        c->classes[encl->class_id].instantiated = 1;
+        for (int k = 0; k < c->nclasses; k++)
+          if (k == encl->class_id || is_descendant(c, k, encl->class_id)) c->classes[k].instantiated = 1;
     }
     /* raise Cls / raise Cls, msg : constructs an instance of Cls */
     if (recv < 0 && sp_streq(name, "raise")) {
@@ -1698,6 +1752,25 @@ void compute_instantiated(Compiler *c, int early) {
       }
     }
   }
+  /* The object a `rescue ... => e` binds is built at the clause when the
+     exception was raised with none (Thread#raise, Fiber#raise,
+     Timeout.timeout(n, Cls) and the runtime's own raises take a class, not an
+     object): a binding typed as a program exception class is handed an
+     instance of the class the clause names, or a subclass of it, which no
+     `new` of the program writes (emit_rescue). */
+  if (!early && !disable)
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_RescueNode) continue;
+      int ref = nt_ref(nt, id, "reference");
+      if (ref < 0 || nt_kind(nt, ref) != NK_LocalVariableTargetNode) continue;
+      Scope *encl = comp_scope_of(c, ref);
+      if (!encl || !encl->reachable) continue;
+      LocalVar *lv = scope_local(encl, nt_str(nt, ref, "name"));
+      int xc = lv && ty_is_object(lv->type) ? ty_object_class(lv->type) : -1;
+      if (xc < 0 || !class_is_exc_subclass(c, xc)) continue;
+      for (int k = 0; k < c->nclasses; k++)
+        if (k == xc || is_descendant(c, k, xc)) c->classes[k].instantiated = 1;
+    }
   if (disable)
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
@@ -1711,10 +1784,30 @@ void compute_instantiated(Compiler *c, int early) {
     /* no reached code can make one (compute_reachable) */
     if (c->classes[k].no_instance) c->classes[k].instantiated = 0;
     c->classes[k].ctor_site = c->classes[k].instantiated;
-    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+    /* a TypedData class (or a Ruby subclass of one) has its objects made by
+       C, with TypedData_Make_Struct, and no `new` of the program names it */
+    if (c->classes[k].is_struct || c->classes[k].is_native_class || c->classes[k].cext_extension) c->classes[k].instantiated = 1;
     /* a C extension makes any exception class of the program's by name
        (rb_exc_new2 through sp_cext_exception_new_fn), with no `.new` here */
     if (c->n_cext_extensions && class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
+  }
+  /* A singleton class's constructor stamps its objects with the parent's id
+     until the singleton's first method runs (ctor_cls_id), and each `extend`
+     moves the object up one link of the chain (sg_chain_link, whose parent is
+     the previous link), so an object whose exact class is the original class,
+     or any link below the last, exists wherever the last link is built. */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated || !c->classes[k].is_singleton_of) continue;
+    for (int p = c->classes[k].parent; p >= 0 && p < c->nclasses && c->classes[p].is_singleton_of; p = c->classes[p].parent)
+      c->classes[p].instantiated = 1;
+    c->classes[c->classes[k].is_singleton_of - 1].instantiated = 1;
+  }
+  for (int k = 0; k < c->nclasses; k++) c->classes[k].inst_below = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    int hops = 0;
+    for (int p = c->classes[k].parent; p >= 0 && p < c->nclasses && hops <= c->nclasses; p = c->classes[p].parent, hops++)
+      c->classes[p].inst_below = 1;
   }
   for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
@@ -4851,6 +4944,15 @@ static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
     }
   return 0;
 }
+/* Does the program write `leaf = Struct.new(...)` or `leaf = Data.define(...)`?
+   Such a constant names a class as a `class` header does. */
+static int qc_program_defines_struct_or_data(const NodeTable *nt, const char *leaf) {
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
+    const char *cn = nt_str(nt, id, "name");
+    if (cn && sp_streq(cn, leaf) && qc_struct_or_data_value(nt, nt_ref(nt, id, "value"))) return 1;
+  }
+  return 0;
+}
 /* `M.const_set(:N, v)` with a literal name sets M's constant N and answers
    v, as `M::N = v` does; `const_set(:N, v)` or `self.const_set(:N, v)` in a
    class or module body sets the body's own, as `N = v` there does. Written
@@ -4938,15 +5040,18 @@ int desugar_const_set_write_at(Compiler *c, LowerCtx *lc, int id) {
 }
 /* A top-level path write's target `A::B::NAME`, as a write of NAME under
    the module path A::B names from the top level (through an alias, `A =
-   Base`) -- when each segment of it is a class or module of the program. */
+   Base`) -- when each segment of it is a class or module of the program, or
+   a constant that holds `Struct.new(...)` or `Data.define(...)`. */
 static void qc_note_path_write(Compiler *c, int tgt, QCWrite **ws, int *n, int *cap) {
   char chain[QC_MAXDEPTH + 1][64], mods[QC_MAXDEPTH + 1][64];
   int abs = 0, cn = tgt >= 0 ? qc_read_chain(c->nt, tgt, chain, &abs) : 0;
   if (cn < 2 || cn > QC_MAXDEPTH) return;
   QCScope top = { chain, 0 };
   int via, md = qc_alias_chain(&top, 1, chain, cn - 1, mods, &via);
-  if (md < 1 || qc_holder >= 0) return;
-  for (int i = 0; i < md; i++) if (!qc_program_defines_class(c->nt, mods[i])) return;
+  if (md < 1 || (qc_holder >= 0 && !qc_aliases[qc_holder].sd)) return;
+  for (int i = 0; i < md; i++)
+    if (!qc_program_defines_class(c->nt, mods[i]) && !qc_program_defines_struct_or_data(c->nt, mods[i])) return;
+  if (!qc_program_defines_class(c->nt, mods[md - 1]) && holder_subclass_defines(c->nt, mods[md - 1], chain[cn - 1])) return;
   if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
   if (!*ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   QCWrite *w = &(*ws)[(*n)++];
@@ -10790,8 +10895,10 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
   int n0 = nt->count;
   for (int id = 0; id < n0; id++) {
     NodeKind ty_k = nt_kind(nt, id);
-    if (ty_k != NK_CallNode) continue;
-    const char *nm = nt_str(nt, id, "name");
+    /* `super(a, &s)` too: left as the block argument, the parent's `&b`
+       had no proc for a Symbol and the call was refused */
+    if (ty_k != NK_CallNode && ty_k != NK_SuperNode) continue;
+    const char *nm = ty_k == NK_CallNode ? nt_str(nt, id, "name") : NULL;
     int is_toproc = nm && sp_streq(nm, "to_proc");
     int ex = -1;
     if (is_toproc) {
@@ -10828,7 +10935,7 @@ static int desugar_symbol_var_block_arg(Compiler *c) {
     }
     /* as many parameters as the call passes its block: the first receives
        the send, the rest are its arguments */
-    int npar = is_toproc ? 1 : sym_block_values(c, id);
+    int npar = is_toproc || ty_k != NK_CallNode ? 1 : sym_block_values(c, id);
     if (npar < 1) npar = 1;
     char pn[8][64];
     int preq[8], sa[9];
@@ -34827,7 +34934,7 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
 static int nullable_int_call_name(const char *nm) {
   if (!nm) return 0;
   static const char *const N[] = {
-    "index", "rindex", "byteindex", "byterindex", "delete_at", "slice!", "pop", "shift",
+    "index", "rindex", "find_index", "byteindex", "byterindex", "delete_at", "slice!", "pop", "shift",
     "delete", "nonzero?", "infinite?", "getbyte", "bsearch", "bsearch_index", "unpack1",
     /* Process::Status: nil when the process did not exit / was not signaled */
     "exitstatus", "termsig", "stopsig",
@@ -47200,6 +47307,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_ITSELF_RECEIVER);           /* x.itself -> x (--share-strings) */
   lower_run(c, &lc, LW_TAP_VALUE_WRITE);            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
   AN_STEP_V("desugar_self_const_get", desugar_self_const_get(c));            /* const_get(:X) / self::X in a class method -> per subclass */
+  AN_STEP_V("desugar_holder_block_self_const", desugar_holder_block_self_const(c));  /* self.class::X in a Data.define block -> Holder::X */
   AN_STEP_V("desugar_dynamic_const_get", desugar_dynamic_const_get(c));          /* M.const_get(expr) -> a table of M's constants */
   AN_STEP_V("desugar_builtin_reopen_self_calls", desugar_builtin_reopen_self_calls(c));  /* class Hash; def m = each {..} -> self.each */
   AN_STEP_V("desugar_builtin_ivars", desugar_builtin_ivars(c));              /* class Array; def m = @x -> self.__bivar_get(:@x) */
@@ -47221,6 +47329,10 @@ static void an_phase_desugar_register(Compiler *c) {
   AN_STEP_V("desugar_native_func_defs", desugar_native_func_defs(c));          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
   AN_STEP_V("desugar_explicit_receiver_mixin", desugar_explicit_receiver_mixin(c));    /* K.prepend(M) as a statement -> class K; prepend M; end */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M), class << self; include M -> extend M */
+  /* extend Enumerable -> an instance-side twin each Enumerable call on the class goes to */
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_extend_enumerable", desugar_extend_enumerable(c, &hs));
+  host_end(c, &hs);
   AN_STEP_V("desugar_attr_const_splat", desugar_attr_const_splat(c));           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
   AN_STEP_V("desugar_singleton_attr", desugar_singleton_attr(c));             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   AN_STEP_V("desugar_sclass_readers_through_class", desugar_sclass_readers_through_class(c)); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
@@ -49080,6 +49192,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_class_literal_ctors", desugar_class_literal_ctors(c));      /* Array[a,b] -> [a,b]; Range.new -> (a..b) */
     ch |= AN_PASS("desugar_enum_iter_splat_args", desugar_enum_iter_splat_args(c));     /* enum.map(*a, &b) -> enum.map(&b) */
     ch |= AN_PASS("desugar_index_value_block_pass", desugar_index_value_block_pass(c));  /* a.index(v, &mk) -> (b = mk; a.index(v, &b)) */
+    ch |= AN_PASS("desugar_value_form_drop_block", desugar_value_form_drop_block(c));  /* a.count(v) { } -> a.count(v) */
     ch |= AN_PASS("desugar_iter_splat_args", desugar_iter_splat_args(c));     /* ary.each(*a) { } -> raise unless a.empty?; ary.each { } */
     ch |= AN_PASS("desugar_enum_pair_lone_param", desugar_enum_pair_lone_param(c));     /* a.each_with_index.map { |x| } -> { |x, i| } */
     ch |= AN_PASS("desugar_builtin_iter_block_shapes", desugar_builtin_iter_block_shapes(c));  /* [1].each { |c, a = 10| } -> { |v| c = v; a = 10 } */
@@ -53343,6 +53456,29 @@ void analyze_program(Compiler *c) {
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */
   AN_STEP_V("compute_reachable", compute_reachable(c, 2));
+  /* The census again, on what this pass reached: it opens the instances of
+     a class reached code is typed with (an object built only where nothing
+     runs), and a construction in one of its methods, now reached, builds
+     its class too. Taken as more, never less: the dispatch's arms and the
+     types settled on the census above. Without it a reached
+     `SSLSocket#initialize` called `SSLContext.new`, whose constructor the
+     C left out (#10643). */
+  {
+    int nk = c->nclasses;
+    unsigned char *was = malloc((size_t)(nk ? nk : 1) * 3);
+    for (int k = 0; k < nk; k++) {
+      was[3 * k] = (unsigned char)c->classes[k].instantiated;
+      was[3 * k + 1] = (unsigned char)c->classes[k].ctor_site;
+      was[3 * k + 2] = (unsigned char)c->classes[k].ctor_reachable;
+    }
+    compute_instantiated(c, 0);
+    for (int k = 0; k < nk; k++) {
+      c->classes[k].instantiated |= was[3 * k];
+      c->classes[k].ctor_site |= was[3 * k + 1];
+      c->classes[k].ctor_reachable |= was[3 * k + 2];
+    }
+    free(was);
+  }
   if (g_dump_implicit) { ic_dump(c, stdout); exit(0); }   /* the methods CRuby calls that the program does not name, and the defs kept */
 
   if (getenv("SP_FIXPOINT_LOG"))

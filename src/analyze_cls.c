@@ -3370,7 +3370,12 @@ static void cf_opaque_answer(CF *f, int v, int r, const char *nm, const int *arg
     return;
   }
   if (cf_name_in(nm, reports)) {
-    cf_add_set(f, v, cf_bv_set(f));
+    /* a Method (method, public_method, singleton_method, bind) is called
+       by its `[]` as a Proc is: the Proc set, whose `pr` the typing of a
+       boxed `[]` reads */
+    static const char *const methods[] = { "method", "public_method", "singleton_method", "bind", NULL };
+    int set = cf_name_in(nm, methods) ? cf_proc_set(f) : cf_bv_set(f);
+    cf_add_set(f, v, set);
     cf_add_set(f, f->obj_cont[cf_el_obj(f, v)], cf_bv_set(f));
     return;
   }

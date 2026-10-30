@@ -1,0 +1,3 @@
+[<label for="title">Title</label>]
+<select name="kind">opts</select>
+[<label for="body">Blocky</label>]

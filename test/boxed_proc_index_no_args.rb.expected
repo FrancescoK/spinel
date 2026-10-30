@@ -1,0 +1,15 @@
+5
+:p
+7
+10
+[ArgumentError, "wrong number of arguments (given 0, expected 1..2)"]
+[ArgumentError, "wrong number of arguments (given 0, expected 1..2)"]
+[ArgumentError, "wrong number of arguments (given 0, expected 1)"]
+[ArgumentError, "wrong number of arguments (given 0, expected 1..2)"]
+[NoMethodError, "undefined method '[]' for an instance of Plain"]
+40
+"t"
+1
+1
+1
+3

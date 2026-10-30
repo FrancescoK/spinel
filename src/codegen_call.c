@@ -2257,6 +2257,9 @@ static int class_body_constants(Compiler *c, int ci, const char **out, const cha
       else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
         int ncp = nt_ref(nt, stmts[k], "constant_path");
         if (ncp >= 0 && nt_kind(nt, ncp) == NK_ConstantPathNode) continue;
+        /* the twin a class that extends Enumerable answers it through
+           (desugar_extend_enumerable) is the compiler's, not the program's */
+        if (nt_int(nt, stmts[k], "enum_twin", 0)) continue;
         class_stmt_const_names(nt, stmts[k], &nm, &sh);
       }
       if (nm) n = add_listed_const(out, shown, n, nm, sh);
@@ -6469,10 +6472,18 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
         buf_printf(&body, "%.*s_t%d", (int)(hit - q), q, tv);
         q = hit + 3;
       }
+      /* with no class of the program built to answer the name, the call is
+         still typed from their returns (the poly dispatch's union in
+         analyze_infer.c): an Integer? or untyped one is the slot this Time
+         answer lands in */
+      TyKind raw = ti ? TY_INT : tb ? TY_BOOL : TY_STRING, want = comp_ntype(c, id);
+      const char *wrap = want == TY_POLY ? ty_box_fn(raw) : ti && node_is_oint(c, id) ? "sp_oint_of" : NULL;
+      if (wrap) buf_printf(b, "%s(", wrap);
       buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
       buf_printf(b, "; _t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME ? %s"
                     " : (%s)(sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), %s); })",
                  tv, tv, body.p ? body.p : "0", cty, name, tv, miss);
+      if (wrap) buf_puts(b, ")");
       free(body.p);
       return 1;
     }
@@ -12734,7 +12745,7 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   CtorArityArms aerr = {0};
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
-    if (!class_is_exc_subclass(c, ci)) continue;
+    if (!class_is_exc_subclass(c, ci) || !class_has_ctor(&c->classes[ci])) continue;
     int initm = comp_method_in_chain(c, ci, "initialize", NULL);
     if (initm < 0 || !c->scopes[initm].reachable) continue;
     Scope *is = &c->scopes[initm];
@@ -12867,6 +12878,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
     if (emit_user_new_arm(c, id, ci, argc, NULL, 0, rt2, b)) continue;
+    if (!class_has_ctor(&c->classes[ci])) continue;
     int initm = comp_method_in_chain(c, ci, "initialize", NULL);
     /* A Struct or Data class's generated constructor, reached with a sole
        `*args` or a sole keyword hash: the arm builds it as the static

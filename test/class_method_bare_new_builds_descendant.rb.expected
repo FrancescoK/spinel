@@ -1,0 +1,13 @@
+Shape
+Oval
+Square
+Strap
+Band
+Oval(a)
+Square(b)
+Strap(c)
+[oval:a, 1]
+[#<Square:XX @name="b">, 1]
+[band:c, 1]
+[band:d, 1]
+[Oval, Square, Strap, Band]
