@@ -25,6 +25,26 @@
 #include "sp_string.h"  /* sp_String builder for sp_IntIntHash_inspect */
 #include "sp_re.h"      /* mrb_regexp_pattern for sp_re_gsub_str_str_hash/sub_str_str_hash */
 
+/* A Hash's insertion order without the entry a delete takes out. The order
+   holds what the table holds for the entry -- the key pointer a String-keyed
+   Hash stored, the key of an Integer- or Symbol-keyed one, a PolyPolyHash's
+   slot -- so the entry is found by that value, not by comparing key bytes,
+   and the entries after it move down: a few in a loop, more in one memmove,
+   whose call costs more than a short loop. len is the order's length
+   before the delete. */
+static inline void sp_order_drop_str(const char **order, sp_int len, const char *k) {
+  sp_int i = 0;
+  while (i < len && order[i] != k) i++;
+  if (len - 1 - i > 16) memmove(order + i, order + i + 1, sizeof *order * (size_t)(len - 1 - i));
+  else for (; i + 1 < len; i++) order[i] = order[i + 1];
+}
+static inline void sp_order_drop_int(sp_int *order, sp_int len, sp_int k) {
+  sp_int i = 0;
+  while (i < len && order[i] != k) i++;
+  if (len - 1 - i > 16) memmove(order + i, order + i + 1, sizeof *order * (size_t)(len - 1 - i));
+  else for (; i + 1 < len; i++) order[i] = order[i + 1];
+}
+
 SP_NORETURN SP_COLD void sp_raise_hash_nil_value(void);
 void sp_StrIntHash_fin(void*p);
 void sp_StrIntHash_scan(void*p);
