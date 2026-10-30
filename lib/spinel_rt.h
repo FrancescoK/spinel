@@ -12086,7 +12086,7 @@ static SP_NOINLINE sp_int sp_poly_for_next(const sp_Range *r, sp_PolyArray *a, s
   }
   return a->len > 0 ? 0 : -1;
 }
-static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
+static SP_NOINLINE sp_int sp_poly_arr_len_ex_slow(sp_RbVal a) {
   if (a.tag != SP_TAG_OBJ) return 0;
   if (sp_enum_is_walker(a)) return sp_enum_walk_len(a);
   /* a finite materialized Enumerator is its items: read as none, any?, all?,
@@ -12106,7 +12106,7 @@ static sp_int sp_poly_arr_len_ex(sp_RbVal a) {
 /* sp_poly_each_elem: return the i-th element for sequential each-iteration.
    For arrays: element at index i. For hashes: the i-th insertion-order
    key-value pair as a 2-element PolyArray so |k, v| block splat works. */
-static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
+static SP_NOINLINE sp_RbVal sp_poly_each_elem_slow(sp_RbVal a, sp_int i) {
   SP_GC_ROOT_RBVAL(a);   /* the boxing arms below allocate */
   if (a.tag != SP_TAG_OBJ) return sp_box_nil();
   if (sp_enum_is_walker(a)) return sp_enum_walk_at(a, i);
@@ -12170,6 +12170,29 @@ static sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
       return sp_box_poly_array(pair); }
     default: return sp_box_nil();
   }
+}
+/* A boxed walk's loop (sp_poly_arr_len_ex, sp_poly_each_elem) reads its
+   length and element once per step. An Array of a common kind answers here,
+   inline at the loop, before the Enumerator, Range and Hash cases the
+   functions above sort out; an Array is none of those. */
+static inline sp_int sp_poly_arr_len_ex(sp_RbVal a) {
+  if (a.tag == SP_TAG_OBJ && a.v.p) {
+    if (a.cls_id == SP_BUILTIN_POLY_ARRAY) return ((sp_PolyArray *)a.v.p)->len;
+    if (a.cls_id == SP_BUILTIN_INT_ARRAY) return ((sp_IntArray *)a.v.p)->len;
+    if (a.cls_id == SP_BUILTIN_FLT_ARRAY) return ((sp_FloatArray *)a.v.p)->len;
+  }
+  return sp_poly_arr_len_ex_slow(a);
+}
+static inline sp_RbVal sp_poly_each_elem(sp_RbVal a, sp_int i) {
+  if (a.tag == SP_TAG_OBJ && a.v.p) {
+    if (a.cls_id == SP_BUILTIN_POLY_ARRAY) {
+      sp_PolyArray *ar = (sp_PolyArray *)a.v.p;
+      return i >= 0 && i < ar->len ? ar->data[i] : sp_box_nil();
+    }
+    if (a.cls_id == SP_BUILTIN_INT_ARRAY) return sp_IntArray_box_elem((sp_IntArray *)a.v.p, i);
+    if (a.cls_id == SP_BUILTIN_FLT_ARRAY) return sp_FloatArray_box_elem((sp_FloatArray *)a.v.p, i);
+  }
+  return sp_poly_each_elem_slow(a, i);
 }
 /* Array#zip with no arguments: each element alone in a one-element array
    ([1, 2].zip -> [[1], [2]]), the degenerate case of zipping nothing (#3612). */
