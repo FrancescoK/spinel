@@ -10409,8 +10409,12 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
         if (is_fetch && argc == 2) {
           char dn[40]; snprintf(dn, sizeof dn, "_t%d", atmp[1]);
           /* a default held as a shared handle is boxed as one: its temp is
-             an sp_String *, whatever the read's String type */
-          TyKind dt = atmp_ty[1] == TY_STRBUF ? TY_STRBUF : repr_of(c, argv[1]).as_ty;
+             an sp_String *, whatever the read's String type; one held
+             boxed already (an Integer that can be nil, `form == :utc ? 0 :
+             nil`, whose temp is its oint boxed) is the box, not an Integer
+             to box again */
+          TyKind dt = atmp_ty[1] == TY_STRBUF ? TY_STRBUF
+                    : atmp_ty[1] == TY_POLY ? TY_POLY : repr_of(c, argv[1]).as_ty;
           if (rr.kind == RK_BOXED) emit_boxed_text(c, dt, dn, b);
           else if (trn_o && dt == TY_NIL) buf_puts(b, oint_nil(ret));
           else if (trn_o && dt == TY_POLY) buf_printf(b, "%s(%s)", oint_unbox(ret), dn);
