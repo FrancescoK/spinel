@@ -86,6 +86,7 @@ mode_t umask(mode_t m) { (void)m; return 022; }
 int chown(const char *p, uid_t u, gid_t g) SP_WASI_NOSYS(p, u, g)
 int mkfifo(const char *p, mode_t m) SP_WASI_NOSYS(p, m)
 int fchdir(int fd) SP_WASI_NOSYS(fd)
+FILE *tmpfile(void) { errno = ENOSYS; return NULL; }   /* no temporary directory */
 int flock(int fd, int op) { (void)fd; (void)op; return 0; }   /* one process: the lock is always free */
 int madvise(void *a, size_t n, int adv) { (void)a; (void)n; (void)adv; return 0; }
 #endif
