@@ -381,6 +381,18 @@ jobs:
       - name: Build (parse + regexp + spinelc)
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
+      # The result cache (tools/result_cache.sh) skips the compile and run of
+      # a program whose C, runtime headers and flags match a run that
+      # passed. Kept across runs, a push recompiles only the programs whose C
+      # changed; one that edits a header under lib/ or packages/ misses every
+      # entry and runs the whole corpus, as before.
+      - name: Restore the result cache
+        uses: actions/cache@v6
+        with:
+          path: build/result-cache
+          key: result-cache-${{ matrix.mode }}-${{ github.run_id }}
+          restore-keys: result-cache-${{ matrix.mode }}-
+
       - name: Run the test corpus under --int-overflow=${{ matrix.mode }}
         run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0 SPINEL_INT_OVERFLOW=${{ matrix.mode }}
 
