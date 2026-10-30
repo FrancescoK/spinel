@@ -17739,6 +17739,9 @@ int infer_block_params(Compiler *c) {
        (the two-owner face row, #4763): the param takes the box, so the body
        is typed once and both arms bind it boxed */
     if (sp_streq(name, "step") && rt == TY_POLY && p0) pt = TY_POLY;
+    /* an Integer's Rational limit or step yields boxed Rational/Integer
+       values, as a Rational receiver's walk does */
+    else if (sp_streq(name, "step") && rt == TY_INT && an_step_rat_bound(c, id, 1)) pt = TY_POLY;
     else if (sp_streq(name, "step") && (rt == TY_INT || rt == TY_FLOAT)) {
       /* a float receiver or float limit/step yields floats */
       int args = nt_ref(nt, id, "arguments");
@@ -17747,6 +17750,7 @@ int infer_block_params(Compiler *c) {
                 (sc >= 2 && infer_type(c, sv[1]) == TY_FLOAT);
       pt = isf ? TY_FLOAT : TY_INT;
     }
+    else if (sp_streq(name, "step") && rt == TY_RANGE && an_range_step_rat(c, id, 1)) pt = TY_POLY;
     else if (sp_streq(name, "step") && rt == TY_RANGE) {
       /* (range).step(k) { |x| }: float when the step or a literal range bound
          is float; mirrors emit_range_step_array's element type. */

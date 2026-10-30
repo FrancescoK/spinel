@@ -3279,6 +3279,48 @@ static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, B
   return 1;
 }
 
+/* The head of a boxed numeric walk, as one line: the current value _t<tc>
+   advances by the step _t<ts> through the poly numeric tower (sp_poly_add
+   keeps a Rational exact) while it stays within the limit _t<tl>. `excl`
+   and `open` are C conditions: an excluded limit is compared with <, an open
+   one (an endless Range) not at all. A zero step raises, a negative one
+   walks down; `guard` (or NULL) runs after the zero check. */
+void emit_boxed_step_head(Buf *b, int tc, int tl, int ts, const char *excl, const char *open, const char *guard) {
+  int td = ++g_tmp;
+  buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
+  if (guard) buf_printf(b, " %s", guard);
+  buf_printf(b, " sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", td, ts);
+  buf_printf(b, " for (; (%s) || (_t%d ? ((%s) ? sp_poly_lt(_t%d, _t%d) : sp_poly_le(_t%d, _t%d))"
+                " : ((%s) ? sp_poly_gt(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d)));"
+                " _t%d = sp_poly_add(_t%d, _t%d))",
+             open, td, excl, tc, tl, tc, tl, excl, tc, tl, tc, tl, tc, tc, ts);
+}
+
+/* The boxed walk of an Integer Range by a Rational step (an_range_step_rat),
+   as one line: the declarations and the `for (...)` head, the current value
+   in the returned temp. `materialize`: the walk fills an Array, so an
+   endless Range or a span past 2**30 steps raises, as the Integer step's
+   array does, rather than pushing until memory runs out. */
+int emit_range_rat_step_for(Compiler *c, int recv, int step, int materialize, Buf *b) {
+  int tr = ++g_tmp, tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
+  buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, recv, b);
+  buf_printf(b, "; sp_range_int_only(_t%d, \"Range#step\");", tr);
+  buf_printf(b, " if (_t%d.nobeg) sp_raise_cls(\"ArgumentError\","
+                " \"#step for non-numeric beginless ranges is meaningless\");", tr);
+  buf_printf(b, " sp_RbVal _t%d = ", ts); emit_boxed(c, step, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ts);
+  buf_printf(b, " sp_RbVal _t%d = sp_box_int(_t%d.last);", tl, tr);
+  buf_printf(b, " sp_RbVal _t%d = sp_box_int(_t%d.first); SP_GC_ROOT_RBVAL(_t%d); ", tc, tr, tc);
+  char excl[32], open[32], guard[320];
+  snprintf(excl, sizeof excl, "_t%d.excl", tr);
+  snprintf(open, sizeof open, "_t%d.noend", tr);
+  snprintf(guard, sizeof guard,
+           "if (_t%d.noend || sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
+           " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tr, tl, tc, ts);
+  emit_boxed_step_head(b, tc, tl, ts, excl, open, materialize ? guard : NULL);
+  return tc;
+}
+
 /* numeric.step(limit[, step]) without a block, materialized as an int or
    float array (so a following .to_a / .inspect works). Returns 1 if handled. */
 int emit_step_array_expr(Compiler *c, int id, Buf *b) {
@@ -3312,9 +3354,11 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
      sequence boxed, exactly as a Rational receiver does (#3006). */
   int bn_bound = 0;
   for (int sk = 0; sk < sc; sk++) if (repr_of(c, sv[sk]).big) bn_bound = 1;
-  /* (and a Rational --int-overflow=promote holds boxed) */
-  if (rt == TY_RATIONAL || bn_bound || (rt == TY_POLY && an_rat_value(c, recv))) {
-    int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp, tdd = ++g_tmp;
+  /* (and a Rational --int-overflow=promote holds boxed, and an Integer's
+     Rational limit or step) */
+  if (rt == TY_RATIONAL || bn_bound || (rt == TY_POLY && an_rat_value(c, recv)) ||
+      (rt == TY_INT && an_step_rat_bound(c, id, 0))) {
+    int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", trr, trr);
     buf_printf(b, " sp_RbVal _t%d = ", tcc);
     if (rt == TY_RATIONAL) { buf_puts(b, "sp_box_rational("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -3325,14 +3369,15 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, " sp_RbVal _t%d = ", tss);
     if (sc >= 2) emit_boxed(c, sv[1], b); else buf_puts(b, "sp_box_int(1)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tss);
-    buf_printf(b, " if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", tss);
     /* a span past 2**30 steps raises as the sp_int form below does, rather
        than pushing until memory runs out */
-    buf_printf(b, " if (sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
-                  " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tss);
-    buf_printf(b, " sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", tdd, tss);
-    buf_printf(b, " for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) sp_PolyArray_push(_t%d, _t%d);",
-               tdd, tcc, tll, tcc, tll, tcc, tcc, tss, trr, tcc);
+    char guard[256];
+    snprintf(guard, sizeof guard,
+             "if (sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
+             " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tss);
+    buf_puts(b, " ");
+    emit_boxed_step_head(b, tcc, tll, tss, "0", "0", guard);
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", trr, tcc);
     buf_printf(b, " _t%d; })", trr);
     return 1;
   }

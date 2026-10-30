@@ -8082,6 +8082,19 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc < 1) return 0;
+    /* a Rational step walks the boxed sequence from the begin */
+    if (rt == TY_RANGE && an_range_step_rat(c, id, 0)) {
+      emit_indent(b, indent); buf_puts(b, "{ ");
+      int tc = emit_range_rat_step_for(c, recv, sargv[0], 0, b);
+      buf_puts(b, " {\n");
+      if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
+      { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);
+        int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+        emit_iter_bind_rest(c, block, rs_np, TY_POLY, rs_es, b, indent + 1); }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "} }\n");
+      return 1;
+    }
     /* An INTEGER-stepped Range walks its span directly instead of
        materializing it: an endless range would never finish building the
        array, so the block (and its break) was never reached (#3673). */
@@ -8224,12 +8237,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      a Rational operand rational), so the values stay exact (#2566). */
   /* a Bignum receiver walks the same boxed sequence: it does not fit the
      sp_int loop below, and it had no arm at all (#4779) */
-  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big || (rt == TY_POLY && an_rat_value(c, recv)))) {
+  /* and so does an Integer's Rational limit or step */
+  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big || (rt == TY_POLY && an_rat_value(c, recv)) ||
+                                 (rt == TY_INT && an_step_rat_bound(c, id, 0)))) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc < 1) return 0;
-    int tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, td = ++g_tmp;
+    int tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tc);
     if (rt == TY_RATIONAL) { buf_puts(b, "sp_box_rational("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else emit_boxed(c, recv, b);
@@ -8240,12 +8255,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     if (sargc >= 2) emit_boxed(c, sargv[1], b); else buf_puts(b, "sp_box_int(1)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", ts);
     emit_indent(b, indent);
-    buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;\n", td, ts);
-    emit_indent(b, indent);
-    buf_printf(b, "for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) {\n",
-               td, tc, tl, tc, tl, tc, tc, ts);
+    emit_boxed_step_head(b, tc, tl, ts, "0", "0", NULL);
+    buf_puts(b, " {\n");
     if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
