@@ -1248,7 +1248,7 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
   return sc;
 }
 static int program_defines_name(const NodeTable *nt, int n0, const char *name);
-static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name);
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name, int recv);
 /* The paths the program writes, for the receiver of an instance_eval:
    each class or module header's full path ("A::B"), each value constant's,
    and the lexical scopes (the full paths of the bodies around it,
@@ -6226,9 +6226,11 @@ void enum_send_copy_take(NodeTable *nt, int call) {
      definition has, under that name, as desugar_builtins renames a written
      one; a class with its own method of the alias keeps it, answered by
      the name the call was written with (desugar_builtin_enum_calls); a
-     class method or a top-level one keeps the call as written */
+     class method keeps the call as written, and a top-level one a call
+     it can reach */
   const LowerRow *alias = bi < 0 && nm ? lower_row_named(LR_ENUM_NAME, nm) : NULL;
-  if (alias && !program_defines_name_off_class(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
+  if (alias && !program_defines_name_off_class(nt, nt->count, nm, nt_ref(nt, call, "receiver")))
+    bi = builtin_enum_name_index(alias->target);
   else alias = NULL;
   if (bi < 0 || bi >= g_enum_send_copy_n || g_enum_send_copy[bi] < 0) return;
   if (alias) {
@@ -12977,15 +12979,31 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
   return 0;
 }
 
+/* is def a statement of a file's top level? */
+static int def_at_top_level(const NodeTable *nt, int n0, int def) {
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_ProgramNode) continue;
+    int st = nt_ref(nt, id, "statements"), bn = 0;
+    const int *bb = st >= 0 ? nt_arr(nt, st, "body", &bn) : NULL;
+    for (int k = 0; k < bn; k++) if (bb[k] == def) return 1;
+  }
+  return 0;
+}
+
 /* does the program define name other than as an instance method in a
-   class body? A call that reaches such a method -- a class's or module's
-   own (`C.detect`), a top-level one (a receiverless `detect`) -- is
-   resolved by the name it carries, never by orig_name, so renaming it to
-   the builtin's left it no method. */
-static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name) {
+   class body, where a call with receiver recv (-1 for none) can reach it?
+   A call that reaches such a method -- a class's or module's own
+   (`C.detect`), a top-level one (a receiverless `detect`) -- is resolved
+   by the name it carries, never by orig_name, so renaming it to the
+   builtin's left it no method. A top-level method is private: a call on a
+   receiver other than self never reaches it, and kept as written
+   `[[1], [2]].collect_concat { }` found no method of that name. */
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name, int recv) {
+  int other_recv = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode;
   for (int id = 0; id < n0; id++) {
     if (nt_kind(nt, id) != NK_DefNode || !nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), name)) continue;
     int ct = nt_ref(nt, id, "receiver") < 0 ? fwd_lex_parent(nt, id) : -1;
+    if (ct < 0 && other_recv && nt_ref(nt, id, "receiver") < 0 && def_at_top_level(nt, n0, id)) continue;
     if (ct < 0 || !fwd_node_is(nt, ct, "ClassNode")) return 1;
   }
   return 0;
@@ -13405,6 +13423,7 @@ int desugar_builtins(Compiler *c) {
     const char *cn0 = nt_str(nt, id, "name");
     int send_site = 0;   /* cn0 is a literal send's name */
     int each_site = 0;   /* cn0 is the inner call's name, on the outer each */
+    int cr0 = nt_ref(nt, id, "receiver");   /* the receiver of the call cn0 names */
     /* `enum.with_object(memo)` is renamed to each_with_object by the
        Enumerator desugar inside the fixpoint, after this pass: give it its
        copy under the name it will have. `recv.m(args).each { blk }` becomes
@@ -13412,7 +13431,7 @@ int desugar_builtins(Compiler *c) {
        node takes a copy of the inner's name. */
     if (cn0 && sp_streq(cn0, "each") && nt_ref(nt, id, "block") >= 0) {
       int er = nt_ref(nt, id, "receiver");
-      if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) { cn0 = nt_str(nt, er, "name"); each_site = 1; }
+      if (er >= 0 && nt_kind(nt, er) == NK_CallNode && nt_ref(nt, er, "block") < 0) { cn0 = nt_str(nt, er, "name"); cr0 = nt_ref(nt, er, "receiver"); each_site = 1; }
     }
     if (cn0 && sp_streq(cn0, "with_object")) cn0 = "each_with_object";
     /* Array#index with a block and no argument is find_index, renamed so in
@@ -13445,9 +13464,11 @@ int desugar_builtins(Compiler *c) {
        with (orig_name), where a program-wide test left an Array's
        collect_concat no method at all. A class method or a top-level
        method of the alias keeps every call of it as written
-       (program_defines_name_off_class). */
+       (program_defines_name_off_class), and a top-level one each call
+       that can reach it. */
     const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
-    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name_off_class(nt, n0, alias->name)) {
+    if (alias && builtin_enum_name_index(alias->target) >= 0 &&
+        !program_defines_name_off_class(nt, n0, alias->name, cr0)) {
       /* (a send keeps its own name until desugar_public_send_recv
          retargets it, which renames it so: renamed here, `a.send(:detect)`
          was a call of find with :detect for its argument; an outer each
