@@ -12659,9 +12659,16 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "); })");
       return 1;
     }
+    /* The renderer answers text. A call the inference typed boxed -- a
+       subclass's own inspect answers no String, so the dispatch over the
+       receiver's classes is poly -- takes it as a boxed String: left as text,
+       `"#{inspect}"` in a base class under such subclasses initialized an
+       sp_RbVal with a const char * and the C did not compile. */
+    int bx = repr_of(c, id).kind == RK_BOXED;
+    if (bx) buf_puts(b, "sp_box_str(");
     buf_printf(b, "sp_poly_%s(", want_ins ? "inspect" : "to_s");
     emit_boxed(c, recv, b);
-    buf_puts(b, ")");
+    buf_puts(b, bx ? "))" : ")");
     return 1;
   }
 
