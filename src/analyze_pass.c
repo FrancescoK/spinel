@@ -3311,8 +3311,8 @@ static int widen_boxed_ivar_array_sources(Compiler *c, const LWIndex *ivw, int c
   }
   return changed;
 }
-/* the parameter a merge!'s receiver reads, one the body never assigns and
-   no RBS signature types, or NULL */
+/* the parameter a merge!'s or replace's receiver reads, one the body never
+   assigns and no RBS signature types, or NULL */
 static LocalVar *merge_param_recv(Compiler *c, int recv) {
   if (recv < 0 || nt_kind(c->nt, recv) != NK_LocalVariableReadNode) return NULL;
   Scope *sc = comp_scope_of(c, recv);
@@ -3320,10 +3320,10 @@ static LocalVar *merge_param_recv(Compiler *c, int recv) {
   LocalVar *lv = scope_local(sc, nt_str(c->nt, recv, "name"));
   return lv && !lv->rbs_seeded ? lv : NULL;
 }
-/* `obj.merge!(src)` with `src` boxed: when both are parameters the body
-   never assigns, src's position is recorded on obj (store_merge_src), for
-   the binding to check each call's hash for it against obj's container
-   (param_src_misfits). A box from anywhere else is left to the store. */
+/* `obj.merge!(src)` or `obj.replace(src)` with `src` boxed: when both are
+   parameters the body never assigns, src's position is recorded on obj
+   (store_merge_src), for the binding to check each call's hash for it
+   against obj's container (param_src_misfits). A box from anywhere else is left to the store. */
 static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an) {
   LocalVar *lv = merge_param_recv(c, recv);
   if (!lv) return 0;
@@ -3522,6 +3522,9 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           }
         }
         else if (rpk != NK_InstanceVariableReadNode) continue;
+        /* into a parameter, a boxed other that is a parameter too is checked
+           at the binding, as a merge!'s is */
+        if (ot == TY_POLY) changed |= note_merge_param_srcs(c, recv, argv, an);
         /* A parameter's or an ivar's Hash is held elsewhere too: the
            other's keys and values are the evidence a merge! of it is, and
            the fold below widens the Hash where it is built (a boxed other
