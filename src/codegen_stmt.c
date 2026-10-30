@@ -1176,7 +1176,7 @@ else {
     LocalVar *serr = comp_gvar(c, "stderr");
     int redirect_boxed = -1;
     if (std_stream_boxed(c, "$stderr")) {
-      int sio = comp_class_index(c, "StringIO");
+      int sio = comp_core_class(c, CORE_STRINGIO);
       if (std_stream_foreign_writer(c, NULL)) {
         if (argc > 0) unsupported(c, id, "warn while $stderr can hold an object whose class has its own write");
       }
@@ -2291,7 +2291,7 @@ static int strbuf_route_reopen_pf(Compiler *c, int v) {
   if (vt != TY_STRING && vt != TY_STRBUF) return 0;
   const CallPlan *p = cplan_user(c, v);
   int mi = p->mi;
-  if (p->via != UC_REOPEN || mi < 0 || c->scopes[mi].class_id != comp_class_index(c, "String") ||
+  if (p->via != UC_REOPEN || mi < 0 || c->scopes[mi].class_id != comp_core_class(c, CORE_STRING) ||
       !c->scopes[mi].yields || repr_self_handle(c, mi)) return 0;
   int pf = scope_proc_form_of(c, mi), last = scope_body_last(c, mi);
   return pf >= 0 && c->scopes[pf].ret == TY_POLY && last >= 0 && nt_kind(nt, last) == NK_YieldNode &&

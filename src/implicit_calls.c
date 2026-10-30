@@ -207,7 +207,7 @@ static int ic_module_runs(Compiler *c, int id, int mod) {
   }
   for (int j = 0; j < c->ntoplevel_includes; j++) {
     if (c->toplevel_includes[j] != mod) continue;
-    int obj = comp_class_index(c, "Object");
+    int obj = comp_core_class(c, CORE_OBJECT);
     if (obj < 0 || cplan_user_in(c, id, obj, CPX_TARGET)->mi < 0) return 0;
     includers++;
   }

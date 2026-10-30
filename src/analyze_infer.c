@@ -2994,7 +2994,7 @@ int sclass_value_call(Compiler *c, int id) {
 int object_reopen_answers(Compiler *c, const char *cls, int call_id, TyKind *out) {
   const char *name = nt_str(c->nt, call_id, "name");
   if (!name || builtin_method_known(cls, name) || builtin_object_method_known(name)) return 0;
-  int oci = comp_class_index(c, "Object");
+  int oci = comp_core_class(c, CORE_OBJECT);
   int omi = oci >= 0 ? call_target(c, call_id, oci, name, 0, NULL) : -1;
   if (omi < 0) return 0;
   /* a yielding one given a block answers what its proc form does, a boxed
@@ -3486,10 +3486,10 @@ static int infer_poly_operand_call(Compiler *c, int id, const NodeTable *nt, con
       /* the count form too, but not where a reopened Object or Kernel has a
          curry, which answers for every receiver the Proc arm does not */
       if (argc == 1 && nt_kind(nt, argv[0]) != NK_SplatNode && sp_streq(name, "curry") &&
-          !(comp_class_index(c, "Object") >= 0 &&
-            call_target(c, id, comp_class_index(c, "Object"), name, 0, NULL) >= 0) &&
-          !(comp_class_index(c, "Kernel") >= 0 &&
-            call_target(c, id, comp_class_index(c, "Kernel"), name, 0, NULL) >= 0))
+          !(comp_core_class(c, CORE_OBJECT) >= 0 &&
+            call_target(c, id, comp_core_class(c, CORE_OBJECT), name, 0, NULL) >= 0) &&
+          !(comp_core_class(c, CORE_KERNEL) >= 0 &&
+            call_target(c, id, comp_core_class(c, CORE_KERNEL), name, 0, NULL) >= 0))
         { *out = an_poly_concrete(c, id, name, TY_CURRY); return 1; }
       if (argc == 0 && sp_streq(name, "to_proc")) { *out = an_poly_concrete(c, id, name, TY_POLY); return 1; }
       /* Integer#chr(Encoding::X) on a boxed Integer (emit_poly_call) */
@@ -6251,7 +6251,7 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
          boxes self for it), so the call answers the method's return. Below
          the builtin surface, as Ruby's lookup puts Object last. */
       if (mi < 0 && !self->is_cmethod) {
-        int oc = comp_class_index(c, "Object");
+        int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 && oc != self->class_id ? call_target(c, id, oc, name, 0, NULL) : -1;
         if (omi >= 0) { *out = c->scopes[omi].ret; return 1; }
       }
@@ -8441,8 +8441,8 @@ static int reopen_owner_of(Compiler *c, int id, const char *cn, const char *name
     static int ahr_n = -1, ahr_any = 0;
     if (ahr_n != c->nclasses) {
       ahr_n = c->nclasses;
-      ahr_any = comp_class_index(c, "Array") >= 0 || comp_class_index(c, "Hash") >= 0 ||
-                comp_class_index(c, "Range") >= 0 || comp_class_index(c, "Symbol") >= 0;
+      ahr_any = comp_core_class(c, CORE_ARRAY) >= 0 || comp_core_class(c, CORE_HASH) >= 0 ||
+                comp_core_class(c, CORE_RANGE) >= 0 || comp_core_class(c, CORE_SYMBOL) >= 0;
     }
     if (!ahr_any) return -1;
   }
@@ -10652,7 +10652,7 @@ int std_stream_value_classes(Compiler *c, char *set) {
 int std_stream_foreign_writer(Compiler *c, const char *nm) {
   char *set = calloc((size_t)c->nclasses + 1, 1);
   int bounded = set && std_stream_value_classes(c, set);
-  int sio = comp_class_index(c, "StringIO"), hit = 0;
+  int sio = comp_core_class(c, CORE_STRINGIO), hit = 0;
   for (int k = 0; k < c->nclasses && !hit; k++) {
     if (k == sio || (bounded && !set[k])) continue;
     int writes = comp_method_in_chain(c, k, "write", NULL) >= 0;
@@ -10674,7 +10674,7 @@ int std_stream_assigned(Compiler *c, const char *nm) {
 /* A reopening needs its empty receiver's kind during parameter binding and
    proc-form selection, before the late empty-operand marking. */
 static TyKind infer_empty_array_reopen(Compiler *c, int id) {
-  if (comp_class_index(c, "Array") < 0) return TY_UNKNOWN;
+  if (comp_core_class(c, CORE_ARRAY) < 0) return TY_UNKNOWN;
   int call = comp_recv_parent(c, id);
   if (call >= 0 && !nt_int(c->nt, call, "builtin_only", 0) &&
       comp_builtin_kind_reopen_mi(c, TY_POLY_ARRAY, nt_str(c->nt, call, "name")) >= 0)

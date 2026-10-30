@@ -1557,9 +1557,9 @@ else {
          and a builtin's name with a literal block, reopen_override_block_ok):
          the block is a real proc, and its captures need cells. A spurious
          cell, where the method is spliced instead, is a missed optimization. */
-      else if ((rt == TY_STRING || rt == TY_STRBUF) && comp_class_index(c, "String") >= 0 &&
-               call_target(c, id, comp_class_index(c, "String"), name, 0, NULL) >= 0 &&
-               c->scopes[call_target(c, id, comp_class_index(c, "String"), name, 0, NULL)].yields)
+      else if ((rt == TY_STRING || rt == TY_STRBUF) && comp_core_class(c, CORE_STRING) >= 0 &&
+               call_target(c, id, comp_core_class(c, CORE_STRING), name, 0, NULL) >= 0 &&
+               c->scopes[call_target(c, id, comp_core_class(c, CORE_STRING), name, 0, NULL)].yields)
         return 1;
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for
@@ -5474,7 +5474,7 @@ static int module_private_builtin(const char *nm) {
   return 0;
 }
 static int give_object_methods_a_class_self(Compiler *c) {
-  int ob = comp_class_index(c, "Object");
+  int ob = comp_core_class(c, CORE_OBJECT);
   if (ob < 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   int n0 = nt->count, changed = 0;
@@ -14922,7 +14922,7 @@ static int oa_one_class_may_answer(Compiler *c, int ci, const char *name) {
 static int oa_class_may_answer(Compiler *c, int ci, const char *name) {
   for (int k = 0; k < c->nclasses; k++)
     if ((k == ci || is_descendant(c, k, ci)) && oa_one_class_may_answer(c, k, name)) return 1;
-  int oc = comp_class_index(c, "Object");
+  int oc = comp_core_class(c, CORE_OBJECT);
   return oc >= 0 && oc != ci && comp_resolve_member(c, oc, name, 0, NULL, NULL) != SP_MEMBER_NONE;
 }
 
@@ -24962,7 +24962,7 @@ static int an_tail_recv_answer(Compiler *c, int n) {
   TyKind rt = comp_ntype(c, recv);
   if (rt != TY_STRING && rt != TY_STRBUF) return 0;
   if (bop_share_named(TY_STRING, nm) != BSH_RECV) return 0;
-  int si = comp_class_index(c, "String");
+  int si = comp_core_class(c, CORE_STRING);
   return si < 0 || call_target(c, n, si, nm, 0, NULL) < 0;
 }
 /* Is tail n `x.tap { ... }` on a String no reopening gives a tap, Kernel's
@@ -24977,7 +24977,7 @@ static int an_tail_tap_blind(Compiler *c, int n) {
       call_breaks(c, n) || comp_method_index(c, "tap") >= 0) return 0;
   TyKind rt = comp_ntype(c, recv);
   if (rt != TY_STRING && rt != TY_STRBUF) return 0;
-  int si = comp_class_index(c, "String");
+  int si = comp_core_class(c, CORE_STRING);
   return si < 0 || comp_method_in_chain(c, si, "tap", NULL) < 0;
 }
 /* ---- a local a method builds its answer up in (#9258) ----
@@ -25177,7 +25177,7 @@ static int an_super_reaches_object(Compiler *c, int cid, const char *nm) {
       if (sup >= 0 && !(nt_kind(nt, sup) == NK_ConstantReadNode && sp_streq(nt_str(nt, sup, "name"), "Object"))) return 0;
     }
   }
-  int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
+  int ob = comp_core_class(c, CORE_OBJECT), ke = comp_core_class(c, CORE_KERNEL);
   if ((ob >= 0 && (an_defines_instance_method(c, ob, nm) || comp_is_reader(&c->classes[ob], nm))) ||
       (ke >= 0 && (an_defines_instance_method(c, ke, nm) || comp_is_reader(&c->classes[ke], nm)))) return 0;
   for (int i = 0; i < c->ntoplevel_includes; i++) {
@@ -25744,7 +25744,7 @@ static int sb_fresh_string_array_call(Compiler *c, int n) {
   if (sp_streq(mn, "sort") && nt_ref(nt, n, "arguments") < 0 && !an_user_defines_method(c, mn))
     return infer_type(c, n) == TY_STR_ARRAY && sb_fresh_string_array_call(c, r);
   if (nt_kind(nt, r) == NK_ConstantReadNode && sp_streq(nt_str(nt, r, "name"), "Dir") &&
-      comp_class_index(c, "Dir") < 0 &&
+      comp_core_class(c, CORE_DIR) < 0 &&
       (sp_streq(mn, "entries") || sp_streq(mn, "children") || sp_streq(mn, "glob")))
     return infer_type(c, n) == TY_STR_ARRAY;
   if (!sp_streq(mn, "split") && !sp_streq(mn, "scan") && !sp_streq(mn, "lines") && !sp_streq(mn, "chars"))
@@ -26088,7 +26088,7 @@ static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
   const char *bc = rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
   int bci = bc ? comp_class_index(c, bc) : -1;
   if (bci >= 0 && call_target(c, u, bci, un, 0, NULL) >= 0) return 0;
-  int oci = comp_class_index(c, "Object");
+  int oci = comp_core_class(c, CORE_OBJECT);
   if (oci >= 0 && call_target(c, u, oci, un, 0, NULL) >= 0) return 0;
   return 1;
 }
@@ -29650,7 +29650,7 @@ static int dyn_method_prints(Compiler *c, int mi) {
   int printer = 0;
   for (int i = 0; sym && printers[i]; i++) if (sp_streq(sym, printers[i])) printer = 1;
   if (!printer || comp_method_index(c, sym) >= 0) return 0;
-  int si = comp_class_index(c, "String");
+  int si = comp_core_class(c, CORE_STRING);
   return si < 0 || (comp_method_in_chain(c, si, "inspect", NULL) < 0 && comp_method_in_chain(c, si, "to_s", NULL) < 0);
 }
 
@@ -33262,12 +33262,12 @@ static int pf_wanted(Compiler *c, const char *name) {
       int rci = rcn ? comp_class_index(c, rcn) : -1;
       if (rci >= 0 && comp_method_in_class(c, rci, name) >= 0) return 1;
       /* a Float's or Symbol's own reopening is reached the same way */
-      int oci = rt == TY_FLOAT ? comp_class_index(c, "Float")
-              : rt == TY_SYMBOL ? comp_class_index(c, "Symbol") : -1;
+      int oci = rt == TY_FLOAT ? comp_core_class(c, CORE_FLOAT)
+              : rt == TY_SYMBOL ? comp_core_class(c, CORE_SYMBOL) : -1;
       if (oci >= 0 && comp_method_in_class(c, oci, name) >= 0) return 1;
       /* and an Object reopening's, on a builtin receiver, with a block or
          without one: the Object fallback reaches it the same way */
-      int obj = comp_class_index(c, "Object");
+      int obj = comp_core_class(c, CORE_OBJECT);
       if (obj >= 0 && rt != TY_UNKNOWN && !ty_is_object(rt) && builtin_class_of_type(rt) &&
           comp_method_in_class(c, obj, name) >= 0) return 1;
     }
@@ -33276,7 +33276,7 @@ static int pf_wanted(Compiler *c, const char *name) {
        through the clone, since it cannot be spliced in on that class */
     if (recv >= 0 && nt_ref(nt, id, "block") >= 0) {
       TyKind rt = infer_type(c, recv);
-      int obj = comp_class_index(c, "Object");
+      int obj = comp_core_class(c, CORE_OBJECT);
       if (obj >= 0 && ty_is_object(rt) && ty_object_class(rt) != obj &&
           comp_method_in_chain(c, ty_object_class(rt), name, NULL) < 0 &&
           comp_method_in_class(c, obj, name) >= 0) return 1;
@@ -36986,7 +36986,7 @@ static void nn_structure(Compiler *c) {
   }
   /* reflection that reads or writes an ivar by name, or an Array reopened by
      the program, leaves no ivar slot to reason about */
-  nn_no_ivar_slots = nn_no_local_slots = nn_array_reopened = comp_class_index(c, "Array") >= 0;
+  nn_no_ivar_slots = nn_no_local_slots = nn_array_reopened = comp_core_class(c, CORE_ARRAY) >= 0;
   /* ... and a reopened Integer, Float or class above them can give `<` or
      `+` a method that takes a nil (nn_operands_nonnil) */
   static const char *const reopen[] = { "NilClass", "Integer", "Float", "Numeric", "Comparable",
@@ -37897,7 +37897,7 @@ static int ps_param_index(Compiler *c, Scope *m, int n) {
   return -1;
 }
 static int ps_op_reopened(Compiler *c, const char *op) {
-  int nc = comp_class_index(c, "NilClass");
+  int nc = comp_core_class(c, CORE_NILCLASS);
   if (nc >= 0 && comp_method_in_chain(c, nc, op, NULL) >= 0) return 1;
   return comp_builtin_kind_reopen_mi(c, TY_INT, op) >= 0 || comp_builtin_kind_reopen_mi(c, TY_FLOAT, op) >= 0;
 }
@@ -40166,7 +40166,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         else if (rt != TY_POLY && rt != TY_UNKNOWN && rt != TY_VOID && rt != TY_NIL &&
                  nt_kind(nt, recv) != NK_ConstantReadNode && nt_kind(nt, recv) != NK_ConstantPathNode &&
                  nt_str(nt, id, "name")) {
-          int oci = comp_class_index(c, "Object");
+          int oci = comp_core_class(c, CORE_OBJECT);
           int omi = oci >= 0 ? call_target(c, id, oci, nt_str(nt, id, "name"), CT_OWN, NULL) : -1;
           int ba = nt_ref(nt, id, "arguments"); int bac = 0;
           if (ba >= 0) nt_arr(nt, ba, "arguments", &bac);
@@ -43145,7 +43145,7 @@ static void rewrite_ivar_reflection_supers(Compiler *c) {
     Scope *s = &c->scopes[si];
     if (s->is_cmethod || !s->name || s->class_id < 0 || !is_ivar_reflection_name(s->name) ||
         c->classes[s->class_id].is_native_class ||
-        (is_builtin_reopen_name(c->classes[s->class_id].name) && s->class_id != comp_class_index(c, "Object"))) continue;
+        (is_builtin_reopen_name(c->classes[s->class_id].name) && s->class_id != comp_core_class(c, CORE_OBJECT))) continue;
     if (super_reach(c, s) >= 0) continue;
     int args = k == NK_SuperNode ? nt_ref(nt, id, "arguments") : -1;
     if (k == NK_ForwardingSuperNode) {
@@ -44178,7 +44178,7 @@ static int sid_collection_ok(Compiler *c, int v, int set_cid) {
      `Set.new(%i[a b].to_a)` here): judged by the Array's, unless the
      program gives Array a to_a of its own (`class Array; def to_a =
      ...`, or through a module it prepends), which may answer anything */
-  int arr_cid = comp_class_index(c, "Array");
+  int arr_cid = comp_core_class(c, CORE_ARRAY);
   int own_to_a = arr_cid >= 0 && comp_method_in_chain(c, arr_cid, "to_a", NULL) >= 0;
   for (int d = 0; d < 8 && !own_to_a && nt_kind(nt, v) == NK_CallNode && nt_str(nt, v, "name") &&
                   sp_streq(nt_str(nt, v, "name"), "to_a") && nt_ref(nt, v, "arguments") < 0 &&
@@ -45004,7 +45004,7 @@ static int sid_value_or_check(Compiler *c, int call, int v) {
 }
 static void refuse_set_identity_members(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int set_cid = comp_class_index(c, "Set");
+  int set_cid = comp_core_class(c, CORE_SET);
   if (set_cid < 0 || comp_method_in_class(c, set_cid, "compare_by_identity") < 0) return;
   /* a compare_by_identity that may make a Set an identity one: on a value
      that may be a Set, or on self in an instance method of a Set's subclass
@@ -45141,7 +45141,7 @@ int builtin_instance_method_known(const char *cls, const char *m);
    program's own `String#dup` can answer self, its `touch?` can append. */
 static int rd_builtin_string_method(Compiler *c, const char *nm) {
   if (!builtin_instance_method_known("String", nm)) return 0;
-  int sci = comp_class_index(c, "String");
+  int sci = comp_core_class(c, CORE_STRING);
   return sci < 0 || (comp_method_in_chain(c, sci, nm, NULL) < 0 &&
                      comp_method_in_chain(c, sci, "method_missing", NULL) < 0);
 }

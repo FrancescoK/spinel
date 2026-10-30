@@ -5079,7 +5079,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     if (rt == TY_RANDOM) {
       const CallPlan *pl = cplan_user(c, id);
       if (pl->mi >= 0 && pl->via == UC_REOPEN && pl->dispatch == CP_DIRECT &&
-          pl->owner_ci == comp_class_index(c, "Random")) {
+          pl->owner_ci == comp_core_class(c, CORE_RANDOM)) {
         int mi = pl->mi, ci = pl->owner_ci;
         if (emit_reopen_block_call(c, id, recv, mi, NULL, b)) return 1;
         if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
@@ -5131,7 +5131,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Hash reopening: any hash-typed receiver -> box to sp_RbVal */
     if (ty_is_hash(rt)) {
-      int hc_ci = comp_class_index(c, "Hash");
+      int hc_ci = comp_core_class(c, CORE_HASH);
       int hc_mi = hc_ci >= 0 ? call_target(c, id, hc_ci, name, 0, NULL) : -1;
       if (hc_mi >= 0 && emit_reopen_block_call(c, id, recv, hc_mi, NULL, b)) return 1;
       if (hc_mi >= 0) {
@@ -5147,7 +5147,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* NilClass methods on a receiver known to be nil (self is the `int self`
        the bool reopens take; nil carries nothing) */
     if (rt == TY_NIL) {
-      int nc_ci = comp_class_index(c, "NilClass");
+      int nc_ci = comp_core_class(c, CORE_NILCLASS);
       int nc_mi = nc_ci >= 0 ? call_target(c, id, nc_ci, name, 0, NULL) : -1;
       if (nc_mi >= 0) {
         if (g_plan_check) ucall_observe(c, id, nc_mi, nc_ci, 0);
@@ -5161,7 +5161,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     /* Numeric reopening: an Integer / Float receiver whose own reopen (above)
        did not answer; the inference twin has typed it. Self is boxed. */
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int nm_ci = comp_class_index(c, "Numeric");
+      int nm_ci = comp_core_class(c, CORE_NUMERIC);
       int nm_mi = nm_ci >= 0 ? call_target(c, id, nm_ci, name, 0, NULL) : -1;
       if (nm_mi >= 0 && emit_reopen_block_call(c, id, recv, nm_mi, NULL, b)) return 1;
       if (nm_mi >= 0) {
@@ -5175,7 +5175,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Array reopening: any array-typed receiver -> box to sp_RbVal */
     if (ty_is_array(rt)) {
-      int oc_ci2 = comp_class_index(c, "Array");
+      int oc_ci2 = comp_core_class(c, CORE_ARRAY);
       if (oc_ci2 >= 0) {
         int oc_mi2 = call_target(c, id, oc_ci2, name, 0, NULL);
         if (oc_mi2 >= 0) {
@@ -5194,7 +5194,7 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     }
     /* Object reopening: universal fallback -> box receiver to sp_RbVal */
     {
-      int oc_ci3 = comp_class_index(c, "Object");
+      int oc_ci3 = comp_core_class(c, CORE_OBJECT);
       if (oc_ci3 >= 0) {
         const CallPlan *pl = cplan_user(c, id);
         int planned = pl->via == UC_REOPEN && pl->owner_ci == oc_ci3 && pl->dispatch == CP_DIRECT;
@@ -5283,7 +5283,7 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          fallback boxes its receiver. Only inlining served it before; the
          method body itself raised NoMethodError. */
       if (mi < 0 && !self->is_cmethod && nt_ref(nt, id, "block") < 0 && g_self) {
-        int oc = comp_class_index(c, "Object");
+        int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 && oc != dispatch_cid ? call_target(c, id, oc, name, 0, NULL) : -1;
         if (omi >= 0) {
           const char *scn = c->classes[dispatch_cid].name;

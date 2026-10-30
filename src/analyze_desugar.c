@@ -290,7 +290,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
    reached through self on these receivers yet, so it keeps the bare call. */
 static int ie_enum_reopen_answers(Compiler *c, int cls, const char *nm) {
   if (comp_ary_root(c, cls) < 0 || comp_ary_is_str(c, cls)) return 0;
-  int en = comp_class_index(c, "Enumerable");
+  int en = comp_core_class(c, CORE_ENUMERABLE);
   int mi = en >= 0 ? comp_method_in_chain(c, en, nm, NULL) : -1;
   if (mi < 0) return 0;
   for (int m = 0; m < c->classes[en].nincluded_mods; m++) {
@@ -359,7 +359,7 @@ int desugar_ie_bare_object_calls(Compiler *c) {
    A module's method runs on its includer and an instance_eval block on its
    receiver; both are left as they were. */
 int desugar_bare_object_reopen_calls(Compiler *c) {
-  int obj = comp_class_index(c, "Object");
+  int obj = comp_core_class(c, CORE_OBJECT);
   if (obj < 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
@@ -7727,7 +7727,7 @@ static int interp_empty_part(const NodeTable *nt, int p) {
    --share-strings only: a build without it copies in every case. */
 int desugar_interp_elided_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
-  int sc = comp_class_index(c, "String");
+  int sc = comp_core_class(c, CORE_STRING);
   if (sc >= 0 && comp_method_in_chain(c, sc, "to_s", NULL) >= 0) return 0;
   NodeTable *nt = (NodeTable *)c->nt;
   unsigned char *nested = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
@@ -9722,7 +9722,7 @@ int desugar_value_callable_forwards(Compiler *c) {
       const int *fv = fa >= 0 ? nt_arr(nt, fa, "arguments", &fn) : NULL;
       int fsplat = 0;
       for (int k = 0; k < fn; k++) if (nt_kind(nt, fv[k]) == NK_SplatNode) fsplat = 1;
-      int aci = comp_class_index(c, "Array");
+      int aci = comp_core_class(c, CORE_ARRAY);
       int ami = aci >= 0 ? comp_method_in_chain(c, aci, name, NULL) : -1;
       int fown = ami >= 0 && ami < c->nscopes && c->scopes[ami].def_node >= 0 &&
                  !nt_int(nt, c->scopes[ami].def_node, "node_bi", 0);
@@ -14050,7 +14050,7 @@ int enum_builtin_responds(Compiler *c, const char *name, TyKind rt) {
    by. Such a call is refused, once per call. (An attr_writer defines
    `with_object=`, which leaves with_object the builtin's.) */
 int enumerator_own_with_object(Compiler *c, int id) {
-  int ci = comp_class_index(c, "Enumerator");
+  int ci = comp_core_class(c, CORE_ENUMERATOR);
   if (ci < 0) return 0;
   const char *rn = comp_resolve_alias(c, ci, "with_object");
   if (comp_method_in_chain(c, ci, "with_object", NULL) < 0 && !comp_reader_in_chain(c, ci, "with_object", NULL) &&
@@ -24316,7 +24316,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
     else {
       if (call_target(c, id, -1, name, CT_TOP, NULL) >= 0) continue;
       int bk = body_cls ? body_cls[id] : -1;
-      int obj = comp_class_index(c, "Object");
+      int obj = comp_core_class(c, CORE_OBJECT);
       if (bk >= 0) {
         /* a class-body statement: self is the class */
         if (call_target(c, id, bk, name, CT_CMETHOD, NULL) >= 0) continue;

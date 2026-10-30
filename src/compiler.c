@@ -4713,7 +4713,7 @@ int comp_super_parent(Compiler *c, int class_id, int is_cmethod) {
   if (class_id < 0) return -1;
   int p = c->classes[class_id].parent;
   if (p >= 0 || is_cmethod) return p;
-  int obj = comp_class_index(c, "Object");
+  int obj = comp_core_class(c, CORE_OBJECT);
   if (obj < 0 || obj == class_id) return -1;
   int dn = c->classes[class_id].def_node;
   if (dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ModuleNode) return -1;

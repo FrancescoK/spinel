@@ -4575,7 +4575,7 @@ const char *time_strict_parser_call(Compiler *c, int id) {
   const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1) return NULL;
   if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK)) return NULL;
-  int tci = comp_class_index(c, "Time");
+  int tci = comp_core_class(c, CORE_TIME);
   if (tci >= 0 && call_target(c, id, tci, name, CT_CMETHOD, NULL) >= 0) return NULL;
   return fn;
 }
@@ -4705,7 +4705,7 @@ int an_kernel_backtick_recv(Compiler *c, int id, int recv, int fresh, int in_def
   const NodeTable *nt = c->nt;
   if (an_kernel_const_recv(c, id, recv, fresh)) return 1;
   if (recv < 0) return 0;
-  int ob = comp_class_index(c, "Object"), ke = comp_class_index(c, "Kernel");
+  int ob = comp_core_class(c, CORE_OBJECT), ke = comp_core_class(c, CORE_KERNEL);
   if ((ob >= 0 && comp_method_in_chain(c, ob, "`", NULL) >= 0) ||
       (ke >= 0 && comp_method_in_chain(c, ke, "`", NULL) >= 0) ||
       comp_toplevel_mod_defines(c, "`", 0)) return 0;

@@ -173,7 +173,7 @@ int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
   int blk = nt_ref(nt, id, "block");
   return mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
-         c->scopes[mi].class_id == comp_class_index(c, "String") && cplan_called_before_def(c, id, mi);
+         c->scopes[mi].class_id == comp_core_class(c, CORE_STRING) && cplan_called_before_def(c, id, mi);
 }
 /* The existing boxed dispatch candidates also serve literal-name send arms:
    the method call `call` runs on each candidate's arm. */
@@ -307,7 +307,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   /* a Class reopen's own method answers a class value first, as the
      inference arm for Range / Time / IO / Class receivers does */
   if (rt == TY_CLASS && !nt_int(nt, id, "builtin_only", 0)) {
-    int kci = comp_class_index(c, "Class");
+    int kci = comp_core_class(c, CORE_CLASS);
     int kmi = kci >= 0 ? call_target(c, id, kci, name, 0, NULL) : -1;
     if (kmi >= 0) { cplan_set(p, kmi, kci, UC_REOPEN, CP_DIRECT); return; }
   }
@@ -2963,7 +2963,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
 /* The `default:` arm emit_poly_obj_default0 writes for a zero-argument
    dispatch: the Object reopening's method of the name. */
 static void cpoly_obj_default0(Compiler *c, int id, const char *name, TyKind ret, PolyPlan *p, int *cap) {
-  int obj_cls = comp_class_index(c, "Object");
+  int obj_cls = comp_core_class(c, CORE_OBJECT);
   if (obj_cls < 0) return;
   int obj_def = -1;
   int obj_mi = call_target(c, id, obj_cls, name, 0, &obj_def);
@@ -3050,7 +3050,7 @@ static void cpoly_prearms0(Compiler *c, int id, const char *name, const PolySpec
   if (blockless && sp_streq(name, "puts")) cpoly_family(p, cap, PB_IO_PUTS);
   if (blockless && cpoly_name_in(name, ioz)) cpoly_family(p, cap, PB_IOZ);
   if (blockless && cpoly_name_in(name, reduce)) cpoly_family(p, cap, PB_REDUCE);
-  int sci = comp_class_index(c, "String");
+  int sci = comp_core_class(c, CORE_STRING);
   if (sci >= 0 && call_target(c, id, sci, name, 0, NULL) >= 0) return;   /* the reopen answers */
   int fits = cpoly_name_in(name, strt_s) ? ret == TY_POLY || ret == TY_STRING
            : sp_streq(name, "bytes") ? ret == TY_POLY || ret == TY_INT_ARRAY
@@ -3339,7 +3339,7 @@ int cplan_has_method_missing(Compiler *c, int id, int ci, int cmethod) {
                           : comp_method_in_chain(c, ci, "method_missing", NULL)) >= 0) return 1;
   if (!cmethod && ci >= 0 && class_is_blank_slate(c, ci)) return 0;
   /* Object's methods include top-level defs; main has no user class entry. */
-  int obj = comp_class_index(c, "Object");
+  int obj = comp_core_class(c, CORE_OBJECT);
   return (obj >= 0 && comp_method_in_chain(c, obj, "method_missing", NULL) >= 0) ||
          comp_method_index(c, "method_missing") >= 0;
 }
