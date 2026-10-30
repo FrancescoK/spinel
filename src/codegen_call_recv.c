@@ -3298,7 +3298,7 @@ else {
    first, naming its own class. */
 static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int recv, int argc,
                                      const int *argv, Buf *b) {
-  if (!(sp_streq(name, "replace") || sp_streq(name, "product") ||
+  if (!(sp_streq(name, "concat") || sp_streq(name, "replace") || sp_streq(name, "product") ||
         sp_streq(name, "union") || sp_streq(name, "difference") || sp_streq(name, "intersection")) ||
       argc < 1) return 0;
   int bad = -1;

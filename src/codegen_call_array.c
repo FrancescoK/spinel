@@ -1819,7 +1819,7 @@ static int prepare_concat_operands(Compiler *c, const int *argv, int argc, Conca
     /* Several concrete converters have no per-occurrence planned calls:
        the global hook would select a later definition at an earlier call.
        Leave that unsupported surface to the ordinary call path. */
-    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED) return 0;
+    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED && !conv_to_ary_misfit(c, r.as_ty)) return 0;
     out[i].repr = r;
     out[i].boxed = r.kind == RK_BOXED || !ty_is_array(r.as_ty);
     out[i].snapshot = later_conversion;
