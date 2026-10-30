@@ -11113,6 +11113,18 @@ int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cl
   return t;
 }
 
+/* The default #inspect of the object the void * variable `p` holds, for a
+   receiver typed as class cid: the generated per-class switch, asked with the
+   class id the object carries where the representation says its box reads
+   one (repr_dyn_cls: a class that others inherit from, whose objects start
+   with their cls_id), because the switch has an arm for the class of the
+   object, not for the type it is held as (P#show's `p self` on a C or a D).
+   Any other class is asked with the id it is typed as. */
+void emit_obj_default_inspect(Compiler *c, int cid, const char *p, Buf *b) {
+  if (repr_dyn_cls(c, ty_object(cid))) buf_printf(b, "sp_obj_inspect_sw((int)*(sp_int *)%s, %s)", p, p);
+  else buf_printf(b, "sp_obj_inspect_sw(%d, %s)", cid, p);
+}
+
 /* The class name a default Object#to_s / #inspect of class `ci` prints, as the
    two halves of a C format: `name` goes inside "#<...>" and `arg` leads the
    call's arguments. A Class.new class prints at run time (a constant may
