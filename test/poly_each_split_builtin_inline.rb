@@ -102,12 +102,19 @@ seen = []
 grow.each { |x| seen << x; grow << 9 if x == 1; grow.pop if x == 2 }
 p seen, grow
 
-# a generator keeps the dispatch: its body runs once
+# an Enumerator walks inline too: a materialized one answers its source, a
+# generator its body's value, the body running once
+p(box([1, 2, 3].each).each { |x| x })
 runs = 0
 gen2 = box(Enumerator.new { |y| runs += 1; y << 1; y << 2; :body_done })
 seen = []
 gen2.each { |x| seen << x }
 p seen, runs
+runs = 0
+p gen2.each { |x| x }, runs
+def walk_gen(g) = g.each { |x| x }
+runs = 0
+p walk_gen(gen2), runs
 
 # reverse_each keeps the dispatch beside a class with one of its own,
 # whose walk ends where the block shortened the Array
