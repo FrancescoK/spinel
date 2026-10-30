@@ -11784,7 +11784,10 @@ int ctor_init_proc_form(Compiler *c, int cid) {
   if (ci->is_struct || ci->is_value_type || ci->is_native_class) return -1;
   if (comp_class_is_module(c, ci)) return -1;
   int init = comp_method_in_chain(c, cid, "initialize", NULL);
-  return init >= 0 ? scope_proc_form_of(c, init) : -1;
+  int pf = init >= 0 ? scope_proc_form_of(c, init) : -1;
+  /* a class no reached code can build leaves its initialize, and so the
+     clone, unwritten (compute_reachable, #10592) */
+  return pf >= 0 && proc_form_live(c, pf) ? pf : -1;
 }
 
 static TyKind scope_param_type(Scope *s, int i) {
