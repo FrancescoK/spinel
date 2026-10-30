@@ -1876,8 +1876,8 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   /* Argument expressions have run. This guard precedes the boxed
      conversions below, even for an empty concat. Nonempty appends test
      frozen again if a callback has frozen the receiver. */
-  buf_printf(b, " if (!_t%d) sp_nil_recv(\"concat\");", tr);
-  buf_printf(b, " if (_t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, array_frozen_cls(rt));
+  if (repr_of(c, recv).may_nil) buf_printf(b, " if (!_t%d) sp_nil_recv(\"concat\");", tr);
+  buf_printf(b, " if (_t%d && _t%d->frozen) sp_raise_frozen_array_at(_t%d, %s);", tr, tr, tr, array_frozen_cls(rt));
   for (int i = 0; i < argc; i++) {
     int tv = base + i;
     const char *ak = arr_kind(op[i].repr.as_ty);
@@ -1893,7 +1893,8 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
     }
     else {
       /* A typed pointer's NULL is Ruby's nil, not an empty operand. */
-      buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
+      if (op[i].repr.may_nil)
+        buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
       if (op[i].snapshot) buf_printf(b, " _t%d = sp_%sArray_dup(_t%d);", tv, ak, tv);
       if (!int_bulk) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
     }
