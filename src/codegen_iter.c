@@ -1922,8 +1922,8 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
 /* Whether the program gives the builtin class cn a []= of its own (a reopen,
    or a module it includes or prepends there): the value form of `x[k] = v`
    then answers that method's value, not v */
-static int program_defines_builtin_aset(Compiler *c, const char *cn) {
-  int ci = comp_class_index(c, cn);
+static int program_defines_builtin_aset(Compiler *c, int cn) {
+  int ci = comp_core_class(c, cn);
   int mi = ci >= 0 ? comp_method_in_chain(c, ci, "[]=", NULL) : -1;
   return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
          !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
@@ -2008,7 +2008,7 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
         ((sp_streq(nm, "clear") && nt_ref(nt, id, "arguments") < 0 && ty_is_array(rt)) ||
          (sp_streq(nm, "store") && ty_is_hash(rt)) ||
          (sp_streq(nm, "[]=") && (ty_is_hash(rt) || ty_is_array(rt)) &&
-          !program_defines_builtin_aset(c, ty_is_hash(rt) ? "Hash" : "Array"))))
+          !program_defines_builtin_aset(c, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY))))
       return 1; }
   /* and a String mutator on a String held as the sp_String buffer (a block
      parameter that is the shared handle): the statement form appends

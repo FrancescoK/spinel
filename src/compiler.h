@@ -2155,7 +2155,7 @@ int        comp_ary_is_hash(Compiler *c, int cid);
 int        comp_ary_is_str(Compiler *c, int cid);
 int        comp_arysub_emb(Compiler *c, int cid);
 int        comp_arysub_str_boxed(const char *n);
-const char *comp_arysub_builtin(Compiler *c, int cid);
+int        comp_arysub_builtin(Compiler *c, int cid);
 /* a name the builtin cid's chain embeds answers (comp_array_method_name, or Hash's) */
 int        comp_arysub_builtin_name(Compiler *c, int cid, const char *n);
 int        comp_arysub_reopen(Compiler *c, int cid);

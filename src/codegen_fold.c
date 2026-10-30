@@ -816,7 +816,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   if (!hn) return 0;
   /* a Hash reopen's own method of the name is the call's target, as the
      inference takes it (an_reopen_owner): its call takes the block */
-  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_HASH) >= 0) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
   if (bn < 1) return 0;

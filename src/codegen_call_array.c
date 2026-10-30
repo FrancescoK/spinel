@@ -2698,7 +2698,7 @@ int frange_index_view(Compiler *c, int id) {
   int n = vals ? argc : argc >= 1 ? 1 : 0, any = 0;
   for (int i = 0; i < n; i++) any |= comp_ntype(c, argv[i]) == TY_FLOAT_RANGE;
   if (!any) return -1;
-  int ci = comp_class_index(c, str ? "String" : "Array");
+  int ci = comp_core_class(c, str ? CORE_STRING : CORE_ARRAY);
   if (ci >= 0 && call_target(c, id, ci, nm, 0, NULL) >= 0) return -1;
   int mark = view_mark();
   int held = subtree_is_pure_read(c, recv), done = 0;

@@ -4487,8 +4487,8 @@ static int send_family_user_answers(Compiler *c, int id, int recv, const char *n
   if (ty_is_object(rt)) return send_own_in_chain(c, id, ty_object_class(rt), name, 0);
   if (rt == TY_POLY || rt == TY_UNKNOWN) return 1;
   /* a builtin receiver: the program's only through a reopening of its class */
-  const char *bcls = builtin_class_of_type(rt);
-  int bci = bcls ? comp_class_index(c, bcls) : -1;
+  int bcls = builtin_class_of_type(rt) ? core_of_type(rt) : -1;
+  int bci = bcls >= 0 ? comp_core_class(c, bcls) : -1;
   return bci >= 0 && send_own_in_chain(c, id, bci, name, 0);
 }
 
@@ -4778,7 +4778,7 @@ void step_kw_positional(Compiler *c, NodeTable *nt, int id, int args, int to_v, 
 
 int step_kw_unknown(Compiler *c, NodeTable *nt, int id, int args) {
   if (nt_int(nt, id, "step_kw_unk", 0)) return 0;
-  static const char *step_owners[] = { "Integer", "Float", "Numeric", "Range" };
+  static const int step_owners[] = { CORE_INTEGER, CORE_FLOAT, CORE_NUMERIC, CORE_RANGE };
   for (size_t i = 0; i < sizeof(step_owners) / sizeof(*step_owners); i++)
     if (an_reopen_owner(c, id, step_owners[i]) >= 0) return 0;
   int sn = nt_safe_nav(nt, id), recv = nt_ref(nt, id, "receiver");
@@ -7652,11 +7652,11 @@ int desugar_interp_reopened_to_s(Compiler *c) {
   if (g_infer_optimistic) return 0;
   /* true and false: either class's own to_s makes the part a call, which
      picks the side by value (cplan_bool_sides) */
-  const char *const names[] = { "Integer", "Float", "Symbol", "TrueClass", "FalseClass" };
+  static const int names[] = { CORE_INTEGER, CORE_FLOAT, CORE_SYMBOL, CORE_TRUECLASS, CORE_FALSECLASS };
   const TyKind kinds[] = { TY_INT, TY_FLOAT, TY_SYMBOL, TY_BOOL, TY_BOOL };
   int own[5], any = 0;
   for (int k = 0; k < 5; k++) {
-    int ci = comp_class_index(c, names[k]);
+    int ci = comp_core_class(c, names[k]);
     own[k] = ci >= 0 && comp_method_in_chain(c, ci, "to_s", NULL) >= 0;
     any |= own[k];
   }
@@ -9193,9 +9193,9 @@ static int fwd_io_one_param_iter(Compiler *c, const char *name) {
     "each", "each_line", "each_char", "each_byte", "each_codepoint", NULL };
   if (!str_in(name, names)) return 0;
   /* not where the program reopens File or IO with its own method of the name */
-  static const char *const owners[] = { "File", "IO", NULL };
-  for (int k = 0; owners[k]; k++) {
-    int ci = comp_class_index(c, owners[k]);
+  static const int owners[] = { CORE_FILE, CORE_IO, -1 };
+  for (int k = 0; owners[k] >= 0; k++) {
+    int ci = comp_core_class(c, owners[k]);
     if (ci >= 0 && comp_method_in_chain(c, ci, name, NULL) >= 0) return 0;
   }
   return 1;
@@ -10483,7 +10483,7 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        rerouting it through to_a would answer an Array instead. */
     if (comp_ntype(c, id) != TY_UNKNOWN) continue;
     /* a Hash or Range reopen's own method of the name is the call's target */
-    if (an_reopen_owner(c, id, ty_is_hash(rt) ? "Hash" : "Range") >= 0) continue;
+    if (an_reopen_owner(c, id, ty_is_hash(rt) ? CORE_HASH : CORE_RANGE) >= 0) continue;
     /* A blockless each_* over a Range has an arm already, and its Enumerator
        keeps the Range as its source (`(1..6).each_slice(2)` inspects as
        `1..6:each_slice(2)`); routing it would answer the elements instead. A
@@ -14279,9 +14279,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* an Array, Hash, Range or Enumerator reopen's own method of the name is
        the call's target, as the call plan takes it (for an Integer Range: a
        Float or String one has no route to the reopen yet) */
-    const char *reopen_cn = ty_is_array(rt) ? "Array" : ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" :
-                            rt == TY_ENUMERATOR ? "Enumerator" : NULL;
-    if (reopen_cn && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
+    int reopen_cn = ty_is_array(rt) ? CORE_ARRAY : ty_is_hash(rt) ? CORE_HASH : rt == TY_RANGE ? CORE_RANGE :
+                    rt == TY_ENUMERATOR ? CORE_ENUMERATOR : -1;
+    if (reopen_cn >= 0 && an_reopen_owner(c, id, reopen_cn) >= 0) continue;
     if (ty_is_array(rt) || ty_is_hash(rt) || rt == TY_RANGE || rt == TY_FLOAT_RANGE ||
         rt == TY_STR_RANGE || (rt == TY_ENUMERATOR && !lazy_driven)) ok = 1;
     /* an empty `[]` / `{}` receiver has no type until its use decides one,
@@ -15932,9 +15932,9 @@ int desugar_reduce_splat_args(Compiler *c) {
    (reopened, or through a module it includes there; not one builtins/
    defines): the call reaches it, and it takes what arguments it says. */
 static int iter_name_program_defined(Compiler *c, const char *nm) {
-  static const char *const owners[] = { "Array", "Hash", "Range", "Enumerable", NULL };
-  for (int k = 0; owners[k]; k++) {
-    int ci = comp_class_index(c, owners[k]);
+  static const int owners[] = { CORE_ARRAY, CORE_HASH, CORE_RANGE, CORE_ENUMERABLE, -1 };
+  for (int k = 0; owners[k] >= 0; k++) {
+    int ci = comp_core_class(c, owners[k]);
     int mi = ci >= 0 ? comp_method_in_chain(c, ci, nm, NULL) : -1;
     if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0))

@@ -4438,15 +4438,15 @@ void an_node_dir(const NodeTable *nt, int id, char *dir, size_t cap) {
 }
 
 /* The classes whose instances are the runtime's IO handles (sp_File). */
-static const char *const io_family[] = {
-  "File", "IO", "TCPServer", "TCPSocket", "UDPSocket", "IPSocket", "UNIXServer",
-  "UNIXSocket", "Socket", "BasicSocket", NULL };
+static const int io_family[] = {
+  CORE_FILE, CORE_IO, CORE_TCPSERVER, CORE_TCPSOCKET, CORE_UDPSOCKET, CORE_IPSOCKET, CORE_UNIXSERVER,
+  CORE_UNIXSOCKET, CORE_SOCKET, CORE_BASICSOCKET, -1 };
 int io_family_name(const char *n) {
   if (!n) return 0;
   if (is_io_class_name(n)) return 1;
   /* a socket class is the builtin only once the program loads socket
      (asked after the name matches: it walks the program's requires) */
-  for (int i = 2; io_family[i]; i++) if (sp_streq(n, io_family[i])) return sp_feature_required("socket");
+  for (int i = 2; io_family[i] >= 0; i++) if (sp_streq(n, core_class_name(io_family[i]))) return sp_feature_required("socket");
   return 0;
 }
 /* Class k is a reopening of one of them, not a class of that name nested
@@ -4463,8 +4463,8 @@ int io_family_class(Compiler *c, int k) {
 int g_io_skip_reopen = 0, g_io_skip_node = -1;
 int io_reopen_class(Compiler *c, const char *name) {
   if (!name || g_io_skip_reopen) return -1;
-  for (int i = 0; io_family[i]; i++) {
-    int k = comp_class_index(c, io_family[i]), def = -1;
+  for (int i = 0; io_family[i] >= 0; i++) {
+    int k = comp_core_class(c, io_family[i]), def = -1;
     if (k >= 0 && comp_method_in_chain(c, k, name, &def) >= 0 && io_family_class(c, def)) return def;
   }
   return -1;

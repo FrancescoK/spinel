@@ -1446,8 +1446,8 @@ void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, i
 /* The reopening of builtin `cls` an OBJ box of it keys to in a dispatch of
    `nm`: the program's class, when it has the method (or the dispatch is
    not of one name), else -1. */
-static int poly_key_reopen(Compiler *c, const char *cls, const char *nm) {
-  int idx = comp_class_index(c, cls);
+static int poly_key_reopen(Compiler *c, int cls, const char *nm) {
+  int idx = comp_core_class(c, cls);
   if (idx < 0 || !nm) return idx;
   if (comp_method_in_chain(c, idx, nm, NULL) >= 0 || comp_reader_in_chain(c, idx, nm, NULL)) return idx;
   return -1;
@@ -1531,10 +1531,10 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
     else buf_printf(b, "_t%d.cls_id", tv);
     return;
   }
-  static const struct { const char *tag, *cls; } P[] = {
-    {"SP_TAG_INT", "Integer"}, {"SP_TAG_FLT", "Float"},
-    {"SP_TAG_STR", "String"},  {"SP_TAG_SYM", "Symbol"},
-    {"SP_TAG_NIL", "NilClass"},
+  static const struct { const char *tag; int cls; } P[] = {
+    {"SP_TAG_INT", CORE_INTEGER}, {"SP_TAG_FLT", CORE_FLOAT},
+    {"SP_TAG_STR", CORE_STRING},  {"SP_TAG_SYM", CORE_SYMBOL},
+    {"SP_TAG_NIL", CORE_NILCLASS},
   };
   /* a boxed Time / Range is an OBJ box whose cls_id names the builtin, so
      it has to be asked before the plain cls_id read below claims it */
@@ -1544,12 +1544,12 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
      the builtin arms, which key by the box's own cls_id. */
   int opened = 0;
   {
-    int ti = poly_key_reopen(c, "Time", pick_name), ri = poly_key_reopen(c, "Range", pick_name);
-    int ai = poly_key_reopen(c, "Array", pick_name), hi = poly_key_reopen(c, "Hash", pick_name);
+    int ti = poly_key_reopen(c, CORE_TIME, pick_name), ri = poly_key_reopen(c, CORE_RANGE, pick_name);
+    int ai = poly_key_reopen(c, CORE_ARRAY, pick_name), hi = poly_key_reopen(c, CORE_HASH, pick_name);
     if (ti >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_TIME) ? %d : ", tv, tv, ti); }
     if (ri >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_RANGE) ? %d : ", tv, tv, ri); }
     /* a boxed thread / fiber is a handle box naming the builtin, like a Time's */
-    { int thi = poly_key_reopen(c, "Thread", pick_name), fbi = poly_key_reopen(c, "Fiber", pick_name);
+    { int thi = poly_key_reopen(c, CORE_THREAD, pick_name), fbi = poly_key_reopen(c, CORE_FIBER, pick_name);
       if (thi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_THREAD) ? %d : ", tv, tv, thi); }
       if (fbi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_FIBER) ? %d : ", tv, tv, fbi); } }
     /* a boxed array / hash of any element kind is its reopen's; the box's
@@ -1558,12 +1558,12 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
     if (hi >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && sp_poly_is_hash_kind(_t%d.cls_id)) ? %d : ", tv, tv, hi); }
     /* a shared-mutable string travels as a handle box, not the plain string
        tag the String arm keys on; it is the String's too */
-    { int si = poly_key_reopen(c, "String", pick_name);
+    { int si = poly_key_reopen(c, CORE_STRING, pick_name);
       if (si >= 0) { opened++; buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_STRBUF) ? %d : ", tv, tv, si); } }
   }
   buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id", tv, tv);
   for (unsigned i = 0; i < sizeof P / sizeof P[0]; i++) {
-    int idx = comp_class_index(c, P[i].cls);
+    int idx = comp_core_class(c, P[i].cls);
     if (idx >= 0) buf_printf(b, " : _t%d.tag == %s ? %d", tv, P[i].tag, idx);
   }
   { int ti = comp_core_class(c, CORE_TRUECLASS), fi = comp_core_class(c, CORE_FALSECLASS);
@@ -15754,10 +15754,10 @@ static void emit_poly_nil_eq_user(Compiler *c, int id, int recv, int eq, Buf *b)
 /* Does the program give nil an `==` or a `!=` of its own: on NilClass, on a
    class every object has, or at the top level? */
 static int nil_eq_is_the_programs(Compiler *c) {
-  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  static const int owners[] = { CORE_NILCLASS, CORE_OBJECT, CORE_KERNEL, CORE_BASIC_OBJECT, -1 };
   if (comp_method_index(c, "==") >= 0 || comp_method_index(c, "!=") >= 0) return 1;
-  for (int i = 0; owners[i]; i++) {
-    int k = comp_class_index(c, owners[i]);
+  for (int i = 0; owners[i] >= 0; i++) {
+    int k = comp_core_class(c, owners[i]);
     if (k >= 0 && (comp_method_in_chain(c, k, "==", NULL) >= 0 || comp_method_in_chain(c, k, "!=", NULL) >= 0))
       return 1;
   }
@@ -21490,8 +21490,8 @@ int emit_vis_refusal(Compiler *c, int id, Buf *b) {
    direct-call check below share it too. */
 static int builtin_reopen_vis_class(Compiler *c, TyKind rt, const char *name) {
   if (!name || ty_is_object(rt)) return -1;
-  const char *bcls = builtin_class_of_type(rt);
-  int bci = bcls ? comp_class_index(c, bcls) : -1;
+  int bcls = builtin_class_of_type(rt) ? core_of_type(rt) : -1;
+  int bci = bcls >= 0 ? comp_core_class(c, bcls) : -1;
   if (bci < 0) return -1;
   return comp_method_vis_declared(c, bci, name, NULL) == SP_VIS_PUBLIC ? -1 : bci;
 }
@@ -21700,9 +21700,9 @@ void emit_poly_vis_precheck(Compiler *c, int id, int tv, Buf *b) {
    `cname`? A builtin the program reopens has an entry of its own, and its
    constant emits as that entry's index; an unreopened one as the builtin id.
    Either spelling is the same class. */
-void emit_class_id_is(Compiler *c, const char *cname, const char *expr, Buf *b) {
-  int ui = comp_class_index(c, cname);
-  buf_printf(b, "(%s == %d", expr, builtin_class_id(cname));
+void emit_class_id_is(Compiler *c, int cname, const char *expr, Buf *b) {
+  int ui = comp_core_class(c, cname);
+  buf_printf(b, "(%s == %d", expr, builtin_class_id(core_class_name(cname)));
   if (ui >= 0) buf_printf(b, " || %s == %d", expr, ui);
   buf_puts(b, ")");
 }
@@ -22517,9 +22517,9 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
         int t = ++g_tmp;
         char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_t%d.cls_id", t);
         buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
-        buf_printf(b, "; (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, "Thread", cid_expr, b); buf_puts(b, ") ? ");
+        buf_printf(b, "; (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, CORE_THREAD, cid_expr, b); buf_puts(b, ") ? ");
         emit_boxed_text(c, TY_THREAD, "sp_Thread_current()", b);
-        buf_printf(b, " : (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, "Fiber", cid_expr, b); buf_puts(b, ") ? ");
+        buf_printf(b, " : (_t%d.tag == SP_TAG_CLASS && ", t); emit_class_id_is(c, CORE_FIBER, cid_expr, b); buf_puts(b, ") ? ");
         emit_boxed_text(c, TY_FIBER, "sp_fiber_current", b);
         buf_printf(b, " : (sp_raise_nomethod(sp_nomethod_msg(\"current\", _t%d)), sp_box_nil()); })", t);
         return 1;
@@ -22761,7 +22761,7 @@ int emit_unresolved_call(Compiler *c, int id, Buf *b) {
    their values (a def in the class body has, through Object): refused
    rather than raising where CRuby calls it */
 if (recv >= 0 && nm && (grt == TY_RATIONAL || grt == TY_COMPLEX)) {
-  int kci = comp_class_index(c, grt == TY_RATIONAL ? "Rational" : "Complex");
+  int kci = comp_core_class(c, grt == TY_RATIONAL ? CORE_RATIONAL : CORE_COMPLEX);
   if (kci >= 0 && call_target(c, id, kci, nm, 0, NULL) >= 0)
     unsupported(c, id, "a method of a module included or prepended into Rational or Complex "
                        "(define it in the class body instead)");
@@ -24805,7 +24805,7 @@ int reopen_override_block_ok(Compiler *c, int id) {
     const char *nm = nt_str(c->nt, id, "name");
     TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
     if (nm && (ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt) || rt == TY_RANGE)) {
-      int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : rt == TY_RANGE ? "Range" : "Array");
+      int aci = comp_core_class(c, ty_is_hash(rt) ? CORE_HASH : rt == TY_RANGE ? CORE_RANGE : CORE_ARRAY);
       int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, nm, 0, &adc) : -1;
       if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, nm))
         return !c->scopes[ami].yields;
@@ -24825,8 +24825,8 @@ static void emit_reopen_primitive_call_o(Compiler *c, int id, int ci, int mi, in
   if (wo) buf_puts(b, ")");
 }
 
-static int format_method_is_own(Compiler *c, const char *cls, const char *nm) {
-  int ci = comp_class_index(c, cls);
+static int format_method_is_own(Compiler *c, int cls, const char *nm) {
+  int ci = comp_core_class(c, cls);
   return ci >= 0 && (comp_method_in_chain(c, ci, nm, NULL) >= 0 || comp_reader_in_chain(c, ci, nm, NULL));
 }
 /* Is the format read out of a slot that a variable, a constant or self
@@ -24846,7 +24846,7 @@ static int format_is_slot_read(Compiler *c, int v) {
   int a = nt_ref(nt, v, "arguments"), ac = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &ac) : NULL;
   int ary = ty_is_array(rt), hash = ty_is_hash(rt);
-  if (!nm || !(ary || hash) || format_method_is_own(c, ary ? "Array" : "Hash", nm)) return 0;
+  if (!nm || !(ary || hash) || format_method_is_own(c, ary ? CORE_ARRAY : CORE_HASH, nm)) return 0;
   if (ary && ac == 0) return sp_streq(nm, "first") || sp_streq(nm, "last");
   if (!sp_streq(nm, "[]") || ac != 1 ||
       !(nt_kind(nt, av[0]) == NK_StringNode || subtree_is_pure_read(c, av[0]))) return 0;
@@ -31307,9 +31307,9 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
      IO, File or socket reopening defines answers at run time too, by the
      handle's kind (emit_io_reopen_responds). */
   if (!resolved && recv >= 0 && rt == TY_IO) {
-    static const char *const roots[] = { "BasicObject", "Object", "Kernel", NULL };
-    for (int u = 0; roots[u]; u++) {
-      int k = comp_class_index(c, roots[u]);
+    static const int roots[] = { CORE_BASIC_OBJECT, CORE_OBJECT, CORE_KERNEL, -1 };
+    for (int u = 0; roots[u] >= 0; u++) {
+      int k = comp_core_class(c, roots[u]);
       if (k < 0 || comp_method_in_chain(c, k, qm, NULL) < 0) continue;
       if (comp_method_vis_in_chain(c, k, qm) == SP_VIS_PUBLIC) return 1;
       return foldable ? include_all : -1;

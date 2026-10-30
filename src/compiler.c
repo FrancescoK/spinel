@@ -1769,9 +1769,9 @@ int comp_arysub_str_boxed(const char *n) {
 int comp_arysub_emb(Compiler *c, int cid) {
   return comp_ary_is_str(c, cid) ? 2 : comp_ary_is_hash(c, cid) ? 1 : 0;
 }
-/* The builtin class cid's chain embeds: "Array", "Hash" or "String" */
-const char *comp_arysub_builtin(Compiler *c, int cid) {
-  return comp_ary_is_str(c, cid) ? "String" : comp_ary_is_hash(c, cid) ? "Hash" : "Array";
+/* The core id cid's chain embeds: CORE_ARRAY, CORE_HASH or CORE_STRING. */
+int comp_arysub_builtin(Compiler *c, int cid) {
+  return comp_ary_is_str(c, cid) ? CORE_STRING : comp_ary_is_hash(c, cid) ? CORE_HASH : CORE_ARRAY;
 }
 /* The scope of the #to_ary an implicit Array conversion of a class cid
    instance calls, or -1. An Array subclass instance is an Array already:
@@ -1796,7 +1796,7 @@ int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
      `class Hash; alias_method :blank?, :empty?`), which the builtin's
      dispatch resolves as it does on the builtin itself */
   static int depth = 0;
-  int ro = comp_class_index(c, comp_arysub_builtin(c, cid));
+  int ro = comp_core_class(c, comp_arysub_builtin(c, cid));
   if (ro >= 0 && depth < 8) {
     const char *rn = comp_resolve_alias_ex(c, ro, n, NULL, NULL);
     if (rn && n && !sp_streq(rn, n)) {
@@ -1820,7 +1820,7 @@ int comp_arysub_builtin_name(Compiler *c, int cid, const char *n) {
 int comp_arysub_reopen(Compiler *c, int cid) {
   int r = comp_ary_root(c, cid);
   int p = r >= 0 ? c->classes[r].parent : -1;
-  return p >= 0 && p != r && p == comp_class_index(c, comp_arysub_builtin(c, cid)) ? p : -1;
+  return p >= 0 && p != r && p == comp_core_class(c, comp_arysub_builtin(c, cid)) ? p : -1;
 }
 /* The String subclasses whose instances answer `name` with a public method
    or reader of their own, not the String reopen's: a boxed instance is its
@@ -1935,12 +1935,11 @@ int comp_arysub_kernel_array(Compiler *c, int id) {
    `name` (`class Array; def first ...`), or -1: the class itself, not an
    ancestor, since an Object reopen does not displace Array#first. */
 int comp_builtin_kind_reopen_mi(Compiler *c, TyKind t, const char *name) {
-  const char *cn = t == TY_INT ? "Integer" : t == TY_FLOAT ? "Float"
-                 : t == TY_STRING ? "String" : t == TY_SYMBOL ? "Symbol"
-                 : (ty_is_array(t) || ty_is_obj_array(t)) ? "Array"
-                 : ty_is_hash(t) ? "Hash" : t == TY_ENUMERATOR ? "Enumerator" : NULL;
-  if (!cn || !name) return -1;
-  int ci = comp_class_index(c, cn);
+  int cn = t == TY_INT || t == TY_FLOAT || t == TY_STRING || t == TY_SYMBOL ||
+           ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t) || t == TY_ENUMERATOR
+           ? core_of_type(t) : -1;
+  if (cn < 0 || !name) return -1;
+  int ci = comp_core_class(c, cn);
   if (ci < 0) return -1;
   int dc = -1, mi = comp_method_in_chain(c, ci, name, &dc);
   /* under the name itself: an alias resolving to the reopen's name is not it */

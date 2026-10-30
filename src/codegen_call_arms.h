@@ -195,7 +195,7 @@ int struct_nil_fills(const ClassInfo *k);
 int cls_arm_takes_argc(Scope *s, int argc, int splat);
 int collect_class_constants(Compiler *c, int ci, int inherit, const char **out, const char **shown,
                             int max, int n, int depth);
-void emit_class_id_is(Compiler *c, const char *cname, const char *expr, Buf *b);
+void emit_class_id_is(Compiler *c, int cname, const char *expr, Buf *b);
 int emit_reopen_arm_test(Compiler *c, int kmi, const char *name, const char *cls, const char *raise, Buf *b);
 extern int g_cls_value_recv;
 int hoist_dispatch_args(Compiler *c, int argsN, int **sv, int **vw);

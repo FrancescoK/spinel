@@ -781,36 +781,22 @@ static int collect_dm_each_unroll(Compiler *c, int id, const WalkCtx *w) {
 
 /* The class name a TyKind denotes (for `<x>.class` alias resolution). */
 const char *builtin_class_of_type(TyKind t) {
-  if (t == TY_INT || t == TY_BIGINT) return "Integer";
-  if (t == TY_FLOAT) return "Float";
-  if (t == TY_STRING) return "String";
-  if (t == TY_SYMBOL) return "Symbol";
-  if (t == TY_RANGE) return "Range";
-  if (t == TY_TIME) return "Time";
-  if (t == TY_IO) return "File";
-  if (t == TY_CLASS) return "Class";
-  if (t == TY_NIL) return "NilClass";
-  if (t == TY_MATCHDATA) return "MatchData";
-  if (t == TY_REGEX) return "Regexp";
-  if (t == TY_THREAD) return "Thread";
-  if (t == TY_FIBER) return "Fiber";
-  if (t == TY_RANDOM) return "Random";
-  if (ty_is_array(t)) return "Array";
-  if (ty_is_hash(t)) return "Hash";
-  return NULL;
+  switch (t) {
+  case TY_STRBUF: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_ENUMERATOR:
+  case TY_RATIONAL: case TY_COMPLEX: case TY_PROC: case TY_QUEUE: case TY_EXCEPTION: return NULL;
+  default: return ty_is_obj_array(t) ? NULL : core_class_name(core_of_type(t));
+  }
 }
 
 /* The class name of a type whose calls fall back to a program's own Object
    method (object_reopen_answers): builtin_class_of_type's names plus the
    kinds nothing else asks a name of. builtin_class_of_type stays as it was,
-   since the dynamic-send desugar and the other readers resolve through it. */
-const char *object_fallback_class_of_type(TyKind t) {
-  if (t == TY_RATIONAL) return "Rational";
-  if (t == TY_COMPLEX) return "Complex";
-  if (t == TY_PROC) return "Proc";
-  if (t == TY_QUEUE) return "Queue";
-  if (t == TY_EXCEPTION) return "Exception";
-  return builtin_class_of_type(t);
+   since the dynamic-send desugar and the other readers resolve through it.
+   This helper returns that class's core id, or -1 when there is none. */
+int object_fallback_class_of_type(TyKind t) {
+  if (t == TY_RATIONAL || t == TY_COMPLEX || t == TY_PROC ||
+      t == TY_QUEUE || t == TY_EXCEPTION) return core_of_type(t);
+  return builtin_class_of_type(t) ? core_of_type(t) : -1;
 }
 
 /* The class constant local read `v` holds when every write of that local
@@ -7087,7 +7073,7 @@ void register_includes(Compiler *c) {
       include_module_methods(c, ci, k);
       if (k == c->classes[k].parent) break;
     }
-    int base = comp_class_index(c, c->classes[ci].is_data ? "Data" : "Struct");
+    int base = comp_core_class(c, c->classes[ci].is_data ? CORE_DATA : CORE_STRUCT);
     if (base >= 0 && base != ci && !c->classes[base].is_struct)
       include_module_methods(c, ci, base);
   }

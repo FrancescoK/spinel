@@ -1032,17 +1032,17 @@ int loop_never_completes(Compiler *c, int node) {
 /* Whether the program's own `kept` (Range or Array), Enumerator or
    Enumerable defines `name`: the kept value would then answer the
    program's method, not the Enumerator's. */
-static int kept_enum_reopen_defines(Compiler *c, const char *kept, const char *name) {
-  const char *const CLS[] = { kept, "Enumerator", "Enumerable", NULL };
-  for (int i = 0; CLS[i]; i++) {
-    int ci = comp_class_index(c, CLS[i]);
+static int kept_enum_reopen_defines(Compiler *c, int kept, const char *name) {
+  const int CLS[] = { kept, CORE_ENUMERATOR, CORE_ENUMERABLE, -1 };
+  for (int i = 0; CLS[i] >= 0; i++) {
+    int ci = comp_core_class(c, CLS[i]);
     int dc = -1;
     if (ci >= 0 && comp_method_in_chain(c, ci, name, &dc) >= 0 && dc == ci) return 1;
   }
   return 0;
 }
 static int range_enum_reopen_defines(Compiler *c, const char *name) {
-  return kept_enum_reopen_defines(c, "Range", name);
+  return kept_enum_reopen_defines(c, CORE_RANGE, name);
 }
 /* The walks with a block, and the argless readers, whose answer over the
    members laid out ahead is the Enumerator's answer */
@@ -1146,7 +1146,7 @@ int an_blockless_tuples_kept(Compiler *c, int id) {
   /* nor is a `to_a` a desugar puts under a walk (made_to_a): the walk
      reads the Enumerator through it and may answer its source */
   if (!pn || nt_str(nt, p, "enum_recv") || nt_int(nt, p, "made_to_a", 0) ||
-      kept_enum_reopen_defines(c, "Array", pn)) return 0;
+      kept_enum_reopen_defines(c, CORE_ARRAY, pn)) return 0;
   int pblk = nt_ref(nt, p, "block");
   int pac = 0; { int pa = nt_ref(nt, p, "arguments"); if (pa >= 0) nt_arr(nt, pa, "arguments", &pac); }
   int each = sp_streq(pn, "each"), ewi = sp_streq(pn, "each_with_index");
@@ -1921,7 +1921,7 @@ int range_enum_redispatch(Compiler *c, int id) {
   /* a Range reopen's own method of the name is the call's target, as the
      inference arm for a Range receiver takes it (`class Range; def sum = 0;
      end`) */
-  if (an_reopen_owner(c, id, "Range") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_RANGE) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   int args = nt_ref(nt, id, "arguments"); int argc = 0;
   if (args >= 0) nt_arr(nt, args, "arguments", &argc);
@@ -2012,7 +2012,7 @@ int hash_enum_redispatch(Compiler *c, int id) {
   if (!name) return 0;
   /* a Hash reopen's own method of the name is the call's target, not the
      pair array (`class Hash; def uniq = "mine"; end`) */
-  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_HASH) >= 0) return 0;
   int block = nt_ref(nt, id, "block");
   /* blockless pair-order Enumerables: min/max compare the [k, v] pairs */
   if (block < 0 && (is_extrema_family(name)))
@@ -2940,8 +2940,8 @@ static TyKind kconv_hash_kind(Compiler *c, int arg) {
   return TY_POLY_POLY_HASH;                      /* Hash(nil) / Hash([]) -> {} */
 }
 
-static int an_reopen_method(Compiler *c, const char *cls, const char *name) {
-  int oc_ci = comp_class_index(c, cls);
+static int an_reopen_method(Compiler *c, int cls, const char *name) {
+  int oc_ci = comp_core_class(c, cls);
   return oc_ci >= 0 ? comp_method_in_chain(c, oc_ci, name, NULL) : -1;
 }
 
@@ -6636,24 +6636,17 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
       *out = o == t || o == TY_UNKNOWN || o == TY_VOID ? t : TY_POLY;
       return 1;
     }
-    const char *oc_cn = NULL;
+    int oc_cn = -1;
     switch (rt) {
-    case TY_STRING: oc_cn = "String"; break;
-    case TY_INT:    oc_cn = "Integer"; break;
-    case TY_FLOAT:  oc_cn = "Float"; break;
-    case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_RANGE:  oc_cn = "Range"; break;
-    case TY_TIME:   oc_cn = "Time"; break;
-    case TY_THREAD: oc_cn = "Thread"; break;
-    case TY_FIBER:  oc_cn = "Fiber"; break;
-    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
-    case TY_RANDOM: oc_cn = "Random"; break;
-    case TY_IO:     oc_cn = "File"; break;
-    case TY_CLASS:  oc_cn = "Class"; break;
+    case TY_STRING: case TY_INT: case TY_FLOAT:
+    case TY_SYMBOL: case TY_RANGE: case TY_TIME:
+    case TY_THREAD: case TY_FIBER: case TY_ENUMERATOR:
+    case TY_RANDOM: case TY_IO: case TY_CLASS:
+      oc_cn = core_of_type(rt); break;
     default: break;
     }
-    if (oc_cn) {
-      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
+    if (oc_cn >= 0) {
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_core_class(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = call_target(c, id, oc_ci, name, 0, NULL);
         if (oc_mi >= 0 && rt == TY_IO && io_reopen_ret_mixed(c, name)) { *out = an_planned_call_ret(c, id, TY_POLY); return 1; }
@@ -7023,7 +7016,7 @@ static int infer_universal_call(Compiler *c, int id, const NodeTable *nt, const 
   if (recv >= 0) {
     /* a boxed receiver too: the builtin-only answer the poly dispatch's
        default arm is shaped by is the Object fallback's call */
-    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : object_fallback_class_of_type(rt);
+    const char *ocls = ty_is_object(rt) || rt == TY_POLY || rt == TY_BOOL ? "Object" : core_class_name(object_fallback_class_of_type(rt));
     TyKind ort;
     if (ocls && object_reopen_answers(c, ocls, id, &ort)) { *out = ort; return 1; }
   }
@@ -7829,32 +7822,32 @@ static int infer_last_resort_call(Compiler *c, int id, const NodeTable *nt, cons
   if (recv >= 0) {
     /* Array reopening: any array-typed receiver */
     if (ty_is_array(rt)) {
-      int oc_mi = an_reopen_method(c, "Array", name);
+      int oc_mi = an_reopen_method(c, CORE_ARRAY, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Hash reopening: any hash-typed receiver */
     if (ty_is_hash(rt)) {
-      int oc_mi = an_reopen_method(c, "Hash", name);
+      int oc_mi = an_reopen_method(c, CORE_HASH, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Numeric reopening: integers and floats */
     if (rt == TY_INT || rt == TY_FLOAT || rt == TY_BIGINT) {
-      int oc_mi = an_reopen_method(c, "Numeric", name);
+      int oc_mi = an_reopen_method(c, CORE_NUMERIC, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* FalseClass methods (TrueClass already checked earlier for TY_BOOL) */
     if (rt == TY_BOOL) {
-      int oc_mi = an_reopen_method(c, "FalseClass", name);
+      int oc_mi = an_reopen_method(c, CORE_FALSECLASS, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* NilClass methods on a receiver known to be nil */
     if (rt == TY_NIL) {
-      int oc_mi = an_reopen_method(c, "NilClass", name);
+      int oc_mi = an_reopen_method(c, CORE_NILCLASS, name);
       if (oc_mi >= 0) { *out = c->scopes[oc_mi].ret; return 1; }
     }
     /* Object reopening: universal fallback for any receiver type */
     {
-      int oc_mi = an_reopen_method(c, "Object", name);
+      int oc_mi = an_reopen_method(c, CORE_OBJECT, name);
       /* a yielding one given a block answers what its proc form does,
          a boxed value (#5779) */
       if (oc_mi >= 0 && c->scopes[oc_mi].yields && nt_ref(c->nt, id, "block") >= 0) { *out = TY_POLY; return 1; }
@@ -8432,12 +8425,12 @@ static int chain_has_aliases(Compiler *c, int ci) {
    a.size`), which leaves the block unused, as codegen calls it
    (reopen_override_block_ok). The reopen's method, or -1. */
 static int ty_array_or_hash(TyKind t) { return ty_is_array(t) || ty_is_obj_array(t) || ty_is_hash(t); }
-static int reopen_owner_of(Compiler *c, int id, const char *cn, const char *name) {
+static int reopen_owner_of(Compiler *c, int id, int cn, const char *name) {
   /* A block-carrying call of a builtin's name is the reopen's only when it
      does not yield; asked first whether the program reopens the class at
      all, counted again only as the class table grows (a lookup before the
      table is frozen scans it, and most such calls are a plain `each`) */
-  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name)) {
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(core_class_name(cn), name)) {
     static int ahr_n = -1, ahr_any = 0;
     if (ahr_n != c->nclasses) {
       ahr_n = c->nclasses;
@@ -8446,31 +8439,31 @@ static int reopen_owner_of(Compiler *c, int id, const char *cn, const char *name
     }
     if (!ahr_any) return -1;
   }
-  int aci = comp_class_index(c, cn);
+  int aci = comp_core_class(c, cn);
   int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, name, 0, &adc) : -1;
   /* the reopen's own method under this very name: an alias taken before the
      reopen (`alias orig_first first`) still names the builtin */
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, name)) return -1;
-  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(cn, name) && c->scopes[ami].yields) return -1;
+  if (nt_ref(c->nt, id, "block") >= 0 && builtin_method_known(core_class_name(cn), name) && c->scopes[ami].yields) return -1;
   return ami;
 }
 static int array_hash_reopen_owner(Compiler *c, int id, TyKind rt, const char *name) {
-  return reopen_owner_of(c, id, ty_is_hash(rt) ? "Hash" : "Array", name);
+  return reopen_owner_of(c, id, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY, name);
 }
-/* The method the program's reopen of builtin class cn ("Array", "Hash",
-   "Range" or "Symbol") defines itself under call id's name, which the call
+/* The method the program's reopen of builtin core id cn (CORE_ARRAY, CORE_HASH,
+   CORE_RANGE or CORE_SYMBOL) defines itself under call id's name, which the call
    reaches over the builtin's (a module the reopen includes does not
    displace the builtin's method). -1 for none, and for a call marked
    builtin_only. A rewrite that turns the call into another builtin's asks
    it first. */
-int an_reopen_owner(Compiler *c, int id, const char *cn) {
+int an_reopen_owner(Compiler *c, int id, int cn) {
   const char *name = nt_str(c->nt, id, "orig_name") ? nt_str(c->nt, id, "orig_name") : nt_str(c->nt, id, "name");
   if (!name || nt_int(c->nt, id, "builtin_only", 0)) return -1;
   int mi = reopen_owner_of(c, id, cn, name);
   /* (a Symbol or Range one; an Array or Hash one keeps the answer the
      inference arm above gives it) */
-  if (mi >= 0 && c->scopes[mi].is_include_copy && builtin_method_known(cn, name) &&
-      (sp_streq(cn, "Symbol") || sp_streq(cn, "Range"))) return -1;
+  if (mi >= 0 && c->scopes[mi].is_include_copy && builtin_method_known(core_class_name(cn), name) &&
+      (cn == CORE_SYMBOL || cn == CORE_RANGE)) return -1;
   return mi;
 }
 
