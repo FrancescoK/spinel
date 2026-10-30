@@ -547,6 +547,31 @@ int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const cha
   return emit_builtin_op_ex(c, id, recv, rt, name, rtext, t0, 0, bop_arg_ntype, 0, b);
 }
 
+/* A row rendered as one arm of a boxed dispatch whose answer is a boxed
+   value: the call through the row of kind rt (the receiver read as that
+   kind, by a view), its answer boxed by the row's result kind. 0 and
+   nothing written when no row has the call, its emitter declines, or its
+   answer is a kind with nothing to box it by. */
+int emit_builtin_op_arm_boxed(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b) {
+  if (recv < 0) return 0;
+  int argc;
+  const int *argv = call_args(c->nt, id, &argc);
+  BopArgs a = { c, argv };
+  const BuiltinOp *op = bop_find_stage(bop_family_of(rt), name, argc, nt_ref(c->nt, id, "block") >= 0,
+                                       bop_arg_ntype, &a, 0);
+  if (!op || op->emit == BOPE_NONE) return 0;
+  TyKind res = bop_result_args(op, rt, argc, bop_arg_ntype, &a, an_bop_facts(c, op, id));
+  const TyTraits *tr = ty_traits_of(res);
+  if (res == TY_UNKNOWN || res == TY_VOID) return 0;   /* a kind inference types in a rule of its own */
+  if (res != TY_POLY && res != TY_STRING && !(tr && tr->box_text)) return 0;
+  Buf ab; memset(&ab, 0, sizeof ab);
+  if (!emit_builtin_op_arm_text(c, id, recv, rt, name, NULL, 0, &ab)) { free(ab.p); return 0; }
+  if (res == TY_POLY) buf_puts(b, ab.p ? ab.p : "sp_box_nil()");
+  else emit_boxed_text(c, res, ab.p ? ab.p : "", b);
+  free(ab.p);
+  return 1;
+}
+
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b) {
   return emit_builtin_op_ex(c, id, recv, rt, name, NULL, t0, 0, bop_arg_ntype, 1, b);

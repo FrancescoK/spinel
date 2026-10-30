@@ -2308,6 +2308,7 @@ int poly_splat_keyed(const char *name);
 int an_yield_site_builtin_answer(Compiler *c, int id, TyKind kind, TyKind *out);
 int an_bop_facts(Compiler *c, const struct BuiltinOp *op, int id);
 const struct BuiltinOp *an_bop_row_for_kind(Compiler *c, int id, TyKind rt);
+const struct BuiltinOp *poly_scalar_row(TyKind k, const char *name, int argc, int has_block);   /* analyze_infer.c */
 int a_super_target(Compiler *c, Scope *m);
 int an_arg_is_shared_handle(Compiler *c, int node);
 int an_super_object_text(Compiler *c, int n, int mi);
@@ -2463,6 +2464,8 @@ int emit_builtin_op_text(Compiler *c, int id, int recv, TyKind rt, const char *n
    dispatch's temp for the row's $T, or 0 */
 int emit_builtin_op_arm_text(Compiler *c, int id, int recv, TyKind rt, const char *name,
                              const char *rtext, int t0, Buf *b);
+/* the same, the answer boxed into b by the row's result kind (0: no arm) */
+int emit_builtin_op_arm_boxed(Compiler *c, int id, int recv, TyKind rt, const char *name, Buf *b);
 /* the same, with the temp t0 the family took before its arms ($T) */
 int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *name,
                         int t0, Buf *b);

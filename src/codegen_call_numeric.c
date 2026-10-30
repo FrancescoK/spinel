@@ -1,6 +1,7 @@
 /* codegen_call_numeric.c -- the builtin-op emitters of Complex and
    Rational that are more than one C expression around the receiver and
-   its operands; the rest are templates in builtin_ops.c. Each answers 1
+   its operands; the rest are templates in builtin_ops.c. A boxed Integer
+   or Float reaches the rows of its own kind here too (poly_scalar_arms_open). Each answers 1
    when it emitted the call, 0 (having emitted nothing) to leave it to the
    chain after the lookup. */
 
@@ -811,4 +812,69 @@ int emit_op_range_freeze(Compiler *c, const BopCtx *x, Buf *b) {
   }
   buf_printf(b, "_t%d; })", t);
   return 1;
+}
+
+/* A boxed Integer or Float reaches a call no target of the program and no
+   family of the boxed dispatch answers. CRuby calls the value's own method,
+   and the typed receiver of that kind answers it from its row, so each
+   scalar kind with a row for the call gets an arm, tag-guarded, ahead of
+   the NoMethodError: the value read as that kind (a view of the receiver),
+   the row's own emitter, its answer boxed. The receiver and the arguments
+   are held in boxed temps first, in source order, so the arms and the
+   default read each once; they stay held until poly_scalar_arms_close.
+   Answers 1 when it held them (the caller writes the default and closes),
+   0 and nothing held when no scalar kind has a row for the call. When arms
+   were made b gets `(tag test ? arm : tag test ? arm : `, the close its `)`. */
+int poly_scalar_arms_open(Compiler *c, int id, PolyScalarArms *pa, Buf *b) {
+  const NodeTable *nt = c->nt;
+  static const struct { TyKind k; const char *tag, *fmt; } S[] = {
+    { TY_INT, "SP_TAG_INT", "_t%d.v.i" }, { TY_FLOAT, "SP_TAG_FLT", "_t%d.v.f" },
+  };
+  const int ns = (int)(sizeof S / sizeof *S);
+  memset(pa, 0, sizeof *pa);
+  const char *name = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver");
+  if (!name || recv < 0 || nt_call_has_block_arg(nt, id) || g_n_argov + 8 > MAX_ARG_OVERRIDE) return 0;
+  int argc; const int *argv = call_args(nt, id, &argc);
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) return 0;
+  int blk = nt_ref(nt, id, "block") >= 0, any = 0;
+  for (int i = 0; i < ns; i++) any |= poly_scalar_row(S[i].k, name, argc, blk) != NULL;
+  if (!any) return 0;
+  int tv = hoist_boxed_rooted(c, recv);
+  pa->hn = hoist_dispatch_args(c, nt_ref(nt, id, "arguments"), &pa->hsv, &pa->hvw);
+  argov_reserve();
+  pa->bslot = g_n_argov;
+  view_bind(recv, "_t%d", tv);
+  pa->open = 1;
+  Buf ab; memset(&ab, 0, sizeof ab);
+  for (int i = 0; i < ns; i++) {
+    argov_reserve();
+    int slot = g_n_argov;
+    view_bind(recv, S[i].fmt, tv);
+    int vw = view_push(c, recv, S[i].k), fv = view_push_face(recv, S[i].k);
+    size_t pre = g_pre->len;
+    Buf one; memset(&one, 0, sizeof one);
+    /* an emitter that stages code ahead of the statement would run it for
+       every tag: such a row gets no arm */
+    if (poly_scalar_row(S[i].k, name, argc, blk) &&
+        emit_builtin_op_arm_boxed(c, id, recv, S[i].k, name, &one) && g_pre->len == pre) {
+      buf_printf(&ab, "(_t%d.tag == %s) ? %s : ", tv, S[i].tag, one.p ? one.p : "sp_box_nil()");
+      pa->arms++;
+    }
+    else if (g_pre->len != pre) buf_erase(g_pre, pre, g_pre->len - pre);
+    free(one.p);
+    view_pop(c, fv); view_pop(c, vw);
+    view_unbind(slot);
+  }
+  if (pa->arms) { buf_puts(b, "("); buf_puts(b, ab.p); }
+  free(ab.p);
+  return 1;
+}
+
+void poly_scalar_arms_close(Compiler *c, PolyScalarArms *pa, Buf *b) {
+  if (!pa->open) return;
+  if (pa->arms) buf_puts(b, ")");
+  view_unbind(pa->bslot);
+  unhoist_dispatch_args(c, pa->hn, pa->hsv, pa->hvw);
+  pa->open = 0;
 }

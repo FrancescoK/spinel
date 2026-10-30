@@ -2824,6 +2824,7 @@ static int yield_recv_builtin_every_site(Compiler *c, int call) {
   return any;
 }
 
+static int poly_scalar_row_call(Compiler *c, int id);
 TyKind infer_call(Compiler *c, int id) {
   /* a receiver that folded to a constant after the early rewrite of a
      singleton alias of a builtin's class method (`k = Integer; k.root(25)`) */
@@ -2874,6 +2875,7 @@ TyKind infer_call(Compiler *c, int id) {
   if (t == TY_UNKNOWN && boxed_struct_aref_may_construct(c, id)) return TY_POLY;
   int av = t == TY_UNKNOWN ? builtin_arity_violation(c, id) : 0;
   if (av) return av == 2 ? TY_POLY : TY_NIL;
+  if (t == TY_UNKNOWN && poly_scalar_row_call(c, id)) return TY_POLY;
   return t;
 }
 
@@ -3013,6 +3015,32 @@ static int an_user_poly_arm(Compiler *c, const char *name, int argc) {
     if (comp_poly_arm_defines_n(c, k, name, argc) ||
         (!c->classes[k].is_native_class && comp_reader_in_chain(c, k, name, NULL))) return 1;
   return 0;
+}
+
+const BuiltinOp *poly_scalar_row(TyKind k, const char *name, int argc, int has_block) {
+  int mn, mx;
+  const char *lo, *hi;
+  if (!builtin_class_arity_spec(k == TY_INT ? "Integer" : "Float", name, &mn, &mx, &lo, &hi) ||
+      argc < mn || argc > mx) return NULL;
+  return bop_find(k, name, argc, has_block);
+}
+
+/* A boxed Integer or Float answers a name its kind's row states, when no rule
+   typed the call and no class of the program answers it: the value is
+   whichever kind the box holds, so the call is boxed (codegen's tag-guarded
+   arms through the rows, poly_scalar_arms_open). Typed here, so the
+   consumers of the call take a boxed value instead of the raise token an
+   untyped call leaves. */
+static int poly_scalar_row_call(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  const char *name = nt_str(nt, id, "name");
+  if (recv < 0 || !name || an_builtin_only || nt_call_has_block_arg(nt, id) || comp_ntype(c, recv) != TY_POLY) return 0;
+  int argc; const int *argv = call_args(nt, id, &argc);
+  if (nt_argv_has(nt, argv, argc, NT_ARG_SPLAT | NT_ARG_BLOCK | NT_ARG_KEYWORDS)) return 0;
+  int blk = nt_ref(nt, id, "block") >= 0;
+  return !an_user_defines_or_reads(c, name) && !an_user_poly_arm(c, name, argc) &&
+         (poly_scalar_row(TY_INT, name, argc, blk) || poly_scalar_row(TY_FLOAT, name, argc, blk));
 }
 
 void an_user_call_record(Compiler *c, int id, int mi, int via, int owner_ci) {
