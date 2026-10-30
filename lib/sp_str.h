@@ -283,6 +283,28 @@ static inline int sp_str_eq(const char*a,const char*b){
   for(size_t i=0;i<la;i++)if((unsigned char)a[i]>=0x80)return 0;
   return 1;
 }
+/* The key compare of a Hash's probe loop. A key that matches is walked twice
+   by sp_str_eq, by strcmp and then by memcmp; when both Strings carry their
+   length, the length and one memcmp answer. Only the test for the same String
+   is inline, so a lookup that finds its own key runs the loop it ran; any
+   other pair -- a literal without a header among them -- takes sp_str_eq.
+   Most pairs a probe meets differ in their first byte, where strcmp stopped
+   too, so that byte is tested before the headers are read. */
+static SP_NOINLINE int sp_str_key_eq(const char*a,const char*k){
+  if(!a||!k||*a!=*k)return 0;
+  if(sp_str_has_hdr(a)&&sp_str_has_hdr(k)){
+    uint32_t la=(((const sp_str_hdr*)(a-1))-1)->len,lk=(((const sp_str_hdr*)(k-1))-1)->len;
+    if(la!=SP_STR_LEN_UNSET&&lk!=SP_STR_LEN_UNSET){
+      if(la!=lk||memcmp(a,k,la)!=0)return 0;
+      /* comparable encodings, as sp_str_eq */
+      if(sp_str_is_binary(a)==sp_str_is_binary(k))return 1;
+      for(uint32_t i=0;i<la;i++)if((unsigned char)a[i]>=0x80)return 0;
+      return 1;
+    }
+  }
+  return sp_str_eq(a,k);
+}
+static inline int sp_str_probe_eq(const char*a,const char*k){return a==k||sp_str_key_eq(a,k);}
 /* `s == "lit"` for a literal of n ASCII bytes, none of them NUL, that the
    compiler knows: an inline byte loop where sp_str_eq calls strcmp. The loop
    stops at a's terminator (the literal has no NUL to match it), so it reads
