@@ -11221,12 +11221,33 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     site[nsite++] = ci;
   }
   free(parent);
+  /* The twin's name and its class method's are ones the program gives
+     nothing -- no class, module, constant, method or call -- so the twin's
+     declaration reopens none of the program's classes and the accessor
+     replaces none of its methods, nor one of them it. */
+  char twin[64], acc[64];
+  for (int serial = 0;; serial++) {
+    char sfx[16] = "";
+    if (serial) snprintf(sfx, sizeof sfx, "%d", serial);
+    snprintf(twin, sizeof twin, "SpinelEnumerableSelf%s", sfx);
+    snprintf(acc, sizeof acc, "__spinel_enum_self%s", sfx);
+    int taken = 0;
+    for (int id = 0; id < n0 && !taken; id++) {
+      NodeKind k = nt_kind(nt, id);
+      const char *cn = k == NK_ClassNode || k == NK_ModuleNode ? nt_str(nt, nt_ref(nt, id, "constant_path"), "name")
+                     : k == NK_ConstantWriteNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode ||
+                       k == NK_DefNode || k == NK_CallNode ? nt_str(nt, id, "name")
+                     : k == NK_SymbolNode ? nt_str(nt, id, "value") : NULL;
+      taken = cn && (sp_streq(cn, twin) || sp_streq(cn, acc));
+    }
+    if (!taken) break;
+  }
   int changed = 0;
   for (int k = 0; k < nsite; k += 2) {
     int id = site[k], ci = site[k + 1];
     int tw = fwd_new_node_like(nt, id, "CallNode");
     if (tw < 0) break;
-    nt_node_set_str(nt, tw, "name", "__spinel_enum_self");
+    nt_node_set_str(nt, tw, "name", acc);
     nt_node_set_ref(nt, tw, "receiver", nt_ref(nt, id, "receiver"));
     nt_node_set_ref(nt, id, "receiver", tw);
     nt_set_vcall(nt, id, 0);
@@ -11242,22 +11263,7 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     }
   /* then the twins, each the first statements of its class's first body:
      only where a call asks for one, as a class that never calls them need
-     not define #each. The twin's name is one the program gives no class,
-     module or constant, so its declaration reopens none of them. */
-  char twin[64];
-  for (int serial = 0;; serial++) {
-    if (serial) snprintf(twin, sizeof twin, "SpinelEnumerableSelf%d", serial);
-    else snprintf(twin, sizeof twin, "SpinelEnumerableSelf");
-    int taken = 0;
-    for (int id = 0; id < n0 && !taken; id++) {
-      NodeKind k = nt_kind(nt, id);
-      const char *cn = k == NK_ClassNode || k == NK_ModuleNode ? nt_str(nt, nt_ref(nt, id, "constant_path"), "name")
-                     : k == NK_ConstantWriteNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode
-                       ? nt_str(nt, id, "name") : NULL;
-      taken = cn && sp_streq(cn, twin);
-    }
-    if (!taken) break;
-  }
+     not define #each */
   for (int i = 0; i < nv; i++) {
     if (!v[i].in_set || !v[i].used) continue;
     char path[512];
@@ -11267,7 +11273,7 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     char text[1536];
     snprintf(text, sizeof text,
              "class %s\n  include Enumerable\n  def each\n    %s.each { |*x| yield(*x) }\n  end\nend\n"
-             "def self.__spinel_enum_self\n  %s.new\nend\n", twin, path, twin);
+             "def self.%s\n  %s.new\nend\n", twin, path, acc, twin);
     NodeTable *tmp = sp_parse_snippet(text);
     if (!tmp) continue;
     int st = nt_ref(tmp, tmp->root_id, "statements"), tn = 0;

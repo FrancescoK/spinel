@@ -5,8 +5,8 @@
 # singleton prepend, its own is_a?, but not a module extended before it,
 # nor the body's own instance declarations; a constant names the class its
 # namespace reaches; a body with rescue extends it too; the class's
-# constants are its own; and a class of the program named like the twin
-# is left alone.
+# constants are its own; and a class or class method of the program
+# named like the twin or its accessor is left alone.
 
 class Counter
   extend Enumerable
@@ -180,3 +180,14 @@ class Named
 end
 p Named.map { |x| x * 2 }
 p Named::SpinelEnumerableSelf.new.each
+
+class Acc
+  extend Enumerable
+  def self.each
+    yield 6
+    yield 7
+  end
+  def self.__spinel_enum_self = "the program's accessor"
+end
+p Acc.map { |x| x + 1 }
+p Acc.__spinel_enum_self
