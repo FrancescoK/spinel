@@ -25,6 +25,9 @@ puts f.basename.to_s
 puts f.dirname.relative_path_from(root).to_s
 puts f.ftype
 puts f.mtime.class.to_s
+puts f.stat.file?
+puts f.stat.size
+puts f.lstat.class.to_s
 
 n = 0
 f.each_line { |_| n += 1 }
