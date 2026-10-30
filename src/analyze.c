@@ -41936,16 +41936,21 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   }
   /* index, rindex and find_index take a value or a block: the empty splat
      is the block's form and one element the value's, which leaves the block
-     unused. So the block goes on the arm with no arguments. */
+     unused. So the block goes on the arm with no arguments (a `&b` read is
+     kept on the others for its TypeError, below). */
   int vob = blk >= 0 && splat_value_or_block_name(cnm);
   /* A `&b` may hold nil, and then the call with no arguments answers an
      Enumerator: that arm tests it, `b ? r.m(&b) : r.m`, or block_given?
-     for an anonymous `&`. A `&` of anything but a local keeps its splat. */
-  int vob_test = 0;
+     for an anonymous `&`. Only nil is no block: `&false` raises TypeError
+     at any count, so the falsy arm raises it for false, and a `&b` stays
+     on the value's arms too, where it is not called. A `&` of anything
+     but a local keeps its splat. */
+  int vob_test = 0, bxl = 0;
   if (vob && nt_kind(nt, blk) == NK_BlockArgumentNode) {
     int bx = nt_ref(nt, blk, "expression");
     if (bx < 0 || nt_kind(nt, bx) == NK_LocalVariableReadNode) vob_test = 1;
     else vob = 0;
+    bxl = bx >= 0 && vob_test;
   }
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
@@ -42297,7 +42302,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, cl, "block", fwd_blk ? nt_clone_subtree(nt, blk) :
-                                     vob ? (m == 0 ? blk : -1) :
+                                     vob ? (m == 0 ? blk : vob_test && bxl ? nt_clone_subtree(nt, blk) : -1) :
                                      blk >= 0 && (m == 1 || odyn || ctor >= 0) ? blk : -1);
     int an = -1;
     if (m > 0) {
@@ -42324,6 +42329,19 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_ref(nt, bare, "receiver", nt_clone_subtree(nt, recv));
       nt_node_set_ref(nt, bare, "arguments", -1);
       nt_node_set_ref(nt, bare, "block", -1);
+      /* a falsy `&b` is nil or false, and false raises TypeError */
+      if (bx >= 0) {
+        int isn = sd_bcall(nt, "nil?", nt_clone_subtree(nt, bx), NULL, 0);
+        int te = nt_new_node(nt, "ConstantReadNode");
+        nt_node_set_str(nt, te, "name", "TypeError");
+        int rargs[2] = { te, sd_str(nt, "no implicit conversion of FalseClass into Proc") };
+        int chk = sd_if(nt, isn, nt_new_node(nt, "NilNode"), sd_call(nt, "raise", -1, rargs, 2));
+        int body[2] = { chk, bare };
+        int st = nt_new_node(nt, "StatementsNode");
+        nt_node_set_arr(nt, st, "body", body, 2);
+        bare = nt_new_node(nt, "ParenthesesNode");
+        nt_node_set_ref(nt, bare, "body", st);
+      }
       cl = sd_if(nt, test, cl, bare);
     }
     int ard = splat_operand_read(c, nt, anm, adepth, aview);
