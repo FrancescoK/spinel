@@ -4551,6 +4551,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
 	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/is_a_user_class_guard_narrows.rb -c --no-line-map -o "$$tmp/iug.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (is_a_user_class_guard_narrows: -c)"; ok=0; }; \
+	  grep -q 'sp_Int_tag((sp_Int \*)(sp_Int \*)sp_poly_unbox_cls(lv_x' "$$tmp/iug.c" || { echo "infer-test: FAIL (is_a?(Int) left a guarded call on a user class in boxed dispatch)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_method_ivar_receivers.rb -c --no-line-map -o "$$tmp/oir.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_method_ivar_receivers: -c)"; ok=0; }; \
 	  grep -q 'static sp_PointValue sp_PointValue_new(' "$$tmp/oir.c" && ! grep -q 'iv_unused;' "$$tmp/oir.c" || { echo "infer-test: FAIL (an Object setter changes unrelated layouts)"; ok=0; }; \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
