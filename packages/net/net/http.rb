@@ -452,9 +452,10 @@ module Net
     end
 
     # Where the session is traced: the connection opened and closed, each
-    # request as written and each response line as read, in CRuby's `<-` and
-    # `->` spelling. Like CRuby's, for debugging only -- the trace is not a
-    # format to parse, and a body is reported by its length, not written out.
+    # request as written -- its headers and body whole, credentials included
+    # -- and each response line as read, with the response body reported by
+    # its length. CRuby's `<-` and `->` spelling. Like CRuby's, for debugging
+    # only, never in production: the trace carries whatever the request does.
     def set_debug_output(output)
       # Without CRuby's `uplevel: 1`: Spinel has no caller location to prefix.
       warn "Net::HTTP#set_debug_output called after HTTP started" if started?
@@ -832,7 +833,7 @@ module Net
       body =
         if bodyless
           nil
-        elsif headers["transfer-encoding"].to_s.downcase == "chunked"
+        elsif headers["transfer-encoding"].to_s.downcase.split(",").last.to_s.strip == "chunked"
           read_chunked
         elsif headers.key?("content-length")
           n = headers["content-length"].to_i
@@ -843,11 +844,14 @@ module Net
 
       debug "read #{body.bytesize} bytes" unless body.nil?
       if decode_content && !bodyless
+        length_before = headers["content-length"]
         body = decode_body(headers, body)
         # decode_body may drop Content-Encoding and restate Content-Length;
-        # the separate values follow what the joined ones now say.
+        # the separate values follow only what it changed.
         fields.delete("content-encoding") unless headers.key?("content-encoding")
-        fields["content-length"] = [headers["content-length"]] if headers.key?("content-length")
+        if headers.key?("content-length") && headers["content-length"] != length_before
+          fields["content-length"] = [headers["content-length"]]
+        end
       end
       build_response(version, code, message, headers, body, fields)
     end

@@ -99,11 +99,11 @@ class Resolv
 
     # CRuby's reading, as it is: a `#` starts a comment, the first field is
     # the address and each further field a name for it. The address is not
-    # checked, there or here. A file that cannot be read raises from the
+    # checked, there or here, and a line that starts with whitespace gives
+    # an empty first field, as `split(/\s+/)` does there. A file that cannot be read raises from the
     # first lookup, Errno::ENOENT for a missing one, as CRuby's does.
     def load
       return if @loaded
-      @loaded = true
       File.readlines(@filename).each do |line|
         fields = line.sub(/#.*/, "").split(/\s+/)
         next if fields.empty?
@@ -113,6 +113,7 @@ class Resolv
         end
       end
       @name2addr.each_value(&:reverse!)
+      @loaded = true
     end
   end
 
