@@ -41191,9 +41191,14 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   /* ...and a method's own `&block` handed on to an element read, which
      ignores a block (`def [](*args, &block) = expressions.[](*args, &block)`,
      regexp_parser's forwarders): a read of a local, which every arm shares
-     too. A name a block changes (`index { }`) keeps its splat. */
+     too. So does fetch's (`def fetch(key, *args, &block) =
+     @hash.fetch(key, *args, &block)`, thor's HashWithIndifferentAccess),
+     the key fixed ahead of the splat: each arm takes the block a missing
+     key calls, and a nil one leaves the default or the KeyError, where the
+     kept splat call handed the whole Array over as the default. A name a
+     block changes (`index { }`) keeps its splat. */
   if (blk >= 0 && !subst && nt_kind(nt, blk) == NK_BlockArgumentNode &&
-      (sp_streq(cnm, "[]") || sp_streq(cnm, "slice"))) {
+      (sp_streq(cnm, "[]") || sp_streq(cnm, "slice") || (sp_streq(cnm, "fetch") && sp_at == 1))) {
     int bx = nt_ref(nt, blk, "expression");
     if (bx >= 0 && nt_kind(nt, bx) == NK_LocalVariableReadNode) fwd_blk = 1;
   }
