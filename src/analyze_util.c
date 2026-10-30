@@ -3653,8 +3653,9 @@ int name_is_synth_method(Compiler *c, const char *m) {
      the program names `__noarg_inspect` is its own */
   if (strncmp(m, "__noarg ", 8) == 0) return 1;
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
-     so an override can reach it through super (#3738) */
-  if (strncmp(m, "__inc ", 6) == 0) return 1;
+     so an override can reach it through super (#3738); a name not in that
+     spelling, as `__inc foo`, is the program's own */
+  if (comp_name_is_inc_shadow(m)) return 1;
   if (comp_name_is_prep_shadow(m)) return 1;
   /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
      Ruby method name */

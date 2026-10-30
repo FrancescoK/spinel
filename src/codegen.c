@@ -17180,7 +17180,7 @@ static void rbs_class_methods(Compiler *c, Buf *b, int ci, int cmeth) {
   for (int si = 1; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->class_id != ci || !!s->is_cmethod != !!cmeth) continue;
-    if (!s->name || !*s->name) continue;
+    if (!s->name || !*s->name || comp_name_is_prep_shadow(s->name)) continue;
     Buf pre; memset(&pre, 0, sizeof pre);
     buf_printf(&pre, "def %s%s", cmeth ? "self." : "", s->name);
     rbs_method_line(c, b, pre.p ? pre.p : "def ?", s);
