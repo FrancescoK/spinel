@@ -1248,6 +1248,7 @@ static int xs_singleton_attr(NodeTable *nt, int st, const XsOwn *own, int nown, 
   return sc;
 }
 static int program_defines_name(const NodeTable *nt, int n0, const char *name);
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name);
 /* The paths the program writes, for the receiver of an instance_eval:
    each class or module header's full path ("A::B"), each value constant's,
    and the lexical scopes (the full paths of the bodies around it,
@@ -6223,9 +6224,11 @@ void enum_send_copy_take(NodeTable *nt, int call) {
   /* collect_concat is flat_map under another name, and detect find
      (LR_ENUM_NAME's rows): the call takes the copy of the name the
      definition has, under that name, as desugar_builtins renames a written
-     one -- unless the program defines the alias itself */
+     one; a class with its own method of the alias keeps it, answered by
+     the name the call was written with (desugar_builtin_enum_calls); a
+     class method or a top-level one keeps the call as written */
   const LowerRow *alias = bi < 0 && nm ? lower_row_named(LR_ENUM_NAME, nm) : NULL;
-  if (alias && !program_defines_name(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
+  if (alias && !program_defines_name_off_class(nt, nt->count, nm)) bi = builtin_enum_name_index(alias->target);
   else alias = NULL;
   if (bi < 0 || bi >= g_enum_send_copy_n || g_enum_send_copy[bi] < 0) return;
   if (alias) {
@@ -12931,6 +12934,20 @@ static int program_defines_name(const NodeTable *nt, int n0, const char *name) {
   return 0;
 }
 
+/* does the program define name other than as an instance method in a
+   class body? A call that reaches such a method -- a class's or module's
+   own (`C.detect`), a top-level one (a receiverless `detect`) -- is
+   resolved by the name it carries, never by orig_name, so renaming it to
+   the builtin's left it no method. */
+static int program_defines_name_off_class(const NodeTable *nt, int n0, const char *name) {
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_DefNode || !nt_str(nt, id, "name") || !sp_streq(nt_str(nt, id, "name"), name)) continue;
+    int ct = nt_ref(nt, id, "receiver") < 0 ? fwd_lex_parent(nt, id) : -1;
+    if (ct < 0 || !fwd_node_is(nt, ct, "ClassNode")) return 1;
+  }
+  return 0;
+}
+
 /* `self` in nodes [lo, hi] reads the `__self` parameter, and the
    receiverless calls there (Kernel's aside) take it as their receiver; cls
    and own as bi_keeps_receiverless takes them */
@@ -13378,10 +13395,15 @@ int desugar_builtins(Compiler *c) {
       }
     }
     /* collect_concat is flat_map under another name, and detect find: the
-       call takes the name the definition has (LR_ENUM_NAME's rows; a
-       program that defines collect_concat or detect itself keeps its call) */
+       call takes the name the definition has (LR_ENUM_NAME's rows). A class
+       of the program with its own method of the alias keeps it: the rewrite
+       answers a receiver of that class by the name the call was written
+       with (orig_name), where a program-wide test left an Array's
+       collect_concat no method at all. A class method or a top-level
+       method of the alias keeps every call of it as written
+       (program_defines_name_off_class). */
     const LowerRow *alias = lower_row_named(LR_ENUM_NAME, cn0);
-    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name(nt, n0, alias->name)) {
+    if (alias && builtin_enum_name_index(alias->target) >= 0 && !program_defines_name_off_class(nt, n0, alias->name)) {
       /* (a send keeps its own name until desugar_public_send_recv
          retargets it, which renames it so: renamed here, `a.send(:detect)`
          was a call of find with :detect for its argument) */
@@ -14348,7 +14370,9 @@ int desugar_builtin_enum_calls(Compiler *c) {
     /* the builtin's own arity: `str.partition(sep)` on a value that is a
        String at run time is String's method, not Enumerable's. A program's
        own method may take a rest (activesupport's `excluding(*elements)`)
-       or keywords, and a splatted argument counts for any number. */
+       or keywords, and a splatted argument counts for any number. A boxed
+       receiver's call left as written is dispatched by the name it was
+       written with: a class's own `collect_concat(n)` is not flat_map's. */
     { int cpn = nt_ref(nt, copy, "parameters");
       int crn = 0; if (cpn >= 0) nt_arr(nt, cpn, "requireds", &crn);
       int con = 0; if (cpn >= 0) nt_arr(nt, cpn, "optionals", &con);
@@ -14356,7 +14380,10 @@ int desugar_builtin_enum_calls(Compiler *c) {
       int crest = cpn >= 0 && nt_ref(nt, cpn, "rest") >= 0;
       int pos = an, splat = nt_argv_has_splat(nt, av, an);
       if (ckn > 0 && nt_argv_kwh(nt, av, an) >= 0) pos--;
-      if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) continue; }
+      if ((!splat && pos + 1 < crn) || (!crest && pos + 1 > crn + con)) {
+        if (rt == TY_POLY && enum_unrename(nt, id)) changed = 1;
+        continue;
+      } }
     int base = nt->count;
     int encl = c->nscope[id];
     /* A dynamic send's arms share one receiver node; rewritten here it
@@ -14419,8 +14446,8 @@ int desugar_builtin_enum_calls(Compiler *c) {
        on whatever it is handed, and a boxed String's `special?` (`count >
        1`) reached String#count and raised ArgumentError. Only a value that
        is an Enumerable -- an Array, a Hash, a Range, an Enumerator, a
-       Struct, an IO, or an instance of a program class with Enumerable
-       behind it -- takes the copy; any other takes the call as written,
+       Struct, an IO, a Dir, or an instance of a program class with
+       Enumerable behind it -- takes the copy; any other takes the call as written,
        whose answer is CRuby's NoMethodError. (`is_a?(Enumerable)` itself
        answers false for a boxed builtin.) */
     int scal_arm = rt == TY_POLY && !safe_nav && !range_arm && !wo_arm && nt_int(nt, copy, "enum_own_def", 0);
@@ -14457,7 +14484,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
       if (!safe_nav) pred = range_arm ? enum_is_a_named(c, rn, "Range")
                           : wo_arm ? enum_is_a_named(c, rn, "Enumerator") : enum_is_a_chain(c, rn, defcls, exact, ndef);
       if (scal_arm) {
-        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO" };
+        static const char *const enums[] = { "Array", "Hash", "Range", "Enumerator", "Struct", "IO", "Dir" };
         const int nenums = (int)(sizeof enums / sizeof enums[0]);
         int is_enum = -1;
         for (int k = 0; k < nenums + c->nclasses; k++) {

@@ -1,0 +1,8 @@
+:c_detect
+:c_collect_concat
+:m_detect
+[:c_detect, :c_collect_concat, :c_detect]
+:c_detect
+:c_detect
+2
+[1, 2]

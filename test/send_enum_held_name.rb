@@ -101,8 +101,28 @@ class Plain
   def initialize = @v = 1
 end
 Pair = Struct.new(:a, :b)
-[Pair.new(1, 2), Bag.new, Plain.new, /a/, 1.5r, Time.at(0), -> {}].each do |r|
-  p [r.special?, r.public_send(m)]
-rescue NoMethodError => e
-  p e.message.sub(/ for .*/, "")
+[Pair.new(1, 2), Bag.new, Plain.new, /a/, 1.5r, Time.at(0), -> {}, Dir.new(".")].each do |r|
+  got = [-> { r.special? }, -> { r.public_send(m) }].map do |f|
+    f.call
+  rescue NoMethodError => e
+    e.message.sub(/ for .*/, "")
+  end
+  p got
+end
+
+# a class of the program that defines an alias itself keeps its method, and
+# an Array's collect_concat or detect still reaches the builtin's, written,
+# held or sent
+class CC
+  include Enumerable
+  def each = yield(1)
+  def collect_concat = :own
+end
+class Plain2
+  def detect = :plain
+end
+p [[1], [2]].collect_concat { |x| x }, [[1], [2]].public_send(cc) { |x| x }, [[1], [2]].send(:collect_concat) { |x| x }
+p CC.new.public_send(cc), CC.new.send(:collect_concat)
+[Det.new, [1, 2], Plain2.new].each do |v|
+  p [v.detect { |e| e > 1 }, v.public_send(dt) { |e| e > 1 }]
 end
