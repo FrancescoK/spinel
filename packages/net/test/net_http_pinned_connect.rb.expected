@@ -1,0 +1,4 @@
+"Host: pinned.example"
+false
+"Host: renamed.example"
+true
