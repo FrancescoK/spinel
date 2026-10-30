@@ -6745,8 +6745,10 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
     NodeKind rvti_k = nt_kind(nt, recv);
     if ((rvti_k == NK_LocalVariableReadNode ||
                  rvti_k == NK_InstanceVariableReadNode)) {
+      /* (the variable's own slot: inside a class dispatch's builtin arm the
+         receiver reads as the dispatch's temp, which is not the variable) */
       buf_puts(b, "(");
-      emit_expr(c, recv, b);
+      emit_recv_slot(c, recv, b);
       buf_puts(b, " = ");
     }
     if (argc == 2) {
