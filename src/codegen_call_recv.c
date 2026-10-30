@@ -3312,11 +3312,11 @@ static int emit_array_operand_misfit(Compiler *c, int id, const char *name, int 
   g_tmp += argc;
   Buf *sv_pre = g_pre;
   buf_puts(b, "({ ");
-  /* replace changes the receiver: CRuby's frozen check comes
+  /* concat and replace change the receiver: CRuby's frozen check comes
      before any argument converts, so a frozen one raises FrozenError, not
      the operand's TypeError. The receiver is held for that test. */
   TyKind rrt = repr_of(c, recv).as_ty;
-  const char *fcls = sp_streq(name, "replace") ? array_frozen_cls(rrt) : NULL;
+  const char *fcls = (sp_streq(name, "concat") || sp_streq(name, "replace")) ? array_frozen_cls(rrt) : NULL;
   int tf = 0, tr;
   if (fcls) {
     tf = ++g_tmp;
