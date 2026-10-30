@@ -1191,7 +1191,34 @@ int emit_op_array_flatten(Compiler *c, const BopCtx *x, Buf *b) {
   }
   if (sp_streq(name, "flatten") && argc == 0) {
     /* a scalar-element array can't nest: flatten is identity, as
-       to_a / to_ary / entries / deconstruct are (builtin-op rows) */
+       to_a / to_ary / entries / deconstruct are (builtin-op rows). Those
+       names run through the generic builtin-op row emitter, which already
+       rebuilds a typed-array identity into a poly array when the call's
+       own slot (a yield mixed with another site's poly-array kind) asks
+       for one; this arm is this op's own emitter, so it has to do the same
+       check itself, or a typed array's raw pointer gets assigned straight
+       into the shared poly slot -- a C compile error the other names never
+       hit, since no typed-array identity at a second site is ever a bare
+       `sp_PolyArray *` and a bare typed-array pointer at once.
+       The shared helper for that rebuild, emit_array_into_poly_slot, copies
+       the receiver's own frozen flag and turns a NULL receiver into an
+       empty poly array -- both right for the paths it already serves
+       (a widening read, never meant to look like a fresh value), both
+       wrong for flatten, which CRuby always returns a fresh, mutable copy
+       from (even a frozen receiver's), and which raises NoMethodError on a
+       nil receiver (reachable through an out-of-range slice) rather than
+       answering an empty array (CodeRabbit, yosefbennywidyo/spinel#43).
+       So this arm builds its own conversion instead of reusing that
+       helper, with the nil check first and the frozen flag dropped. */
+    if (comp_ntype(c, id) == TY_POLY_ARRAY) {
+      const char *lk = rt == TY_INT_ARRAY ? "int" : rt == TY_FLOAT_ARRAY ? "float" : "str";
+      int t = ++g_tmp, t2 = ++g_tmp;
+      buf_printf(b, "({ sp_%sArray *_t%d = ", k, t); emit_expr(c, recv, b);
+      buf_printf(b, "; if (!_t%d) sp_raise_nomethod(sp_nomethod_msg(\"flatten\", sp_box_nil()));"
+                    " sp_PolyArray *_t%d = sp_PolyArray_from_%s_array(_t%d); _t%d->frozen = 0; _t%d; })",
+                 t, t2, lk, t, t2, t2);
+      return 1;
+    }
     emit_expr(c, recv, b); return 1;
   }
   if ((sp_streq(name, "flatten!") || sp_streq(name, "flatten")) && argc == 1) {
