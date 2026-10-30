@@ -6735,7 +6735,7 @@ static const char *include_shadow_copy(Compiler *c, int ci, int mod, const char 
   if (src < 0) return NULL;
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (sc->class_id == ci && !sc->is_cmethod && sc->name && !strncmp(sc->name, "__inc ", 6) &&
+    if (sc->class_id == ci && !sc->is_cmethod && sc->name && comp_name_is_inc_shadow(sc->name) &&
         sc->def_node == c->scopes[src].def_node && sp_streq(comp_prep_user_name(sc->name), m)) {
       { sc->reachable = 1; comp_touch_scope(sc->idx); }
       return sc->name;

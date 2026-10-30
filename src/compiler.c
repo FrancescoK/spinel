@@ -4743,14 +4743,30 @@ void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t si
   snprintf(out, size, "__prep %d %s", ci->prep_shadow_count++, name);
 }
 
+/* The method name inside a generated shadow name `<tag><n> <name>`, n being
+   decimal digits and <name> non-empty, or NULL for any other spelling: a
+   method the program names `__prep foo` or `__prep 0` is its own. */
+static const char *shadow_user_part(const char *name, const char *tag) {
+  size_t tl = strlen(tag);
+  if (!name || strncmp(name, tag, tl) != 0) return NULL;
+  const char *p = name + tl;
+  if (*p < '0' || *p > '9') return NULL;
+  while (*p >= '0' && *p <= '9') p++;
+  return p[0] == ' ' && p[1] ? p + 1 : NULL;
+}
+
 int comp_name_is_prep_shadow(const char *name) {
-  return name && strncmp(name, "__prep ", 7) == 0;
+  return shadow_user_part(name, "__prep ") != NULL;
+}
+
+int comp_name_is_inc_shadow(const char *name) {
+  return shadow_user_part(name, "__inc ") != NULL;
 }
 
 const char *comp_prep_user_name(const char *name) {
-  if (name && strncmp(name, "__inc ", 6) == 0) return strchr(name + 6, ' ') + 1;
-  if (comp_name_is_prep_shadow(name)) return strchr(name + 7, ' ') + 1;
-  return name;
+  const char *u = shadow_user_part(name, "__inc ");
+  if (!u) u = shadow_user_part(name, "__prep ");
+  return u ? u : name;
 }
 
 /* The name `super` resolves under from the scope named `name` whose class's

@@ -2319,6 +2319,7 @@ const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
 void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t size);
 int comp_name_is_prep_shadow(const char *name);
+int comp_name_is_inc_shadow(const char *name);
 const char *comp_prep_user_name(const char *name);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);
