@@ -37452,8 +37452,15 @@ int nullable_int_value(Compiler *c, int v) {
           if (rci >= 0) mi = call_target(c, v, rci, cn, CT_CMETHOD, NULL);
         }
         /* the receiver stayed poly, so no single callee resolves -- fall back
-           to the runtime dispatch set */
-        else if (rt == TY_POLY) return poly_dispatch_nullable(c, v, cn);
+           to the runtime dispatch set. Not for a builtin_only call (a
+           desugar's own count of a splat, `args.length` in the arity test
+           a `recipient.public_send(m, *args)` or `h.slice(*keys)` lowers
+           to): no method of the program is a target of it, and its emitter
+           takes the builtin's arm alone (emit_call), whose Integer is plain.
+           Marked nil-able by a program method of the name that answers nil
+           (`def length = nil` in an unrelated class), the call's slot was an
+           sp_oint the builtin's sp_int could not initialize. */
+        else if (rt == TY_POLY && !nt_int(nt, v, "builtin_only", 0)) return poly_dispatch_nullable(c, v, cn);
         /* a class or module value only the run time knows (`g.upd` with g
            a module): any class's method of the name the dispatch can reach,
            as emit's class-value switch reaches them (#8985) */
