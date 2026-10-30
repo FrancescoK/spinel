@@ -1780,11 +1780,17 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
       return 1;
     }
   }
-  /* slice!(start, len) on a String no other name holds answers the part
-     it cuts, as slice!(i) does on any receiver below; the change is seen
-     by nobody. Any other receiver that is no variable is left to the
-     unresolved-call gate. */
-  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0 && str_fresh_value(c, recv);
+  /* slice!(start, len) on a String that is no assignable variable (sb_asgn
+     false) answers the part it cuts, as slice!(i) does on any receiver
+     below -- there is nowhere to write a mutated copy back to, so the
+     change (if the receiver turns out mutable at runtime) is seen by
+     nobody, same as the str_fresh_value case this used to require. A
+     frozen literal still raises through sp_str_check_mutable below, the
+     same way slice!(i) already does unconditionally; this arm no longer
+     needs str_fresh_value to tell a literal/ternary/other-non-variable
+     receiver apart from one that is provably fresh, since both get
+     identical codegen once sb_asgn is false. */
+  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0;
   if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
     int tp2 = ++g_tmp;
     buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);

@@ -1,0 +1,4 @@
+can't modify frozen String: "abc"
+can't modify frozen String: "abc"
+"bc"
+"ab"
