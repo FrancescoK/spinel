@@ -2182,14 +2182,19 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
      Proc slot into NoMethodError. */
   /* Proc#yield is #call as well; a Method has no `yield`, so one read out
      of the slot raises NoMethodError, as anything else that is no Proc
-     does (is_yield below) */
+     does (is_yield below). So is a Proc's or a Method's `[]` with no
+     argument, which the index paths, all of one argument or more, never
+     take: `fs[0][]` raised NoMethodError for a Proc. A String, an Array or
+     a Hash there has raised its ArgumentError already (the arity guard),
+     and a program class with a `[]` of its own keeps the dispatch. */
+  int is_aref0 = sp_streq(name, "[]") && argc == 0;
   if (recv >= 0 &&
-      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield")) &&
+      (sp_streq(name, "call") || sp_streq(name, "()") || sp_streq(name, "yield") || is_aref0) &&
       repr_of(c, recv).kind == RK_BOXED) {
     int has_user_call = 0;
     for (int _k = 0; _k < c->nclasses && !has_user_call; _k++) {
       int umi = call_target(c, id, _k, name, CT_OWN, NULL);
-      if ((umi >= 0 && argc >= c->scopes[umi].nrequired) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
+      if ((umi >= 0 && (is_aref0 || argc >= c->scopes[umi].nrequired)) || (argc == 0 && comp_reader_in_chain(c, _k, name, NULL)))
         has_user_call = 1;
     }
     /* A call of any count: the slots are sized for it, and an argument past
@@ -2217,11 +2222,13 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
          NoMethodError for anything else, a Method included */
       int is_yield = sp_streq(name, "yield");
       char yield_else[96] = "";
-      if (is_yield) {
+      if (is_yield || is_aref0) {
         buf_printf(b, "(_t%d.tag == SP_TAG_OBJ && _t%d.v.p && (_t%d.cls_id == SP_BUILTIN_PROC ||"
-                      " _t%d.cls_id == SP_BUILTIN_CURRY) ? ", t, t, t, t);
+                      " _t%d.cls_id == SP_BUILTIN_CURRY", t, t, t, t);
+        if (is_aref0) buf_printf(b, " || _t%d.cls_id == SP_BUILTIN_METHOD", t);
+        buf_puts(b, ") ? ");
         snprintf(yield_else, sizeof yield_else,
-                 " : (sp_raise_nomethod(sp_nomethod_msg(\"yield\", _t%d)), sp_box_nil()))", t);
+                 " : (sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d)), sp_box_nil()))", name, t);
       }
       /* the poly callable may be a Proc or a bound Method (different ABIs).
          Under promote the bound method is poly-signatured, so call it through
