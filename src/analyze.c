@@ -1698,6 +1698,25 @@ void compute_instantiated(Compiler *c, int early) {
       }
     }
   }
+  /* The object a `rescue ... => e` binds is built at the clause when the
+     exception was raised with none (Thread#raise, Fiber#raise,
+     Timeout.timeout(n, Cls) and the runtime's own raises take a class, not an
+     object): a binding typed as a program exception class is handed an
+     instance of the class the clause names, or a subclass of it, which no
+     `new` of the program writes (emit_rescue). */
+  if (!early && !disable)
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_RescueNode) continue;
+      int ref = nt_ref(nt, id, "reference");
+      if (ref < 0 || nt_kind(nt, ref) != NK_LocalVariableTargetNode) continue;
+      Scope *encl = comp_scope_of(c, ref);
+      if (!encl || !encl->reachable) continue;
+      LocalVar *lv = scope_local(encl, nt_str(nt, ref, "name"));
+      int xc = lv && ty_is_object(lv->type) ? ty_object_class(lv->type) : -1;
+      if (xc < 0 || !class_is_exc_subclass(c, xc)) continue;
+      for (int k = 0; k < c->nclasses; k++)
+        if (k == xc || is_descendant(c, k, xc)) c->classes[k].instantiated = 1;
+    }
   if (disable)
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
