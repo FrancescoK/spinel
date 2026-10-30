@@ -3704,10 +3704,12 @@ static int alias_def_after(Compiler *c, int cid, const char *name, int at, int c
   int first = -1;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->def_node < 0 || prog_cmp_run(c, sc->def_node, at, at, "the alias reading") <= 0) continue;
+    if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->def_node < 0) continue;
     if (nt_kind(nt, sc->def_node) != NK_DefNode) continue;
     const char *dn = nt_str(nt, sc->def_node, "name");
-    if (dn && sp_streq(dn, name) && (first < 0 || prog_cmp_run(c, sc->def_node, first, at, "the alias reading") < 0)) first = sc->def_node;
+    if (!dn || !sp_streq(dn, name)) continue;
+    if (prog_cmp_run(c, sc->def_node, at, at, "the alias reading") <= 0) continue;
+    if (first < 0 || prog_cmp_run(c, sc->def_node, first, at, "the alias reading") < 0) first = sc->def_node;
   }
   return first;
 }
@@ -3716,7 +3718,7 @@ static const char *alias_pending_target(Compiler *c, int cid, const char *name, 
   const char *t = NULL;
   for (int i = 0; i < g_nalias_pending; i++) {
     AliasPending *ap = &g_alias_pending[i];
-    if (ap->cid == cid && ap->cm == cm && prog_cmp_run(c, at, ap->until, at, "the alias reading") < 0 && sp_streq(ap->name, name)) t = ap->target;
+    if (ap->cid == cid && ap->cm == cm && sp_streq(ap->name, name) && prog_cmp_run(c, at, ap->until, at, "the alias reading") < 0) t = ap->target;
   }
   return t;
 }
@@ -3756,17 +3758,31 @@ static int alias_capture_earlier_def(Compiler *c, ClassInfo *cls,
     return 1;
   }
   const NodeTable *nt = c->nt;
-  int before = -1, after = 0;
+  int before = -1, after = 0, candidates = 0, lone = -1;
+  /* A lone target has no other version to capture. Count after filtering,
+     then order only when selecting among multiple versions. */
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
     if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->is_proc_form || !sc->name) continue;
     const char *dn = sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode
                      ? nt_str(nt, sc->def_node, "name") : NULL;
     if (!sp_streq(sc->name, od) && !(dn && sp_streq(dn, od))) continue;
-    if (sc->def_node >= 0 && prog_cmp_run(c, sc->def_node, alias_node, alias_node, "the alias reading") < 0) {
-      if (before < 0 || prog_cmp_run(c, sc->def_node, c->scopes[before].def_node, alias_node, "the alias reading") > 0) before = si;
+    candidates++;
+    lone = si;
+  }
+  if (candidates == 1) before = lone;
+  else {
+    for (int si = 1; si < c->nscopes; si++) {
+      Scope *sc = &c->scopes[si];
+      if (sc->class_id != cid || !sc->is_cmethod != !cm || sc->is_proc_form || !sc->name) continue;
+      const char *dn = sc->def_node >= 0 && nt_kind(nt, sc->def_node) == NK_DefNode
+                       ? nt_str(nt, sc->def_node, "name") : NULL;
+      if (!sp_streq(sc->name, od) && !(dn && sp_streq(dn, od))) continue;
+      if (sc->def_node >= 0 && prog_cmp_run(c, sc->def_node, alias_node, alias_node, "the alias reading") < 0) {
+        if (before < 0 || prog_cmp_run(c, sc->def_node, c->scopes[before].def_node, alias_node, "the alias reading") > 0) before = si;
+      }
+      else after = 1;
     }
-    else after = 1;
   }
   if (before < 0 || !after) {
     if (alias_def_after(c, cid, nw, alias_node, cm) < 0) return 0;
@@ -3804,14 +3820,15 @@ static int alias_target_defined_before(Compiler *c, ClassInfo *cls, int cid, con
   const NodeTable *nt = c->nt;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
-    if (sc->class_id != cid || sc->is_cmethod != singleton || sc->def_node < 0 || prog_cmp_run(c, sc->def_node, at, at, "the alias reading") >= 0) continue;
+    if (sc->class_id != cid || sc->is_cmethod != singleton || sc->def_node < 0) continue;
     const char *dn = nt_kind(nt, sc->def_node) == NK_DefNode ? nt_str(nt, sc->def_node, "name") : NULL;
-    if ((sc->name && sp_streq(sc->name, od)) || (dn && sp_streq(dn, od))) return 1;
+    if (((sc->name && sp_streq(sc->name, od)) || (dn && sp_streq(dn, od))) &&
+        prog_cmp_run(c, sc->def_node, at, at, "the alias reading") < 0) return 1;
   }
   /* ... of the same side: an instance alias of the name is no singleton one */
   for (int i = 0; i < cls->naliases; i++)
-    if (cls->alias_node[i] >= 0 && prog_cmp_run(c, cls->alias_node[i], at, at, "the alias reading") < 0 && !cls->alias_sg[i] == !singleton &&
-        sp_streq(cls->alias_new[i], od)) return 1;
+    if (cls->alias_node[i] >= 0 && !cls->alias_sg[i] == !singleton && sp_streq(cls->alias_new[i], od) &&
+        prog_cmp_run(c, cls->alias_node[i], at, at, "the alias reading") < 0) return 1;
   return 0;
 }
 
@@ -3848,7 +3865,7 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
   }
   if (defn < 0) return;
   for (int n = comp_kind_first(c, NK_CallNode); n >= 0; n = comp_kind_next(c, n)) {
-    if (nt_kind(nt, n) != NK_CallNode || prog_cmp_run(c, n, defn, alias_node, "the alias reading") <= 0 || prog_cmp_run(c, n, alias_node, alias_node, "the alias reading") >= 0) continue;
+    if (nt_kind(nt, n) != NK_CallNode) continue;
     const char *nm = nt_str(nt, n, "name");
     if (!nm || !sp_streq(nm, nw)) continue;
     /* code run where the alias is: in its scope, or a file's top level as
@@ -3861,6 +3878,7 @@ static void alias_refuse_early_call(Compiler *c, ClassInfo *cls, const char *nw,
        program, is no call of this class's method */
     int ec = are_enclosing_class(c, n);
     if (elab_header_class(c, ec, NULL, NULL) != cid) continue;
+    if (prog_cmp_run(c, n, defn, alias_node, "the alias reading") <= 0 || prog_cmp_run(c, n, alias_node, alias_node, "the alias reading") >= 0) continue;
     char msg[300];
     snprintf(msg, sizeof msg, "`%s` is called in the class body before an alias rebinds it: an alias binds for the "
              "whole program here, so the call would run the aliased body, not the `def %s` Ruby runs at that point. "
@@ -3979,15 +3997,14 @@ static int alias_module_included_before(Compiler *c, int k, int mi, int at) {
   const char *leaf = strrchr(mn, ':');
   leaf = leaf ? leaf + 1 : mn;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    if (prog_cmp_run(c, id, at, at, "the alias reading") >= 0) continue;
     const char *cn = nt_str(nt, id, "name");
-    if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend")) || nt_ref(nt, id, "receiver") >= 0) continue;
+    if (!cn || (!is_include_name(cn) && !is_prepend_name(cn)) || nt_ref(nt, id, "receiver") >= 0) continue;
     if (id >= c->node_cap || c->node_cbody[id] != k) continue;
     int a = nt_ref(nt, id, "arguments"), an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int j = 0; j < an; j++) {
       const char *an_ = nt_str(nt, av[j], "name");
-      if (an_ && sp_streq(an_, leaf)) return 1;
+      if (an_ && sp_streq(an_, leaf) && prog_cmp_run(c, id, at, at, "the alias reading") < 0) return 1;
     }
   }
   return 0;
@@ -4056,16 +4073,16 @@ static int mixin_arg_module(Compiler *c, int arg) {
    included before it (the later first), then the superclass. -1 when the
    class does not answer the name there, or the answer is not a def. The
    bodies are the class's, in source order. */
-static int alias_def_in_effect(Compiler *c, int k, const char *od, int at) {
+static int alias_def_in_effect(Compiler *c, int k, const char *od, const char *nw, int at) {
   const NodeTable *nt = c->nt;
-  int inc_def = -1, inc_at = -1, pre_def = -1, pre_at = -1, nb = 0;
+  int inc_def = -1, inc_at = -1, pre_def = -1, pre_at = -1, nb = 0, competing = 0;
   const LrOpen *ob = elab_class_bodies(c, k, &nb);
   for (int b = 0; b < nb; b++) {
     int n = 0;
     const int *stmts = ob[b].body >= 0 ? nt_arr(nt, ob[b].body, "body", &n) : NULL;
     for (int j = 0; j < n; j++) {
       int st = stmts[j];
-      if (prog_cmp_run(c, st, at, at, "the alias reading") >= 0 || nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) continue;
+      if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0) continue;
       const char *nm = nt_str(nt, st, "name");
       int prep = nm && is_prepend_name(nm);
       if (!nm || (!prep && !is_include_name(nm))) continue;
@@ -4075,7 +4092,9 @@ static int alias_def_in_effect(Compiler *c, int k, const char *od, int at) {
       for (int q = an - 1; q >= 0; q--) {
         int mod = mixin_arg_module(c, av[q]);
         int mm = mod >= 0 ? comp_method_in_chain(c, mod, od, NULL) : -1;
+        if (mod >= 0 && comp_method_in_chain(c, mod, nw, NULL) >= 0) competing = 1;
         if (mm < 0) continue;
+        if (prog_cmp_run(c, st, at, at, "the alias reading") >= 0) continue;
         /* the latest mixin ahead of the alias, the class's bodies in any
            file (prog_cmp); the same statement again for `A` of `include A, B` */
         if (prep) { if (pre_at < 0 || prog_cmp_run(c, st, pre_at, at, "the alias reading") >= 0) { pre_at = st; pre_def = c->scopes[mm].def_node; } }
@@ -4084,13 +4103,30 @@ static int alias_def_in_effect(Compiler *c, int k, const char *od, int at) {
     }
   }
   if (pre_def >= 0) return pre_def;
-  int own = -1;
+  int own = -1, candidates = 0, lone = -1;
   for (int si = 1; si < c->nscopes; si++) {
     Scope *sc = &c->scopes[si];
     if (sc->class_id != k || sc->is_cmethod || sc->is_include_copy || sc->def_node < 0 ||
-        prog_cmp_run(c, sc->def_node, at, at, "the alias reading") >= 0 || nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+        nt_kind(nt, sc->def_node) != NK_DefNode) continue;
     const char *dn = nt_str(nt, sc->def_node, "name");
-    if (dn && sp_streq(dn, od) && (own < 0 || prog_cmp_run(c, sc->def_node, own, at, "the alias reading") > 0)) own = sc->def_node;
+    if (!dn || !sp_streq(dn, od)) continue;
+    candidates++;
+    lone = si;
+  }
+  /* With no competing mixin or ancestor, the lone def is the answer unless
+     it is known to come after the alias. A mixin defining the alias name
+     also competes, even when it does not define the target name. */
+  if (candidates == 1 && !competing && inc_def < 0 &&
+      (c->classes[k].parent < 0 || comp_method_in_chain(c, c->classes[k].parent, od, NULL) < 0) &&
+      elab_order(c, c->scopes[lone].def_node, at) != PROG_AFTER) return c->scopes[lone].def_node;
+  for (int si = 1; si < c->nscopes; si++) {
+    Scope *sc = &c->scopes[si];
+    if (sc->class_id != k || sc->is_cmethod || sc->is_include_copy || sc->def_node < 0 ||
+        nt_kind(nt, sc->def_node) != NK_DefNode) continue;
+    const char *dn = nt_str(nt, sc->def_node, "name");
+    if (!dn || !sp_streq(dn, od)) continue;
+    if (prog_cmp_run(c, sc->def_node, at, at, "the alias reading") >= 0) continue;
+    if (own < 0 || prog_cmp_run(c, sc->def_node, own, at, "the alias reading") > 0) own = sc->def_node;
   }
   if (own >= 0) return own;
   if (inc_def >= 0) return inc_def;
@@ -4171,14 +4207,14 @@ void settle_mixin_aliases(Compiler *c) {
       /* a later alias or def of the same name replaces this one */
       int replaced = alias_def_after(c, k, nw, at, 0) >= 0;
       for (int j = 0; j < cls->naliases && !replaced; j++)
-        replaced = j != i && !(cls->alias_sg && cls->alias_sg[j]) && cls->alias_node[j] >= 0 && prog_cmp_run(c, cls->alias_node[j], at, at, "the alias reading") > 0 &&
-                   sp_streq(cls->alias_new[j], nw);
+        replaced = j != i && !(cls->alias_sg && cls->alias_sg[j]) && cls->alias_node[j] >= 0 && sp_streq(cls->alias_new[j], nw) &&
+                   prog_cmp_run(c, cls->alias_node[j], at, at, "the alias reading") > 0;
       if (replaced) continue;
       int fm = comp_method_in_chain(c, k, nw, NULL);
       if (fm < 0) continue;
       char od[256];
       snprintf(od, sizeof od, "%s", cls->alias_old[i]);
-      int want = alias_def_in_effect(c, k, od, at);
+      int want = alias_def_in_effect(c, k, od, nw, at);
       if (want < 0) continue;
       int ok = c->scopes[fm].def_node == want;
       if (!ok) {
@@ -6516,8 +6552,8 @@ void resolve_inherited_aliases(Compiler *c) {
         later = 1;
       }
       for (int b = 0; !own && !later && b < cls->naliases; b++)
-        if (b != a && cls->alias_node[b] >= 0 && prog_cmp_run(c, cls->alias_node[b], cls->alias_node[a], cls->alias_node[a], "the alias reading") > 0 &&
-            sp_streq(cls->alias_new[b], od)) later = 1;
+        if (b != a && cls->alias_node[b] >= 0 && sp_streq(cls->alias_new[b], od) &&
+            prog_cmp_run(c, cls->alias_node[b], cls->alias_node[a], cls->alias_node[a], "the alias reading") > 0) later = 1;
       if (own) continue;
       inherited_alias_vis(c, ci, a);
       /* Not only where the class redefines the name after the alias: the

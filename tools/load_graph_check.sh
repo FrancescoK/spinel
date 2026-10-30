@@ -413,23 +413,38 @@ printf 'module M\n  def tag = "m"\nend\nclass C\nend\ndef load_plugin\n  require
 refused late_include_method "a later statement mixes module M into class C"
 
 # A require whose path no expression tells may name any file of the program,
-# so a file it might run first has no fixed place, and an alias that reads
-# its order is refused for now: a file whose require is under a condition,
-# one that comes after the method holding the computed require, and one a
-# file with no place requires. A file whose require precedes the computed
-# one, as a statement of a top level, is placed (computed_open_main).
+# so a file it might run first has no fixed place: a file whose require is
+# under a condition, one that comes after the method holding the computed
+# require, and one a file with no place requires. A file whose require
+# precedes the computed one, as a statement of a top level, is placed
+# (computed_open_main). An alias with one target version in an unplaced file
+# answers without an order comparison; multiple versions still require an
+# order and are refused.
 mkdir "$tmp/open_cond" "$tmp/open_after" "$tmp/open_nested"
 open_lib() { printf 'class OpenMoney\n  def initialize(c) = @c = c\n  def +(o) = OpenMoney.new(@c + o)\n  def cents = @c\nend\n' > "$tmp/$1/lib.rb"; }
 open_lib open_cond
-printf 'require_relative "lib" if ARGV.empty?\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_cond/main.rb"
-refused open_cond "the alias reading reads the order of two files"
+printf 'require_relative "lib" if ARGV.empty?\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\np OpenMoney.new(10).add(1).cents\n' > "$tmp/open_cond/main.rb"
 open_lib open_after
-printf 'def pull(path) = require_relative(path)\nrequire_relative "lib"\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_after/main.rb"
-refused open_after "the alias reading reads the order of two files"
+printf 'def pull(path) = require_relative(path)\nrequire_relative "lib"\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\np OpenMoney.new(10).add(1).cents\n' > "$tmp/open_after/main.rb"
 open_lib open_nested
 printf 'require_relative "lib"\n' > "$tmp/open_nested/wrap.rb"
-printf 'def setup = require_relative("wrap")\nsetup\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\n' > "$tmp/open_nested/main.rb"
-refused open_nested "the alias reading reads the order of two files"
+printf 'def setup = require_relative("wrap")\nsetup\ndef pull(path) = require_relative(path)\nclass OpenMoney\n  alias_method :add, :+\nend\np pull("lib")\np OpenMoney.new(10).add(1).cents\n' > "$tmp/open_nested/main.rb"
+
+for d in open_cond open_after open_nested; do
+  if "$SPINEL" --load-model=graph "$tmp/$d/main.rb" -o "$tmp/$d/bin" >"$tmp/$d/cc" 2>&1; then
+    "$tmp/$d/bin" >"$tmp/$d/out" 2>&1 || fail "$d exits $?"
+    printf 'false\n11\n' | cmp -s - "$tmp/$d/out" || { fail "$d did not keep the current alias target"; cat "$tmp/$d/out"; }
+  else
+    fail "$d did not compile"; sed -n 1,3p "$tmp/$d/cc"
+  fi
+done
+
+# Two versions of the target still need an order: the alias captures the
+# first body even though the method loaded later replaces the target name.
+mkdir "$tmp/alias_versions"
+printf 'class Timer\n  def delay=(n); n + 2; end\nend\n' > "$tmp/alias_versions/lib.rb"
+printf 'def boot = require_relative("lib")\nclass Timer\n  def delay=(n); n + 1; end\n  alias_method :delay, :delay=\nend\nboot\np Timer.new.delay(10)\n' > "$tmp/alias_versions/main.rb"
+refused alias_versions "the alias reading reads the order of two files"
 
 # --strict-require holds in graph mode as in the inline one: a feature no
 # require names is not there (CRuby's NoMethodError for winsize, refused
