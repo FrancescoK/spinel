@@ -9424,7 +9424,15 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     int svind = g_indent; g_indent++;
+    /* a dispatch's builtin arm reads its RECEIVER as no object of the
+       program's (g_poly_builtin_arm); the block's own calls are not that
+       receiver's, and a user class owns their names as it does anywhere
+       (step_arm_begin, as the iterator steps do): `text.empty?` in the
+       block of a boxed String's scan took the builtin shortcut's int while
+       the inference typed it by the program's `empty?` methods */
+    int sv_arm = step_arm_begin();
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    step_arm_end(c, sv_arm);
     g_indent = svind;
     g_c_loop_depth--;
     g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
