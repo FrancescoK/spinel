@@ -312,6 +312,7 @@ int yield_value_diverges(Compiler *c, int mi);
 int node_is_scope_tail(Compiler *c, int mi, int id);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
+int an_enum_own_find_index(Compiler *c);
 int an_native_defines_method(Compiler *c, const char *name);
 int an_user_recv_defines_method(Compiler *c, const char *name);
 int an_user_define_method(Compiler *c);
