@@ -166,6 +166,11 @@ static int cplan_called_before_def(Compiler *c, int id, int mi) {
    (as in CRuby)? The plan, the inference and the emitter ask it alike. */
 int cplan_reopen_runs_builtin(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
+  /* concat keeps the builtin until Array's definition has run, whether
+     or not this call supplies a block. Use the same load-order fact as
+     the existing String case, not another method lookup. */
+  if (mi >= 0 && c->scopes[mi].class_id == comp_core_class(c, CORE_ARRAY) &&
+      sp_streq(nt_str(nt, id, "name"), "concat") && cplan_called_before_def(c, id, mi)) return 1;
   int blk = nt_ref(nt, id, "block");
   return mi >= 0 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && c->scopes[mi].yields &&
          c->scopes[mi].class_id == comp_core_class(c, CORE_STRING) && cplan_called_before_def(c, id, mi);
@@ -442,6 +447,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int aci = comp_core_class(c, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY);
     int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, rname, 0, &adc) : -1;
     if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, rname)) {
+      if (cplan_reopen_runs_builtin(c, id, ami)) return;
       cplan_set(p, ami, aci, UC_REOPEN, CP_DIRECT);
       return;
     }

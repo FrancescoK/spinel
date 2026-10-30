@@ -2215,7 +2215,7 @@ else {
          form receives it, so captured writes need cells. */
       else if ((ty_is_array(rt) || ty_is_obj_array(rt)) && sp_streq(name, "concat")) {
         int cm = an_reopen_owner(c, id, CORE_ARRAY);
-        if (cm >= 0 && c->scopes[cm].yields) return 1;
+        if (cm >= 0 && (c->scopes[cm].yields || (c->scopes[cm].blk_param && c->scopes[cm].blk_param[0]))) return 1;
       }
       /* A poly receiver dispatches on the runtime class, and the dispatch
          materializes the block as a real proc once, ahead of the switch, for

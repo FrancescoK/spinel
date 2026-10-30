@@ -32088,6 +32088,7 @@ static int emit_array_hash_reopen_call(Compiler *c, int id, int recv, TyKind rt,
   int aci = comp_class_index(c, acn);
   int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, nm, 0, &adc) : -1;
   if (ami < 0 || adc != aci || !c->scopes[ami].name || !sp_streq(c->scopes[ami].name, nm)) return 0;
+  if (cplan_reopen_runs_builtin(c, id, ami)) return 0;
   if (c->scopes[ami].yields && emit_reopen_block_call(c, id, recv, ami, NULL, b)) return 1;
   if (g_plan_check) ucall_observe(c, id, ami, aci, 0);
   size_t at = b->len;
