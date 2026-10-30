@@ -21037,6 +21037,123 @@ int desugar_self_const_get(Compiler *c) {
   return changed;
 }
 
+/* The name of the constant that holds the class a block defines
+   (`Color = Data.define(:red) do ... end`, `Pair = Struct.new(:left) do ... end`),
+   or NULL when the block is none. */
+static const char *holder_block_name(const NodeTable *nt, const int *parent, int block) {
+  int call = parent[block];
+  if (call < 0 || nt_kind(nt, call) != NK_CallNode || nt_ref(nt, call, "block") != block) return NULL;
+  int receiver = nt_ref(nt, call, "receiver");
+  const char *receiver_name = receiver >= 0 && nt_kind(nt, receiver) == NK_ConstantReadNode ? nt_str(nt, receiver, "name") : NULL;
+  const char *method_name = nt_str(nt, call, "name");
+  if (!receiver_name || !method_name) return NULL;
+  if (!((sp_streq(receiver_name, "Struct") && sp_streq(method_name, "new")) ||
+        (sp_streq(receiver_name, "Data") && sp_streq(method_name, "define")))) return NULL;
+  int write = parent[call];
+  if (write < 0 || nt_kind(nt, write) != NK_ConstantWriteNode || nt_ref(nt, write, "value") != call) return NULL;
+  return nt_str(nt, write, "name");
+}
+
+/* How many writes of a constant named `name` the program has: bare writes,
+   and `Owner::NAME = v` path writes. */
+static int constant_write_count(const NodeTable *nt, const char *name) {
+  int count = 0;
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
+    const char *written = nt_str(nt, id, "name");
+    if (written && sp_streq(written, name)) count++;
+  }
+  NT_FOREACH_KIND(nt, NK_ConstantPathWriteNode, id) {
+    int target = nt_ref(nt, id, "target");
+    const char *written = target >= 0 ? nt_str(nt, target, "name") : NULL;
+    if (written && sp_streq(written, name)) count++;
+  }
+  return count;
+}
+
+/* Does the class named `cls` inherit from `holder`, however many classes
+   lie between? A superclass that is no plain constant counts as yes. */
+static int class_descends_from(const NodeTable *nt, const char *cls, const char *holder, int depth) {
+  if (depth > 16) return 1;
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode) continue;
+    const char *name = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (!name || !sp_streq(name, cls)) continue;
+    int superclass = nt_ref(nt, id, "superclass");
+    if (superclass < 0) continue;
+    if (nt_kind(nt, superclass) != NK_ConstantReadNode) return 1;
+    const char *superclass_name = nt_str(nt, superclass, "name");
+    if (!superclass_name) return 1;
+    if (sp_streq(superclass_name, holder) || class_descends_from(nt, superclass_name, holder, depth + 1)) return 1;
+  }
+  return 0;
+}
+
+/* Does a class that inherits from `holder` write a constant named `name` in
+   its body? A read through the class value must then find that constant, which
+   the constant qualifier and the rewrite below both leave alone. */
+int holder_subclass_defines(const NodeTable *nt, const char *holder, const char *name) {
+  for (int id = 0; id < nt->count; id++) {
+    if (nt_kind(nt, id) != NK_ClassNode) continue;
+    const char *class_name = nt_str(nt, nt_ref(nt, id, "constant_path"), "name");
+    if (class_name && scg_body_defines(nt, id, name) && class_descends_from(nt, class_name, holder, 0)) return 1;
+  }
+  return 0;
+}
+
+/* `self.class::NAME` in an instance method, and `self::NAME` in a class
+   method, of a block that defines a Struct or Data class: the class is the
+   constant that holds it, so the read is `Holder::NAME`. desugar_self_const_get
+   knows only `class` and `module` bodies as the owner. Only for a NAME that
+   the program writes more than once: the constant qualifier keys those
+   writes apart, and a read through the class value then finds none of them.
+   Not when a subclass of the holder writes NAME: its own value must win. */
+int desugar_holder_block_self_const(Compiler *c) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int original_count = nt->count, changed = 0;
+  int *parent = NULL;
+  for (int id = 0; id < original_count; id++) {
+    if (nt_kind(nt, id) != NK_ConstantPathNode) continue;
+    int path_parent = nt_ref(nt, id, "parent");
+    if (path_parent < 0) continue;
+    int class_call = 0;
+    if (nt_kind(nt, path_parent) == NK_CallNode && nt_str(nt, path_parent, "name") &&
+        sp_streq(nt_str(nt, path_parent, "name"), "class") && nt_ref(nt, path_parent, "arguments") < 0 &&
+        nt_ref(nt, path_parent, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, path_parent, "receiver")) == NK_SelfNode)
+      class_call = 1;
+    else if (nt_kind(nt, path_parent) != NK_SelfNode) continue;
+    const char *constant_name = nt_str(nt, id, "name");
+    if (!constant_name || constant_write_count(nt, constant_name) < 2) continue;
+    if (!parent && !(parent = an_parent_map(nt))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    int def = parent[id];
+    while (def >= 0 && nt_kind(nt, def) != NK_DefNode) {
+      NodeKind kind = nt_kind(nt, def);
+      if (kind == NK_ClassNode || kind == NK_ModuleNode || kind == NK_SingletonClassNode || kind == NK_BlockNode) { def = -1; break; }
+      def = parent[def];
+    }
+    if (def < 0) continue;
+    int receiver = nt_ref(nt, def, "receiver");
+    int class_method = receiver >= 0 && nt_kind(nt, receiver) == NK_SelfNode;
+    if (class_call ? class_method : !class_method) continue;
+    int block = parent[def];
+    while (block >= 0 && nt_kind(nt, block) != NK_BlockNode) {
+      NodeKind kind = nt_kind(nt, block);
+      if (kind == NK_ClassNode || kind == NK_ModuleNode || kind == NK_SingletonClassNode || kind == NK_DefNode) { block = -1; break; }
+      block = parent[block];
+    }
+    const char *holder = block >= 0 ? holder_block_name(nt, parent, block) : NULL;
+    if (!holder || holder_subclass_defines(nt, holder, constant_name)) continue;
+    int holder_read = nt_new_node(nt, "ConstantReadNode");
+    if (holder_read < 0) continue;
+    nt_node_set_str(nt, holder_read, "name", holder);
+    comp_grow_node_arrays(c);
+    c->nscope[holder_read] = c->nscope[id];
+    nt_node_set_ref(nt, id, "parent", holder_read);
+    changed = 1;
+  }
+  free(parent);
+  return changed;
+}
+
 /* ---- const_get / const_defined? with a name known only at run time ----
  *
  * A module's constants are all known when the program is compiled, so a name

@@ -4851,6 +4851,15 @@ static int qc_program_defines_class(const NodeTable *nt, const char *leaf) {
     }
   return 0;
 }
+/* Does the program write `leaf = Struct.new(...)` or `leaf = Data.define(...)`?
+   Such a constant names a class as a `class` header does. */
+static int qc_program_defines_struct_or_data(const NodeTable *nt, const char *leaf) {
+  NT_FOREACH_KIND(nt, NK_ConstantWriteNode, id) {
+    const char *cn = nt_str(nt, id, "name");
+    if (cn && sp_streq(cn, leaf) && qc_struct_or_data_value(nt, nt_ref(nt, id, "value"))) return 1;
+  }
+  return 0;
+}
 /* `M.const_set(:N, v)` with a literal name sets M's constant N and answers
    v, as `M::N = v` does; `const_set(:N, v)` or `self.const_set(:N, v)` in a
    class or module body sets the body's own, as `N = v` there does. Written
@@ -4938,15 +4947,18 @@ int desugar_const_set_write_at(Compiler *c, LowerCtx *lc, int id) {
 }
 /* A top-level path write's target `A::B::NAME`, as a write of NAME under
    the module path A::B names from the top level (through an alias, `A =
-   Base`) -- when each segment of it is a class or module of the program. */
+   Base`) -- when each segment of it is a class or module of the program, or
+   a constant that holds `Struct.new(...)` or `Data.define(...)`. */
 static void qc_note_path_write(Compiler *c, int tgt, QCWrite **ws, int *n, int *cap) {
   char chain[QC_MAXDEPTH + 1][64], mods[QC_MAXDEPTH + 1][64];
   int abs = 0, cn = tgt >= 0 ? qc_read_chain(c->nt, tgt, chain, &abs) : 0;
   if (cn < 2 || cn > QC_MAXDEPTH) return;
   QCScope top = { chain, 0 };
   int via, md = qc_alias_chain(&top, 1, chain, cn - 1, mods, &via);
-  if (md < 1 || qc_holder >= 0) return;
-  for (int i = 0; i < md; i++) if (!qc_program_defines_class(c->nt, mods[i])) return;
+  if (md < 1 || (qc_holder >= 0 && !qc_aliases[qc_holder].sd)) return;
+  for (int i = 0; i < md; i++)
+    if (!qc_program_defines_class(c->nt, mods[i]) && !qc_program_defines_struct_or_data(c->nt, mods[i])) return;
+  if (!qc_program_defines_class(c->nt, mods[md - 1]) && holder_subclass_defines(c->nt, mods[md - 1], chain[cn - 1])) return;
   if (*n >= *cap) { *cap = *cap ? *cap * 2 : 16; *ws = realloc(*ws, sizeof(QCWrite) * (size_t)*cap); }
   if (!*ws) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   QCWrite *w = &(*ws)[(*n)++];
@@ -47137,6 +47149,7 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_ITSELF_RECEIVER);           /* x.itself -> x (--share-strings) */
   lower_run(c, &lc, LW_TAP_VALUE_WRITE);            /* x = E.tap { } -> x = (x = E).tap { } (--share-strings) */
   AN_STEP_V("desugar_self_const_get", desugar_self_const_get(c));            /* const_get(:X) / self::X in a class method -> per subclass */
+  AN_STEP_V("desugar_holder_block_self_const", desugar_holder_block_self_const(c));  /* self.class::X in a Data.define block -> Holder::X */
   AN_STEP_V("desugar_dynamic_const_get", desugar_dynamic_const_get(c));          /* M.const_get(expr) -> a table of M's constants */
   AN_STEP_V("desugar_builtin_reopen_self_calls", desugar_builtin_reopen_self_calls(c));  /* class Hash; def m = each {..} -> self.each */
   AN_STEP_V("desugar_builtin_ivars", desugar_builtin_ivars(c));              /* class Array; def m = @x -> self.__bivar_get(:@x) */
