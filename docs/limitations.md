@@ -997,8 +997,8 @@ give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind).
 
 A typed Hash is handled the same way. A parameter the method stores keys or
-values of another kind into, by `[]=`, `store`, or a `merge!` or `update` of
-another of its parameters, widens a hash literal the call passes, or one it
+values of another kind into, by `[]=`, `store`, or a `merge!`, `update` or
+`replace` of another of its parameters, widens a hash literal the call passes, or one it
 follows back to through locals and method values; a typed Hash it cannot
 follow back to one, such as a getter's, is refused:
 
@@ -1012,7 +1012,7 @@ into(Holder.new.h, { "d" => [1] })
 # spinel: t.rb:6: a typed Hash is passed to `into`'s parameter `obj`, which the method stores keys or values of other types into: ...
 ```
 
-A merged hash's boxed keys and values are left to the store, which raises
+The other hash's boxed keys and values are left to the store, which raises
 `TypeError` for one the hash cannot hold, as for a typed array.
 
 #### ENV passed around as a value is a snapshot
