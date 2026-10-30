@@ -1780,11 +1780,17 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
       return 1;
     }
   }
-  /* slice!(start, len) on a String no other name holds answers the part
-     it cuts, as slice!(i) does on any receiver below; the change is seen
-     by nobody. Any other receiver that is no variable is left to the
-     unresolved-call gate. */
-  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0 && str_fresh_value(c, recv);
+  /* slice!(start, len) on a String that is no assignable variable (sb_asgn
+     false) answers the part it cuts, as slice!(i) does on any receiver
+     below -- there is nowhere to write a mutated copy back to, so the
+     change (if the receiver turns out mutable at runtime) is seen by
+     nobody, same as the str_fresh_value case this used to require. A
+     frozen literal still raises through sp_str_check_mutable below, the
+     same way slice!(i) already does unconditionally; this arm no longer
+     needs str_fresh_value to tell a literal/ternary/other-non-variable
+     receiver apart from one that is provably fresh, since both get
+     identical codegen once sb_asgn is false. */
+  int span2 = argc == 2 && !sb_asgn && re_lit_index(c, argv[0]) < 0;
   if (argc == 1 && comp_ntype(c, argv[0]) == TY_STRING) {
     int tp2 = ++g_tmp;
     buf_puts(b, "({ "); emit_str_frozen_check(c, recv, b);
@@ -1846,6 +1852,23 @@ int emit_op_string_slice(Compiler *c, const BopCtx *x, Buf *b) {
     buf_printf(b, "sp_str_check_mutable(_t%d);", to);   /* frozen -> FrozenError (#3003) */
     buf_printf(b, " sp_int _t%d = (sp_int)sp_str_length(_t%d); sp_int _t%d, _t%d;",
                tn2, to, tb2, tl2);
+    /* slice!(range, n): Ruby has no two-argument overload that takes a
+       Range first -- raises TypeError, after the receiver's own frozen
+       check above (a frozen receiver with a Range first argument still
+       raises FrozenError, not TypeError: CRuby checks mutability before
+       argument shape) and after argv[1]'s own side effect, the same
+       left-to-right order Ruby evaluates both arguments in before
+       raising. Range is the ONLY argv[0] kind the TY_RANGE arm below
+       answers for a plain index; argc == 1 is implied by reaching this
+       `if` with a Range, since argc == 2 is only otherwise possible
+       through span2, checked here first so the TY_RANGE arm no longer
+       sees it. */
+    if (argc == 2 && comp_ntype(c, argv[0]) == TY_RANGE) {
+      buf_puts(b, " (void)("); emit_expr(c, argv[1], b); buf_puts(b, ");");
+      buf_puts(b, " sp_raise_cls(\"TypeError\", \"no implicit conversion of Range into Integer\");"
+                  " (const char *)0; })");
+      return 1;
+    }
     if (comp_ntype(c, argv[0]) == TY_RANGE) {
       int trg = ++g_tmp;
       buf_printf(b, " sp_Range _t%d = sp_range_ix(", trg); emit_expr(c, argv[0], b); buf_puts(b, ")");

@@ -4551,6 +4551,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  "$$tmp/ibin" >/dev/null 2>&1 || { echo "infer-test: FAIL ($$f: the program does not run)"; ok=0; }; \
 	done; \
 	for flags in '' --share-strings; do \
+	  $(SPINEL) $$flags test/is_a_user_class_guard_narrows.rb -c --no-line-map -o "$$tmp/iug.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (is_a_user_class_guard_narrows: -c)"; ok=0; }; \
+	  grep -q 'sp_Int_tag((sp_Int \*)(sp_Int \*)sp_poly_unbox_cls(lv_x' "$$tmp/iug.c" || { echo "infer-test: FAIL (is_a?(Int) left a guarded call on a user class in boxed dispatch)"; ok=0; }; \
 	  $(SPINEL) $$flags test/object_method_ivar_receivers.rb -c --no-line-map -o "$$tmp/oir.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (object_method_ivar_receivers: -c)"; ok=0; }; \
 	  grep -q 'static sp_PointValue sp_PointValue_new(' "$$tmp/oir.c" && ! grep -q 'iv_unused;' "$$tmp/oir.c" || { echo "infer-test: FAIL (an Object setter changes unrelated layouts)"; ok=0; }; \
 	  $(SPINEL) $$flags test/hash_store_boxed_unbounded.rb -c --no-line-map -o "$$tmp/hbu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (hash_store_boxed_unbounded: -c)"; ok=0; }; \
@@ -4886,6 +4888,8 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	$(SPINEL) test/defined_guard_and_quiet.rb -c -o "$$tmp/dgq.c" 2>&1 >/dev/null | grep -q 'defined nowhere' && { echo "infer-test: FAIL (a constant behind a false defined? guard on the left of && warned)"; ok=0; }; \
 	printf 'Here = 1\np(defined?(::Here) && ::Lost)\n' > "$$tmp/dgw.rb"; \
 	$(SPINEL) "$$tmp/dgw.rb" -c -o "$$tmp/dgw.c" 2>&1 >/dev/null | grep -q 'uninitialized constant Lost: defined nowhere' || { echo "infer-test: FAIL (a missing constant behind a true defined? guard stays warned)"; ok=0; }; \
+	$(SPINEL) test/infer/emit_rbs_prepend_shadow.rb --emit-rbs -o "$$tmp/eps.rbs" >/dev/null 2>&1 || { echo "infer-test: FAIL (--emit-rbs on emit_rbs_prepend_shadow)"; ok=0; }; \
+	[ "$$(grep -c 'def speak:' "$$tmp/eps.rbs")" = 2 ] && ! grep -q 'def __prep [0-9]' "$$tmp/eps.rbs" || { echo "infer-test: FAIL (--emit-rbs declared a prepend's hidden copy)"; ok=0; }; \
 	$(SPINEL) test/infer/emit_types_fields.rb --warn-widen --emit-rbs -o "$$tmp/ww.rbs" 2>&1 >/dev/null | grep -q ': warning: parameter `o` of `dist2`' || { echo "infer-test: FAIL (--warn-widen warns under --emit-rbs too)"; ok=0; }; \
 	grep -q '^spinel: test/infer/emit_types_fields.rb:13:28: note: passed `pts\[0\]` is untyped' "$$tmp/ww.err" && grep -q '^spinel: test/infer/emit_types_fields.rb:12:7: note: from `\[Point.new(1, 2), Point.new(3, 4)\]` is Array\[untyped\] -- born here' "$$tmp/ww.err" || { echo "infer-test: FAIL (--warn-widen: why: an inherited poly is followed to the expression it was born at)"; cat "$$tmp/ww.err"; ok=0; }; \
 	grep -q '^spinel: test/infer/emit_types_fields.rb:15:7: note: passed `"s"` is String, where the slot was Integer (two kinds meet: untyped)' "$$tmp/ww.err" && grep -q '^spinel: test/infer/emit_types_fields.rb:14:7: note: and `1` is Integer' "$$tmp/ww.err" || { echo "infer-test: FAIL (--warn-widen: why: two kinds meeting name both call sites)"; cat "$$tmp/ww.err"; ok=0; }; \

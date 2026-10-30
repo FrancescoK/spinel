@@ -1,0 +1,22 @@
+[:"__inc 0 ", :"__inc foo", :"__inc x 1", :__prep, :"__prep ", :"__prep 0", :"__prep 0 ", :"__prep foo", :"__prep x 1", :plain]
+[:"__inc 0 ", :"__inc foo", :"__inc x 1", :__prep, :"__prep ", :"__prep 0", :"__prep 0 ", :"__prep foo", :"__prep x 1", :plain]
+[:"__prep foo", true, true, true, 1, 1, 1, 1]
+[:__prep, true, true, true, 2, 2, 2, 2]
+[:"__prep ", true, true, true, 3, 3, 3, 3]
+[:"__prep 0", true, true, true, 4, 4, 4, 4]
+[:"__prep 0 ", true, true, true, 5, 5, 5, 5]
+[:"__prep x 1", true, true, true, 6, 6, 6, 6]
+[:"__inc foo", true, true, true, 7, 7, 7, 7]
+[:"__inc 0 ", true, true, true, 8, 8, 8, 8]
+[:"__inc x 1", true, true, true, 10, 10, 10, 10]
+"L hi"
+[:"__prep foo", :speak]
+true
+false
+false
+NoMethodError
+"own base"
+[:"__inc foo", :hello]
+true
+false
+false
