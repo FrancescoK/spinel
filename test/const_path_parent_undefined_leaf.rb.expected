@@ -8,12 +8,12 @@ uninitialized constant Outer::HOLDER
 uninitialized constant Outer::HOLDER
 uninitialized constant Outer::HOLDER
 assigned
-NameError
-NameError
-NameError
-NameError
-NameError
-NameError
-NameError
-NameError
-NameError
+true
+true
+true
+true
+true
+true
+true
+true
+true

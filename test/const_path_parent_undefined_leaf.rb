@@ -5,7 +5,7 @@ class Target
 end
 $assigned = false
 def report(error)
-  puts($assigned ? error.class : error.message)
+  puts($assigned ? error.message.include?("::Missing") : error.message)
 end
 module Outer
   def self.store
