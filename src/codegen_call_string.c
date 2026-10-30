@@ -92,6 +92,24 @@ static void emit_match_block_body(Compiler *c, const int *body, int n, int tr, B
   }
 }
 
+/* Bind the match block's parameter to the MatchData the hit arm holds in
+   `_t<tm>`. The parameter's slot is the handle's own type when the arms here
+   are its only writers; a `&:captures` block that a program class's `match`
+   (one taking `&block`) also receives as a proc has a boxed slot, the proc's
+   parameter being poly, and that slot takes the handle boxed: assigned the
+   raw pointer, the C did not compile. */
+static void emit_match_param_bind(Compiler *c, int mblk, int tm, Buf *b) {
+  const char *mp0 = block_param_name(c, mblk, 0);
+  if (!mp0) return;
+  Scope *bs = comp_scope_of(c, mblk);
+  LocalVar *lv = bs ? scope_local(bs, mp0) : NULL;
+  char h[32]; snprintf(h, sizeof h, "_t%d", tm);
+  buf_printf(b, "lv_%s = ", rename_local(mp0));
+  if (lv && repr_of_slot(c, lv).kind == RK_BOXED) emit_boxed_text(c, TY_MATCHDATA, h, b);
+  else buf_puts(b, h);
+  buf_puts(b, "; ");
+}
+
 /* A `match` the String arms answer: its MatchData (or NULL), boxed where
    the call itself is typed boxed (a receiver known only at run time, whose
    slot took the box), as the value's other readers take it. */
@@ -388,8 +406,6 @@ no_gsub_enum:
       /* match(re) { |m| body }: yield the MatchData on a hit, evaluate to the
          block's value; nil (block not run) on a miss */
       int mblk = nt_ref(nt, id, "block");
-      const char *mp0 = block_param_name(c, mblk, 0);
-      const char *mp0r = mp0 ? rename_local(mp0) : NULL;
       int mbody = nt_ref(nt, mblk, "body");
       int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
       int tm = ++g_tmp, tr2 = ++g_tmp;
@@ -397,7 +413,7 @@ no_gsub_enum:
       emit_str_expr(c, recv, b);
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
-      if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
+      emit_match_param_bind(c, mblk, tm, b);
       emit_match_block_body(c, mbb, mbn, tr2, b);
       buf_printf(b, "} _t%d; })", tr2);
       return 1;
@@ -450,8 +466,6 @@ no_gsub_enum:
          nil on a miss. Without the arm the MatchData itself was the value and
          the block never ran (#3642). */
       int mblk = nt_ref(nt, id, "block");
-      const char *mp0 = block_param_name(c, mblk, 0);
-      const char *mp0r = mp0 ? rename_local(mp0) : NULL;
       int mbody = nt_ref(nt, mblk, "body");
       int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
       int tm = ++g_tmp, tr2 = ++g_tmp;
@@ -465,7 +479,7 @@ no_gsub_enum:
       if (argc == 2) { buf_puts(b, ", "); emit_int_expr(c, argv[1], b); }
       buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                  tr2, tr2, tm);
-      if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
+      emit_match_param_bind(c, mblk, tm, b);
       emit_match_block_body(c, mbb, mbn, tr2, b);
       buf_printf(b, "} _t%d; })", tr2);
       return 1;
@@ -727,8 +741,6 @@ no_gsub_enum:
             /* the block form: yield the MatchData on a hit, evaluate to the
                block's value, nil on a miss (#3642) */
             int mblk = nt_ref(nt, id, "block");
-            const char *mp0 = block_param_name(c, mblk, 0);
-            const char *mp0r = mp0 ? rename_local(mp0) : NULL;
             int mbody = nt_ref(nt, mblk, "body");
             int mbn = 0; const int *mbb = mbody >= 0 ? nt_arr(nt, mbody, "body", &mbn) : NULL;
             int tm = ++g_tmp, tr2 = ++g_tmp;
@@ -736,7 +748,7 @@ no_gsub_enum:
             emit_str_expr(c, argv[0], b);
             buf_printf(b, "); sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); if (_t%d) { ",
                        tr2, tr2, tm);
-            if (mp0r) buf_printf(b, "lv_%s = _t%d; ", mp0r, tm);
+            emit_match_param_bind(c, mblk, tm, b);
             emit_match_block_body(c, mbb, mbn, tr2, b);
             buf_printf(b, "} _t%d; })", tr2);
             free(rp.p); return 1;
