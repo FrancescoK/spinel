@@ -122,7 +122,7 @@ typedef struct { char **f, **t; int n; } RenCopy;
 void ren_copy_out(RenCopy *k, int from, int n);
 void ren_copy_in(const RenCopy *k, int from);
 void ren_copy_free(RenCopy *k);
-typedef struct { int sv, from; RenCopy k; int fence; } RenPark;
+typedef struct { int sv, from; RenCopy k; int fence, arm; } RenPark;
 RenPark ren_park(int from);
 void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);

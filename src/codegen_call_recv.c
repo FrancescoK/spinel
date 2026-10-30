@@ -9549,7 +9549,15 @@ static int str_arms_pattern(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
     g_c_loop_depth++;
     int svind = g_indent; g_indent++;
+    /* a dispatch's builtin arm reads its RECEIVER as no object of the
+       program's (g_poly_builtin_arm); the block's own calls are not that
+       receiver's, and a user class owns their names as it does anywhere
+       (step_arm_begin, as the iterator steps do): `text.empty?` in the
+       block of a boxed String's scan took the builtin shortcut's int while
+       the inference typed it by the program's `empty?` methods */
+    int sv_arm = step_arm_begin();
     for (int j = 0; j < bn; j++) emit_stmt(c, bb[j], g_pre, g_indent);
+    step_arm_end(c, sv_arm);
     g_indent = svind;
     g_c_loop_depth--;
     g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
@@ -12776,9 +12784,16 @@ int emit_object_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "); })");
       return 1;
     }
+    /* The renderer answers text. A call the inference typed boxed -- a
+       subclass's own inspect answers no String, so the dispatch over the
+       receiver's classes is poly -- takes it as a boxed String: left as text,
+       `"#{inspect}"` in a base class under such subclasses initialized an
+       sp_RbVal with a const char * and the C did not compile. */
+    int bx = repr_of(c, id).kind == RK_BOXED;
+    if (bx) buf_puts(b, "sp_box_str(");
     buf_printf(b, "sp_poly_%s(", want_ins ? "inspect" : "to_s");
     emit_boxed(c, recv, b);
-    buf_puts(b, ")");
+    buf_puts(b, bx ? "))" : ")");
     return 1;
   }
 
