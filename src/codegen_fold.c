@@ -4222,11 +4222,12 @@ void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent) {
 /* A dispatch's builtin arm reads its RECEIVER as no object of the
    program's (g_poly_builtin_arm); a block body's own calls are not that
    receiver's, and a user class owns their names there as anywhere. The
-   step helpers below drop the reading for the body they emit. */
-static int step_arm_begin(void) {
+   step helpers below drop the reading for the body they emit, as does the
+   in-place filter loop (emit_filter_body), which reads the step itself. */
+int step_arm_begin(void) {
   return g_poly_builtin_arm ? view_push_arm(g_pd_skip, g_prbd_skip, 0) : -1;
 }
-static void step_arm_end(Compiler *c, int tok) {
+void step_arm_end(Compiler *c, int tok) {
   if (tok >= 0) view_pop(c, tok);
 }
 
