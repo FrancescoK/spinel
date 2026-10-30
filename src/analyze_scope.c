@@ -2924,6 +2924,7 @@ static void sg_transplant_module(Compiler *c, int mod_ci, int newci) {
     Scope *dst = comp_scope_new(c, src->name, src->def_node);
     int dst_idx = (int)(dst - c->scopes);
     src = &c->scopes[ms];   /* comp_scope_new may realloc */
+    comp_scope_copy_shadow(c, dst_idx, ms, NULL);
     /* Clone + re-walk the module body under the subclass so implicit-self
        calls (and ivar reads) re-attribute to it, not the module -- exactly
        what `include` does (a shared body would resolve `name` against the
@@ -4145,13 +4146,14 @@ static const char *alias_body_copy(Compiler *c, int k, int want, const char *od)
   for (int s = 1; s < c->nscopes && si < 0; s++) {
     Scope *sc = &c->scopes[s];
     if (sc->class_id == k && !sc->is_cmethod && sc->def_node == want && sc->name &&
-        sp_streq(comp_prep_user_name(sc->name), od)) si = s;
+        sp_streq(comp_scope_user_name(sc), od)) si = s;
   }
   if (si < 0) return NULL;
   char nm[256];
   snprintf(nm, sizeof nm, "__inc %d %s", c->classes[k].prep_shadow_count++, od);
   comp_scope_new(c, nm, want);
   int di = c->nscopes - 1;
+  comp_scope_set_shadow(c, di, SHADOW_INC, od);
   Scope *src = &c->scopes[si], *dst = &c->scopes[di];
   { dst->body = src->body; comp_touch_scope(dst->idx); }
   if (src->body >= 0) {
@@ -6735,8 +6737,8 @@ static const char *include_shadow_copy(Compiler *c, int ci, int mod, const char 
   if (src < 0) return NULL;
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (sc->class_id == ci && !sc->is_cmethod && sc->name && comp_name_is_inc_shadow(sc->name) &&
-        sc->def_node == c->scopes[src].def_node && sp_streq(comp_prep_user_name(sc->name), m)) {
+    if (sc->class_id == ci && !sc->is_cmethod && sc->shadow == SHADOW_INC &&
+        sc->def_node == c->scopes[src].def_node && sp_streq(sc->shadow_user, m)) {
       { sc->reachable = 1; comp_touch_scope(sc->idx); }
       return sc->name;
     }
@@ -6784,6 +6786,7 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
         }
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(inc_shadow);
+      comp_scope_set_shadow(c, own, SHADOW_INC, src->name);
       if (scope_body_has_super(c, ms)) comp_prep_chain_add(cif, src->name, inc_shadow);
       else { c->scopes[own].reachable = 0; comp_touch_scope(c->scopes[own].idx); }   /* nothing can reach it now */
       own = -1;
@@ -6845,6 +6848,8 @@ static void include_module_methods(Compiler *c, int ci, int mod_id) {
     int dst_idx = c->nscopes - 1;
     /* comp_scope_new may realloc c->scopes; re-derive src pointer. */
     src = &c->scopes[ms];
+    if (dst_name == inc_shadow) comp_scope_set_shadow(c, dst_idx, SHADOW_INC, src->name);
+    else comp_scope_copy_shadow(c, dst_idx, ms, NULL);
     /* Clone the body and re-attribute it to the target when either:
        (a) the target is a built-in class, where `self` has a different
        (scalar) type than the module's object self -- otherwise the shared
@@ -7123,13 +7128,15 @@ static void prepend_copy_name(Compiler *c, int mi) {
   Scope *m = &c->scopes[mi];
   ClassInfo *cl = &c->classes[m->class_id];
   char shadow[320], key[340], renamed[340];
-  comp_prep_shadow_name(cl, m->name, shadow, sizeof shadow);
+  comp_shadow_name(c, m->class_id, m->name, shadow, sizeof shadow);
   snprintf(key, sizeof key, "%s%s", m->is_cmethod ? "self." : "", m->name);
   snprintf(renamed, sizeof renamed, "%s%s", m->is_cmethod ? "self." : "", shadow);
   for (int k = 0; k < cl->nprep_chain; k++)
     if (sp_streq(cl->prep_from[k], key)) { free(cl->prep_from[k]); cl->prep_from[k] = strdup(renamed); break; }
-  free(m->name);
+  char *user = m->name;
   m->name = strdup(shadow);
+  comp_scope_set_shadow(c, mi, SHADOW_PREP, user);
+  free(user);
 }
 static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int cell, int behind);
 static int prepend_late_stmt(Compiler *c, int ci, int body);
@@ -7240,7 +7247,7 @@ void rewrite_attr_supers(Compiler *c) {
     ClassInfo *cls = &c->classes[s->class_id];
     if (comp_class_is_module(c, cls)) continue;
     if (comp_prep_chain_target(c, s->class_id, s->name)) continue;
-    const char *uname = comp_prep_user_name(s->name);
+    const char *uname = comp_scope_user_name(s);
     char base[256];
     int is_write = name_is_plain_setter(uname);
     if (is_write) { if (!setter_base_name(uname, base, sizeof base)) continue; }
@@ -7480,6 +7487,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         }
       free(c->scopes[own].name);
       c->scopes[own].name = strdup(shadow);
+      comp_scope_set_shadow(c, own, SHADOW_INC, src->name);
       int reached = scope_body_has_super(c, ms);
       if (prepend && cell) {
         /* the copy's own super reaches the method it stands in front of,
@@ -7542,7 +7550,7 @@ static int extend_class_with(Compiler *c, int ci, int mod_id, int inherited, int
         comp_cmethod_extend_vis_set(&c->classes[ci], src->name, src->is_module_function && ci != mod_id
                                     ? SP_VIS_PRIVATE : comp_method_vis(&c->classes[mod_id], src->name));
       if (own_name) {
-        if (cp >= 0) { free(c->scopes[cp].name); c->scopes[cp].name = strdup(behind); }
+        if (cp >= 0) { free(c->scopes[cp].name); c->scopes[cp].name = strdup(behind); comp_scope_set_shadow(c, cp, SHADOW_INC, src->name); }
         free(c->scopes[own].name);
         c->scopes[own].name = own_name;
       } }
@@ -8021,6 +8029,7 @@ static void specialize_cmethod_for(Compiler *c, int mi, int def_cls, int ci, int
   Scope *dst = comp_scope_new(c, src->name, src->def_node);
   src = &c->scopes[mi];  /* realloc-safe */
   int dst_idx = c->nscopes - 1;
+  comp_scope_copy_shadow(c, dst_idx, mi, NULL);
   { dst->body = new_body; comp_touch_scope(dst->idx); }
   if (new_body >= 0) walk_scope(c, new_body, dst_idx, ci);
   { dst->class_id = ci; comp_touch_scope(dst->idx); }
@@ -8211,6 +8220,7 @@ static void specialize_super_cmethod(Compiler *c, int own, int snap) {
     if (cp < 0 || cp == own || cp == cur) break;
     free(c->scopes[cp].name);
     c->scopes[cp].name = strdup(behind);
+    comp_scope_set_shadow(c, cp, SHADOW_INC, own_name);
     comp_cprep_chain_add(&c->classes[ci], cur == own ? own_name : c->scopes[cur].name, behind);
     if (!scope_body_has_super(c, pm)) break;
     cur = cp;
@@ -8561,7 +8571,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
         if (active_mi >= 0) {
           Scope *active = &c->scopes[active_mi];
           char shadow[256];
-          comp_prep_shadow_name(&c->classes[ci], method_name, shadow, sizeof shadow);
+          comp_shadow_name(c, ci, method_name, shadow, sizeof shadow);
           /* Rename any existing chain entry for method_name to use shadow. */
           ClassInfo *cif = &c->classes[ci];
           for (int kk = 0; kk < cif->nprep_chain; kk++) {
@@ -8574,6 +8584,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           /* Rename the currently active scope to the shadow name. */
           free(active->name);
           active->name = strdup(shadow);
+          comp_scope_set_shadow(c, active_mi, SHADOW_PREP, method_name);
           /* Record the new dispatch chain entry: method_name -> shadow. */
           comp_prep_chain_add(&c->classes[ci], method_name, shadow);
           /* Visibility is registered before prepends, by name: the class's
@@ -8603,6 +8614,7 @@ static void process_prepend_body(Compiler *c, int ci, int body) {
           Scope *dst = comp_scope_new(c, method_name, sc->def_node);
           int dst_i = c->nscopes - 1;
           sc = &c->scopes[ms_i];               /* comp_scope_new may realloc */
+          comp_scope_copy_shadow(c, dst_i, ms_i, NULL);
           if (sc->body >= 0) {
             int nb = nt_clone_subtree((NodeTable *)nt, sc->body);
             comp_grow_node_arrays(c);

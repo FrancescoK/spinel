@@ -1,0 +1,6 @@
+[:"__inc 0 foo", :"__inc 3 zap", :foo]
+[true, true]
+"user"
+:"__inc 3 zap"
+:"__inc 3 zap"
+true

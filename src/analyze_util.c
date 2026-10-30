@@ -2108,7 +2108,7 @@ static int yvt_may_reach(Compiler *c, int ii, int mi) {
   if (!mn || !cn) return 1;
   if (sp_streq(cn, mn)) return 1;
   if (sp_streq(cn, "new") && sp_streq(mn, "initialize")) return 1;
-  if (comp_name_is_prep_shadow(mn)) return 1;
+  if (c->scopes[mi].shadow == SHADOW_PREP) return 1;
   return yvt_alias_name && yvt_alias_name[ii];
 }
 static void yvt_build(Compiler *c) {
@@ -2280,7 +2280,7 @@ static void yvt_tg_build(Compiler *c) {
 typedef struct { int s[3]; int ai; int tp, te; int all; int next_all; int last; } YvtIt;
 static void yvt_it_init(Compiler *c, YvtIt *it, int mi) {
   const char *mn = c->scopes[mi].name;
-  it->all = !mn || comp_name_is_prep_shadow(mn) || !yvt_nm_head;
+  it->all = !mn || c->scopes[mi].shadow == SHADOW_PREP || !yvt_nm_head;
   it->next_all = 0; it->last = -1; it->ai = 0; it->tp = it->te = 0;
   it->s[0] = it->s[1] = -1;
   if (it->all) return;
@@ -2423,7 +2423,7 @@ static int yvt_reaches(Compiler *c, int cid, int mi) {
      from all of them, the clone's copies too. */
   Scope *m = &c->scopes[mi];
   if (m->ctor_cycle && m->class_id >= 0 && !c->classes[m->class_id].is_struct &&
-      sp_streq(comp_prep_user_name(m->name), "initialize") && ctor_site_on_cycle(c, cid, mi))
+      sp_streq(comp_scope_user_name(m), "initialize") && ctor_site_on_cycle(c, cid, mi))
     return 0;
   if (yvt_callee_index(c, cid) == mi) return 1;
   /* the rest is a `new` reaching an initialize: the method's side first,
@@ -2957,7 +2957,7 @@ int an_zero_arg_builtin_shadowed(Compiler *c, const char *name, int argc) {
 int an_user_defines_method(Compiler *c, const char *name) {
   if (an_builtin_only_p()) return 0;   /* deriving the builtin-only answer (#3459) */
   /* Copied bodies are call-plan targets, not Ruby method names. */
-  if (!name || comp_name_is_prep_shadow(name)) return 0;
+  if (!name || comp_name_is_shadow_copy(c, name, SHADOW_PREP)) return 0;
   if (!comp_scope_index_is_frozen()) {
     /* scope shape may still change without the counts moving (renames);
        don't consult or populate the memo outside the frozen fixpoint. */
@@ -3653,10 +3653,10 @@ int name_is_synth_method(Compiler *c, const char *m) {
      the program names `__noarg_inspect` is its own */
   if (strncmp(m, "__noarg ", 8) == 0) return 1;
   /* `__inc <n> <name>`: the shadow copy of an included module's method, kept
-     so an override can reach it through super (#3738); a name not in that
-     spelling, as `__inc foo`, is the program's own */
-  if (comp_name_is_inc_shadow(m)) return 1;
-  if (comp_name_is_prep_shadow(m)) return 1;
+     so an override can reach it through super (#3738); a name no such copy
+     has, as `__inc foo`, is the program's own */
+  if (comp_name_is_shadow_copy(c, m, SHADOW_INC)) return 1;
+  if (comp_name_is_shadow_copy(c, m, SHADOW_PREP)) return 1;
   /* `m#pf`, the proc-form clone of a yielding method: `#` is never part of a
      Ruby method name */
   if (strchr(m, '#')) return 1;

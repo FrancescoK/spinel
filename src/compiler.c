@@ -554,6 +554,7 @@ void comp_free(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     free(sc->name);
+    free(sc->shadow_user);
     for (int i = 0; i < sc->nlocals; i++) free(sc->locals[i].name);
     free(sc->locals);
     free(sc->lidx);
@@ -562,6 +563,7 @@ void comp_free(Compiler *c) {
     free(sc->pdefault);
   }
   free(c->scopes);
+  free(c->shadow_copies);
   free(c->file_scope);
   free(c->load_sets_flag);
   elab_free(c);
@@ -1413,7 +1415,7 @@ static int sm_lookup(Compiler *c, int class_id, const char *name, int is_cm) {
     for (int s = c->nscopes - 1; s >= 0; s--)
       if (sm_owns(c, s, class_id, is_cm) &&
           c->scopes[s].name && (sp_streq(c->scopes[s].name, name) ||
-            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_prep_user_name(c->scopes[s].name), name)))) return s;
+            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_scope_user_name(&c->scopes[s]), name)))) return s;
     return -1;
   }
   if (sm_nscopes != c->nscopes) sm_build(c);
@@ -1576,7 +1578,7 @@ static int sm_version(Compiler *c, int class_id, const char *name, int is_cm, in
     for (int s = c->nscopes - 1; s >= 0; s--)
       if (c->scopes[s].def_node == def_node && (top ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm)) &&
           c->scopes[s].name && (sp_streq(c->scopes[s].name, name) ||
-            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_prep_user_name(c->scopes[s].name), name)))) return s;
+            (!c->ver_built && c->scopes[s].mixin_guarded && sp_streq(comp_scope_user_name(&c->scopes[s]), name)))) return s;
     return -1;
   }
   if (sm_nscopes != c->nscopes) sm_build(c);
@@ -1595,7 +1597,7 @@ static int sm_version(Compiler *c, int class_id, const char *name, int is_cm, in
 static int sm_version_renamed(Compiler *c, int class_id, int is_cm, int def_node) {
   for (int s = c->nscopes - 1; s >= 0; s--)
     if (c->scopes[s].def_node == def_node && c->scopes[s].name && !c->scopes[s].is_proc_form &&
-        comp_prep_user_name(c->scopes[s].name) == c->scopes[s].name &&
+        !c->scopes[s].shadow &&
         (class_id < 0 ? sm_toplevel(c, s) : sm_owns(c, s, class_id, is_cm))) return s;
   return -1;
 }
@@ -4733,40 +4735,78 @@ int comp_super_is_class_new(Compiler *c, int id) {
   if (k != NK_SuperNode && k != NK_ForwardingSuperNode) return 0;
   Scope *s = comp_scope_of(c, id);
   if (!s || !s->is_cmethod || s->class_id < 0 || !s->name) return 0;
-  if (!sp_streq(comp_prep_user_name(s->name), "new")) return 0;
+  if (!sp_streq(comp_scope_user_name(s), "new")) return 0;
   if (comp_super_shadow(c, s)) return 0;
   int p = c->classes[s->class_id].parent;
   return p < 0 || comp_cmethod_in_chain(c, p, "new", NULL) < 0;
 }
 
-void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t size) {
-  snprintf(out, size, "__prep %d %s", ci->prep_shadow_count++, name);
+/* Does the program have a method or alias spelled `name`? Its scope is not a
+   hidden copy (Scope.shadow), or an alias table names it. */
+static int program_names_method(Compiler *c, const char *name) {
+  for (int s = 1; s < c->nscopes; s++)
+    if (!c->scopes[s].shadow && c->scopes[s].name && sp_streq(c->scopes[s].name, name)) return 1;
+  for (int k = 0; k < c->nclasses; k++)
+    for (int i = 0; i < c->classes[k].naliases; i++)
+      if (sp_streq(c->classes[k].alias_new[i], name)) return 1;
+  return 0;
 }
 
-/* The method name inside a generated shadow name `<tag><n> <name>`, n being
-   decimal digits and <name> non-empty, or NULL for any other spelling: a
-   method the program names `__prep foo` or `__prep 0` is its own. */
-static const char *shadow_user_part(const char *name, const char *tag) {
-  size_t tl = strlen(tag);
-  if (!name || strncmp(name, tag, tl) != 0) return NULL;
-  const char *p = name + tl;
-  if (*p < '0' || *p > '9') return NULL;
-  while (*p >= '0' && *p <= '9') p++;
-  return p[0] == ' ' && p[1] ? p + 1 : NULL;
+/* The name a new prepend copy of class ci's method `name` gets: `__prep <n>
+   <name>` with the next index n of ci that no method or alias the program
+   names has, so a lookup by that name reaches the copy and nothing else. The
+   `__inc` copies are named where they are made and are not checked this way:
+   a program method spelled like one can still coincide with it. */
+void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t size) {
+  do snprintf(out, size, "__prep %d %s", c->classes[ci].prep_shadow_count++, name);
+  while (program_names_method(c, out));
 }
 
-int comp_name_is_prep_shadow(const char *name) {
-  return shadow_user_part(name, "__prep ") != NULL;
+/* Mark scope si a hidden copy of kind (SHADOW_PREP or SHADOW_INC) of the
+   method the program wrote as `user`. */
+void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user) {
+  Scope *s = &c->scopes[si];
+  free(s->shadow_user);
+  s->shadow = (unsigned char)kind;
+  s->shadow_user = strdup(user);
+  for (int i = 0; i < c->nshadow_copies; i++)
+    if (c->shadow_copies[i] == si) return;
+  if (c->nshadow_copies >= c->cshadow_copies) {
+    c->cshadow_copies = c->cshadow_copies ? c->cshadow_copies * 2 : 4;
+    c->shadow_copies = realloc(c->shadow_copies, sizeof(int) * (size_t)c->cshadow_copies);
+    if (!c->shadow_copies) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  c->shadow_copies[c->nshadow_copies++] = si;
 }
 
-int comp_name_is_inc_shadow(const char *name) {
-  return shadow_user_part(name, "__inc ") != NULL;
+/* A clone of scope src under src's own name (dst) is the same hidden copy,
+   its user name with `suffix` (a proc-form clone's "#pf"). */
+void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix) {
+  const Scope *s = &c->scopes[src];
+  if (!s->shadow) return;
+  char u[320];
+  snprintf(u, sizeof u, "%s%s", s->shadow_user, suffix ? suffix : "");
+  comp_scope_set_shadow(c, dst, s->shadow, u);
 }
 
-const char *comp_prep_user_name(const char *name) {
-  const char *u = shadow_user_part(name, "__inc ");
-  if (!u) u = shadow_user_part(name, "__prep ");
-  return u ? u : name;
+/* The name the program wrote for s's method: a hidden copy's user name,
+   else s's own name, whatever its spelling */
+const char *comp_scope_user_name(const Scope *s) {
+  return s->shadow_user ? s->shadow_user : s->name;
+}
+
+/* Is `name` the name of a hidden copy of the given kind? A SHADOW_PREP name is
+   generated apart from every method the program names (comp_shadow_name), so
+   a scope of that name is a copy or none is. A SHADOW_INC name is not checked,
+   so the answer is not exact: a program method spelled like an include copy
+   (in a class whose copies do not include that name) counts as one too. */
+int comp_name_is_shadow_copy(Compiler *c, const char *name, int kind) {
+  if (!name) return 0;
+  for (int i = 0; i < c->nshadow_copies; i++) {
+    const Scope *s = &c->scopes[c->shadow_copies[i]];
+    if (s->shadow == kind && s->name && sp_streq(s->name, name)) return 1;
+  }
+  return 0;
 }
 
 /* The name `super` resolves under from the scope named `name` whose class's
@@ -4780,19 +4820,19 @@ const char *comp_prep_user_name(const char *name) {
    captured an earlier def renamed that scope to the alias
    (alias_capture_earlier_def), and settle_mixin_aliases keeps a copy under
    a shadow name, but the body's super still asks for the name its def has,
-   as CRuby's does. A proc-form clone keeps its "#pf" mark. A scope that
-   still carries its def's name answers its own name, prefix and all. */
+   as CRuby's does. A proc-form clone keeps its "#pf" mark. A hidden copy
+   answers the name the program wrote (Scope.shadow_user), and a scope that
+   still carries its def's name answers its own name, however it is spelled. */
 const char *comp_scope_def_name(Compiler *c, const Scope *s) {
-  const char *nm = s->name;
-  if (!nm || s->def_node < 0 || nt_kind(c->nt, s->def_node) != NK_DefNode) return nm;
+  const char *u = comp_scope_user_name(s);
+  if (!s->name || s->def_node < 0 || nt_kind(c->nt, s->def_node) != NK_DefNode) return u;
   const char *dn = nt_str(c->nt, s->def_node, "name");
-  if (!dn) return nm;
+  if (!dn) return u;
   size_t dl = strlen(dn);
-  const char *u = comp_prep_user_name(nm);
   size_t n = strlen(u);
   int pf = n > 3 && strcmp(u + n - 3, "#pf") == 0;
   size_t base = pf ? n - 3 : n;
-  if (dl == base && strncmp(u, dn, base) == 0) return nm;
+  if (dl == base && strncmp(u, dn, base) == 0) return u;
   static char buf[4][320];
   static int r;
   char *b = buf[r++ & 3];
@@ -4800,10 +4840,9 @@ const char *comp_scope_def_name(Compiler *c, const Scope *s) {
   return b;
 }
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod) {
-  const char *u = comp_prep_user_name(name);
-  if (!u) return u;
-  size_t n = strlen(u);
-  if (n <= 3 || strcmp(u + n - 3, "#pf") != 0) return u;
+  if (!name) return name;
+  size_t n = strlen(name);
+  if (n <= 3 || strcmp(name + n - 3, "#pf") != 0) return name;
   /* a class whose parent is builtin (Object, StandardError) supers into the
      plain method, which the super emitter answers for itself */
   if (parent < 0) goto plain;
@@ -4812,28 +4851,28 @@ const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cm
      grandparent's and skipped a parent that overrides without yielding
      (CodeRabbit on #4996). */
   char base[256];
-  if (n - 3 >= sizeof base) return u;
-  memcpy(base, u, n - 3); base[n - 3] = '\0';
+  if (n - 3 >= sizeof base) return name;
+  memcpy(base, name, n - 3); base[n - 3] = '\0';
   int dc = -1;
   int bm = is_cmethod ? comp_cmethod_in_chain(c, parent, base, &dc)
                       : comp_method_in_chain(c, parent, base, &dc);
   int hit = bm < 0 || dc < 0 ? -1
-          : is_cmethod ? comp_cmethod_in_class(c, dc, u) : comp_method_in_class(c, dc, u);
+          : is_cmethod ? comp_cmethod_in_class(c, dc, name) : comp_method_in_class(c, dc, name);
   if (hit >= 0 || bm < 0) {
-    if (bm >= 0) return u;
+    if (bm >= 0) return name;
     /* no ancestor defines the plain name: keep the old answer, the clone
        found anywhere up the chain */
-    int any = is_cmethod ? comp_cmethod_in_chain(c, parent, u, NULL)
-                         : comp_method_in_chain(c, parent, u, NULL);
-    if (any >= 0) return u;
+    int any = is_cmethod ? comp_cmethod_in_chain(c, parent, name, NULL)
+                         : comp_method_in_chain(c, parent, name, NULL);
+    if (any >= 0) return name;
   }
 plain:;
   static struct pf_base { char *from, *to; struct pf_base *next; } *cache;
   for (struct pf_base *e = cache; e; e = e->next)
-    if (strcmp(e->from, u) == 0) return e->to;
+    if (strcmp(e->from, name) == 0) return e->to;
   struct pf_base *e = (struct pf_base *)malloc(sizeof *e);
-  char *to = strndup(u, n - 3), *from = strdup(u);
-  if (!e || !to || !from) { free(e); free(to); free(from); return u; }
+  char *to = strndup(name, n - 3), *from = strdup(name);
+  if (!e || !to || !from) { free(e); free(to); free(from); return name; }
   e->from = from; e->to = to; e->next = cache; cache = e;
   return to;
 }

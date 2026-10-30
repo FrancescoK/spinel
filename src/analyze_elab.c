@@ -2336,7 +2336,7 @@ void elab_mark_versions(Compiler *c) {
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
     if (sc->versioned || sc->replaced) { sc->versioned = sc->replaced = 0; comp_touch_scope(sc->idx); }
-    const char *name = sc->mixin_guarded ? comp_prep_user_name(sc->name) : sc->name;
+    const char *name = sc->mixin_guarded ? comp_scope_user_name(sc) : sc->name;
     const LrVers *x = name && sc->def_node >= 0 ? lr_vers(r, name) : NULL;
     if (!x || x->nver < 2) continue;
     { sc->versioned = 1; comp_touch_scope(sc->idx); }

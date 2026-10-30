@@ -447,6 +447,7 @@ static inline int lv_set_proc_ret(LocalVar *lv, int t) {
 #define STRBUF_LIFT_FRESH_CALL 2
 
 enum { RBS_CONT_HASH = 1, RBS_CONT_ARRAY = 2 };   /* Scope.ret_rbs_cont: the class a container return seed checks */
+enum { SHADOW_NONE = 0, SHADOW_INC, SHADOW_PREP };   /* Scope.shadow: the kind of hidden copy */
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
   int idx;          /* its index in Compiler.scopes: the owner its slots' writes move */
@@ -504,6 +505,16 @@ typedef struct {
                                  behind it, guard_behind, until the cell is
                                  set */
   int guard_behind;
+  /* a hidden copy: a body the compiler moved behind another method of its
+     name. A SHADOW_PREP copy is named apart from every method the program
+     names (comp_shadow_name); a SHADOW_INC copy's name is not checked against
+     them. SHADOW_PREP: a prepend's `__prep <n> m` (the class's own body
+     behind the module's copy, or a later prepend's guarded copy); SHADOW_INC:
+     an include's, extend's or alias's `__inc <n> m`. shadow_user is m, the
+     name the program wrote (a proc-form clone's with its "#pf"). SHADOW_NONE
+     and NULL for every method the program names, however it is spelled. */
+  unsigned char shadow;
+  char *shadow_user;
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
@@ -1676,6 +1687,9 @@ typedef struct {
      are kept, and a call that reaches a later prepend's copy binds its
      guard entry */
   int ver_built;
+  /* the scopes that are hidden copies (Scope.shadow), which
+     comp_name_is_shadow_copy reads */
+  int *shadow_copies, nshadow_copies, cshadow_copies;
   /* the version each call asked on a class runs, once the entries are
      made (call_plan.c, ct_version): open addressing, name NULL for a free
      slot; dc the class it answers, -2 for the table's */
@@ -2317,10 +2331,14 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
    method of the same name. */
 const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
-void comp_prep_shadow_name(ClassInfo *ci, const char *name, char *out, size_t size);
-int comp_name_is_prep_shadow(const char *name);
-int comp_name_is_inc_shadow(const char *name);
-const char *comp_prep_user_name(const char *name);
+/* The hidden copies (Scope.shadow): the name a new `__prep <n> <name>` copy of
+   class ci's gets, set on the scope where the copy is made, carried by the
+   clones, and read back as the name the program wrote. */
+void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t size);
+void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user);
+void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix);
+const char *comp_scope_user_name(const Scope *s);
+int comp_name_is_shadow_copy(Compiler *c, const char *name, int kind);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);
 int comp_super_is_class_new(Compiler *c, int id);

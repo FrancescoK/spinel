@@ -195,7 +195,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
        runs under a shadow name, `__prep 0 go`: the name as written) */
     /* (and one an alias captured ahead of a redefinition runs under the
        alias, alias_capture_earlier_def: the name its def has) */
-    const char *mn = s ? comp_prep_user_name(comp_scope_def_name(c, s)) : NULL;
+    const char *mn = s ? comp_scope_def_name(c, s) : NULL;
     if (mn && mn[0] && sp_streq(name, "__callee__"))
       buf_printf(b, "(_sp_cal ? sp_sym_intern(_sp_cal) : (sp_sym)%d)", comp_sym_intern(c, mn));
     else if (mn && mn[0]) buf_printf(b, "(sp_sym)%d", comp_sym_intern(c, mn));

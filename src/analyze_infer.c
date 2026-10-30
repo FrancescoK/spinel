@@ -5989,7 +5989,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
     Scope *s = comp_scope_of(c, id);
     /* the name codegen answers (comp_scope_def_name) is a symbol of the
        program's table, which codegen writes before it emits the call */
-    if (s && s->name && s->name[0]) comp_sym_intern(c, comp_prep_user_name(comp_scope_def_name(c, s)));
+    if (s && s->name && s->name[0]) comp_sym_intern(c, comp_scope_def_name(c, s));
     { *out = (s && s->name && s->name[0]) ? TY_SYMBOL : TY_NIL; return 1; }
   }
 

@@ -1601,7 +1601,7 @@ else {
      initialize, or in its clone) hands its block to the clone as a proc
      (ctor_site_on_cycle, emit_ctor_new_with_proc), the body not being
      spliced there */
-  if (m->yields && sp_streq(name, "new") && m->name && sp_streq(comp_prep_user_name(m->name), "initialize") &&
+  if (m->yields && sp_streq(name, "new") && m->name && sp_streq(comp_scope_user_name(m), "initialize") &&
       ctor_site_on_cycle(c, id, mi)) return 1;
   /* A lowered yielding method also receives its block as a real proc, so a
      block passed to it is lifted and captures enclosing locals like any other. */
@@ -7865,7 +7865,7 @@ static void synth_enum_to_a(Compiler *c) {
        would yield an empty result, so it stays a loud reject. */
     /* Before entries are built, the table already answers a prepend's
        hidden copy by its public name. The bridge serves that same name. */
-    if (!is_each_name(comp_prep_user_name(m->name)) ||
+    if (!is_each_name(comp_scope_user_name(m)) ||
         !(m->yields || (m->blk_param && m->blk_param[0]) ||
           /* a class that mixes Enumerable in still gets the materializer even
              when its #each never yields: the mixin is simply empty (#3755) */
@@ -32505,7 +32505,7 @@ int a_super_target(Compiler *c, Scope *m) {
   if (m->class_id < 0) return -1; /* a top-level def: no class, so no superclass method */
   int p = c->classes[m->class_id].parent;
   if (p < 0) return -1;
-  const char *u = comp_prep_user_name(m->name);
+  const char *u = comp_scope_user_name(m);
   return m->is_cmethod ? comp_cmethod_in_chain(c, p, u, NULL)
                        : comp_method_in_chain(c, p, u, NULL);
 }
@@ -33185,7 +33185,7 @@ static int scope_yields_inside_lifted_body(Compiler *c, int mi) {
    a yielding initialize the way a constant `X.new` site does, so the class
    needs the clone for its constructor to run the body at all. */
 static int super_new_init_yields(Compiler *c, Scope *s) {
-  if (!s->is_cmethod || !sp_streq(comp_prep_user_name(s->name), "new") || super_reach(c, s) >= 0) return 0;
+  if (!s->is_cmethod || !sp_streq(comp_scope_user_name(s), "new") || super_reach(c, s) >= 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     int mi = k == s->class_id || is_descendant(c, k, s->class_id) ? comp_method_in_chain(c, k, "initialize", NULL) : -1;
     if (mi >= 0 && c->scopes[mi].yields) return 1;
@@ -33348,7 +33348,7 @@ int make_yield_proc_forms(Compiler *c) {
        re-raise and its own `new` sites alike, none of which splice the body */
     int exc_init = src->class_id >= 0 && sp_streq(src->name, "initialize") && !src->is_cmethod &&
                    class_is_exc_subclass(c, src->class_id);
-    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, comp_prep_user_name(src->name)) && !pf_in_class_dispatch(c, src) &&
+    if (src->class_id >= 0 && !shadow_clone && !exc_init && !pf_wanted(c, comp_scope_user_name(src)) && !pf_in_class_dispatch(c, src) &&
         !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
@@ -33366,6 +33366,7 @@ int make_yield_proc_forms(Compiler *c) {
     if (nb < 0) continue;
     comp_scope_new(c, pfname, src->def_node);
     int di = c->nscopes - 1;
+    comp_scope_copy_shadow(c, di, s, "#pf");
     comp_grow_node_arrays(c);
     src = &c->scopes[s];
     Scope *dst = &c->scopes[di];
@@ -42914,7 +42915,7 @@ static int super_reach(Compiler *c, Scope *s) {
 
 static int super_new_init_keeps_block(Compiler *c, Scope *s) {
   if (super_new_init_yields(c, s)) return 1;
-  if (!s->is_cmethod || !sp_streq(comp_prep_user_name(s->name), "new") || super_reach(c, s) >= 0) return 0;
+  if (!s->is_cmethod || !sp_streq(comp_scope_user_name(s), "new") || super_reach(c, s) >= 0) return 0;
   for (int k = 0; k < c->nclasses; k++) {
     int mi = k == s->class_id || is_descendant(c, k, s->class_id) ? comp_method_in_chain(c, k, "initialize", NULL) : -1;
     if (mi >= 0 && c->scopes[mi].blk_param && c->scopes[mi].blk_param[0] && !c->scopes[mi].yields) return 1;
@@ -42936,7 +42937,7 @@ static int ctor_graph_node(Compiler *c, int s) {
 static int ctor_graph_init(Compiler *c, int s) {
   Scope *sc = &c->scopes[s];
   return ctor_graph_node(c, s) && sc->class_id >= 0 && !sc->is_cmethod &&
-         sp_streq(comp_prep_user_name(sc->name), "initialize");
+         sp_streq(comp_scope_user_name(sc), "initialize");
 }
 
 /* The yielding method node `id` splices where it stands in a yielding
@@ -43602,7 +43603,7 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
   Scope *s = comp_scope_of(c, id);
   if (!s || !s->name || comp_ary_root(c, s->class_id) < 0) return;
   int init;
-  const char *mname = comp_prep_user_name(s->name);
+  const char *mname = comp_scope_user_name(s);
   if (s->is_cmethod) {
     /* (only the class's own: not a copy a module's extend, include or
        prepend in its singleton made) */
