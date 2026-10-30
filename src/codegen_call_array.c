@@ -1914,7 +1914,14 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
                ti, ti, lengths + i, ti, k, num ? (same ? "_o" : "_nilable") : "", tr);
     Buf el = {0};
     if (same) buf_printf(&el, "sp_%sArray_%s(_t%d, _t%d)", ak, num ? "oget" : "get", tv, ti);
-    else if (op[i].boxed) buf_printf(&el, "sp_poly_arr_get(_t%d, _t%d)", tv, ti);
+    else if (op[i].boxed) {
+      /* The checked Array's numeric kinds retain the iterator's inline
+         nil-aware reads. Other kinds need the Array getter: the generic
+         iterator does not handle Symbol Arrays. */
+      buf_printf(&el, "(_t%d.cls_id == SP_BUILTIN_INT_ARRAY ? sp_IntArray_box_elem((sp_IntArray *)_t%d.v.p, _t%d)"
+                      " : _t%d.cls_id == SP_BUILTIN_FLT_ARRAY ? sp_FloatArray_box_elem((sp_FloatArray *)_t%d.v.p, _t%d)"
+                      " : sp_poly_arr_get(_t%d, _t%d))", tv, tv, ti, tv, tv, ti, tv, ti);
+    }
     else if (at == TY_POLY_ARRAY) buf_printf(&el, "sp_PolyArray_get(_t%d, _t%d)", tv, ti);
     else {
       char get[96];
