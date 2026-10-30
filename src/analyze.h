@@ -79,6 +79,9 @@ extern int g_wrap_mode;
 void an_rat_boxed_mark(int id);
 int an_rat_boxed(int id);
 int an_rat_value(Compiler *c, int n);
+int an_rat_operand(Compiler *c, int n, int infer);
+int an_step_rat_bound(Compiler *c, int id, int infer);
+int an_range_step_rat(Compiler *c, int id, int infer);
 extern int g_exc_abort;   /* --exceptions=abort (src/main.c) */
 extern int g_gc_none;     /* --gc=none (src/main.c) */
 /* is a def's value (the Symbol it names) used? par: an_parent_map */

@@ -13985,6 +13985,14 @@ TyKind emit_range_step_array(Compiler *c, int id, Buf *b) {
   int argc = 0;
   const int *argv = args >= 0 ? nt_arr(nt, args, "arguments", &argc) : NULL;
   if (argc < 1) { buf_puts(b, "sp_IntArray_new()"); return TY_INT_ARRAY; }
+  /* a Rational step collects the boxed walk's values */
+  if (comp_ntype(c, recv) == TY_RANGE && an_range_step_rat(c, id, 0)) {
+    int ta = ++g_tmp;
+    buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", ta, ta);
+    int tc = emit_range_rat_step_for(c, recv, argv[0], 1, b);
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d); _t%d; })", ta, tc, ta);
+    return TY_POLY_ARRAY;
+  }
   int rn = nt_paren_single(c->nt, recv);
   int is_lit = rn >= 0 && nt_kind(nt, rn) == NK_RangeNode;
   int lo = is_lit ? nt_ref(nt, rn, "left") : -1;

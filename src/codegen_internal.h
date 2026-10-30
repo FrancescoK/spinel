@@ -2066,6 +2066,8 @@ int emit_sum_block_poly_expr(Compiler *c, int id, Buf *b);
 int emit_slice_when_chunk_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_product_inspect_expr(Compiler *c, int id, Buf *b);
 int emit_step_array_expr(Compiler *c, int id, Buf *b);
+void emit_boxed_step_head(Buf *b, int tc, int tl, int ts, const char *excl, const char *open, const char *guard);
+int emit_range_rat_step_for(Compiler *c, int recv, int step, int materialize, Buf *b);
 int emit_inject_expr(Compiler *c, int id, Buf *b);
 int emit_reduce_block_expr(Compiler *c, int id, Buf *b);
 int emit_sortby_expr(Compiler *c, int id, Buf *b);

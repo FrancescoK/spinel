@@ -5012,6 +5012,8 @@ static int infer_range_lazy_call(Compiler *c, int id, const NodeTable *nt, const
       if (nt_ref(nt, id, "block") >= 0) { *out = rt; return 1; }
       /* an endless one is walked as it is read: an Enumerator (sp_range_endless_step) */
       if (argc == 1 && range_lit_endless(c, recv)) { *out = TY_ENUMERATOR; return 1; }
+      /* a Rational step yields boxed Rational/Integer values */
+      if (rt == TY_RANGE && an_range_step_rat(c, id, 1)) { *out = TY_POLY_ARRAY; return 1; }
       /* a float step, or a literal range with float bounds, yields floats */
       int sfloat = argc >= 1 && infer_type(c, argv[0]) == TY_FLOAT;
       int rn = nt_paren_single(nt, recv);
@@ -5347,6 +5349,8 @@ static int infer_int_float_recv_call(Compiler *c, int id, const NodeTable *nt, c
     /* a Bignum limit or step walks the sequence boxed (#3006) */
     for (int sk = 0; sk < sc; sk++)
       if (infer_type(c, sv[sk]) == TY_BIGINT) { *out = TY_POLY_ARRAY; return 1; }
+    /* and so does an Integer's Rational limit or step */
+    if (rt == TY_INT && an_step_rat_bound(c, id, 1)) { *out = TY_POLY_ARRAY; return 1; }
     if ((rt == TY_INT || rt == TY_FLOAT) && (sc == 0 || nt_kind(nt, sv[0]) == NK_NilNode)) { *out = TY_ENUMERATOR; return 1; }
     if (rt == TY_INT && !isf && infer_type(c, sv[0]) == TY_POLY) { *out = TY_ENUMERATOR; return 1; }
     { *out = isf ? TY_FLOAT_ARRAY : TY_INT_ARRAY; return 1; }
@@ -12024,6 +12028,60 @@ void an_rat_boxed_mark(int id) {
   g_rat_boxed[id] = 1;
 }
 int an_rat_boxed(int id) { return id >= 0 && id < g_rat_boxed_cap && g_rat_boxed[id]; }
+/* Is node n a Rational: one typed so, or one --int-overflow=promote holds
+   boxed (an_rat_value)? infer reads it through infer_type, codegen through
+   its settled type. */
+int an_rat_operand(Compiler *c, int n, int infer) {
+  TyKind t = infer ? infer_type(c, n) : comp_ntype(c, n);
+  return t == TY_RATIONAL || (t == TY_POLY && an_rat_value(c, n));
+}
+
+/* An Integer's step(limit[, step]) with a Rational limit or step and no
+   Float among them: it walks the boxed sequence a Rational receiver walks,
+   so `1.step(3, 1r/2)` yields 1, (3/2), (2/1), ... In the Integer loop the
+   step 1/2 was the sp_int 0. A nil limit (no end) is left to the endless
+   walk. */
+int an_step_rat_bound(Compiler *c, int id, int infer) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments");
+  int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+  if (sc < 1 || sc > 2 || nt_kind(nt, sv[0]) == NK_NilNode) return 0;
+  int rat = 0;
+  for (int k = 0; k < sc; k++) {
+    if ((infer ? infer_type(c, sv[k]) : comp_ntype(c, sv[k])) == TY_FLOAT) return 0;
+    if (an_rat_operand(c, sv[k], infer)) rat = 1;
+  }
+  return rat;
+}
+
+/* An Integer Range's step(r) with a Rational r (a literal's bounds both
+   Integers, as written): it walks the boxed sequence from the begin,
+   (1..2).step(1r/2) yielding 1, (3/2), (2/1). An endless Range is left to
+   its Enumerator. */
+int an_range_step_rat(Compiler *c, int id, int infer) {
+  const NodeTable *nt = c->nt;
+  int args = nt_ref(nt, id, "arguments");
+  int sc = 0; const int *sv = args >= 0 ? nt_arr(nt, args, "arguments", &sc) : NULL;
+  if (sc != 1 || !an_rat_operand(c, sv[0], infer)) return 0;
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv < 0 || range_lit_endless(c, recv)) return 0;
+  /* a program's own Range#step is not this walk */
+  int rg = comp_class_index(c, "Range");
+  int mi = rg >= 0 ? comp_method_in_chain(c, rg, "step", NULL) : -1;
+  if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+      !nt_int(nt, c->scopes[mi].def_node, "node_bi", 0)) return 0;
+  int rn = nt_paren_single(nt, recv);
+  if (rn >= 0 && nt_kind(nt, rn) == NK_RangeNode) {
+    int lo = nt_ref(nt, rn, "left"), hi = nt_ref(nt, rn, "right");
+    if (lo < 0 || hi < 0) return 0;
+    for (int k = 0; k < 2; k++) {
+      int e = k ? hi : lo;
+      if ((infer ? infer_type(c, e) : comp_ntype(c, e)) != TY_INT) return 0;
+    }
+  }
+  return 1;
+}
+
 /* Is node n a Rational --int-overflow=promote holds boxed: one infer_type
    boxed (an_rat_boxed), or the read of a local or an instance variable
    whose every write is one. A parameter, or a slot written any other way,
