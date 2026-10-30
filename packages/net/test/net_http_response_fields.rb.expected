@@ -12,3 +12,5 @@ StandardError
 true
 true
 "Conn close\n"
+["ok", ["x-custom", "chunked"]]
+["ok", ["2", "2"]]
