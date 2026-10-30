@@ -5356,15 +5356,20 @@ gate-full:
 # on a second machine beside the CI lanes). A plain `make gate` runs it.
 GATE_RUBYSPEC ?= 1
 gate-legs: $(if $(filter 0,$(GATE_RUBYSPEC)),,gate-rubyspec) gate-test gate-bench gate-optcarrot gate-rubyboy gate-props
-# The corpus sub-make uses the -O1 PCH files. Build them once before the leg
-# starts, so the other legs that run beside it never read a PCH it writes.
+# The corpus leg's C optimization level: -O1 under gcc, -O0 under clang, as
+# the CI lanes have it (ci.yml's "Run tests"): gcc's -O1 prunes spinel_rt.h's
+# unreferenced statics and compiles faster than its -O0, while clang's -O1
+# optimizes every one of them.
+GATE_TEST_OPT ?= $(if $(filter clang,$(CC_KIND)),-O0,-O1)
+# The corpus sub-make uses the PCH files of that level. Build them once before
+# the leg starts, so the other legs that run beside it never read a PCH it writes.
 .PHONY: gate-pch
 gate-pch:
-	+@$(MAKE) --no-print-directory test-pch OPT=-O1
+	+@$(MAKE) --no-print-directory test-pch OPT=$(GATE_TEST_OPT)
 gate-test: gate-pch
 
 gate-test:
-	+@$(MAKE) --no-print-directory test OPT=-O1 TEST_PLAN_CHECK=--plan-check
+	+@$(MAKE) --no-print-directory test OPT=$(GATE_TEST_OPT) TEST_PLAN_CHECK=--plan-check
 	@tools/plan_check.sh --from-results $(TEST_RESULT_DIR)
 
 # The property gates `check` runs. They were in the fast pre-commit target and
