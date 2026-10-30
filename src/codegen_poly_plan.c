@@ -4918,9 +4918,23 @@ void emit_poly_defaults_n(Compiler *c, int id, int recv, const char *name, const
     char rv[64];
     if (sp_streq(name, "first")) snprintf(rv, sizeof rv, "sp_poly_enum_chk(_t%d, \"first\")", tv);
     else snprintf(rv, sizeof rv, "_t%d", tv);
+    /* The count: an Integer as it is, a value known only at run time through
+       the runtime's conversion (a Float truncates, anything else is CRuby's
+       TypeError). A count of another known type (the keyword Hash a computed
+       `public_send(*args, **kwargs)` hands every one-argument name, `first`
+       among them) takes the same conversion boxed: its pointer went into the
+       sp_int parameter as it was, and the C did not compile. */
+    Buf cx; memset(&cx, 0, sizeof cx);
+    if (atmp_ty[0] == TY_INT) buf_puts(&cx, nx);
+    else {
+      buf_puts(&cx, "sp_poly_arg_int_chk(");
+      if (atmp_ty[0] == TY_POLY) buf_puts(&cx, nx);
+      else emit_boxed_text(c, atmp_ty[0], nx, &cx);
+      buf_puts(&cx, ")");
+    }
     snprintf(gen, sizeof gen, "sp_poly_%s_n(%s, %s)",
-             sp_streq(name, "first") ? "first" : "last", rv,
-             atmp_ty[0] == TY_POLY ? ({ static char cx[80]; snprintf(cx, sizeof cx, "sp_poly_arg_int_chk(%s)", nx); cx; }) : nx);
+             sp_streq(name, "first") ? "first" : "last", rv, cx.p ? cx.p : nx);
+    free(cx.p);
     if (ret == TY_POLY) {
       buf_printf(b, " default: _t%d = %s; break;", tr, gen);
       if (g_plan_check) pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ND_FIRSTN, -1, TY_UNKNOWN, PC_SAME);

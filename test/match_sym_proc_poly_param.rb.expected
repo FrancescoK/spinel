@@ -1,0 +1,4 @@
+["app/models/user.rb", "12"]
+["no colon here", nil]
+["mapped /^(.+?):(\\d+).*$/", nil]
+["pat", nil]

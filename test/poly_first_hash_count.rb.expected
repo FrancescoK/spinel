@@ -1,0 +1,6 @@
+box first {a: 1}
+box last {a: 1}
+"box first 2.0"
+TypeError: no implicit conversion of Hash into Integer
+TypeError: no implicit conversion of Hash into Integer
+[1, 2]

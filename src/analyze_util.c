@@ -3177,6 +3177,23 @@ static int pinned_block_form_ret(Compiler *c, int mi, TyKind *out) {
   return any;
 }
 
+/* The value of a pinned method once it is emitted as one function (a lowered
+   yielder, a &block held in a cell): both arms are live at run time, so the
+   Enumerator the pin stands for joins the values of the body proper, as
+   ret_noblock joins ret. Joined with ret_noblock alone, the pin was the whole
+   answer, and the `self` an each-like method falls off its end with was a
+   program object returned from a function typed sp_Enumerator * (an
+   ActionController::Parameters#each_value with a block). */
+TyKind pinned_guard_unpin_ret(Compiler *c, int mi) {
+  TyKind r = (TyKind)c->scopes[mi].ret;
+  if (c->scopes[mi].ret_noblock != TY_UNKNOWN) r = ty_unify(r, (TyKind)c->scopes[mi].ret_noblock);
+  TyKind t;
+  if (c->scopes[mi].ret_pin_guard >= 0 && pinned_block_form_ret(c, mi, &t) &&
+      t != TY_UNKNOWN && t != TY_VOID)
+    r = ty_unify(r, t);
+  return r;
+}
+
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   IMEMO_DEP_SCOPE(mi);   /* (the method's value is read here) */
   int last = scope_body_last(c, mi);
@@ -3266,6 +3283,18 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
     if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode && !nt_int(c->nt, blk, "fwd_yield", 0)) {
       TyKind t;
       if (pinned_block_form_ret(c, mi, &t)) return t;
+    }
+    /* `m(&f)` with a proc value: whether there is a block is decided at run
+       time (the proc may be nil), so the guard's Enumerator and the values
+       of the body proper are both live, and the call answers their union.
+       Read as the pin alone, a `self` tail landed in the Enumerator slot as
+       nil. The union waits while a value is not typed yet. */
+    if (blk >= 0 && nt_kind(c->nt, blk) == NK_BlockArgumentNode) {
+      TyKind t;
+      if (pinned_block_form_ret(c, mi, &t)) {
+        if (t == TY_UNKNOWN) return TY_UNKNOWN;
+        return ty_unify((TyKind)c->scopes[mi].ret, t == TY_VOID ? TY_NIL : t);
+      }
     }
   }
   /* `return x unless block_given?`: a blockless call site reads the value
