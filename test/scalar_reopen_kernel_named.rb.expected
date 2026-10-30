@@ -1,0 +1,47 @@
+4
+"nil"
+"005"
+0
+0
+40
+"nil"
+"1.50"
+0
+0
+3.0
+3
+"nil"
+"<7>"
+:comparable_putc
+:comparable_putc
+:integer_sprintf
+:float_sprintf
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"can't define singleton"
+"plain is not a symbol nor a string"
+"nil is not a symbol nor a string"
+"3 is not a symbol nor a string"
+"can't define singleton"
+"5 is not a symbol nor a string"
+"can't define singleton"
+"1.5 is not a symbol nor a string"
+[:to_str, :to_str, :to_str]
+"can't define singleton"
+"can't define singleton"
+nil
+[:receiver, :argument, :receiver, :argument, :receiver]
+"can't define singleton"
+"can't define singleton"
+[:receiver, :argument, :receiver, :argument]

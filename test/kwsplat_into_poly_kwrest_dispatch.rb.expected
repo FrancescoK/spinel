@@ -1,0 +1,4 @@
+1:{x: 2}
+b:{namespace: "ns"}
+local 3:{}
+local d:{k: 1}

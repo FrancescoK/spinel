@@ -1,0 +1,50 @@
+undefined local variable or method 'zz' for class U
+undefined method 'zz' for class U
+undefined method 'zz' for class U
+undefined method 'zz' for class U
+undefined local variable or method 'zz' for class U
+5
+6
+5
+5
+undefined local variable or method 'zz' for module M
+undefined method 'zz' for module M
+7
+undefined local variable or method 'foo' for main
+undefined method 'foo' for main
+9
+10
+1
+2
+2
+:later
+undefined local variable or method 'early' for main
+:early
+:base
+:kid
+undefined method 'yy' for module M
+:yy
+:solo
+42
+"Greeted greets"
+inherited HookedKid
+true
+puts
+"1"
+true
+0
+"Kern"
+[puts]
+:format
+:rand
+:sleep
+:name
+undefined local variable or method 'zz' for class Expr
+undefined local variable or method 'zz' for class Expr
+undefined local variable or method 'zz' for class Expr
+undefined local variable or method 'zz' for class Expr
+NameError
+"undefined local variable or method 'xx' for class Integer"
+NoMethodError
+"undefined method 'xx' for class Integer"
+Set[1]

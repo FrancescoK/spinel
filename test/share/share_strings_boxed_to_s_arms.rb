@@ -17,7 +17,7 @@ class Sub < Own
   def to_s = @n.upcase
 end
 def tidy(o)
-  s = o.to_s
+  s = +o.to_s   # (+: a Symbol's to_s is frozen in Spinel; the others are themselves)
   s << "!"
   [s, o.to_s]
 end

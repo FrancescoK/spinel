@@ -17,7 +17,7 @@ p x.fetch(:zz) { |sym| sym == :zz }
 p x.fetch(:zz) { |sym| "no #{sym}" }
 p x.fetch(:zz) { |sym| sym.inspect.size }
 p x.fetch(:zz) { |k| k[0] }
-v = x.fetch(:zz) { |sym| sym.to_s }
+v = x.fetch(:zz) { |sym| sym.to_s.dup }
 v << "?"
 p v
 

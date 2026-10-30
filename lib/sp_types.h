@@ -327,9 +327,8 @@ typedef struct{void**data;sp_int len;sp_int cap;void(*scan_elem)(void*);int32_t 
 #define SP_PTR_ELEM_STRBUF   4   /* sp_String handles: a String Array whose Strings are shared (--share-strings) */
 /* the element of a String Array (and a String Hash's value): the handle
    under SP_ONE_STRING, the bytes otherwise (sp_string.h's SP_SEB / SP_SEF) */
-/* the shared String handle (sp_string.h); sp_fd_publish reads `binary` and
-   `chilled` as one word */
-struct sp_String_s { char *data; int64_t len; int64_t cap; unsigned binary; unsigned chilled; };
+/* the shared String handle (sp_string.h) */
+struct sp_String_s { char *data; int64_t len; int64_t cap; unsigned binary; };
 #ifdef SP_ONE_STRING
 typedef struct sp_String_s *sp_strelem;
 #else

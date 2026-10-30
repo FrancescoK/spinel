@@ -21,7 +21,7 @@ class CvCols
       if val.is_a?(Hash)
         val.each { |col, v| @cols << "#{key}.#{col}".split(".").last.to_s }
       else
-        @cols << key.to_s
+        @cols << +key.to_s   # (+: a Symbol's to_s is frozen in Spinel)
       end
     end
     self

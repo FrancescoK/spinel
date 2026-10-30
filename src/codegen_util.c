@@ -752,6 +752,29 @@ int call_is_scalar_op(Compiler *c, int id) {
   int scalar_v = (vt == TY_INT || vt == TY_FLOAT || vt == TY_BOOL);
   return scalar_r && scalar_v;
 }
+/* Can a builtin operator over scalars (call_is_scalar_op) raise? A
+   quotient of two Integers and any modulo (a Float one too) raise
+   ZeroDivisionError at a divisor that may be zero, which only a nonzero
+   literal rules out; an Integer power raises for an exponent too large
+   (ArgumentError) and for 0 ** -1; any operator but == and != raises for
+   an operand that can be nil. The rest (+, -, * and the comparisons and
+   bit operators) answer for every Integer and Float. */
+int scalar_op_may_raise(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = nt_str(nt, id, "name");
+  int recv = nt_ref(nt, id, "receiver"), ac = 0;
+  const int *av = call_args(nt, id, &ac);
+  int arg = ac == 1 ? av[0] : -1;
+  if (!is_eq_or_ne(nm) && (node_may_be_nil(c, recv) || node_may_be_nil(c, arg))) return 1;
+  TyKind rt = repr_of(c, recv).as_ty, at = arg >= 0 ? repr_of(c, arg).as_ty : TY_UNKNOWN;
+  int fl = rt == TY_FLOAT || at == TY_FLOAT;
+  if (is_pow_op(nm)) return !fl;
+  if (!is_div_or_mod(nm) || (fl && !is_mod_operator(nm))) return 0;
+  NodeKind k = arg >= 0 ? nt_kind(nt, arg) : NK_NilNode;
+  if (k == NK_IntegerNode) return !nt_str(nt, arg, "bigval") && nt_int(nt, arg, "value", 0) == 0;
+  if (k == NK_FloatNode) return strtod(nt_content(nt, arg) ? nt_content(nt, arg) : "0", NULL) == 0.0;
+  return 1;
+}
 
 /* The block of a call to a builtin that leaves it unused (Array#slice), so
    the call is typed and emitted as the one without it: a literal block, or
@@ -770,6 +793,8 @@ int subtree_has_side_effect(Compiler *c, int id) {
   const char *ty = nt_type(nt, id);
   NodeKind k = nt_kind(nt, id);
   if (!ty) return 0;
+  if (view_const_read_done(c, id)) return 0;
+  if (k == NK_ConstantPathNode && an_const_read_effect(c, nt_ref(nt, id, "parent")) != NULL) return 1;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode ||
       k == NK_YieldNode || strstr(ty, "WriteNode"))
     return 1;
@@ -1010,10 +1035,22 @@ void ren_copy_free(RenCopy *k) {
 }
 
 RenPark ren_park(int from) {
-  RenPark p = { g_nren, from, { NULL, NULL, 0 }, -1 };
+  RenPark p = { g_nren, from, { NULL, NULL, 0 }, -1, -1 };
   /* from 0: a C function body of its own, which cannot name the open
-     splices' slots either (view_splice_next) */
-  if (from == 0) p.fence = view_push_fn();
+     splices' slots either (view_splice_next). Nor is it inside the poly
+     dispatch arm its call site may sit in: the arm context (g_arm) is the
+     call's, under which no user class owns a name, and a proc body
+     emitted there -- the `&block` a dispatch's default arm hands on to a
+     Class value's method -- took every builtin shortcut for its own calls
+     while the inference had typed them by the program's classes
+     (`h.keys` on a boxed receiver came out as a raw sp_PolyArray * into
+     an sp_RbVal slot, and the C did not compile). The body starts from
+     the plain context, as a function of its own does. */
+  if (from == 0) {
+    p.arm = view_push_arm(-1, -1, 0);
+    g_arm.send_split = -1;
+    p.fence = view_push_fn();
+  }
   ren_copy_out(&p.k, from, g_nren - from);
   g_nren = from;
   return p;
@@ -1021,6 +1058,7 @@ RenPark ren_park(int from) {
 
 void ren_unpark(RenPark *p) {
   if (p->fence >= 0) view_pop(NULL, p->fence);
+  if (p->arm >= 0) view_pop(NULL, p->arm);
   g_nren = p->sv;
   ren_copy_in(&p->k, p->from);
   ren_copy_free(&p->k);
@@ -1128,6 +1166,23 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
     int promotes = is_add_sub_mul(op);
     if (g_promote_mode && promotes) return 0;
     *out = TY_INT; return 1;
+  }
+  /* Array#*: a String argument joins (TY_STRING, same rule as the String
+     receiver above); an Integer or Float count repeats, answering the
+     receiver's own kind (analyze_infer.c's identical rule for a direct,
+     non-yield call). Never answered here before (kilau K-035) -- the
+     widening decision already recognized this site (the call reaches
+     codegen typed poly at all only because of that), but this per-site
+     recovery function had no Array arm, so the site's own array pointer
+     got assigned into the shared poly slot unboxed, failing to compile.
+     Every other arithmetic operator (+/-//'%) answers TY_STRING for an
+     Array site already from the receiver == TY_STRING branch above
+     (Array has no #+/#-/#// on an Integer or Float argument to collide
+     with), so only `*` needs its own Array case. */
+  if (ty_is_array(rt) && sp_streq(op, "*")) {
+    if (at == TY_STRING) { *out = TY_STRING; return 1; }
+    if (at == TY_INT || at == TY_FLOAT) { *out = rt; return 1; }
+    return 0;
   }
   return 0;
 }
@@ -1723,7 +1778,7 @@ int re_lit_node(Compiler *c, int nid) {
   NodeKind ty_k = nt_kind(nt, nid);
   if (!ty) return -1;
   if (ty_k == NK_RegularExpressionNode) return nid;
-  int want_const = ty_k == NK_ConstantReadNode || ty_k == NK_ConstantPathNode;
+  int want_const = nt_kind_is_constant(ty_k);
   int want_local = ty_k == NK_LocalVariableReadNode && comp_ntype(c, nid) == TY_REGEX;
   if (!want_const && !want_local) return -1;
   const char *nm = nt_str(nt, nid, "name");
@@ -2338,7 +2393,10 @@ int strbuf_ivar_owner(Compiler *c, int node) {
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
   if (g_ie_class_id >= 0) return g_ie_class_id;
-  return comp_class_index(c, "Toplevel");
+  /* a block or a proc written in a class or module body reads the body
+     class's own slot, as the read emitter resolves it */
+  if (holder_cbody(c, node) >= 0) return holder_cbody(c, node);
+  return c->toplevel_class;
 }
 /* ---- Is an object's ivar set? ----
    An object lays out every ivar its class can hold, and a slot nothing has
@@ -3191,7 +3249,7 @@ int civ_class_of(Compiler *c, int node, Scope *s) {
   if (s->is_cmethod) return s->class_id;
   if (s->class_id >= 0 || g_ie_class_id >= 0 || ie_class_of(c, node) >= 0) return -1;
   if (g_class_body_id >= 0) return g_class_body_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 /* The same for ivar write node `w`, which stores into self: an instance
    method's, or an instance_eval body's, whose self is the rebound receiver
@@ -3220,7 +3278,7 @@ int ivar_global_slot(Compiler *c, int node, Buf *out) {
   if (g_sb_iv_name && sp_streq(nm, g_sb_iv_name)) return 0;
   if (cs->is_cmethod && cs->class_id >= 0)
     buf_printf(out, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
-  else if (cs->class_id < 0 && g_ie_class_id < 0 && comp_class_index(c, "Toplevel") >= 0)
+  else if (cs->class_id < 0 && g_ie_class_id < 0 && c->toplevel_class >= 0)
     buf_printf(out, "civ_Toplevel_%s", iv_c(nm + 1));
   else return 0;
   return 1;
@@ -4600,6 +4658,7 @@ void refuse_prepass_at_emit(Compiler *c, int id) {
   refuse_from_plan(c, id, CRF_SEND, "refuse-send");
   refuse_from_plan(c, id, CRF_CONST_GET, "refuse-const-get");
   refuse_from_plan(c, id, CRF_BINDING, "refuse-binding");
+  refuse_from_plan(c, id, CRF_TOP_SELF, "refuse-top-self");
 }
 
 __attribute__((noreturn)) void unsupported(Compiler *c, int id, const char *what) {
@@ -4629,15 +4688,6 @@ const char *c_type_name(TyKind t) {
   const TyTraits *tr = ty_traits_of(t);
   return tr ? tr->ctype : NULL;
 }
-int is_scalar_ret(TyKind t) {
-  /* a builtin kind's ty_traits row says (types.c); a user object and an
-     object array are pointers a method can return */
-  const TyTraits *tr = ty_traits_of(t);
-  return tr ? tr->scalar_ret : (ty_is_object(t) || ty_is_obj_array(t));
-}
-int const_has_flag(const LocalVar *lv) {
-  return lv && lv->const_early && (lv->type == TY_NIL || is_scalar_ret(lv->type));
-}
 void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent) {
   if (!const_has_flag(lv)) return;
   emit_indent(b, indent);
@@ -4651,7 +4701,7 @@ static void const_read_name(Compiler *c, int id, char *out, size_t cap) {
   const char *segs[16]; int n = 0;
   for (int k = id; k >= 0 && n < 16; k = nt_kind(nt, k) == NK_ConstantPathNode ? nt_ref(nt, k, "parent") : -1) {
     /* a receiver that is no constant (a class held in a variable) has no name here */
-    const char *nm = k == id || nt_kind(nt, k) == NK_ConstantReadNode || nt_kind(nt, k) == NK_ConstantPathNode
+    const char *nm = k == id || nt_kind_is_constant(nt_kind(nt, k))
                      ? nt_str(nt, k, "name") : NULL;
     const char *us = nm ? strstr(nm, "__") : NULL;
     while (us && strstr(us + 2, "__")) us = strstr(us + 2, "__");
@@ -4678,7 +4728,7 @@ static void const_read_name(Compiler *c, int id, char *out, size_t cap) {
 static int const_value_recv(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
-  if (par < 0 || nt_kind(nt, par) == NK_ConstantReadNode || nt_kind(nt, par) == NK_ConstantPathNode) return -1;
+  if (par < 0 || nt_kind_is_constant(nt_kind(nt, par))) return -1;
   return comp_ntype(c, par) == TY_CLASS || comp_ntype(c, par) == TY_POLY ? par : -1;
 }
 /* ... and one whose evaluation is more than a read (a call): the read then
@@ -4692,8 +4742,7 @@ static void emit_const_recv_class(Compiler *c, int par, Buf *b) {
   if (repr_of(c, par).kind == RK_BOXED) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par, b); buf_puts(b, ")"); }
   else emit_expr(c, par, b);
 }
-void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
-  if (!const_has_flag(lv)) return;
+static void emit_const_read_open_checked(Compiler *c, int id, const LocalVar *lv, Buf *b) {
   int par = const_value_recv(c, id);
   if (par >= 0) {
     const NodeTable *nt = c->nt;
@@ -4714,9 +4763,37 @@ void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
   const_read_name(c, id, nm, sizeof nm);
   buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s\")), ", lv->name, nm);
 }
-void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
-  if (!const_has_flag(lv)) return;
+void emit_const_read_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (!view_const_read_done(c, id) && const_has_flag(lv)) emit_const_read_open_checked(c, id, lv, b);
+}
+void emit_const_read_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (view_const_read_done(c, id) || !const_has_flag(lv)) return;
   buf_puts(b, const_recv_held(c, id) >= 0 ? "; })" : ")");
+}
+/* The effects of a statically resolved path, outermost parent first. The
+   opening comma expression lets a caller retain the folded value or call. */
+int emit_const_read_prefix(Compiler *c, int id, Buf *b) {
+  NodeKind k = nt_kind(c->nt, id);
+  if (!nt_kind_is_constant(k) || view_const_read_done(c, id)) return 0;
+  int n = k == NK_ConstantPathNode ? emit_const_read_prefix(c, nt_ref(c->nt, id, "parent"), b) : 0;
+  LocalVar *lv = an_const_read_effect(c, id);
+  if (lv) {
+    if (!n) buf_puts(b, "(");
+    emit_const_read_open_checked(c, id, lv, b);
+    buf_puts(b, "0");
+    buf_puts(b, const_recv_held(c, id) >= 0 ? "; })" : ")");
+    buf_puts(b, ", ");
+    n = 1;
+  }
+  return n;
+}
+/* A discarded read, retained as a statement before a folded consumer. */
+int emit_const_read_stmt(Compiler *c, int id, Buf *b, int indent) {
+  size_t mark = b->len;
+  emit_indent(b, indent);
+  if (emit_const_read_prefix(c, id, b)) { buf_puts(b, "0); "); return 1; }
+  buf_erase(b, mark, b->len - mark);
+  return 0;
 }
 /* A call on a flagged constant read through a receiver that runs (`pick::BUF
    << "y"`): the receiver and the flag test run once, into a pointer to the
@@ -4724,9 +4801,16 @@ void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
    mutator names its receiver twice). Declares the pointer in b and marks the
    receiver node with its temp; the caller emits the call and unmarks. -1
    when the call is no such one. */
-static int const_recv_hold(Compiler *c, int id, Buf *b) {
+static int const_recv_hold(Compiler *c, int id, Buf *b, int *view) {
   const NodeTable *nt = c->nt;
   int r = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  *view = -1;
+  /* Class receivers can be folded away by constructors and reflection. */
+  if (r >= 0 && an_const_read_keeps_class(c, r) && const_value_recv(c, r) < 0 &&
+      !view_const_read_done(c, r) && (!an_const_read_is_value(c, r) || cplan_const_user(c, id, r, 0)) && emit_const_read_stmt(c, r, b, 0)) {
+    *view = view_push_const_read(c, r);
+    return r;
+  }
   if (r < 0 || nt_kind(nt, r) != NK_ConstantPathNode || nt_int(nt, r, "const_ptr", 0)) return -1;
   const char *nm = nt_str(nt, r, "name");
   LocalVar *lv = nm ? comp_const(c, nm) : NULL;
@@ -4747,13 +4831,33 @@ static int const_recv_hold(Compiler *c, int id, Buf *b) {
   nt_node_set_int((NodeTable *)nt, r, "const_ptr", t);
   return r;
 }
+/* A class receiver can disappear before the ordinary call emitter is
+   reached (a boxed constructor or a folded expression). */
+int emit_const_class_call_wrap(Compiler *c, int id, Buf *b, void (*emit)(Compiler *, int, Buf *)) {
+  if (nt_kind(c->nt, id) != NK_CallNode) return 0;
+  int r = nt_ref(c->nt, id, "receiver"), view;
+  if (r < 0 || !an_const_read_keeps_class(c, r) || const_value_recv(c, r) >= 0 || view_const_read_done(c, r)) return 0;
+  for (int i = g_n_argov - 1; i >= 0; i--)
+    if (g_argov_node[i] == id || g_argov_node[i] == r) return 0;
+  Buf pre = {0};
+  if (const_recv_hold(c, id, &pre, &view) < 0) { free(pre.p); return 0; }
+  buf_puts(b, "({ "); buf_puts(b, pre.p); free(pre.p);
+  Buf own = {0}, value = {0}; Buf *saved_pre = g_pre;
+  g_pre = &own; emit(c, id, &value); g_pre = saved_pre;
+  if (own.p) buf_puts(b, own.p);
+  buf_puts(b, value.p ? value.p : "0"); free(own.p); free(value.p);
+  view_pop(c, view);
+  buf_puts(b, "; })");
+  return 1;
+}
 int emit_const_recv_wrap(Compiler *c, int id, Buf *b) {
   Buf pre; memset(&pre, 0, sizeof pre);
-  int r = const_recv_hold(c, id, &pre);
+  int view;
+  int r = const_recv_hold(c, id, &pre, &view);
   if (r < 0) { free(pre.p); return 0; }
   /* with a prelude buffer the pointer is declared there: a call that
      hoists its loop into the prelude (`K::H.map { }`) reads it from there */
-  if (g_pre) {
+  if (g_pre && view < 0) {
     emit_indent(g_pre, g_indent); buf_puts(g_pre, pre.p ? pre.p : ""); buf_puts(g_pre, "\n");
     free(pre.p);
     emit_call(c, id, b);
@@ -4762,22 +4866,29 @@ int emit_const_recv_wrap(Compiler *c, int id, Buf *b) {
   }
   buf_puts(b, "({ "); buf_puts(b, pre.p ? pre.p : ""); free(pre.p);
   emit_call(c, id, b);
-  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  if (view >= 0) view_pop(c, view);
+  else nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
   buf_puts(b, "; })");
   return 1;
 }
-/* The same for a call that is a statement: the pointer is held in a block of its own. */
+/* For a call that is a statement, a held pointer gets a block of its own
+   only in a non-tail statement. A class read emits only its checks, without
+   a block: a spliced body may use an ordinary statement as its last expression.
+   A tail keeps its value in the caller's statement expression. */
 int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail) {
   Buf pre; memset(&pre, 0, sizeof pre);
-  int r = const_recv_hold(c, id, &pre);
+  int view;
+  int r = const_recv_hold(c, id, &pre, &view);
   if (r < 0) { free(pre.p); return 0; }
   emit_indent(b, indent);
-  buf_puts(b, "{ "); buf_puts(b, pre.p ? pre.p : ""); buf_puts(b, "\n"); free(pre.p);
-  if (tail) emit_stmt_tail(c, id, b, indent + 1);
-  else emit_stmt(c, id, b, indent + 1);
-  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
-  emit_indent(b, indent);
-  buf_puts(b, "}\n");
+  int scoped = !tail && view < 0;
+  if (scoped) buf_puts(b, "{ ");
+  buf_puts(b, pre.p ? pre.p : ""); buf_puts(b, "\n"); free(pre.p);
+  if (tail) emit_stmt_tail(c, id, b, indent);
+  else emit_stmt(c, id, b, indent + scoped);
+  if (view >= 0) view_pop(c, view);
+  else nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  if (scoped) { emit_indent(b, indent); buf_puts(b, "}\n"); }
   return 1;
 }
 /* The plain read of a constant's slot, or its address: behind its test the
@@ -4797,9 +4908,9 @@ void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *k
     return;
   }
   buf_puts(b, slot ? "" : "(*");
-  emit_const_check_open(c, id, lv, b);
+  emit_const_read_open(c, id, lv, b);
   buf_printf(b, "&cst_%s", key);
-  emit_const_check_close(c, id, lv, b);
+  emit_const_read_close(c, id, lv, b);
   buf_puts(b, slot ? "" : ")");
 }
 /* native binding (Path B): map a spinel type spec to the C type at the ABI
@@ -5160,7 +5271,7 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
        to its NameError raise with a Class value behind it: into a slot of
        another kind (`Version = Version_C` beside `Version = "1.0"`) it
        answers that slot's zero instead */
-    if ((nt_kind(c->nt, node) == NK_ConstantReadNode || nt_kind(c->nt, node) == NK_ConstantPathNode) &&
+    if ((nt_kind_is_constant(nt_kind(c->nt, node))) &&
         comp_ntype(c, node) == TY_UNKNOWN && slot != TY_POLY && slot != TY_CLASS && slot != TY_UNKNOWN) {
       Buf t; memset(&t, 0, sizeof t);
       emit_expr(c, node, &t);
@@ -5393,7 +5504,7 @@ static int plain_int_op(Compiler *c, const char *nm) {
   for (int i = 0; plain_int_ops[i]; i++)
     if (!strcmp(nm, plain_int_ops[i])) {
       /* a program that reopens Integer with the operator owns its answer */
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       return ci < 0 || comp_method_in_chain(c, ci, nm, NULL) < 0;
     }
   return 0;
@@ -5498,7 +5609,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
     if (comp_ntype(c, recv) != TY_INT &&
         !(g_promote_mode && argc == 0 && !strcmp(nm, "~") && comp_ntype(c, n) == TY_INT)) return 0;
     if (argc == 0 && (!strcmp(nm, "~") || !strcmp(nm, "-@") || !strcmp(nm, "+@"))) {
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       /* ~ of any word is a number; + and - hand a nil operand's word on
          (+nil raises in CRuby, and in a C int is the identity), so they
@@ -5509,7 +5620,7 @@ static int plain_expr(Compiler *c, int n, int depth) {
        on (plain when the receiver is); abs, succ and pred compute a number */
     if (argc == 0 && (!strcmp(nm, "to_i") || !strcmp(nm, "to_int") || !strcmp(nm, "abs") ||
                       !strcmp(nm, "succ") || !strcmp(nm, "pred"))) {
-      int ci = comp_class_index(c, "Integer");
+      int ci = comp_core_class(c, CORE_INTEGER);
       if (ci >= 0 && call_target(c, n, ci, nm, 0, NULL) >= 0) return 0;
       return nm[0] == 't' ? plain_expr(c, recv, depth + 1) : 1;
     }
@@ -6786,16 +6897,25 @@ static int mc_name_fixed(const char *nm) {
    the method, never from a name: two methods of one name are two
    functions. A replaced version (Scope.version_n) is spelled from its
    name and its number: `f__redef<n>` at the top level, `m#redef<n>` in a
-   class (mc_number_versions). The answer stays valid for the next seven
-   spellings. */
-/* The name method s is spelled from: its own, or a replaced version's with
-   its number, in a buffer of its size the caller frees */
+   class (mc_number_versions); a version entry (Scope.entry) as
+   `f__entry`, `m#entry`, or with the number mc_number_versions gives it,
+   `f__entry1`; a method of main's own beside Object's of the name
+   (main_n), `k__main<n>` (mc_number_versions). The answer stays valid
+   for the next seven spellings. */
+/* The name method s is spelled from: its own, or a replaced version's,
+   an entry's or main's own method's with its number, in a buffer of its
+   size the caller frees */
 static char *mc_version_name(const Scope *s) {
-  const char *fmt = s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
-  int n = s->version_n ? snprintf(NULL, 0, fmt, s->name, s->version_n) : (int)strlen(s->name);
+  if (s->entry == ENTRY_TABLE) return strdup(s->name);   /* the table answer keeps the name fixed callbacks call */
+  const char *fmt = s->entry && !s->version_n ? (s->class_id < 0 ? "%s__entry" : "%s#entry")
+                  : s->entry ? (s->class_id < 0 ? "%s__entry%d" : "%s#entry%d")
+                  : s->main_n ? "%s__main%d"
+                  : s->class_id < 0 ? "%s__redef%d" : "%s#redef%d";
+  int num = !s->entry && s->main_n ? s->main_n : s->version_n, spelled = s->version_n || s->entry || s->main_n;
+  int n = spelled ? snprintf(NULL, 0, fmt, s->name, num) : (int)strlen(s->name);
   char *v = n >= 0 ? malloc((size_t)n + 1) : NULL;
   if (!v) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  if (s->version_n) snprintf(v, (size_t)n + 1, fmt, s->name, s->version_n);
+  if (spelled) snprintf(v, (size_t)n + 1, fmt, s->name, num);
   else memcpy(v, s->name, (size_t)n + 1);
   return v;
 }
@@ -6831,42 +6951,88 @@ const char *mc_ring_setf(Compiler *c, const char *fmt, ...) {
   va_end(ap);
   return c->mc_ring[k];
 }
+/* The program's def names, which a version's spelling must not meet
+   (mc_def_named): gathered at the first ask into a name index, so a
+   spelling is one probe (a scan of every def per spelling grew with the
+   square of the program's versions) */
+typedef struct { char **v; int n, built; NameIdx ix; } McDefNames;
 /* Numbers the replaced method versions codegen emits, for their C names
    (mc_method). Top-level ones: those the main file's statements define, in
    statement order whether emitted or not, then the other emitted ones,
    each number skipping a `f__redef<n>` the program defines itself. A
-   class's: the emitted ones, in scope order. */
-static void mc_number_top_version(Compiler *c, Scope *s, int *serial) {
-  char to[300];
-  for (;;) {
-    int taken = 0;
-    snprintf(to, sizeof to, "%s__redef%d", s->name, ++*serial);
+   class's: the emitted ones, in scope order. A version entry, `f__entry`
+   or `m#entry`, is numbered past the entries of its name its class has
+   before it (one per parameter count the calls need), `m#entry1` on, and
+   a top-level one past a `f__entry<n>` the program defines and past the
+   entries of the name on the other side (main's own and Object's share the
+   C namespace). Main's own methods beside Object's of the name: each, in
+   scope order, skipping a `k__main<n>` the program defines. */
+static int mc_def_named(Compiler *c, McDefNames *dn, const char *to) {
+  if (!dn->built) {
+    dn->built = 1;
     NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
-      const char *dn = nt_str(c->nt, d, "name");
-      if (dn && sp_streq(dn, to)) { taken = 1; break; }
+      const char *nm = nt_str(c->nt, d, "name");
+      if (!nm) continue;
+      if (!(dn->n & (dn->n - 1)) && !(dn->v = realloc(dn->v, sizeof *dn->v * (size_t)(dn->n ? 2 * dn->n : 1)))) {
+        fprintf(stderr, "spinel: out of memory\n"); exit(1);
+      }
+      dn->v[dn->n++] = (char *)nm;
     }
-    if (!taken) break;
   }
-  s->version_n = *serial;
+  return name_idx_find(&dn->ix, dn->v, dn->n, to) >= 0;
+}
+static int mc_number_top(Compiler *c, McDefNames *dn, const Scope *s, const char *fmt, int *serial) {
+  char to[300];
+  do snprintf(to, sizeof to, fmt, s->name, ++*serial);
+  while (mc_def_named(c, dn, to));
+  return *serial;
+}
+/* (the entries before s of its name, through the scopes of the name) */
+static void mc_number_entry(Compiler *c, McDefNames *dn, int s) {
+  Scope *sc = &c->scopes[s];
+  char to[300];
+  int n = 0;
+  for (int t = an_scopes_named_first(c, sc->name); t >= 1 && t < s; t = an_scopes_named_next(c, sc->name, t)) {
+    const Scope *o = &c->scopes[t];
+    if (o->entry && o->reachable && o->class_id == sc->class_id &&
+        (sc->class_id < 0 || o->is_cmethod == sc->is_cmethod) && o->version_n >= n)
+      n = o->version_n + 1;
+  }
+  for (; sc->class_id < 0; n++) {
+    if (n) snprintf(to, sizeof to, "%s__entry%d", sc->name, n);
+    else snprintf(to, sizeof to, "%s__entry", sc->name);
+    if (!mc_def_named(c, dn, to)) break;
+  }
+  sc->version_n = n;
 }
 void mc_number_versions(Compiler *c) {
   const NodeTable *nt = c->nt;
-  int body = nt_ref(nt, nt->root_id, "statements"), n = 0, top = 0, cls = 0;
+  int body = nt_ref(nt, nt->root_id, "statements"), n = 0, top = 0, cls = 0, main = 0;
   const int *st = body >= 0 ? nt_arr(nt, body, "body", &n) : NULL;
+  McDefNames dn = { 0 };
+  for (int s = 1; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    int om = sc->class_id < 0 && sc->is_cmethod && !sc->entry && sc->name ? comp_method_index(c, sc->name) : -1;
+    if (om >= 0 && !c->scopes[om].is_cmethod) sc->main_n = mc_number_top(c, &dn, sc, "%s__main%d", &main);
+  }
   for (int i = 0; i < n; i++) {
     if (nt_kind(nt, st[i]) != NK_DefNode || nt_ref(nt, st[i], "receiver") >= 0) continue;
     int s = comp_method_version(c, -1, nt_str(nt, st[i], "name"), 0, st[i], NULL);
-    if (s >= 0 && c->scopes[s].replaced && !c->scopes[s].version_n) mc_number_top_version(c, &c->scopes[s], &top);
+    if (s >= 0 && c->scopes[s].replaced && !c->scopes[s].version_n && !c->scopes[s].main_n)
+      c->scopes[s].version_n = mc_number_top(c, &dn, &c->scopes[s], "%s__redef%d", &top);
   }
   for (int s = 1; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    if (!sc->replaced || !sc->reachable || sc->version_n) continue;
-    if (sc->class_id < 0) mc_number_top_version(c, sc, &top);
+    if (sc->entry && sc->reachable) mc_number_entry(c, &dn, s);
+    if (!sc->replaced || !sc->reachable || sc->version_n || sc->main_n) continue;
+    if (sc->class_id < 0) sc->version_n = mc_number_top(c, &dn, sc, "%s__redef%d", &top);
     else sc->version_n = ++cls;
   }
+  free(dn.v);
+  free(dn.ix.slot);
 }
 static int mc_same_method(const Scope *a, const Scope *b) {
-  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && sp_streq(a->name, b->name);
+  return a->class_id == b->class_id && a->is_cmethod == b->is_cmethod && (a->entry == ENTRY_DISPATCH) == (b->entry == ENTRY_DISPATCH) && sp_streq(a->name, b->name);
 }
 static const char *const mc_class_helpers[] = { "_alloc", "_dup", "_gc_scan", NULL };
 /* A method whose name another has, as *first and *later; *first is -1 when
@@ -7054,7 +7220,7 @@ static void shadow_tab_build(Compiler *c, int raw) {
   if (!g_shadow_tab || !tab) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int k = n - 1; k >= 0; k--) {
     Scope *sc = &c->scopes[k];
-    if (!sc->name) continue;
+    if (!sc->name || sc->entry == ENTRY_DISPATCH) continue;   /* a hidden entry shadows no method; the public guard does */
     /* by the scope's own class, whatever an instance_exec block has moved
        (comp_scope_own_class): the move defines nothing in the class it
        moves to, and the table then reads the same whenever it is built */
@@ -7080,9 +7246,9 @@ static void shadow_tab_build(Compiler *c, int raw) {
 }
 int scope_is_shadowed(Compiler *c, int s) {
   if (c->scopes[s].c_name) return 0;
-  /* a replaced method version is a function of its own while a call bound
-     to it reaches it (compute_reachable) */
-  if (c->scopes[s].replaced) return !c->scopes[s].reachable;
+  /* a replaced method version, and a version entry, is a function of its
+     own while a call bound to it reaches it (compute_reachable) */
+  if (c->scopes[s].replaced || c->scopes[s].entry) return !c->scopes[s].reachable;
   /* Before the scopes settle, the scan's answer holds while the scope
      index is frozen (the inference fixpoint among others): a scope is then
      only appended, and the indexed ones keep their names and classes
@@ -7107,7 +7273,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
     if (sc->def_node < 0 || nt_kind(c->nt, sc->def_node) != NK_DefNode) return 0;
     for (int k = s + 1; k < c->nscopes; k++) {
       Scope *o = &c->scopes[k];
-      if (o->class_id < 0 && o->is_cmethod == sc->is_cmethod && o->name &&
+      if (o->class_id < 0 && o->is_cmethod == sc->is_cmethod && o->name && !o->entry &&
           sp_streq(o->name, sc->name) && o->def_node >= 0 && o->def_node != sc->def_node &&
           nt_kind(c->nt, o->def_node) == NK_DefNode) return 1;
     }
@@ -7116,7 +7282,7 @@ static int scope_is_shadowed_scan(Compiler *c, int s) {
   for (int k = s + 1; k < c->nscopes; k++) {
     Scope *o = &c->scopes[k];
     if (o->class_id == sc->class_id && o->is_cmethod == sc->is_cmethod &&
-        o->name && sp_streq(o->name, sc->name)) return 1;
+        o->name && o->entry != ENTRY_DISPATCH && sp_streq(o->name, sc->name)) return 1;
   }
   return 0;
 }
@@ -7162,7 +7328,7 @@ static int read_is_held(Compiler *c, int node);
    chain of the program's own reopening of Array can be: a `[]` another class
    defines (a Grid's) is never what an Array receiver calls. */
 static int array_index_is_own(Compiler *c) {
-  int ci = comp_class_index(c, "Array");
+  int ci = comp_core_class(c, CORE_ARRAY);
   return ci >= 0 && (comp_method_in_chain(c, ci, "[]", NULL) >= 0 ||
                      comp_reader_in_chain(c, ci, "[]", NULL));
 }
@@ -7289,7 +7455,8 @@ int ctor_site_on_cycle(Compiler *c, int id, int initm) {
   return s >= 0 && s < c->nscopes && c->scopes[s].ctor_cycle == c->scopes[initm].ctor_cycle;
 }
 int scope_needs_proc_form(Compiler *c, int s) {
-  return scope_proc_form_of(c, s) >= 0;
+  int pf = scope_proc_form_of(c, s);
+  return pf >= 0 && proc_form_live(c, pf);   /* a clone that is not emitted is not called */
 }
 /* A module whose instance methods a TOP-LEVEL `include` makes callable: the
    bare-call path emits a direct call to the module's own function, so that
@@ -7378,10 +7545,6 @@ int eq_family(TyKind t) {
   if (t == TY_STR_RANGE) return 7;
   return 0;
 }
-/* The program the class tests below read its reopenings from (set by
-   codegen_program): ty_matches_class takes no Compiler, and is asked in
-   emitters all through the code generator. */
-const Compiler *g_tmc_c = NULL;
 /* Does class index k include program module `mod`, directly or through a
    module it includes? */
 /* The modules class index k includes, by the `include` statements of its
@@ -7408,7 +7571,7 @@ static int tmc_body_includes(const Compiler *c, int k, int mod) {
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
         for (int a = 0; a < an; a++) {
           NodeKind ak = nt_kind(nt, av[a]);
-          const char *an2 = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, av[a], "name") : NULL;
+          const char *an2 = nt_kind_is_constant(ak) ? nt_str(nt, av[a], "name") : NULL;
           if (an2 && sp_streq(an2, mn)) return 1;
         }
       }
@@ -7433,11 +7596,10 @@ static int tmc_includes(const Compiler *c, int k, int mod, int depth) {
    by way of a program reopening of it or of a builtin ancestor (`class Hash;
    include DeepMergeable; end`, `class Numeric; include M; end`, `module
    Enumerable; include M; end`)? */
-static int tmc_prog_module_in_builtin(const char *self_cls, const char *cn) {
-  const Compiler *c = g_tmc_c;
-  if (!c || !cn) return 0;
-  int mod = comp_class_index((Compiler *)c, cn);
-  if (mod < 0 || !comp_class_is_module((Compiler *)c, &c->classes[mod])) return 0;
+static int tmc_prog_module_in_builtin(Compiler *c, const char *self_cls, const char *cn) {
+  if (!cn) return 0;
+  int mod = comp_class_index(c, cn);
+  if (mod < 0 || !comp_class_is_module(c, &c->classes[mod])) return 0;
   const char *chain[8]; int n = 0;
   chain[n++] = self_cls;
   if (sp_streq(self_cls, "Integer") || sp_streq(self_cls, "Float") ||
@@ -7449,7 +7611,7 @@ static int tmc_prog_module_in_builtin(const char *self_cls, const char *cn) {
   chain[n++] = "Object";
   chain[n++] = "Kernel";
   for (int i = 0; i < n; i++) {
-    int k = comp_class_index((Compiler *)c, chain[i]);
+    int k = comp_class_index(c, chain[i]);
     if (k >= 0 && tmc_includes(c, k, mod, 0)) return 1;
   }
   return 0;
@@ -7465,7 +7627,7 @@ int builtin_reopen_includes_module(Compiler *c, int mod) {
   }
   return 0;
 }
-int ty_matches_class(TyKind t, const char *cn, int exact) {
+int ty_matches_class(Compiler *c, TyKind t, const char *cn, int exact) {
   const char *self_cls = NULL;
   switch (t) {
   case TY_STRING: case TY_STRBUF: self_cls = "String"; break;
@@ -7507,7 +7669,7 @@ int ty_matches_class(TyKind t, const char *cn, int exact) {
   if (sp_streq(cn, "Enumerable") && (ty_is_array(t) || ty_is_hash(t) || t == TY_RANGE ||
                                      t == TY_ENUMERATOR)) return 1;
   /* a program module the program mixed into this builtin by reopening it */
-  if (tmc_prog_module_in_builtin(self_cls, cn)) return 1;
+  if (tmc_prog_module_in_builtin(c, self_cls, cn)) return 1;
   return 0;
 }
 

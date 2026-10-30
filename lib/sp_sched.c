@@ -5789,6 +5789,159 @@ const char *sp_Thread_inspect(sp_thread *t) {
   return sp_sprintf("#<Thread:0x%016llx %s>", (unsigned long long)(uintptr_t)t, st);
 }
 
+#if defined(SP_THREADS) && !defined(_WIN32) && !defined(__wasi__)
+/* fork(2) once threads have started (#10516). The child has the calling OS
+   thread alone: the monitor, the helper workers, the collector's sweepers and
+   the trimmer stay behind, a lock one of them held stays held, and the flags
+   that say they run say so still -- a sleep then waited for a monitor that
+   was not there. CRuby's child keeps the thread that forked and no other;
+   here that is the main thread, which the child goes on running on worker 0.
+
+   The parent stops the world as a collection does, so no worker is inside
+   the runtime's locks or the allocator, and waits out a concurrent sweep;
+   the child then starts over from one worker: its locks fresh, every other
+   green thread dead and off every queue, list and timer, and the pool, the
+   monitor, the sweepers and their hooks unstarted, to come up again on the
+   child's first Thread or wait as they did at boot. */
+static void sp_sched_fork_child(void) {
+  pthread_mutex_init(&g_sched_lock, NULL);
+  pthread_mutex_init(&g_reg_lock, NULL);
+  for (int w = 0; w < SP_MAX_WORKERS; w++) pthread_mutex_init(&g_rq_lock[w].m, NULL);
+  pthread_mutex_init(&g_cs_lock, NULL);
+  /* a condvar waited on in the parent (the sweepers' g_cs_go, the monitor's
+     g_stw_release) still counts those waiters in the child, and a broadcast
+     there waits for them for good */
+  pthread_cond_t *cvs[] = { &g_sweep_cv, &g_mk_cv, &g_sched_work, &g_stw_request, &g_stw_release, &g_sysmon_cv,
+                            &g_cs_go, &g_cs_done };
+  for (size_t i = 0; i < sizeof cvs / sizeof cvs[0]; i++) pthread_cond_init(cvs[i], NULL);
+  g_sched_held = 0;
+  g_cnt_other_wl = 0;
+  /* the other green threads: dead, and off whatever they waited on */
+  sp_thread *self = g_current;
+  for (sp_thread *t = g_all, *nx; t; t = nx) {
+    nx = t->all_next;
+    if (t == self) continue;
+    if (t->wait_head) {
+      sp_thread **pp = t->wait_head;
+      while (*pp && *pp != t) pp = &(*pp)->wait_next;
+      if (*pp) *pp = t->wait_next;
+    }
+    if (t->wait_lock) *t->wait_lock = 0;
+    t->wait_next = NULL; t->wait_head = NULL; t->wait_lock = NULL;
+    t->joiners = NULL; t->join_wl = 0; t->sleep_wl = 0; t->sleep_slot = NULL;
+    t->rq_next = NULL; t->tm_armed = 0; t->wait_timer = 0;
+    t->io_fd = -1; t->io_set = NULL; t->io_nset = 0;
+    t->retval = sp_box_nil(); t->has_exc = 0;
+    SP_ATOMIC_STORE(&t->park, SP_PK_RUN, __ATOMIC_RELAXED);
+    SP_TH_SET_STATE(t, SP_TH_DEAD);
+    t->all_prev = t->all_next = NULL;
+  }
+  g_all = NULL;   /* (the main thread is no entry of it) */
+  /* the run queues, the timers, the I/O waiters and the counts: all theirs */
+  memset(&g_grq, 0, sizeof g_grq);
+  memset(g_lrq, 0, sizeof g_lrq);
+  g_timer_heap_len = 0;
+  for (int w = 0; w < SP_MAX_WORKERS; w++) {
+    sp_tm_stage *st = &g_tm_stage[w];
+    st->wl = 0; st->len = 0; st->ncancel = 0;
+  }
+  g_io_waiters = NULL;
+  memset(g_cnt, 0, sizeof g_cnt);
+  g_cnt_hi = 1;
+  g_cnt_me = &g_cnt[0];
+  /* worker 0 alone; the readiness sets are the parent's (an epoll set is
+     shared across a fork), so each is closed and made again on a first park */
+  for (int w = 0; w < SP_MAX_WORKERS; w++) {
+    sp_wslot *ws = &g_wslot[w];
+    if (ws->evfd > 0) { close(ws->evfd); close(ws->kick[0]); close(ws->kick[1]); }
+    if (ws->evfd != -2) ws->evfd = 0;
+    ws->kick_armed = 0; ws->ev_waiting = 0;
+    pthread_cond_init(&ws->cv, NULL);
+    ws->idle = 0; ws->parked = 0; ws->wake_sent = 0; ws->pinned = 0;
+    ws->io_wl = 0; ws->io_waiters = NULL;
+    if (ws->ev_tab) memset(ws->ev_tab, 0, sizeof *ws->ev_tab * (size_t)ws->ev_cap);
+    ws->cur = NULL; ws->since_bits = 0;
+    if (w > 0) ws->active = 0;
+  }
+  g_wslot[0].tid = pthread_self();
+  g_wslot[0].cur = self;
+#ifdef SP_EV_BACKEND
+  g_ev_fd = -1;
+#endif
+  /* the pool, the monitor, the collector's helpers: none run in the child */
+  sp_active_workers = 1;
+  g_workers_started = 0; g_helpers_spawned = 0; g_shutdown = 0;
+  g_sysmon_started = 0; g_sysmon_idle = 0;
+  if (g_sysmon_pipe[0] >= 0) close(g_sysmon_pipe[0]);
+  if (g_sysmon_pipe[1] >= 0) close(g_sysmon_pipe[1]);
+  g_sysmon_pipe[0] = g_sysmon_pipe[1] = -1;
+  g_sysmon_wake_at_bits = 0; g_nearest_bits = 0; g_npreempt = 0;
+  g_stw_active = 0; g_nparked = 0; g_n_parked_fiber = 0; g_stw_epoch++;
+  g_nnative = 0;
+  memset(g_native_out, 0, sizeof g_native_out);
+  memset(g_native_nfiber, 0, sizeof g_native_nfiber);
+  g_main_waits = 0;
+  g_sweep_go = 0; g_sw_ntasks = 0; g_sw_next = 0; g_sw_done = 0;
+  g_mk_go = 0; g_mk_joined = 0; g_mk_active = 0;
+  g_cs_help = 0; g_cs_ntasks = 0; g_cs_finished = 0; g_cs_running = 0; g_cs_unclaimed = 0;
+  g_cs_nsweepers = 0;
+  sp_gc_par_sweep_hook = NULL; sp_gc_par_mark_hook = NULL;
+  sp_gc_conc_sweep_hook = NULL; sp_gc_conc_wait_hook = NULL;
+  sp_gc_trimmer_on = 0;
+  sp_recompute_safepoint_flag();
+}
+#endif
+
+int sp_sched_fork(void) {
+#if defined(_WIN32) || defined(__wasi__)
+  sp_raise_cls("NotImplementedError", "fork() function is unimplemented on this machine");
+  return -1;
+#elif defined(SP_THREADS)
+  if (!g_workers_started && !g_sysmon_started) return (int)fork();
+  /* the main thread goes on in the child; another thread has no worker 0
+     under it there to run on */
+  if (g_current != &g_main_thread || sp_worker_id != 0)
+    sp_raise_cls("NotImplementedError", "fork from a thread other than the main thread");
+#ifdef SP_CEXT
+  sp_cext_lock();
+#endif
+  /* the world stopped, as for a collection: every other worker parked at a
+     safepoint, none inside a lock of the runtime's */
+  SCHED_LOCK();
+  while (g_stw_active) sp_stw_park_locked();
+  SP_ATOMIC_STORE(&g_stw_active, 1, __ATOMIC_SEQ_CST);
+  g_stw_epoch++;
+  g_nparked = 0;
+  SP_SAFEPOINT_SET(1);
+  sched_wake_all_workers(1);
+  while (g_nparked + SP_ATOMIC_LOAD(&g_nnative, __ATOMIC_SEQ_CST) < sp_active_workers - 1) pthread_cond_wait(&g_stw_request, &g_sched_lock);
+  SCHED_UNLOCK();
+  g_collector_active = 1;
+  if (sp_gc_conc_wait_hook) sp_gc_conc_wait_hook();   /* the sweepers out of the heap's lists */
+  g_collector_active = 0;
+  pid_t pid = fork();
+  if (pid == 0) {
+    sp_sched_fork_child();
+#ifdef SP_CEXT
+    sp_cext_unlock();
+#endif
+    return 0;
+  }
+  SCHED_LOCK();
+  g_n_parked_fiber = 0;
+  SP_ATOMIC_STORE(&g_stw_active, 0, __ATOMIC_SEQ_CST);
+  sp_recompute_safepoint_flag();
+  pthread_cond_broadcast(&g_stw_release);
+  SCHED_UNLOCK();
+#ifdef SP_CEXT
+  sp_cext_unlock();
+#endif
+  return (int)pid;
+#else
+  return (int)fork();
+#endif
+}
+
 /* Whether the first Thread has brought up the worker pool, its monitor and the
    collector's sweepers: OS threads a fork does not carry into the child
    (Process.daemon, lib/sp_process.c). Before that the program is one thread. */

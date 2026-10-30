@@ -63,6 +63,10 @@ typedef struct {
                           magic comment turns its refusals into raises where they
                           run (nt_put_file_defers); nfile_defers its length */
   int nfile_defers;
+  unsigned char *file_tier;   /* FILE id -> the resolver's SP_LIB_* tier of a
+                          library file (nt_put_file_tier); 0 (SP_LIB_NONE) for
+                          the program's own; nfile_tier its length */
+  int nfile_tier;
   /* Under --load-model=graph (#9898) each file the program loads is a root:
      its ProgramNode, by graph id (0 is the entry, the table's root). None
      under the inline model, whose one root is root_id (nt_root). */
@@ -328,6 +332,13 @@ const char *nt_file_path(const NodeTable *nt, int fid);
 /* The file's `# spinel: defer-refusals` magic comment: set, and asked */
 void nt_put_file_defers(NodeTable *nt, int fid);
 int nt_file_defers(const NodeTable *nt, int fid);
+/* Where `require` found a file (the parser's sp_lib_lookup): lib/, a `-I`
+   root, builtins/ or a pre-installed package; SP_LIB_NONE for a file of
+   the program's own (the entry, a require_relative, a load). */
+enum { SP_LIB_NONE, SP_LIB_LIB, SP_LIB_ROOT, SP_LIB_BUILTIN, SP_LIB_PACKAGE };
+/* The file's tier: set, and asked */
+void nt_put_file_tier(NodeTable *nt, int fid, int tier);
+int nt_file_tier(const NodeTable *nt, int fid);
 
 const char *nt_type(const NodeTable *nt, int id);          /* NULL if unset */
 static inline const char *nt_str(const NodeTable *nt, int id, const char *key) {
@@ -609,6 +620,9 @@ static inline int nt_def_receiver(const NodeTable *nt, int recv) {
   }
   return nt_paren_single(nt, recv);
 }
+static inline int nt_kind_is_constant(NodeKind k) {
+  return k == NK_ConstantReadNode || k == NK_ConstantPathNode;
+}
 int nt_pred_const(const NodeTable *nt, int pred);   /* a predicate's constant truth: 1, 0, -1 not constant */
 const char *nt_content(const NodeTable *nt, int id);
 
@@ -618,6 +632,21 @@ int        nt_num_refs(const NodeTable *nt, int id);
 int        nt_ref_at(const NodeTable *nt, int id, int i);   /* ref value, may be -1 */
 int        nt_num_arrs(const NodeTable *nt, int id);
 const int *nt_arr_at(const NodeTable *nt, int id, int i, int *out_n);
+
+/* The frame an eval's text is parsed in (sp_parse_snippet_in, in
+   src/spinel_parse.c): the locals of the scopes around it, outermost
+   first; the line the text starts on; the path `__FILE__` answers in it
+   (NULL: "(eval at FILE:LINE)" of the site); and the site's line and file,
+   which its nodes take for `#line` and the reports (site_line 0: none). */
+typedef struct SnipScope { const char *const *names; int n; } SnipScope;
+typedef struct SnipFrame {
+  const SnipScope *scopes; int nscopes;
+  long long line;
+  const char *path;
+  long long site_line; int site_file;
+} SnipFrame;
+NodeTable *sp_parse_snippet(const char *src);   /* compiler-written text: no frame */
+NodeTable *sp_parse_snippet_in(const char *src, const SnipFrame *f);
 
 /* What the driver's flags ask of the parse, the analysis and codegen:
    src/main.c sets them, spinel_parse.c defines them. A string is a path to

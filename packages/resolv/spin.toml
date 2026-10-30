@@ -1,0 +1,7 @@
+[package]
+name = "resolv"
+
+# Pre-installed spin package: ships with the compiler, versioned with it.
+# `require "resolv"` -- Resolv's address lookup (getaddress, getaddresses,
+# each_address) over the hosts file and the system resolver. See resolv.rb
+# for what is deliberately absent.

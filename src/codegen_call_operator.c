@@ -158,18 +158,18 @@ static int cmp_elem_read(Compiler *c, int node, TyKind t, int *arr, int *idx) {
    the boxed method dispatch, any other the runtime's compare
    (sp_poly_spaceship), which knows only the builtin one. */
 static int poly_cmp_reopen_test(Compiler *c, const char *v, char *out, size_t cap) {
-  static const struct { const char *cls; const char *tags; } owners[] = {
-    { "Integer", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT" },
-    { "Float",   "%s.tag == SP_TAG_FLT" },
-    { "Numeric", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
-    { "String",  "%s.tag == SP_TAG_STR" },
-    { "Symbol",  "%s.tag == SP_TAG_SYM" },
-    { "TrueClass",  "(%s.tag == SP_TAG_BOOL && %s.v.i)" },
-    { "FalseClass", "(%s.tag == SP_TAG_BOOL && !%s.v.i)" },
+  static const struct { int cls; const char *tags; } owners[] = {
+    { CORE_INTEGER, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT" },
+    { CORE_FLOAT,   "%s.tag == SP_TAG_FLT" },
+    { CORE_NUMERIC, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
+    { CORE_STRING,  "%s.tag == SP_TAG_STR" },
+    { CORE_SYMBOL,  "%s.tag == SP_TAG_SYM" },
+    { CORE_TRUECLASS,  "(%s.tag == SP_TAG_BOOL && %s.v.i)" },
+    { CORE_FALSECLASS, "(%s.tag == SP_TAG_BOOL && !%s.v.i)" },
   };
   size_t n = 0; out[0] = '\0';
   for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
-    int k = comp_class_index(c, owners[i].cls);
+    int k = comp_core_class(c, owners[i].cls);
     if (k < 0 || comp_method_in_chain(c, k, "<=>", NULL) < 0) continue;
     char one[200];
     snprintf(one, sizeof one, owners[i].tags, v, v, v);
@@ -405,11 +405,17 @@ static int emit_isa_runtime_flag_class(Compiler *c, const NodeTable *nt, const c
   return 0;
 }
 
-/* Does a program class (not a reopened builtin) define the kind query
-   `name` itself? */
+/* Does a program class (not a reopened builtin) answer the kind query
+   `name` with a method of its own? The chain lookup sees an alias and an
+   inherited definition, as the dispatch's arm count and the analyzer's
+   answer type (an_user_ret_disagrees) do: a query a class only aliased
+   (`def is_a?(k) ...; alias kind_of? is_a?`) was typed by the analyzer as
+   the dispatch's box, while this asked for a def of the name itself,
+   found none, and the static class test below put a bare C truth value
+   where the box was expected. */
 static int kind_query_overridden(Compiler *c, const char *name) {
   for (int k = 0; k < c->nclasses; k++)
-    if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_class(c, k, name) >= 0) return 1;
+    if (!is_builtin_reopen(c->classes[k].name) && comp_method_in_chain(c, k, name, NULL) >= 0) return 1;
   return 0;
 }
 /* Is kind query `id` on a boxed receiver the general dispatch's? When a
@@ -1239,7 +1245,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
       }
     }
     if (emit_isa_runtime_flag_class(c, nt, name, eff_rt, recv, argv, b)) return 1;
-    int yes = ty_matches_class(eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
+    int yes = ty_matches_class(c, eff_rt, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
     /* an Integer or a Float reads its nil flag at run time, as nil?
        does: the nullable-value analysis does not see every way nil reaches
        one (a method's parameter only nil is passed to, a splat of a boxed
@@ -1250,7 +1256,7 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     if (yes >= 0 && oint_kind(eff_rt) && node_has_oint_form(c, recv)) {
       /* a number that can be nil: nil's own answer where it is one
          (`Integer === nil` false, `nil.is_a?(Object)` true) */
-      int nilyes = ty_matches_class(TY_NIL, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
+      int nilyes = ty_matches_class(c, TY_NIL, nt_str(nt, argv[0], "name"), sp_streq(name, "instance_of?"));
       if (nilyes < 0) nilyes = 0;
       int tq = ++g_tmp;
       buf_printf(b, "({ %s _t%d = ", oint_ctype(eff_rt), tq); emit_oint_expr(c, recv, eff_rt, b);
@@ -1308,10 +1314,16 @@ int emit_call_compare_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
     const char *cn = isa_match_name(nt, argv[0], cnq, sizeof cnq);
     if (cn) {
       int t = ++g_tmp;
+      /* the call typed as a box, as above (a program class's own `is_a?`
+         answering other than true or false, aliased as `kind_of?`, types
+         every poly receiver's kind query so): the test's bool boxed for
+         it, where the C took an int for the sp_RbVal */
+      int boxed_ans = repr_of(c, id).kind == RK_BOXED;
+      if (boxed_ans) buf_puts(b, "sp_box_bool(");
       buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b); buf_printf(b, "; ");
       char v[32]; snprintf(v, sizeof v, "_t%d", t);
       emit_poly_isa_test(c, cn, v, sp_streq(name, "instance_of?"), b);
-      buf_puts(b, "; })");
+      buf_puts(b, boxed_ans ? "; }))" : "; })");
       return 1;
     }
   }
@@ -1455,9 +1467,9 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
                     sp_streq(name, "%") ? "sp_poly_mod" : NULL;
   if (!pfn) return 0;
   int mis[2] = { -1, -1 };
-  const char *cn[2] = { "Integer", "Float" };
+  static const int cn[2] = { CORE_INTEGER, CORE_FLOAT };
   for (int i = 0; i < 2; i++) {
-    int k = comp_class_index(c, cn[i]);
+    int k = comp_core_class(c, cn[i]);
     if (k < 0 || !class_is_prim_reopen(c, k)) continue;
     int def = -1, mi = call_target(c, id, k, name, 0, &def);
     if (mi < 0 || def != k || c->scopes[mi].nparams != 1 || c->scopes[mi].rest_idx >= 0) continue;
@@ -1767,15 +1779,20 @@ int emit_call_operator_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   }
   /* poly `push` with no argument in expression position: an array answers
      itself (a frozen one raises FrozenError), a queue its ArgumentError (sp_poly_queue_push_n), anything else
-     NoMethodError -- the dispatch with arguments covers the other counts */
-  if (recv >= 0 && rt == TY_POLY && sp_streq(name, "push") && argc == 0 &&
-      nt_ref(nt, id, "block") < 0 && !an_user_defines_method(c, "push")) {
+     NoMethodError -- the dispatch with arguments covers the other counts.
+     append and unshift with no argument are Array's alone: the same, with
+     no queue arm. A reader of the name (attr_*, Struct member) in any class
+     keeps the generic dispatch, as a def of it does. */
+  if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
+      (sp_streq(name, "push") || sp_streq(name, "append") || sp_streq(name, "unshift")) &&
+      !an_user_defines_method(c, name) && !comp_name_reader_any(c, name)) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", t); emit_expr(c, recv, b);
-    buf_printf(b, "; if (!sp_poly_queue_push_n(_t%d, 0, (sp_RbVal[]){sp_box_nil()}) &&"
-                  " !(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
-                  " sp_raise_nomethod(sp_nomethod_msg(\"push\", _t%d));"
-                  " if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) && sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d); _t%d; })", t, t, t, t, t, t, t, t, t);
+    if (sp_streq(name, "push")) buf_printf(b, "; if (!sp_poly_queue_push_n(_t%d, 0, (sp_RbVal[]){sp_box_nil()}) &&", t);
+    else buf_puts(b, "; if (");
+    buf_printf(b, " !(_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id)))"
+                  " sp_raise_nomethod(sp_nomethod_msg(\"%s\", _t%d));"
+                  " if (_t%d.tag == SP_TAG_OBJ && sp_poly_is_array_kind(_t%d.cls_id) && sp_poly_frozen(_t%d)) sp_raise_frozen_array_v(_t%d); _t%d; })", t, t, name, t, t, t, t, t, t);
     return 1;
   }
   /* unary bitwise complement: ~int -> (~x); ~poly -> coerce to int first */

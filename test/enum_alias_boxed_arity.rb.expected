@@ -1,0 +1,5 @@
+[:own, 123]
+[:own_detect, 5]
+[1, 2]
+[:plain, 7]
+[:own, 9]

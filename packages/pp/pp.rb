@@ -31,17 +31,27 @@ class PP < PrettyPrint
     (ENV["COLUMNS"]&.to_i&.nonzero? || 80) - 1
   end
 
-  # The layout is built in a String of PP's own, read back through
-  # #output and then appended to `out`, whatever `out` is.
-  def initialize(width = 79)
-    super(String.new, width)
+  # PP.new takes what PrettyPrint.new takes: the output, the width and the
+  # newline, as CRuby's does (a library makes its printer with
+  # `PP.new(out, width)`). PP.pp builds the layout in a String of its own,
+  # read back through #output and then appended to `out`, whatever `out`
+  # is.
+  def initialize(output = String.new, maxwidth = 79, newline = "\n")
+    super(output, maxwidth, newline)
   end
 
   def PP.pp(obj, out = $stdout, width = width_for(out))
-    q = new(width)
+    q = new(String.new, width)
     q.pp obj
     q.flush
     out << q.output << "\n"
+  end
+
+  # CRuby's guard_inspect_key sets up the table that finds a value inside
+  # itself; the check here is PP's own (@pp_seen), so the guard runs the
+  # block.
+  def guard_inspect_key
+    yield
   end
 
   def pp(obj)

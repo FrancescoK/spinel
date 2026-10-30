@@ -298,7 +298,7 @@ static int cw_cref_at(ConstWalk *w, int id) {
       if (nt_int(nt, a, "class_new_anonymous", 0)) continue;
       int cp = nt_ref(nt, a, "constant_path");
       const char *nm = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-      int ci = nm ? comp_class_index(w->c, nm) : -1;
+      int ci = elab_header_class(w->c, a, NULL, NULL);
       const char *q = ci >= 0 ? class_ruby_name(w->c, ci) : nm;
       if (!q) continue;
       snprintf(buf, sizeof buf, "%s", q);
@@ -405,4 +405,30 @@ void an_const_presence(Compiler *c) {
   free(w.settled);
   free(w.seen); free(w.plain); free(listed_only);
   free(first_settled); free(early_reads);
+}
+
+int const_has_flag(const LocalVar *lv) {
+  return lv && lv->const_early && (lv->type == TY_NIL || is_scalar_ret(lv->type));
+}
+/* The slot whose presence evaluating this constant node observes. Path
+   parents ask separately, before their child's value is used. */
+LocalVar *an_const_read_effect(Compiler *c, int id) {
+  NodeKind k = nt_kind(c->nt, id);
+  if (!nt_kind_is_constant(k)) return NULL;
+  const char *nm = nt_str(c->nt, id, "name");
+  LocalVar *lv = nm ? comp_const(c, nm) : NULL;
+  return const_has_flag(lv) && (k != NK_ConstantPathNode || (!const_path_in_closed_builtin(c, id) && !const_path_misses_toplevel(c, id))) ? lv : NULL;
+}
+
+/* A constant whose class value a consumer may fold away must retain the
+   read. Inference has already resolved builtin values and class aliases. */
+int an_const_read_keeps_class(Compiler *c, int id) {
+  return nt_kind_is_constant(nt_kind(c->nt, id)) && comp_ntype(c, id) == TY_CLASS;
+}
+
+int an_const_read_is_value(Compiler *c, int id) {
+  NodeKind k = nt_kind(c->nt, id);
+  const char *nm = nt_str(c->nt, id, "name");
+  return (nt_kind_is_constant(k)) && nm &&
+         comp_class_index(c, nm) < 0 && !is_builtin_class_name(nm) && comp_const(c, nm);
 }

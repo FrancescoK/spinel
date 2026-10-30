@@ -33,6 +33,7 @@ require "openssl/cipher"
 require "openssl/kdf"
 require "openssl/pkey"
 require "openssl/x509"
+require "openssl/random"
 
 module OpenSSL
   module Native

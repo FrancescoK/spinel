@@ -1,9 +1,10 @@
-# A Symbol read out of a mixed Array answers id2name with its name, a new
-# String like to_s; a value of another kind still has no id2name.
+# A Symbol read out of a mixed Array answers id2name with its name, as to_s
+# does (frozen in Spinel, so the mutation takes a copy); a value of another
+# kind still has no id2name.
 x = [:hello, 1][0]
 p x.id2name
 p x.id2name.upcase
-s = x.id2name
+s = x.id2name.dup
 s << "!"
 p s
 p x

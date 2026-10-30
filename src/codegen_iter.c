@@ -262,6 +262,63 @@ static void yield_target_restore(const YieldTargetSave *s) {
   g_yield_proc_ref_fallback2 = s->ypr; g_yield_slot_ty_fallback2 = s->yslot;
   g_yield_lowered_fallback = s->lowered; g_yield_lowered_blk_fallback = s->lowered_blk;
 }
+/* The whole block context an inline runs its callee's body under: the block
+   current and what its splice binds, the one level out, the forwarded proc
+   and the lowered context, and the break scope a block's `break` leaves.
+   emit_inline_call_x takes a snapshot of the caller's before it switches to
+   the callee's, and puts the caller's back for the call-site code it emits
+   in between (see there). */
+typedef struct {
+  int block_id, block_nren, ytgt_cur;
+  const char *block_param_name, *block_owner_param_name;
+  int yfb, yfb_nren; const char *yfb_owner;
+  const char *blk_brk_fb; int blk_brk_efb;
+  const char *self_fb, *self_deref_fb; int emcls_fb;
+  const char *self_fb2, *self_deref_fb2; int emcls_fb2;
+  int lowered; const char *lowered_blk;
+  int lowered_fb; const char *lowered_blk_fb;
+  const char *ypr, *ypr_expr_ref; int ypr_expr; TyKind yslot;
+  const char *ypr_fb, *ypr_fb2; TyKind yslot_fb, yslot_fb2;
+  const char *brk_var, *ser_var; int brk_ebase, brk_exc_base, brk_rescue_base;
+} InlineBlockCtx;
+static void inline_block_ctx_save(InlineBlockCtx *s) {
+  s->block_id = g_block_id; s->block_nren = g_block_nren; s->ytgt_cur = g_ytgt_cur;
+  s->block_param_name = g_block_param_name; s->block_owner_param_name = g_block_owner_param_name;
+  s->yfb = g_yield_block_fallback; s->yfb_nren = g_yield_block_fallback_nren;
+  s->yfb_owner = g_yield_block_fallback_param_name;
+  s->blk_brk_fb = g_yield_blk_brk_fallback; s->blk_brk_efb = g_yield_blk_brk_efallback;
+  s->self_fb = g_yield_self_fallback; s->self_deref_fb = g_yield_self_deref_fallback;
+  s->emcls_fb = g_yield_emitting_class_fallback;
+  s->self_fb2 = g_yield_self_fallback2; s->self_deref_fb2 = g_yield_self_deref_fallback2;
+  s->emcls_fb2 = g_yield_emitting_class_fallback2;
+  s->lowered = g_current_scope_is_lowered; s->lowered_blk = g_lowered_blk_name;
+  s->lowered_fb = g_yield_lowered_fallback; s->lowered_blk_fb = g_yield_lowered_blk_fallback;
+  s->ypr = g_yield_proc_ref; s->ypr_expr_ref = g_yield_proc_expr_ref; s->ypr_expr = g_yield_proc_expr;
+  s->yslot = g_yield_slot_ty;
+  s->ypr_fb = g_yield_proc_ref_fallback; s->ypr_fb2 = g_yield_proc_ref_fallback2;
+  s->yslot_fb = g_yield_slot_ty_fallback; s->yslot_fb2 = g_yield_slot_ty_fallback2;
+  s->brk_var = g_block_brk_var; s->ser_var = g_brk_ser_var; s->brk_ebase = g_block_brk_ebase;
+  s->brk_exc_base = g_block_brk_exc_base; s->brk_rescue_base = g_block_brk_rescue_base;
+}
+static void inline_block_ctx_restore(const InlineBlockCtx *s) {
+  g_block_id = s->block_id; g_block_nren = s->block_nren; g_ytgt_cur = s->ytgt_cur;
+  g_block_param_name = s->block_param_name; g_block_owner_param_name = s->block_owner_param_name;
+  g_yield_block_fallback = s->yfb; g_yield_block_fallback_nren = s->yfb_nren;
+  g_yield_block_fallback_param_name = s->yfb_owner;
+  g_yield_blk_brk_fallback = s->blk_brk_fb; g_yield_blk_brk_efallback = s->blk_brk_efb;
+  g_yield_self_fallback = s->self_fb; g_yield_self_deref_fallback = s->self_deref_fb;
+  g_yield_emitting_class_fallback = s->emcls_fb;
+  g_yield_self_fallback2 = s->self_fb2; g_yield_self_deref_fallback2 = s->self_deref_fb2;
+  g_yield_emitting_class_fallback2 = s->emcls_fb2;
+  g_current_scope_is_lowered = s->lowered; g_lowered_blk_name = s->lowered_blk;
+  g_yield_lowered_fallback = s->lowered_fb; g_yield_lowered_blk_fallback = s->lowered_blk_fb;
+  g_yield_proc_ref = s->ypr; g_yield_proc_expr_ref = s->ypr_expr_ref; g_yield_proc_expr = s->ypr_expr;
+  g_yield_slot_ty = s->yslot;
+  g_yield_proc_ref_fallback = s->ypr_fb; g_yield_proc_ref_fallback2 = s->ypr_fb2;
+  g_yield_slot_ty_fallback = s->yslot_fb; g_yield_slot_ty_fallback2 = s->yslot_fb2;
+  g_block_brk_var = s->brk_var; g_brk_ser_var = s->ser_var; g_block_brk_ebase = s->brk_ebase;
+  g_block_brk_exc_base = s->brk_exc_base; g_block_brk_rescue_base = s->brk_rescue_base;
+}
 /* Entry `fe` is the block a splice makes current: its own yields bind its
    lowered context (the spliced block's was what the fallback held), and
    its target, when recorded, becomes the fallback with that target's own
@@ -1312,6 +1369,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      itself, its body's `yield` found no block (LocalJumpError). */
   int fwd_kept = block >= 0 && block == saved_block && g_ytgt_cur >= 0 &&
                  g_ytgt[g_ytgt_cur].blk == block;
+  /* the caller's block context, before the lines below switch to the
+     callee's: the receiver and the arguments are emitted under it */
+  InlineBlockCtx caller_bc;
+  inline_block_ctx_save(&caller_bc);
   if (!fwd_kept) {
     g_yield_block_fallback = saved_block;
     g_yield_block_fallback_nren = saved_bnren;
@@ -1414,6 +1475,18 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_brk_ser_var = NULL;
   g_block_param_name = m->blk_param;
   BlockRetHome saved_brh = block_ret_home_enter(block, saved_block);
+  /* The receiver, the `&callable` and the arguments below are call-site
+     code, and run under the CALLER's block context, as they do under its
+     self and class (deferred the same way further down): a `&block` among
+     them forwards the caller's block, and a `yield` in one runs it. The
+     callee's context, set up above, is put back for the body once they are
+     bound. Emitted under the callee's, `note(each_item(&block))` in a
+     method spliced with a literal block saw no block current (the blockless
+     `note` had none), took `block` for a real proc local and read an
+     undeclared `lv_block` for the inner inline's block_given?. */
+  InlineBlockCtx callee_bc;
+  inline_block_ctx_save(&callee_bc);
+  inline_block_ctx_restore(&caller_bc);
 
   if (as_expr) buf_puts(b, "({\n");
   else { emit_indent(b, indent); buf_puts(b, "{\n"); }
@@ -1505,6 +1578,8 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   emit_inline_bind_params(c, m, args, argv, argc, &L, alias_mask, tag, saved_nren, din, b);
   arg_layout_free(&L);
   inl_dflt_leave(sv_dflt);
+  /* the call-site code is bound: the body runs under the callee's block context */
+  inline_block_ctx_restore(&callee_bc);
 
   /* Now switch into the RECEIVER's context for the method BODY. Both the
      self binding and the emitting-class must move together, and only here
@@ -1919,6 +1994,15 @@ static void emit_block_arg_coerced(Compiler *c, int node, TyKind ot, Buf *b) {
    method-tail path already routes both to the value path (codegen_stmt.c);
    a spliced block's tail needed the same, or the statement expression took
    whatever the last emitted statement happened to leave (#4155). */
+/* Whether the program gives the builtin class cn a []= of its own (a reopen,
+   or a module it includes or prepends there): the value form of `x[k] = v`
+   then answers that method's value, not v */
+static int program_defines_builtin_aset(Compiler *c, int cn) {
+  int ci = comp_core_class(c, cn);
+  int mi = ci >= 0 ? comp_method_in_chain(c, ci, "[]=", NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
 static int call_targets_yielding_method(Compiler *c, int id);
 static int block_tail_needs_value_form(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -1989,6 +2073,18 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
       nt_ref(nt, id, "receiver") >= 0 && nt_ref(nt, id, "block") < 0 &&
       nt_ref(nt, id, "arguments") >= 0 && ty_is_array(comp_ntype(c, nt_ref(nt, id, "receiver"))))
     return 1;
+  /* ...and `a.clear` / `a&.clear` on an Array, `h.store(k, v)` on a Hash
+     and `x[k] = v` on either: the statement form empties or stores in a
+     compound, while the call answers the receiver or the value (`t { x.clear }` on a general Array
+     did not build) */
+  { int r = nt_ref(nt, id, "receiver");
+    TyKind rt = r >= 0 ? comp_ntype(c, r) : TY_UNKNOWN;
+    if (r >= 0 && nt_ref(nt, id, "block") < 0 &&
+        ((sp_streq(nm, "clear") && nt_ref(nt, id, "arguments") < 0 && ty_is_array(rt)) ||
+         (sp_streq(nm, "store") && ty_is_hash(rt)) ||
+         (sp_streq(nm, "[]=") && (ty_is_hash(rt) || ty_is_array(rt)) &&
+          !program_defines_builtin_aset(c, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY))))
+      return 1; }
   /* and a String mutator on a String held as the sp_String buffer (a block
      parameter that is the shared handle): the statement form appends
      through a void C call, while the call answers the String */
@@ -2013,7 +2109,12 @@ static int block_tail_needs_value_form(Compiler *c, int id) {
   /* and a `scan` with a block on a subject that is not a plain read answers
      that subject, which the statement form leaves out */
   if (is_scan_name(nm) && tail_iter_receiver(c, id) < 0) return 1;
-  return iter_value_answers_recv(c, id) && tail_iter_receiver(c, id) < 0;
+  /* ...and `2.times { }`, `1.upto(3) { }`, `x.step(..) { }` on a receiver
+     that is not a plain read: the statement form ends in the loop (in a
+     pure loop's signal counter, whose value the block answered: 1), and the
+     value form answers the receiver */
+  return (iter_value_answers_recv(c, id) || num_iter_answers_recv(c, id)) &&
+         tail_iter_receiver(c, id) < 0;
 }
 
 /* The rename entries a spliced block's text and its yield's argument text
@@ -4951,6 +5052,82 @@ int iter_recv_bind_once(Compiler *c, int node) {
 static int g_enum_walk_res = 0;
 void set_enum_walk_result(int tmp) { g_enum_walk_res = tmp; }
 
+/* A boxed receiver's `each { }` that the run-time dispatch serves because a
+   class of the program takes a block for `each` built a proc and called
+   the dispatch for every receiver, an Array's too. Where the plan splits it
+   (cplan_each_split), the receiver is read once into a temp, the kinds the
+   dispatch's enum-proc arm serves walk inline, as the call emits in a
+   program with no such class, and any other value takes the dispatch. An
+   Enumerator's walk answers from the walk it ran (sp_poly_each_walk_answer),
+   as the dispatch's does. Each arm is emitted under an arm view naming the
+   call (ArmCtx.each_inline, each_dispatch), so neither splits it again. */
+int each_split_applies(Compiler *c, int id) {
+  /* none inside a split's dispatch arm: its block is a proc of its own, so
+     a boxed `each` in it split there as well as in the inline arm, and the
+     C doubled at every level of nesting. An inner `each` there takes the
+     dispatch's way, as before the split; the inline arm, where the builtins
+     run, keeps its inner splits. */
+  return g_arm.each_inline != id && g_arm.each_dispatch < 0 && g_n_argov < MAX_ARG_OVERRIDE &&
+         cplan_each_split(c, id)->n > 0;
+}
+/* an arm of the split, emitted into `out` under its arm view */
+static int emit_each_split_arm(Compiler *c, int id, int inline_arm, int as_value, Buf *out, int indent) {
+  int va = view_push_arm(g_pd_skip, g_prbd_skip, g_poly_builtin_arm);
+  if (inline_arm) g_arm.each_inline = id; else g_arm.each_dispatch = id;
+  int ok = 1;
+  if (as_value && inline_arm) ok = emit_iter_value_expr(c, id, out);
+  else if (as_value) emit_boxed(c, id, out);
+  else if (inline_arm) ok = emit_iteration_stmt(c, id, out, indent);
+  else emit_stmt(c, id, out, indent);
+  view_pop(c, va);
+  return ok;
+}
+/* both arms over the receiver read once: a statement, or (as_value) the
+   value of whichever arm ran. The dispatch arm's own set-up (its proc, the
+   captures it hands on) goes inside that arm, so the inline arm builds
+   none of it. */
+static int emit_each_split(Compiler *c, int id, int as_value, Buf *b, int indent) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  int frame = g_plan_check ? pa_begin(id) : -1;
+  int t = ++g_tmp;
+  Buf rb; memset(&rb, 0, sizeof rb);
+  emit_expr(c, recv, &rb);
+  view_bind(recv, "_t%d", t);
+  Buf ib, db, dp;
+  memset(&ib, 0, sizeof ib); memset(&db, 0, sizeof db); memset(&dp, 0, sizeof dp);
+  int ok = emit_each_split_arm(c, id, 1, as_value, &ib, indent + 2);
+  if (ok) {
+    Buf *sv_pre = g_pre;
+    if (as_value) g_pre = &dp;
+    emit_each_split_arm(c, id, 0, as_value, &db, indent + 2);
+    g_pre = sv_pre;
+  }
+  view_unbind(g_n_argov - 1);
+  if (ok && as_value) {
+    buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); (", t, rb.p ? rb.p : "sp_box_nil()", t);
+    emit_penum_kind_test(b, t);
+    buf_printf(b, ") ? %s : ({ %s %s; }); })", ib.p ? ib.p : "sp_box_nil()", dp.p ? dp.p : "",
+               db.p ? db.p : "sp_box_nil()");
+  }
+  else if (ok) {
+    emit_indent(b, indent); buf_puts(b, "{\n");
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", t, rb.p ? rb.p : "sp_box_nil()", t);
+    emit_indent(b, indent + 1); buf_puts(b, "if ("); emit_penum_kind_test(b, t); buf_puts(b, ") {\n");
+    buf_puts(b, ib.p ? ib.p : "");
+    emit_indent(b, indent + 1); buf_puts(b, "} else {\n");
+    buf_puts(b, db.p ? db.p : "");
+    emit_indent(b, indent + 1); buf_puts(b, "}\n");
+    emit_indent(b, indent); buf_puts(b, "}\n");
+  }
+  free(rb.p); free(ib.p); free(db.p); free(dp.p);
+  if (g_plan_check) {
+    if (ok) { pa_resume(frame); pa_observe(PA_BUILTIN, PA_KEY_BUILTIN + PB_ENUM_INLINE, -1, TY_UNKNOWN, PC_SAME);
+              pa_end(c, frame, cplan_each_split(c, id)); }
+    else pa_drop(frame);
+  }
+  return ok;
+}
 int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -4968,6 +5145,8 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   if (nt_kind(nt, block) != NK_BlockNode) return 0;
+  /* the value: the inline walk's answer or the dispatch's */
+  if (each_split_applies(c, id)) return emit_each_split(c, id, 1, b, 0);
   /* `e.each { }` over an Enumerator answers what its underlying each does:
      a generator's body value, a materialized one's collection. The walk
      runs once; the `to_a` hop in front of it is never evaluated. */
@@ -5028,7 +5207,12 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   int ta = ++g_tmp;
   view_bind(recv, "_t%d", ta);
   Buf body; memset(&body, 0, sizeof body);
+  /* a boxed `each` answers from the walk it runs (sp_poly_each_walk_answer) */
+  int twres = rr.kind == RK_BOXED && is_each_name(name) ? ++g_tmp : 0;
+  g_enum_walk_res = twres;
   int ok = emit_iteration_stmt(c, id, &body, 0);
+  int walked = twres && g_enum_walk_res == 0;
+  g_enum_walk_res = 0;
   view_unbind(g_n_argov - 1);
   if (!ok) { free(body.p); return 0; }
   /* The original receiver is read twice, once under the hop and once as the
@@ -5045,6 +5229,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
      whether it is collectable), so this rooted almost nothing. */
   if (comp_ty_value_obj(c, rt)) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   else if (needs_root(rt)) buf_printf(b, rr.kind == RK_BOXED ? "SP_GC_ROOT_RBVAL(_t%d); " : "SP_GC_ROOT(_t%d); ", ta);
+  if (walked) buf_printf(b, "sp_RbVal _t%d = sp_box_nil(); SP_GC_ROOT_RBVAL(_t%d); ", twres, twres);
   /* a String Range is held by value: its two ends */
   else if (rt == TY_STR_RANGE) { emit_gc_root_tmp_refs(c, rt, ta, b); buf_puts(b, " "); }
   buf_puts(b, body.p ? body.p : "");
@@ -5056,6 +5241,7 @@ int emit_iter_value_expr(Compiler *c, int id, Buf *b) {
   if (objn >= 0) { buf_puts(b, " "); emit_expr(c, objn, b); buf_puts(b, "; })"); }
   /* a boxed Enumerator's `each { }` answers its walk's result -- the
      collection an `each` Enumerator was made from -- not the Enumerator */
+  else if (walked) buf_printf(b, " _t%d; })", twres);
   else if (rr.kind == RK_BOXED && nt_str(nt, id, "name") && is_each_name(nt_str(nt, id, "name")))
     buf_printf(b, " sp_poly_each_answer(_t%d); })", ta);
   else buf_printf(b, " _t%d; })", ta);
@@ -5087,6 +5273,14 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
   g_ie_next_var = nxbuf; g_ie_res_poly = 1; g_ie_next_ty = TY_UNKNOWN;
   g_loop_exc_base = g_exc_frame_depth; g_loop_rescue_base = g_rescue_save_depth; g_loop_ensure_base = g_ensure_depth;
   g_c_loop_depth++;
+  /* The loop may be the builtin arm of a poly dispatch, beside a class's
+     own reject!, which reads its receiver as no object of the program's
+     (g_poly_builtin_arm). The block's own calls are not that receiver's:
+     under the reading, `v.zero?` on a poly value took the builtin for a
+     program class's instance in the block, and where the call's slot was
+     a box the C did not build. Drop it for the step, as the step helpers
+     do (step_arm_begin). */
+  int arm = step_arm_begin();
   /* the step's setup: locals fresh, and a redo's label after them */
   if (block_of_body(c, body) >= 0) emit_block_locals_reset(c, block_of_body(c, body), b, indent + 1);
   int rd_lbl = emit_iter_step_stmts(c, body, b, indent + 1, NULL);
@@ -5105,6 +5299,7 @@ static void emit_filter_body(Compiler *c, int body, int tnv, int tk, int is_rej,
     buf_printf(b, "_t%d = %s(%s);\n", tk, is_rej ? "!" : "", cexpr.p ? cexpr.p : "0");
     free(cexpr.p);
   }
+  step_arm_end(c, arm);
   if (rd_lbl) g_redo_depth--;
   g_c_loop_depth--;
   g_loop_exc_base = sv_lexc; g_loop_rescue_base = sv_lexc_rb; g_loop_ensure_base = sv_lens;
@@ -7162,6 +7357,10 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     int pv_half = sp_streq(name, "each_value") ? 1 :
                   sp_streq(name, "each_key") ? 0 : -1;
     int is_ewi = sp_streq(name, "each_with_index");
+    /* the value form's answer (emit_iter_value_expr): an `each` reads it
+       from the walk it ran, so a generator's body runs once */
+    int twres = is_each_name(name) ? g_enum_walk_res : 0;
+    if (twres) g_enum_walk_res = 0;
     int ta = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp;
     Buf rb; memset(&rb, 0, sizeof rb); emit_expr(c, recv, &rb);
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = %s;\n", ta, rb.p ? rb.p : "sp_box_nil()"); free(rb.p);
@@ -7356,6 +7555,12 @@ static int iter_ewi_zip_poly_arms(Compiler *c, int id, Buf *b, int indent, const
     }
     emit_loop_body(c, body, b, indent + 1);
     emit_indent(b, indent); buf_puts(b, "}\n");
+    if (twres) {
+      Buf ob; memset(&ob, 0, sizeof ob); emit_expr(c, recv, &ob);
+      emit_indent(b, indent);
+      buf_printf(b, "_t%d = sp_poly_each_walk_answer(%s, _t%d);\n", twres, ob.p ? ob.p : "sp_box_nil()", ta);
+      free(ob.p);
+    }
     return 1;
   }
   return -1;
@@ -7688,7 +7893,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      method: the loops below walk the receiver as a builtin container, which
      answers empty when the value is the user object. The cls_id dispatch is
      the only emitter with arms for both (#3409). */
-  if (poly_block_call_needs_dispatch(c, id)) return 0;
+  if (g_arm.each_inline != id && poly_block_call_needs_dispatch(c, id))
+    return each_split_applies(c, id) ? emit_each_split(c, id, 0, b, indent) : 0;
 
   /* `e.each { }` on an Enumerator, as a statement: the analysis routed it
      through a `to_a` it marked, which never ends for an endless or generator
@@ -7845,6 +8051,15 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
   /* loop { ... } -- infinite loop, exited by break */
   if (recv < 0 && sp_streq(name, "loop")) {
     int lbody = nt_ref(nt, block, "body");
+    /* a body nothing in which can raise StopIteration is a plain C loop: no
+       handler to open, and its locals stay out of memory */
+    if (!loop_may_stop(c, id)) {
+      emit_indent(b, indent); buf_puts(b, "for (;;) {\n");
+      g_loop_uncounted = 1;
+      emit_loop_body(c, lbody, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "}\n");
+      return 1;
+    }
     /* Kernel#loop rescues StopIteration to terminate normally (e.g. an external
        Enumerator's #next at the end). Wrap the loop in a setjmp handler; a
        StopIteration falls through, any other exception re-raises. */
@@ -7957,6 +8172,19 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     int args = nt_ref(nt, id, "arguments"); int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc < 1) return 0;
+    /* a Rational step walks the boxed sequence from the begin */
+    if (rt == TY_RANGE && an_range_step_rat(c, id, 0)) {
+      emit_indent(b, indent); buf_puts(b, "{ ");
+      int tc = emit_range_rat_step_for(c, recv, sargv[0], 0, b);
+      buf_puts(b, " {\n");
+      if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
+      { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);
+        int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;
+        emit_iter_bind_rest(c, block, rs_np, TY_POLY, rs_es, b, indent + 1); }
+      emit_loop_body(c, body, b, indent + 1);
+      emit_indent(b, indent); buf_puts(b, "} }\n");
+      return 1;
+    }
     /* An INTEGER-stepped Range walks its span directly instead of
        materializing it: an endless range would never finish building the
        array, so the block (and its break) was never reached (#3673). */
@@ -8099,12 +8327,14 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
      a Rational operand rational), so the values stay exact (#2566). */
   /* a Bignum receiver walks the same boxed sequence: it does not fit the
      sp_int loop below, and it had no arm at all (#4779) */
-  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big || (rt == TY_POLY && an_rat_value(c, recv)))) {
+  /* and so does an Integer's Rational limit or step */
+  if (sp_streq(name, "step") && (rt == TY_RATIONAL || rr.big || (rt == TY_POLY && an_rat_value(c, recv)) ||
+                                 (rt == TY_INT && an_step_rat_bound(c, id, 0)))) {
     int args = nt_ref(nt, id, "arguments");
     int sargc = 0;
     const int *sargv = args >= 0 ? nt_arr(nt, args, "arguments", &sargc) : NULL;
     if (sargc < 1) return 0;
-    int tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp, td = ++g_tmp;
+    int tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
     emit_indent(b, indent); buf_printf(b, "sp_RbVal _t%d = ", tc);
     if (rt == TY_RATIONAL) { buf_puts(b, "sp_box_rational("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else emit_boxed(c, recv, b);
@@ -8115,12 +8345,8 @@ static int emit_iteration_stmt_body(Compiler *c, int id, Buf *b, int indent) {
     if (sargc >= 2) emit_boxed(c, sargv[1], b); else buf_puts(b, "sp_box_int(1)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", ts);
     emit_indent(b, indent);
-    buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");\n", ts);
-    emit_indent(b, indent);
-    buf_printf(b, "sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;\n", td, ts);
-    emit_indent(b, indent);
-    buf_printf(b, "for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) {\n",
-               td, tc, tl, tc, tl, tc, tc, ts);
+    emit_boxed_step_head(b, tc, tl, ts, "0", "0", NULL);
+    buf_puts(b, " {\n");
     if (p0) { char cs[32]; snprintf(cs, sizeof cs, "_t%d", tc); emit_iter_param_assign(c, block, p0_orig, p0, TY_POLY, cs, b, indent + 1); }
     { char rs_es[32]; snprintf(rs_es, sizeof rs_es, "_t%d", tc);
       int rs_np = 0; while (block_param_name(c, block, rs_np)) rs_np++;

@@ -92,7 +92,7 @@ int sh_may_hold(const Compiler *c, TyKind t) {
 static int sh_ivar_owner(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
   if (s && s->class_id >= 0) return s->class_id;
-  return comp_class_index(c, "Toplevel");
+  return c->toplevel_class;
 }
 
 static int sh_method_index(Compiler *c, int node) {
@@ -1226,7 +1226,7 @@ int share_name_targets(Compiler *c, int call, int *out, int cap) {
   /* an attr_reader of the name answers the String its ivar holds, and is
      no method's scope the walk below sees */
   for (int ci = 0; ci < c->nclasses; ci++) if (comp_is_reader(&c->classes[ci], nm)) return -1;
-  int str_cid = comp_class_index(c, "String"), k = 0;
+  int str_cid = comp_core_class(c, CORE_STRING), k = 0;
   for (int mi = 0; mi < c->nscopes; mi++) {
     Scope *m = &c->scopes[mi];
     if (!m->name || m->def_node < 0 || !sp_streq(m->name, nm)) continue;
@@ -1507,7 +1507,7 @@ int share_frozen_string(Compiler *c, int n) {
     const char *pn = par >= 0 && nt_kind(nt, par) == NK_ConstantReadNode ? nt_str(nt, par, "name") : NULL;
     /* (or while a File of the program writes no constant of the name: a
        reopen with methods of its own, const_path_in_closed_builtin) */
-    return pn && sp_streq(pn, "File") && (comp_class_index(c, "File") < 0 || const_path_in_closed_builtin(c, u)) &&
+    return pn && sp_streq(pn, "File") && (comp_core_class(c, CORE_FILE) < 0 || const_path_in_closed_builtin(c, u)) &&
            is_file_string_const(nt_str(nt, u, "name"));
   }
   return share_frozen_literal(c, n);

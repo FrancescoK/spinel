@@ -816,7 +816,7 @@ int emit_hash_reduce_scalar_expr(Compiler *c, int id, Buf *b) {
   if (!hn) return 0;
   /* a Hash reopen's own method of the name is the call's target, as the
      inference takes it (an_reopen_owner): its call takes the block */
-  if (an_reopen_owner(c, id, "Hash") >= 0) return 0;
+  if (an_reopen_owner(c, id, CORE_HASH) >= 0) return 0;
   int body = nt_ref(nt, block, "body");
   int bn = 0; if (body >= 0) nt_arr(nt, body, "body", &bn);
   if (bn < 1) return 0;
@@ -3279,6 +3279,48 @@ static int emit_step_boxed_limit(Compiler *c, int recv, const int *sv, int sc, B
   return 1;
 }
 
+/* The head of a boxed numeric walk, as one line: the current value _t<tc>
+   advances by the step _t<ts> through the poly numeric tower (sp_poly_add
+   keeps a Rational exact) while it stays within the limit _t<tl>. `excl`
+   and `open` are C conditions: an excluded limit is compared with <, an open
+   one (an endless Range) not at all. A zero step raises, a negative one
+   walks down; `guard` (or NULL) runs after the zero check. */
+void emit_boxed_step_head(Buf *b, int tc, int tl, int ts, const char *excl, const char *open, const char *guard) {
+  int td = ++g_tmp;
+  buf_printf(b, "if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", ts);
+  if (guard) buf_printf(b, " %s", guard);
+  buf_printf(b, " sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", td, ts);
+  buf_printf(b, " for (; (%s) || (_t%d ? ((%s) ? sp_poly_lt(_t%d, _t%d) : sp_poly_le(_t%d, _t%d))"
+                " : ((%s) ? sp_poly_gt(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d)));"
+                " _t%d = sp_poly_add(_t%d, _t%d))",
+             open, td, excl, tc, tl, tc, tl, excl, tc, tl, tc, tl, tc, tc, ts);
+}
+
+/* The boxed walk of an Integer Range by a Rational step (an_range_step_rat),
+   as one line: the declarations and the `for (...)` head, the current value
+   in the returned temp. `materialize`: the walk fills an Array, so an
+   endless Range or a span past 2**30 steps raises, as the Integer step's
+   array does, rather than pushing until memory runs out. */
+int emit_range_rat_step_for(Compiler *c, int recv, int step, int materialize, Buf *b) {
+  int tr = ++g_tmp, tc = ++g_tmp, tl = ++g_tmp, ts = ++g_tmp;
+  buf_printf(b, "sp_Range _t%d = ", tr); emit_expr(c, recv, b);
+  buf_printf(b, "; sp_range_int_only(_t%d, \"Range#step\");", tr);
+  buf_printf(b, " if (_t%d.nobeg) sp_raise_cls(\"ArgumentError\","
+                " \"#step for non-numeric beginless ranges is meaningless\");", tr);
+  buf_printf(b, " sp_RbVal _t%d = ", ts); emit_boxed(c, step, b);
+  buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", ts);
+  buf_printf(b, " sp_RbVal _t%d = sp_box_int(_t%d.last);", tl, tr);
+  buf_printf(b, " sp_RbVal _t%d = sp_box_int(_t%d.first); SP_GC_ROOT_RBVAL(_t%d); ", tc, tr, tc);
+  char excl[32], open[32], guard[320];
+  snprintf(excl, sizeof excl, "_t%d.excl", tr);
+  snprintf(open, sizeof open, "_t%d.noend", tr);
+  snprintf(guard, sizeof guard,
+           "if (_t%d.noend || sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
+           " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tr, tl, tc, ts);
+  emit_boxed_step_head(b, tc, tl, ts, excl, open, materialize ? guard : NULL);
+  return tc;
+}
+
 /* numeric.step(limit[, step]) without a block, materialized as an int or
    float array (so a following .to_a / .inspect works). Returns 1 if handled. */
 int emit_step_array_expr(Compiler *c, int id, Buf *b) {
@@ -3312,9 +3354,11 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
      sequence boxed, exactly as a Rational receiver does (#3006). */
   int bn_bound = 0;
   for (int sk = 0; sk < sc; sk++) if (repr_of(c, sv[sk]).big) bn_bound = 1;
-  /* (and a Rational --int-overflow=promote holds boxed) */
-  if (rt == TY_RATIONAL || bn_bound || (rt == TY_POLY && an_rat_value(c, recv))) {
-    int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp, tdd = ++g_tmp;
+  /* (and a Rational --int-overflow=promote holds boxed, and an Integer's
+     Rational limit or step) */
+  if (rt == TY_RATIONAL || bn_bound || (rt == TY_POLY && an_rat_value(c, recv)) ||
+      (rt == TY_INT && an_step_rat_bound(c, id, 0))) {
+    int trr = ++g_tmp, tcc = ++g_tmp, tll = ++g_tmp, tss = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", trr, trr);
     buf_printf(b, " sp_RbVal _t%d = ", tcc);
     if (rt == TY_RATIONAL) { buf_puts(b, "sp_box_rational("); emit_expr(c, recv, b); buf_puts(b, ")"); }
@@ -3325,14 +3369,15 @@ int emit_step_array_expr(Compiler *c, int id, Buf *b) {
     buf_printf(b, " sp_RbVal _t%d = ", tss);
     if (sc >= 2) emit_boxed(c, sv[1], b); else buf_puts(b, "sp_box_int(1)");
     buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", tss);
-    buf_printf(b, " if (sp_poly_cmp_ck(_t%d, sp_box_int(0)) == 0) sp_raise_cls(\"ArgumentError\", \"step can't be 0\");", tss);
     /* a span past 2**30 steps raises as the sp_int form below does, rather
        than pushing until memory runs out */
-    buf_printf(b, " if (sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
-                  " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tss);
-    buf_printf(b, " sp_bool _t%d = sp_poly_cmp_ck(_t%d, sp_box_int(0)) > 0;", tdd, tss);
-    buf_printf(b, " for (; _t%d ? sp_poly_le(_t%d, _t%d) : sp_poly_ge(_t%d, _t%d); _t%d = sp_poly_add(_t%d, _t%d)) sp_PolyArray_push(_t%d, _t%d);",
-               tdd, tcc, tll, tcc, tll, tcc, tcc, tss, trr, tcc);
+    char guard[256];
+    snprintf(guard, sizeof guard,
+             "if (sp_poly_cmp_ck(sp_poly_div(sp_poly_sub(_t%d, _t%d), _t%d), sp_box_int(1LL << 30)) >= 0)"
+             " sp_raise_cls(\"RangeError\", \"range too large to materialize\");", tll, tcc, tss);
+    buf_puts(b, " ");
+    emit_boxed_step_head(b, tcc, tll, tss, "0", "0", guard);
+    buf_printf(b, " sp_PolyArray_push(_t%d, _t%d);", trr, tcc);
     buf_printf(b, " _t%d; })", trr);
     return 1;
   }
@@ -4177,11 +4222,12 @@ void emit_iter_step_body(Compiler *c, int block, Buf *b, int indent) {
 /* A dispatch's builtin arm reads its RECEIVER as no object of the
    program's (g_poly_builtin_arm); a block body's own calls are not that
    receiver's, and a user class owns their names there as anywhere. The
-   step helpers below drop the reading for the body they emit. */
-static int step_arm_begin(void) {
+   step helpers below drop the reading for the body they emit, as does the
+   in-place filter loop (emit_filter_body), which reads the step itself. */
+int step_arm_begin(void) {
   return g_poly_builtin_arm ? view_push_arm(g_pd_skip, g_prbd_skip, 0) : -1;
 }
-static void step_arm_end(Compiler *c, int tok) {
+void step_arm_end(Compiler *c, int tok) {
   if (tok >= 0) view_pop(c, tok);
 }
 
@@ -6726,7 +6772,17 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
+  /* The kept answer is boxed, whatever the enumerator's method. The
+     consumer takes the node's own type: a dispatch arm declares its slot
+     by it (an sp_StrArray * for a map over Strings, through a boxed
+     receiver whose other arms are user methods) and the box could not be
+     assigned to it, so a concrete type is unboxed here. */
+  char kept[96];
+  snprintf(kept, sizeof kept, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
+  Repr kr = repr_of(c, id);
+  TyKind kt = kr.as_ty;
+  if (kr.kind == RK_BOXED || kt == TY_POLY || kt == TY_UNKNOWN || kt == TY_NIL || kt == TY_VOID) buf_puts(b, kept);
+  else emit_unbox_text(c, kt, kept, b);
   (void)body;
   return 1;
 }
@@ -6776,6 +6832,8 @@ int emit_find_index_poly_expr(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   if (block < 0 || recv < 0) return 0;
   if (repr_of(c, recv).kind != RK_BOXED) return 0;
+  /* index(v) { } is the value form: the block is not used */
+  { int fac = 0; call_args(nt, id, &fac); if (fac > 0) return 0; }
   int body = nt_ref(nt, block, "body");
   int bn = 0; const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
   if (bn < 1) return 0;
@@ -7868,8 +7926,9 @@ static void emit_arg_or_default_fill(Compiler *c, Scope *m, int idx, int provide
             snprintf(msg, sizeof msg,
                      "a typed Hash is passed to `%s`'s parameter `%s`, which the method stores keys or "
                      "values of other types into: the caller's hash cannot hold them, and a converted copy "
-                     "would not see the stores. Build the argument from a hash literal the call can see, "
-                     "so it is widened with the parameter.",
+                     "would not see the stores. Build the argument where the call can follow it (a hash "
+                     "literal or `Hash.new`, through locals and method values), so it is widened with the "
+                     "parameter.",
                      m->name ? m->name : "?", m->pnames[idx]);
             unsupported_feature(c, provided, msg);
           }
@@ -10903,8 +10962,11 @@ static int bam_variadic_kernel(const NodeTable *nt, const Scope *m) {
    ArgumentError. One rule for the static count (emit_call_arity_check) and
    the counts a splat leaves to the run time (emit_splat_given_count,
    emit_unreached_splat_count), which judged such a scope's synthesized
-   slots as if they were arguments. */
+   slots as if they were arguments. A version entry's synthesized
+   parameters are its call's arguments one for one: it forwards them to
+   versions that all take the same count, so that count is judged here. */
 static int arity_unjudged(Compiler *c, Scope *m) {
+  if (m->entry) return 0;
   if (m->cs_synth) return 1;
   for (int i = 0; i < m->nparams; i++)
     if (m->pnames[i] && m->pnames[i][0] == '_' && m->pnames[i][1] == '_' &&
@@ -12036,6 +12098,27 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
   }
 }
 
+/* The first parameter of the enclosing method a `callee(...)` forwards: a
+   leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded,
+   the forward carries only the __fwd_ slots (and synthesized keyword
+   params), so the forward starts at the first __fwd_ slot. A `def f(a, ...)`
+   whose `...` is empty at every call site has no such slot, and forwards
+   NOTHING: starting at 0 there handed `a` on -- `method_missing(symbol, ...)`
+   calling `public_send(symbol, ...)` bound the name symbol to the arm's rest
+   parameter. A scope that is no `(...)` def (a block's, a clone's) keeps
+   forwarding all of its parameters. */
+static int fwd_slot_base(Compiler *c, Scope *encl) {
+  int fwd_base = 0;
+  while (fwd_base < encl->nparams &&
+         (!encl->pnames[fwd_base] ||
+          strncmp(encl->pnames[fwd_base], "__fwd_", 6) != 0)) fwd_base++;
+  if (fwd_base < encl->nparams) return fwd_base;
+  int pn = encl->def_node >= 0 ? nt_ref(c->nt, encl->def_node, "parameters") : -1;
+  int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
+  if (kwr >= 0 && nt_kind(c->nt, kwr) == NK_ForwardingParameterNode) return encl->nparams;
+  return 0;   /* no __fwd_ slot and no `...` of its own: forward all */
+}
+
 /* See codegen_internal.h. */
 void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
                            const char *lead, Buf *out) {
@@ -12047,17 +12130,9 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
      foo's args; no rest array / splat is materialized. */
   if (nt_argv_only_forwarding(nt, argv, argc)) {
     Scope *encl = comp_scope_of(c, argv[0]);
-    /* A leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded:
-       the forward carries only the __fwd_ slots (and synthesized keyword
-       params). Skip the enclosing method's leading concrete params by starting
-       at its first __fwd_ slot. */
-    int fwd_base = 0;
-    if (encl) {
-      while (fwd_base < encl->nparams &&
-             (!encl->pnames[fwd_base] ||
-              strncmp(encl->pnames[fwd_base], "__fwd_", 6) != 0)) fwd_base++;
-      if (fwd_base >= encl->nparams) fwd_base = 0;  /* no __fwd_ slot: forward all */
-    }
+    /* the enclosing method's leading concrete params are not forwarded
+       (fwd_slot_base) */
+    int fwd_base = encl ? fwd_slot_base(c, encl) : 0;
     for (int i = 0; i < m->nparams; i++) {
       buf_puts(out, i == 0 ? lead : ", ");
       int ei = fwd_base + i;
@@ -12495,6 +12570,9 @@ else {
 }
 
 int is_descendant(Compiler *c, int k, int anc) {
+  /* a subclass no reached code names has no instance, and none of its
+     methods is compiled (compute_reachable, #10592) */
+  if (k != anc && k >= 0 && c->classes[k].unreferenced) return 0;
   for (int x = k; x >= 0; x = c->classes[x].parent) if (x == anc) return 1;
   return 0;
 }
@@ -13287,14 +13365,9 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   int fwd_base_d = 0;
   if (nt_argv_only_forwarding(nt, argv, argc)) {
     fwd_encl = comp_scope_of(c, argv[0]);
-    /* skip the enclosing method's leading concrete params (`def f(a, ...)`) --
-       only the __fwd_ slots are forwarded. */
-    if (fwd_encl) {
-      while (fwd_base_d < fwd_encl->nparams &&
-             (!fwd_encl->pnames[fwd_base_d] ||
-              strncmp(fwd_encl->pnames[fwd_base_d], "__fwd_", 6) != 0)) fwd_base_d++;
-      if (fwd_base_d >= fwd_encl->nparams) fwd_base_d = 0;
-    }
+    /* the enclosing method's leading concrete params are not forwarded
+       (fwd_slot_base) */
+    if (fwd_encl) fwd_base_d = fwd_slot_base(c, fwd_encl);
   }
   /* separate keyword-hash arg */
   int kwh_d = -1, pos_argc_d = argc;
@@ -13468,7 +13541,15 @@ else {
         ren_hide(&kr_h, pd_ren_base);
         int krhash = emit_kwrest_collect(c, pm, kwh_d, ds_tmp_d, ds_type_d, argsNode);
         ren_unhide(&kr_h);
-        buf_printf(&ab, "_t%d", krhash);
+        /* The shared temp is declared the parameter's type below: a kwrest
+           held boxed (one the method reassigns a value of another class, as
+           `options = merged_options(options)` does) takes the collected hash
+           boxed, as emit_args_filled hands it over. Passed as the bare
+           pointer, the sp_RbVal temp's store did not compile. */
+        if (p && (p->type == TY_POLY || p->type == TY_UNKNOWN))
+          buf_printf(&ab, "sp_box_obj(_t%d, %s)", krhash,
+                     kwrest_any_key(c, pm) ? "SP_BUILTIN_POLY_POLY_HASH" : "SP_BUILTIN_SYM_POLY_HASH");
+        else buf_printf(&ab, "_t%d", krhash);
       }
       else if (!by_splat && kv < 0 && ds_tmp_d >= 0 && is_kwp_d) {
         /* keyword param fed by a forwarded `**hash`: extract by name. The
@@ -13685,7 +13766,17 @@ else {
          (g_self_deref "->"): its methods take the object */
       int vptr = comp_ty_value_obj(c, ty_object(cid)) && g_self && sp_streq(selfptr, g_self) &&
                  g_self_deref && sp_streq(g_self_deref, "->");
-      buf_printf(b, vptr ? "%s((*%s)" : "%s(%s", mc_method(c, m), selfptr);
+      /* An Array or Hash subclass instance is a typed pointer to its own
+         struct, and the reopening's method takes the builtin it starts
+         with, boxed: the version entry of a method the subclass and the
+         reopening both define arms a bare call to the reopening's
+         version, and the pointer passed as it was did not compile. Boxed
+         as every boxed use of the instance is (arysub_box_id). */
+      if (!vptr && cid >= 0 && c->classes[cid].ary_root > 0 && reopen_takes_boxed_self(c, defcls)) {
+        buf_printf(b, "%s(", mc_method(c, m));
+        emit_boxed_text(c, ty_object(cid), selfptr, b);
+      }
+      else buf_printf(b, vptr ? "%s((*%s)" : "%s(%s", mc_method(c, m), selfptr);
     }
     else
       buf_printf(b, "%s((sp_%s *)%s", mc_method(c, m), c->classes[defcls].c_name, selfptr);

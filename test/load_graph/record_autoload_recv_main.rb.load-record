@@ -9,5 +9,5 @@ r0 #6 f0 CallNode p line 12
 class Box: body#1
 entity Box: owner main leaf Box
 const Box: write#1
-Box#get: def#2 def#3 end=yes
-versions Box#get: def#2..#3 over=def#2, def#3..end; 2 of the name, named
+Box#get: def#2 runs=#6 def#3 runs=#6 end=yes
+versions Box#get: def#2..#3 seen=def#2 idle, def#3..end seen=def#3; 2 of the name, named

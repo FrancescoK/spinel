@@ -67,7 +67,6 @@
 # (A run is many programs, so unlike `spinel diff` one status summarizes it.)
 
 require "fileutils"
-require "pty"
 require "rbconfig"
 require "tmpdir"
 
@@ -373,6 +372,8 @@ module ProbeCommon
   # a run that does not end is killed with what it started.
   def run_on_tty(argv, timeout, stop = nil)
     raise Stopped if stop&.call
+    # not at the top: Windows' Ruby has no pty, and the build's generators load this file
+    require "pty"
     out = +""
     r, w, pid = PTY.spawn(*argv, in: File::NULL)
     deadline = Process.clock_gettime(Process::CLOCK_MONOTONIC) + timeout

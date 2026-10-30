@@ -77,6 +77,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     const char *arg_nm = nt_str(c->nt, arg, "name");
     if (arg_nm && comp_class_index(c, arg_nm) >= 0 && !comp_const(c, arg_nm)) {
       emit_indent(b, indent);
+      emit_const_read_stmt(c, arg, b, 0);
       /* (a class method to_s of the class's own prints it) */
       if (cls_user_display_mi(c, comp_class_index(c, arg_nm), "to_s") >= 0)
         buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", comp_class_index(c, arg_nm));
@@ -274,6 +275,7 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
            nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
     /* `puts SomeClass` -- a bare class constant renders its name, or what
        its own class method to_s answers */
+    emit_const_read_stmt(c, arg, b, 0);
     int pci = comp_class_index(c, nt_str(c->nt, arg, "name"));
     if (cls_user_display_mi(c, pci, "to_s") >= 0)
       buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", pci);
@@ -1176,7 +1178,7 @@ else {
     LocalVar *serr = comp_gvar(c, "stderr");
     int redirect_boxed = -1;
     if (std_stream_boxed(c, "$stderr")) {
-      int sio = comp_class_index(c, "StringIO");
+      int sio = comp_core_class(c, CORE_STRINGIO);
       if (std_stream_foreign_writer(c, NULL)) {
         if (argc > 0) unsupported(c, id, "warn while $stderr can hold an object whose class has its own write");
       }
@@ -2291,7 +2293,7 @@ static int strbuf_route_reopen_pf(Compiler *c, int v) {
   if (vt != TY_STRING && vt != TY_STRBUF) return 0;
   const CallPlan *p = cplan_user(c, v);
   int mi = p->mi;
-  if (p->via != UC_REOPEN || mi < 0 || c->scopes[mi].class_id != comp_class_index(c, "String") ||
+  if (p->via != UC_REOPEN || mi < 0 || c->scopes[mi].class_id != comp_core_class(c, CORE_STRING) ||
       !c->scopes[mi].yields || repr_self_handle(c, mi)) return 0;
   int pf = scope_proc_form_of(c, mi), last = scope_body_last(c, mi);
   return pf >= 0 && c->scopes[pf].ret == TY_POLY && last >= 0 && nt_kind(nt, last) == NK_YieldNode &&
@@ -6860,8 +6862,11 @@ void emit_cond(Compiler *c, int id, Buf *b) {
      (`::Time.zone ? a : b`, DateTime.current): the call raises when reached
      (the NoMethodError gate's answer), so the test that follows is never
      read -- evaluate it for the raise */
+  /* ...and a call that finds no method where it runs (cplan_missing), or
+     runs into one in an operand (`1 / n + zz`), which leaves the
+     operators around it untyped */
   if ((t == TY_UNKNOWN || t == TY_VOID) && nt_kind(c->nt, id) == NK_CallNode &&
-      call_on_builtin_class_missing(c, id)) {
+      (call_on_builtin_class_missing(c, id) || missing_call_raised(c, id) >= 0)) {
     buf_puts(b, "(("); emit_expr(c, id, b); buf_puts(b, "), 0)"); return;
   }
   if (t != TY_BOOL) unsupported(c, id, "condition (non-bool)");
@@ -6900,11 +6905,11 @@ int static_isa_cond(Compiler *c, int pred) {
        ancestors hold for nil as well, so those stay folded. */
     if ((rt == TY_STRING || ((rt == TY_INT || rt == TY_FLOAT) && nullable_int_value(c, recv))) &&
         !is_object_root(target_name)) {
-      int ans = ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
+      int ans = ty_matches_class(c, rt, target_name, sp_streq(nm, "instance_of?"));
       if (ans == 1 || sp_streq(target_name, "NilClass")) return -1;
       return ans;
     }
-    return ty_matches_class(rt, target_name, sp_streq(nm, "instance_of?"));
+    return ty_matches_class(c, rt, target_name, sp_streq(nm, "instance_of?"));
   }
   int target = comp_class_index(c, target_name);
   /* Comparable, Enumerable and Math name no class of the table: the includes
@@ -7272,10 +7277,33 @@ void emit_class_val_when(const char *cn, int t, Buf *b) {
                     sp_streq(cn, "BasicObject") || sp_streq(cn, "Kernel")) ? "1" : "0");
 }
 
+static int emit_poly_class_when_value(Compiler *c, int cond_id, const char *tmp, Buf *b);
+static int emit_pm_cond_value(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b);
+/* Both class-condition routes retain a read under a view. A declined
+   condition must also discard its prefix, so its caller can refuse it.
+   A non-NULL tmp is the poly when caller's named boxed scrutinee; the
+   pattern caller instead supplies its typed slot (t, pt, subj). Only the
+   value test differs: this wrapper owns their shared prefix/view rollback. */
+static int emit_class_condition(Compiler *c, int id, const char *tmp, int t, TyKind pt, int subj, Buf *b) {
+  int read = nt_kind_is_constant(nt_kind(c->nt, id)) ? id : nt_ref(c->nt, id, "constant");
+  size_t mark = b->len;
+  int effect = emit_const_read_prefix(c, read, b);
+  int view = effect ? view_push_const_read(c, read) : -1;
+  int result = tmp ? emit_poly_class_when_value(c, id, tmp, b) : emit_pm_cond_value(c, id, t, pt, subj, b);
+  if (effect) {
+    view_pop(c, view);
+    if (result) buf_puts(b, ")");
+    else buf_erase(b, mark, b->len - mark);
+  }
+  return result;
+}
 int emit_poly_class_when(Compiler *c, int cond_id, const char *tmp, Buf *b) {
+  return emit_class_condition(c, cond_id, tmp, 0, TY_UNKNOWN, -1, b);
+}
+static int emit_poly_class_when_value(Compiler *c, int cond_id, const char *tmp, Buf *b) {
   const NodeTable *nt = c->nt;
   NodeKind ck = nt_kind(nt, cond_id);
-  if (ck != NK_ConstantReadNode && ck != NK_ConstantPathNode) return 0;
+  if (!nt_kind_is_constant(ck)) return 0;
   const char *cn = nt_str(nt, cond_id, "name");
   if (!cn) return 0;
   /* a qualified path naming a known builtin (exception) class matches by its
@@ -7790,7 +7818,8 @@ static int g_pm_sentinel_t = -1;
    segment, so comparing it directly never matched and the branch was silently
    skipped (#3373). Resolve through the class table and use the name the
    exception actually has. */
-static const char *exc_when_cls_name(Compiler *c, const char *cn) {
+static const char *exc_when_cls_name(Compiler *c, int pat, char *buf, size_t bufsz) {
+  const char *cn = isa_match_name(c->nt, pat, buf, bufsz);
   int ci = cn ? comp_class_index(c, cn) : -1;
   const char *q = ci >= 0 ? class_ruby_name(c, ci) : NULL;
   return q ? q : cn;
@@ -8068,6 +8097,9 @@ int emit_pm_cond(Compiler *c, int pat, int t, TyKind pt, Buf *b) {
   return emit_pm_cond_subj(c, pat, t, pt, -1, b);
 }
 static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b) {
+  return emit_class_condition(c, pat, NULL, t, pt, subj, b);
+}
+static int emit_pm_cond_value(Compiler *c, int pat, int t, TyKind pt, int subj, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *pty = nt_type(nt, pat);
   NodeKind pk = nt_kind(nt, pat);
@@ -8144,7 +8176,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
     }
     if (pt == TY_EXCEPTION) {
       /* an exception scrutinee matches by name up its class chain (#2759) */
-      buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+      buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, pat, NULL, 0));
       return 1;
     }
     if (pt == TY_BOOL && (is_boolean_class_name(cn2)) &&
@@ -8169,7 +8201,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       emit_class_val_when(cn2, t, b);
       return 1;
     }
-    int yes = ty_matches_class(pt, cn2, 0);
+    int yes = ty_matches_class(c, pt, cn2, 0);
     /* a scalar subject holding nil (its nil flag) is a NilClass, and is not
        the Integer or Float its slot is; Object and its ancestors hold for
        nil too, as in the is_a? fold. A String slot, a typed Hash or Array
@@ -8357,7 +8389,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
         }
         if (classpat >= 0) {
           const char *cn2 = nt_str(nt, classpat, "name");
-          if (cn2 && ty_matches_class(et2, cn2, 0) <= 0 &&
+          if (cn2 && ty_matches_class(c, et2, cn2, 0) <= 0 &&
               !(et2 == TY_STRING && sp_streq(cn2, "NilClass"))) class_mismatch = 1;
         }
       }
@@ -8558,7 +8590,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
       }
       else {
         const char *cn = nt_str(nt, classpat, "name");
-        if (cn && ty_matches_class(hvt, cn, 0) <= 0) {
+        if (cn && ty_matches_class(c, hvt, cn, 0) <= 0) {
           emit_indent(hs, hi); buf_printf(hs, "_t%d = 0;\n", hcond);
         }
       }
@@ -10615,9 +10647,9 @@ static int when_builtin_value_const(Compiler *c, int cond) {
   return ct == TY_POLY && enc_const_path(c->nt, cond);
 }
 
-static int emit_when_scalar_class(TyKind pt, const char *cn, int t, Buf *b) {
+static int emit_when_scalar_class(Compiler *c, TyKind pt, const char *cn, int t, Buf *b) {
   if (pt != TY_INT && pt != TY_FLOAT && pt != TY_STRING) return 0;
-  int yes = ty_matches_class(pt, cn, 0);
+  int yes = ty_matches_class(c, pt, cn, 0);
   int nilcls = sp_streq(cn, "NilClass");
   int univ = is_object_root(cn);
   if (yes < 0 || (!nilcls && (!yes || univ))) return 0;
@@ -11054,7 +11086,8 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
         /* ...and so is a builtin's value constant (`Socket::AF_INET`,
            `File::SEPARATOR`): typed a number or a String, not a class */
         if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
-          if (cn2 && pt == TY_POLY) {
+        int effect = cn2 && pt != TY_POLY ? emit_const_read_prefix(c, conds[j], b) : 0;
+        if (cn2 && pt == TY_POLY) {
             char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
             if (!emit_poly_class_when(c, conds[j], tmp, b))
               buf_puts(b, "0");
@@ -11069,7 +11102,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           }
           else if (cn2 && pt == TY_EXCEPTION) {
             /* an exception scrutinee matches by name up its class chain (#2759) */
-            buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+            buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, conds[j], cq2, sizeof cq2));
           }
           else if (cn2 && pt == TY_BOOL &&
                    (is_boolean_class_name(cn2))) {
@@ -11077,9 +11110,9 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
                not decidable from the static TY_BOOL type (#2966) */
             buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
           }
-          else if (cn2 && emit_when_scalar_class(pt, cn2, t, b)) { }
+          else if (cn2 && emit_when_scalar_class(c, pt, cn2, t, b)) { }
           else if (cn2) {
-            int yes = ty_matches_class(pt, cn2, 0);
+            int yes = ty_matches_class(c, pt, cn2, 0);
             buf_printf(b, "%d", yes > 0 ? 1 : 0);
           }
           else {
@@ -11136,6 +11169,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
             else emit_case_obj_eq(c, conds[j], t, pt, b);
           }
           } /* close non-ConstantReadNode else */
+          if (effect) buf_puts(b, ")");
           } /* close else { int reidx... } */
         }
       }
@@ -11490,6 +11524,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         /* ...and so is a builtin's value constant (`Socket::AF_INET`,
            `File::SEPARATOR`): typed a number or a String, not a class */
         if (cn2 && when_builtin_value_const(c, conds[j])) cn2 = NULL;
+        int effect = cn2 && pt != TY_POLY ? emit_const_read_prefix(c, conds[j], b) : 0;
         if (cn2 && pt == TY_POLY) {
           char tmp[32]; snprintf(tmp, sizeof tmp, "_t%d", t);
           if (!emit_poly_class_when(c, conds[j], tmp, b)) buf_puts(b, "0");
@@ -11504,15 +11539,15 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         }
         else if (cn2 && pt == TY_EXCEPTION) {
           /* an exception scrutinee matches by name up its class chain (#2759) */
-          buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+          buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, conds[j], cq2, sizeof cq2));
         }
         else if (cn2 && pt == TY_BOOL &&
                  (is_boolean_class_name(cn2))) {
           /* a boolean's class is a runtime value, not the static TY_BOOL (#2966) */
           buf_printf(b, "(_t%d %s)", t, sp_streq(cn2, "TrueClass") ? "!= 0" : "== 0");
         }
-        else if (cn2 && emit_when_scalar_class(pt, cn2, t, b)) { }
-        else if (cn2) { int yes = ty_matches_class(pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
+        else if (cn2 && emit_when_scalar_class(c, pt, cn2, t, b)) { }
+        else if (cn2) { int yes = ty_matches_class(c, pt, cn2, 0); buf_printf(b, "%d", yes > 0 ? 1 : 0); }
         else {
         if (emit_when_typed_test(c, conds[j], t, pt, b)) { }
         else if (comp_ntype(c, conds[j]) == TY_PROC &&
@@ -11547,6 +11582,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         else if (pt == TY_POLY) { buf_printf(b, "sp_poly_eq(_t%d, ", t); emit_boxed(c, conds[j], b); buf_puts(b, ")"); }
         else emit_case_obj_eq(c, conds[j], t, pt, b);
         } /* close non-ConstantReadNode else */
+        if (effect) buf_puts(b, ")");
       }
       else {
         buf_puts(b, "(");
@@ -13963,6 +13999,7 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
   if (g_repr_check) repr_channel_end(c, frame);
 }
 static void emit_tail_value_1(Compiler *c, int node, Buf *b) {
+  if (emit_const_class_call_wrap(c, node, b, emit_tail_value_1)) return;
   /* A poly tail slot (a poly return, or a poly result var -- e.g. an inlined
      method's result temp) takes the value as-is: do not rewrite a poly
      `sp_box_nil()` into the scalar emit_ret_nil(g_ret_type) form below. */
@@ -14801,6 +14838,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
       }
       if (en_k != NK_ConstantReadNode && en_k != NK_ConstantPathNode) continue;
       if (!first) buf_puts(b, " || ");
+      int effect = emit_const_read_prefix(c, exc[i], b);
       first = 0;
       const char *ename = nt_str(nt, exc[i], "name");
       /* A builtin namespaced exception (e.g. StringScanner::Error) is raised
@@ -14907,6 +14945,7 @@ void emit_rescue(Compiler *c, int id, Buf *b, int indent, int fr, const char *re
         }
         buf_puts(b, ")");
       }
+      if (effect) buf_puts(b, ")");
     }
     if (first) buf_puts(b, "1");  /* no usable type -> always */
     }
@@ -16459,7 +16498,7 @@ static int masgn_ivar_home(Compiler *c, int id, const char *ivnm, char *lhs, siz
   }
   if (sc && sc->is_cmethod) return 0;
   if (g_class_body_id >= 0) cc = g_class_body_id;
-  else cc = comp_class_index(c, "Toplevel");
+  else cc = c->toplevel_class;
   if (cc < 0) return 0;
   snprintf(lhs, n, "civ_%s_%s", c->classes[cc].name, iv_c(ivnm + 1));
   *cid = cc;
@@ -17293,6 +17332,7 @@ static int emit_next_leaving_body(Compiler *c, int id, Buf *b, int indent) {
 static int class_body_name_undefined(Compiler *c, const char *nm) {
   static const char *const decls[] = { "private", "protected", "public", "module_function",
     "private_class_method", "public_class_method", "private_constant", "public_constant",
+    "deprecate_constant",
     "attr", "attr_reader", "attr_writer", "attr_accessor", "attribute", "attributes",
     "include", "extend", "prepend",
     "using", "refine", "alias_method", "define_method", "define_singleton_method",
@@ -18717,7 +18757,7 @@ static int emit_multi_write_stmt(Compiler *c, int id, Buf *b, int indent, const 
       int iv_global = 0;
       if (iv_cid < 0 && !(iv_sc && iv_sc->is_cmethod)) {
         if (g_class_body_id >= 0) { iv_cid = g_class_body_id; iv_global = 1; }
-        else if (comp_class_index(c, "Toplevel") >= 0) { iv_cid = comp_class_index(c, "Toplevel"); iv_global = 1; }
+        else if (c->toplevel_class >= 0) { iv_cid = c->toplevel_class; iv_global = 1; }
         else continue;   /* no home for it: the value was evaluated above */
       }
       TyKind ivt = TY_UNKNOWN;
@@ -19603,7 +19643,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     }
     /* Top-level method (class_id<0, not cmethod): use Toplevel pseudo-class global. */
     else if (cws && cws->class_id < 0 && !cws->is_cmethod &&
-             comp_class_index(c, "Toplevel") >= 0) {
+             c->toplevel_class >= 0) {
       emit_indent(b, indent);
       buf_printf(b, "civ_Toplevel_%s = ", iv_c(nm + 1));
     }
@@ -19623,7 +19663,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     NodeKind vk = nt_kind(nt, v);
     int sc = g_ie_class_id >= 0 ? g_ie_class_id : (cws ? cws->class_id : -1);
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0) sc = c->toplevel_class;
     TyKind ivt = TY_INT;
     int iv_nullable = 0, iv_elems_handle = 0;
     if (sc >= 0) {
@@ -19918,7 +19958,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
     /* same scope ladder as the plain-write form: class body civ_, then the
        Toplevel pseudo-class global (a bare `self` here is undeclared C) */
     if (sc < 0 && g_class_body_id >= 0) sc = g_class_body_id;
-    if (sc < 0 && g_ie_class_id < 0) sc = comp_class_index(c, "Toplevel");
+    if (sc < 0 && g_ie_class_id < 0) sc = c->toplevel_class;
     TyKind vt = TY_UNKNOWN;
     int vnil = 0;
     if (sc >= 0) {
@@ -19933,7 +19973,7 @@ static int emit_ivar_cvar_write_stmt(Compiler *c, int id, Buf *b, int indent, co
              g_class_body_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[g_class_body_id].name, iv_c(nm + 1));
     else if (cs && cs->class_id < 0 && !cs->is_cmethod && g_ie_class_id < 0 &&
-             comp_class_index(c, "Toplevel") >= 0)
+             c->toplevel_class >= 0)
       snprintf(ref, sizeof ref, "civ_Toplevel_%s", iv_c(nm + 1));
     else
       snprintf(ref, sizeof ref, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
@@ -20269,11 +20309,91 @@ static void emit_cpath_recv_name(Compiler *c, const char *name, int t, Buf *b, i
 static void emit_class_definition(Compiler *c, int id, Buf *b, int indent) {
   const NodeTable *nt = c->nt;
   int cp = nt_ref(nt, id, "constant_path");
+  int reads[] = { nt_ref(nt, cp, "parent"), nt_ref(nt, id, "superclass") };
+  for (int i = 0; i < 2; i++)
+    if (emit_const_read_stmt(c, reads[i], b, indent)) buf_puts(b, "\n");
   const char *name = cp >= 0 ? nt_str(nt, cp, "name") : NULL;
-  int ci = name ? comp_class_index(c, name) : g_class_body_id;
+  int ci = name ? elab_header_class(c, id, NULL, NULL) : g_class_body_id;
   emit_class_body_stmts(c, ci, nt_ref(nt, id, "body"), b, indent);
   if (nt_int(nt, id, "class_new_anonymous", 0) == 1)
     emit_class_assign_name(c, ci, class_ruby_name(c, ci), b, indent);
+}
+
+/* Does a subtree hold an operator over scalars that can raise
+   (scalar_op_may_raise: `1 / n`, `x % 0.0`, `2 ** e`)? */
+static int operand_op_may_raise(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  if (nt_kind(nt, id) == NK_CallNode && call_is_scalar_op(c, id) && scalar_op_may_raise(c, id)) return 1;
+  int nr = nt_num_refs(nt, id), na = nt_num_arrs(nt, id);
+  for (int i = 0; i < nr; i++) if (operand_op_may_raise(c, nt_ref_at(nt, id, i))) return 1;
+  for (int i = 0; i < na; i++) {
+    int n = 0;
+    const int *ids = nt_arr_at(nt, id, i, &n);
+    for (int j = 0; j < n; j++) if (operand_op_may_raise(c, ids[j])) return 1;
+  }
+  return 0;
+}
+/* Does an operand run nothing and raise nothing, so that a raise after it
+   shows the same whether it ran or not: self, a constant receiver the
+   load record resolves to a program class, or a pure read none of whose
+   operators can raise? */
+static int order_operand_inert(Compiler *c, int call, int op, int is_recv) {
+  NodeKind k = nt_kind(c->nt, op);
+  if (k == NK_SelfNode) return 1;
+  if (is_recv && (k == NK_ConstantReadNode || k == NK_ConstantPathNode) &&
+      cplan_const_recv_class(c, call, op) >= 0) return 1;
+  return subtree_is_pure_read(c, op) && !operand_op_may_raise(c, op);
+}
+
+/* The node v runs last when it holds a call that finds no method where it
+   runs (cplan_missing_in_order), with run->ids the operands before it, in
+   CRuby's order, that can act or raise; -1 when v holds no such call (run
+   unchanged). */
+int missing_call_in_order(Compiler *c, int v, OrderRun *run) {
+  const NodeTable *nt = c->nt;
+  int m = cplan_missing_in_order(c, v);
+  if (m < 0 || m == v) return m;
+  int argc = 0;
+  const int *argv = call_args(nt, v, &argc);
+  int r = nt_ref(nt, v, "receiver");
+  for (int i = -1; i < argc; i++) {
+    int op = i < 0 ? r : argv[i];
+    if (op < 0) continue;
+    if (cplan_missing_in_order(c, op) >= 0) return missing_call_in_order(c, op, run);
+    if (order_operand_inert(c, v, op, i < 0)) continue;
+    if (run->n == run->cap) {
+      run->cap = run->cap ? run->cap * 2 : 8;
+      int *ids = realloc(run->ids, sizeof(int) * (size_t)run->cap);
+      if (!ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+      run->ids = ids;
+    }
+    run->ids[run->n++] = op;
+  }
+  return m;
+}
+/* The call finding no method where it runs (cplan_missing) that v runs
+   into, in CRuby's order (missing_call_in_order), and so raises at: v
+   itself or one in its operands; -1 for none */
+int missing_call_raised(Compiler *c, int v) {
+  char self[160];
+  int m = cplan_missing_in_order(c, v);
+  return m >= 0 && cplan_missing(c, m, self, sizeof self, NULL) != CM_NONE ? m : -1;
+}
+/* Run, as statements at indent, the operands of run ahead of the call m
+   that finds no method (missing_call_in_order), then m. Each operand's
+   prelude goes in front of it, not in front of the statement: an earlier
+   operand runs before a later one's. */
+static void emit_missing_run(Compiler *c, int m, const OrderRun *run, Buf *b, int indent) {
+  for (int i = 0; i <= run->n; i++) {
+    Buf op, oe; memset(&op, 0, sizeof op); memset(&oe, 0, sizeof oe);
+    Buf *sv = g_pre; g_pre = &op;
+    emit_expr(c, i < run->n ? run->ids[i] : m, &oe);
+    g_pre = sv;
+    if (op.p) buf_puts(b, op.p);
+    emit_indent(b, indent); buf_printf(b, "(void)(%s);\n", oe.p ? oe.p : "0");
+    free(op.p); free(oe.p);
+  }
 }
 
 static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTable *nt, const char *ty) {
@@ -20608,6 +20728,16 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
         /* the block ran with the class anonymous; the write names it */
         if (comp_class_anonymous(c, sci)) emit_class_assign_name(c, sci, class_ruby_name(c, sci), b, indent);
       }
+      /* a value that runs a call finding no method where it runs
+         (cplan_missing: `zz`, `zz + 1`, `zz.to_s`, `id(zz)`) has no type
+         either, and raises there, before the write: run the operands ahead
+         of that call for their effects, then the call */
+      else if (!isg && v >= 0) {
+        OrderRun run = { NULL, 0, 0 };
+        int m = missing_call_in_order(c, v, &run);
+        if (m >= 0) emit_missing_run(c, m, &run, b, indent);
+        free(run.ids);
+      }
       return 1;
     }
     if (!isg && lv->init_guarded) {
@@ -20828,7 +20958,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* the read it starts with raises while the constant is unset */
     if (const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_read_close(c, tgt, cv, b); buf_puts(b, ";\n");
     }
     emit_indent(b, indent);
     char cslot[256]; snprintf(cslot, sizeof cslot, "cst_%s", nm);
@@ -20857,17 +20987,20 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     emit_const_flag_set(cv, nm, b, indent);
     return 1;
   }
-  if (sp_streq(ty, "ConstantPathOrWriteNode") || sp_streq(ty, "ConstantPathAndWriteNode")) {
-    int is_or = sp_streq(ty, "ConstantPathOrWriteNode");
+  if (nt_kind(nt, id) == NK_ConstantPathOrWriteNode || nt_kind(nt, id) == NK_ConstantPathAndWriteNode) {
+    int is_or = nt_kind(nt, id) == NK_ConstantPathOrWriteNode;
     int tgt = nt_ref(nt, id, "target");
     const char *nm = tgt >= 0 ? nt_str(nt, tgt, "name") : NULL;
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     if (!cv) { unsupported(c, id, "constant path or/and write"); return 1; }
     int v = nt_ref(nt, id, "value");
+    /* Both assignments resolve the parent before testing the child's slot
+       or running the right-hand side, even when ||= finds no child. */
+    if (emit_const_read_stmt(c, nt_ref(nt, tgt, "parent"), b, indent)) buf_puts(b, "\n");
     /* `&&=` reads the constant first: an unset one raises */
     if (!is_or && const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_check_close(c, tgt, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, tgt, cv, b); buf_puts(b, "0"); emit_const_read_close(c, tgt, cv, b); buf_puts(b, ";\n");
     }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
@@ -20897,7 +21030,7 @@ static int emit_attr_global_const_write_stmt(Compiler *c, int id, Buf *b, int in
     /* `&&=` reads the constant first: an unset one raises */
     if (!is_or && const_has_flag(cv)) {
       emit_indent(b, indent);
-      emit_const_check_open(c, id, cv, b); buf_puts(b, "0"); emit_const_check_close(c, id, cv, b); buf_puts(b, ";\n");
+      emit_const_read_open(c, id, cv, b); buf_puts(b, "0"); emit_const_read_close(c, id, cv, b); buf_puts(b, ";\n");
     }
     if (cv->type == TY_POLY) {
       emit_indent(b, indent);
@@ -21278,7 +21411,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
        else a top-level `@x ||= v` renders no store and the assignment is lost. */
     int sc2 = cws2 ? cws2->class_id : -1;
     if (sc2 < 0 && g_class_body_id >= 0) sc2 = g_class_body_id;
-    if (sc2 < 0) sc2 = comp_class_index(c, "Toplevel");
+    if (sc2 < 0) sc2 = c->toplevel_class;
     /* inside an instance_eval/exec block the slot is the receiver's, as the
        plain write reads it */
     if (ie_class_of(c, id) >= 0) sc2 = ie_class_of(c, id);
@@ -21430,6 +21563,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
       class_self = cn && comp_class_index(c, cn) >= 0;
     }
     if (class_self || nt_int(nt, nt_ref(nt, id, "body"), "singleton_body", 0)) {
+      if (emit_const_read_stmt(c, sexpr, b, indent)) buf_puts(b, "\n");
       /* ... but the rest of the body runs here, top to bottom, like a class
          body: a constant it assigns is read by the singleton methods beside
          it (#5996), and a statement like `p 5` has its effect where it
@@ -21935,13 +22069,22 @@ int tail_iter_receiver(Compiler *c, int id) {
   /* a scan's answer is the String it walked, which a boxed read is not: the
      value form checks the boxed subject and answers that String */
   if (is_scan_name(nm) && comp_ntype(c, r) == TY_POLY) return -1;
+  /* a split walk answers the receiver only in its inline arm: the dispatch
+     arm answers what the program's own each does, so the value form reads
+     the call's answer from whichever arm ran */
+  if (each_split_applies(c, id)) return -1;
+  /* a boxed `each` answers from the walk it ran: re-read afterwards, an
+     Enumerator's answer came from a second run of it (a generator's body
+     ran twice, and the items were its answer), so the value form serves
+     it (emit_iter_value_expr) */
+  if (is_each_name(nm) && repr_of(c, r).kind == RK_BOXED) return -1;
   return r;
 }
 
 /* `n.times { }`, `lo.upto(hi) { }`, `x.step(..) { }` and the rest of the
    numeric iterators emit_call's value form runs as a loop and answers the
    receiver of -- the same receiver types it takes. */
-static int num_iter_answers_recv(Compiler *c, int id) {
+int num_iter_answers_recv(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *nm = nt_str(nt, id, "name");
   int r = nt_ref(nt, id, "receiver");
@@ -22206,7 +22349,7 @@ void emit_stmt_tail_inner(Compiler *c, int id, Buf *b, int indent) {
                  g_ie_class_id < 0 && g_class_body_id < 0;
     /* a toplevel method's ivar lives on the Toplevel class (`civ_Toplevel_x`) */
     int tl9 = ics9 && ics9->class_id < 0 && g_ie_class_id < 0 &&
-              g_class_body_id < 0 ? comp_class_index(c, "Toplevel") : -1;
+              g_class_body_id < 0 ? c->toplevel_class : -1;
     if ((plain9 || cmeth9 || tl9 >= 0) && inm9) {
       int icls9 = tl9 >= 0 ? tl9 : ics9->class_id;
       int iidx9 = comp_ivar_index(&c->classes[icls9], inm9);

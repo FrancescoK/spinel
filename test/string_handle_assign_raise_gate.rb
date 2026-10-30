@@ -12,7 +12,7 @@ class Object
     if respond_to?(:to_json)
       str = to_json(opts)
     else
-      str = to_s
+      str = to_s.dup
     end
     n = app(str)
     t = str

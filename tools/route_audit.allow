@@ -25,6 +25,7 @@ src/analyze.c ie_class_answers which classes answer the name
 src/analyze.c ie_class_value_target which classes answer the name
 src/analyze.c ie_poly_self_classes which classes answer the name
 src/analyze.c mixin_call_guarded which classes answer the name
+src/analyze.c oa_copy_name which classes define dup or clone (a program's own may answer anything)
 src/analyze.c mixin_earlier_reaches which modules answer the name
 src/analyze.c refuse_mixin_after_calls which classes and modules answer the name
 src/analyze_cls.c cf_arms which classes answer the name
@@ -180,6 +181,7 @@ src/codegen_expr.c defined_super_reaches super, by its def's name
 src/codegen_util.c ivs_super_method super, by its def's name
 src/codegen_util.c proc_form_source a proc form's source method, by its own name
 src/codegen_util.c scope_proc_form_of a scope's own proc-form clone, by its own name
+src/codegen_util.c mc_number_versions whether Object has a top-level function of a main method's own name, which would share its C name
 src/compiler.c comp_super_name super, by its def's name
 src/compiler.c comp_super_shadow super, by its def's name
 
@@ -203,9 +205,9 @@ src/codegen_call.c rt_probe_unfounded a Symbol argument's method (respond_to?)
 src/codegen_call_class.c emit_call_reflection_arms =qm a Symbol argument's method
 src/codegen_call_class.c emit_refl_im_params a reflected method's name
 src/codegen_call_class.c emit_refl_method_defined a reflected method's name
-src/codegen_call_method.c emit_call_method_obj_arms =disp a Method object's method
+src/codegen_call_method.c emit_method_obj_target =disp arity metadata for a boxed receiver's method, not an invocation target
 src/codegen_call_method.c emit_op_method_arity a Symbol argument's method
-src/codegen_call_method.c emit_op_method_source_location a Symbol argument's method
+src/codegen_call_method.c emit_method_source_target a Symbol argument's method
 src/codegen_call_method.c emit_op_method_super_method super, by the Method object's own name
 src/codegen_call_object.c emit_blank_slate_defined_ask a Symbol argument's method
 src/codegen_stmt.c emit_call_stmt =mn a visibility call's Symbol argument
@@ -236,6 +238,7 @@ src/compiler.c resolve_alias_side an alias's name
 
 # the tables' own queries: the chain walk call_target asks, and the facts a
 # class's method of a name has (a call asks them of the method it runs)
+src/call_plan.c ct_table call_target's table query, which the version entries' build asks too
 src/compiler.c chain_lookup the chain walk itself
 src/compiler.c cls_user_display_mi a class's method of the name
 src/compiler.c comp_arysub_name_is_array a class's method of the name
@@ -270,3 +273,7 @@ src/codegen_stmt.c strbuf_route_operand the String sharing routes
 src/codegen_stmt.c strbuf_self_route_slot the String sharing routes
 src/codegen_stmt.c strbuf_tail_plain the String sharing routes
 src/codegen_util.c strbuf_reader_field_boxed the String sharing routes
+
+# Guard construction and callback reach read the table, not an ordinary call.
+src/analyze_pass.c cr_mark_implied the implicit-callback rows' method-table names
+src/call_plan.c ver_entries_build the current own body of each public name before entries are installed

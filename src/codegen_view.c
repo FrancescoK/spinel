@@ -58,7 +58,7 @@
 
 /* what an entry overrides: the node's type, one representation flag, or
    the arm context */
-enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6, VK_TARGET = -7, VK_CONVERSION = -8 };
+enum { VK_TYPE = -1, VK_ARM = -2, VK_FACE = -3, VK_STMT = -4, VK_SPLICE = -5, VK_FN = -6, VK_TARGET = -7, VK_CONVERSION = -8, VK_CONST_READ = -9 };
 static struct { Compiler *c; int id; int kind; int saved; int val; ArmCtx arm_saved; const void *pre; } view_stack[VIEW_MAX];
 static int view_face = -1;   /* the innermost face entry, or -1 */
 static int view_stmt = -1;   /* the innermost statement entry, or -1 */
@@ -66,7 +66,7 @@ static int view_sp;
 static int view_nodes;   /* the entries that view a node (all but VK_ARM) */
 static unsigned view_epoch_n;
 
-ArmCtx g_arm = { -1, -1, 0, -1 };
+ArmCtx g_arm = { -1, -1, 0, -1, -1, -1 };
 
 /* Argument-hoist overrides: emit_args_filled pre-evaluates GC-hazardous
    call arguments into rooted temps; emit_expr then substitutes the temp
@@ -329,7 +329,7 @@ static void view_close(int tok) {
   if (view_stack[tok].kind == VK_ARM) { g_arm = view_stack[tok].arm_saved; return; }
   if (view_stack[tok].kind == VK_FACE) { view_face = view_stack[tok].arm_saved.pd_skip; return; }
   if (view_stack[tok].kind == VK_STMT) { view_stmt = view_stack[tok].saved; return; }
-  if (view_stack[tok].kind != VK_TARGET && view_stack[tok].kind != VK_CONVERSION)
+  if (view_stack[tok].kind != VK_TARGET && view_stack[tok].kind != VK_CONVERSION && view_stack[tok].kind != VK_CONST_READ)
     view_write(view_stack[tok].c, view_stack[tok].kind, view_stack[tok].id, view_stack[tok].saved);
   view_nodes--;
   view_epoch_n++;
@@ -405,4 +405,19 @@ void arm_body_infer(Compiler *c, int site, int block, TyKind kind, const int *bo
           break;
         }
   }
+}
+
+/* A constant receiver whose read effect the enclosing call already ran. */
+int view_const_read_done(Compiler *c, int id) {
+  for (int i = view_sp - 1; i >= 0; i--)
+    if (view_stack[i].kind == VK_CONST_READ && view_stack[i].c == c && view_stack[i].id == id) return 1;
+  return 0;
+}
+
+int view_push_const_read(Compiler *c, int id) {
+  int tok = view_open_mark(VK_CONST_READ, id, 0, NULL);
+  view_stack[tok].c = c;
+  view_nodes++;
+  view_epoch_n++;
+  return tok;
 }

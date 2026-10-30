@@ -291,10 +291,23 @@ int emit_call_exception_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
         emit_exc_own_render(c, id, recv, xcm, &render, b);
         return 1;
       }
+      /* The helpers answer text. A call the inference typed boxed takes it
+         as a boxed String -- `message =~ re` in a base exception class whose
+         subclasses override message, one of them answering no String, is
+         poly -- and where such an override exists, #message is the value
+         itself (sp_user_exc_message_v), as the boxed receiver's arm reads it.
+         Left as text, the C did not compile. */
+      int boxed = repr_of(c, id).kind == RK_BOXED;
+      if (sp_streq(name, "message") && exc_has_nonstring_msg_override(c)) {
+        buf_puts(b, boxed ? "sp_user_exc_message_v((sp_Exception *)(" : "sp_poly_to_s(sp_user_exc_message_v((sp_Exception *)(");
+        emit_expr(c, recv, b); buf_puts(b, boxed ? "))" : ")))");
+        return 1;
+      }
       const char *fn = exc_has_user_msg_override(c)
         ? (sp_streq(name, "message") ? "sp_user_exc_message" : "sp_user_exc_to_s")
         : "sp_exc_message";
-      buf_printf(b, "%s((sp_Exception *)(", fn); emit_expr(c, recv, b); buf_puts(b, "))");
+      if (boxed) buf_puts(b, "sp_box_str(");
+      buf_printf(b, "%s((sp_Exception *)(", fn); emit_expr(c, recv, b); buf_puts(b, boxed ? ")))" : "))");
       return 1;
     }
   }

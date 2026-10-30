@@ -11,7 +11,7 @@ r0 #8 f0 CallNode puts line 15
 class Box: body#1
 entity Box: owner main leaf Box
 const Box: write#1
-Box#get: def#2 def#3 end=yes
-Box#put: def#4 def#5 end=yes
-versions Box#get: def#2..#3 over=def#2, def#3..end; 2 of the name, named
-versions Box#put: def#4..#5 over=def#4, def#5..end; 2 of the name
+Box#get: def#2 runs=#7 def#3 runs=#7 end=yes
+Box#put: def#4 runs=#7 def#5 runs=#7 end=yes
+versions Box#get: def#2..#3 seen=def#2 idle, def#3..end seen=def#3; 2 of the name, named
+versions Box#put: def#4..#5 seen=def#4 idle, def#5..end seen=def#5; 2 of the name

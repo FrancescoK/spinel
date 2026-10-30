@@ -125,6 +125,208 @@ int bop_generic_entry(const char *name, int *most) {
   return r != NULL;
 }
 
+/* What a builtin calls back on the values it is handed: the callbacks of each
+   (builtin, receiver) row, the rows, and the roles by callback name, all
+   generated from a CRuby run (tools/gen_builtin_callbacks.rb). The receiver
+   "*" of a builtin is its union over receivers, or -1 callbacks for a core
+   name no receiver was probed for. Rows are sorted by builtin, then receiver
+   ("*" first), and each row's callbacks by name; builtin_ops_callbacks_check
+   holds the file to that. */
+static const BopCallback bop_cb_pairs[] = {
+#define BCB_PART 1
+#include "builtin_callbacks.inc"
+#undef BCB_PART
+};
+
+typedef struct { const char *builtin, *recv; int first, count; } BopCbRow;
+static const BopCbRow bop_cb_rows[] = {
+#define BCB_PART 2
+#include "builtin_callbacks.inc"
+#undef BCB_PART
+};
+
+static const BopCallback bop_cb_roles[] = {
+#define BCB_PART 3
+#include "builtin_callbacks.inc"
+#undef BCB_PART
+};
+
+#define BOP_CB_ROWS ((int)(sizeof bop_cb_rows / sizeof bop_cb_rows[0]))
+#define BOP_CB_PAIRS ((int)(sizeof bop_cb_pairs / sizeof bop_cb_pairs[0]))
+#define BOP_CB_ROLES ((int)(sizeof bop_cb_roles / sizeof bop_cb_roles[0]))
+
+static const BopCbRow *bop_cb_find(const char *builtin, const char *recv) {
+  int lo = 0, hi = BOP_CB_ROWS - 1;
+  while (lo <= hi) {
+    int mid = (lo + hi) / 2;
+    const BopCbRow *r = &bop_cb_rows[mid];
+    int c = strcmp(builtin, r->builtin);
+    if (!c) c = strcmp(recv, r->recv);
+    if (!c) return r;
+    if (c < 0) hi = mid - 1;
+    else lo = mid + 1;
+  }
+  return NULL;
+}
+
+int bop_name_callbacks(const char *builtin, const BopCallback **out) {
+  if (out) *out = NULL;
+  const BopCbRow *r = builtin ? bop_cb_find(builtin, "*") : NULL;
+  if (!r) return 0;
+  if (r->count < 0) return -1;
+  if (out) *out = bop_cb_pairs + r->first;
+  return r->count;
+}
+
+int bop_callback_names(const BopCallback **out) {
+  if (out) *out = bop_cb_roles;
+  return BOP_CB_ROLES;
+}
+
+unsigned bop_callback_roles(const char *name) {
+  int lo = 0, hi = BOP_CB_ROLES - 1;
+  while (name && lo <= hi) {
+    int mid = (lo + hi) / 2, c = strcmp(name, bop_cb_roles[mid].name);
+    if (!c) return bop_cb_roles[mid].roles;
+    if (c < 0) hi = mid - 1;
+    else lo = mid + 1;
+  }
+  return 0;
+}
+
+int bop_class_callbacks(const char *recv_class, const char *builtin, const BopCallback **out) {
+  if (out) *out = NULL;
+  const BopCbRow *r = recv_class && builtin ? bop_cb_find(builtin, recv_class) : NULL;
+  if (!r) return -1;
+  if (out) *out = bop_cb_pairs + r->first;
+  return r->count;
+}
+
+/* --check-bop-callbacks: the generated tables hold the shape the lookups
+   assume. Rows are in strict (builtin, receiver) order; each builtin's first
+   row is its "*" union and no other row is; a row's callbacks are a run of the
+   pair table, a run that is new starts where the last one ended and one
+   already emitted lies before that point (identical runs are shared), the
+   runs cover the table, each strictly sorted by name with known roles; the union row is exactly the union of its builtin's other rows (or
+   -1 with no other row); the roles by name are the union over the "*" rows;
+   and the three names asked through rb_check_funcall carry BCR_ASKED and
+   nothing else. */
+/* the roles `name` has in the rows [from, to) */
+static unsigned bop_cb_rows_roles(int from, int to, const char *name) {
+  unsigned roles = 0;
+  for (int i = from; i < to; i++) {
+    const BopCbRow *r = &bop_cb_rows[i];
+    for (int k = 0; k < r->count; k++)
+      if (sp_streq(bop_cb_pairs[r->first + k].name, name)) roles |= bop_cb_pairs[r->first + k].roles;
+  }
+  return roles;
+}
+
+static int bop_cb_check_row(const BopCbRow *r) {
+  int bad = 0;
+  for (int k = 0; k < r->count; k++) {
+    const BopCallback *c = &bop_cb_pairs[r->first + k];
+    if (!c->roles || (c->roles & ~BCR_ALL)) {
+      fprintf(stderr, "check-bop-callbacks: %s %s: %s has roles %u\n", r->builtin, r->recv, c->name, c->roles);
+      bad++;
+    }
+    if (is_check_funcall_name(c->name) ? c->roles != BCR_ASKED : (c->roles & BCR_ASKED) != 0) {
+      fprintf(stderr, "check-bop-callbacks: %s %s: %s has roles %u; BCR_ASKED is for respond_to?, respond_to_missing? and method_missing alone\n",
+              r->builtin, r->recv, c->name, c->roles);
+      bad++;
+    }
+    if (k && strcmp(bop_cb_pairs[r->first + k - 1].name, c->name) >= 0) {
+      fprintf(stderr, "check-bop-callbacks: %s %s: callbacks not sorted at %s\n", r->builtin, r->recv, c->name);
+      bad++;
+    }
+  }
+  return bad;
+}
+
+/* the "*" row at i against the other rows of its builtin, which end at `end` */
+static int bop_cb_check_union(int i, int end) {
+  const BopCbRow *star = &bop_cb_rows[i];
+  int bad = 0;
+  for (int k = 0; k < star->count; k++) {
+    const BopCallback *c = &bop_cb_pairs[star->first + k];
+    if (bop_cb_rows_roles(i + 1, end, c->name) != c->roles) {
+      fprintf(stderr, "check-bop-callbacks: %s: the \"*\" row's %s (roles %u) is not the union of the receivers'\n",
+              star->builtin, c->name, c->roles);
+      bad++;
+    }
+  }
+  for (int j = i + 1; j < end; j++)
+    for (int k = 0; k < bop_cb_rows[j].count; k++) {
+      const char *name = bop_cb_pairs[bop_cb_rows[j].first + k].name;
+      if (!bop_cb_rows_roles(i, i + 1, name)) {
+        fprintf(stderr, "check-bop-callbacks: %s %s: %s is not in the \"*\" row\n", star->builtin, bop_cb_rows[j].recv, name);
+        bad++;
+      }
+    }
+  return bad;
+}
+
+int builtin_ops_callbacks_check(void) {
+  int bad = 0, next = 0, builtins = 0;
+  for (int i = 0; i < BOP_CB_ROWS; i++) {
+    const BopCbRow *r = &bop_cb_rows[i];
+    int star = sp_streq(r->recv, "*");
+    int new_builtin = i == 0 || !sp_streq(bop_cb_rows[i - 1].builtin, r->builtin);
+    int end = i + 1;
+    while (end < BOP_CB_ROWS && sp_streq(bop_cb_rows[end].builtin, r->builtin)) end++;
+    if (i && strcmp(bop_cb_rows[i - 1].builtin, r->builtin) > 0) {
+      fprintf(stderr, "check-bop-callbacks: rows not sorted at %s\n", r->builtin);
+      bad++;
+    }
+    else if (!new_builtin && strcmp(bop_cb_rows[i - 1].recv, r->recv) >= 0) {
+      fprintf(stderr, "check-bop-callbacks: %s: receivers not sorted at %s\n", r->builtin, r->recv);
+      bad++;
+    }
+    if (star != new_builtin) {
+      fprintf(stderr, "check-bop-callbacks: %s %s: the \"*\" row is each builtin's first and only one\n", r->builtin, r->recv);
+      bad++;
+    }
+    if (r->count < 0) {
+      if (!star || end != i + 1) {
+        fprintf(stderr, "check-bop-callbacks: %s %s: -1 callbacks belongs to a \"*\" row alone\n", r->builtin, r->recv);
+        bad++;
+      }
+      builtins += new_builtin;
+      continue;
+    }
+    if (r->first < 0 || r->first + r->count > (r->first == next ? BOP_CB_PAIRS : next)) {
+      fprintf(stderr, "check-bop-callbacks: %s %s: callbacks %d+%d are neither a new run nor one emitted before\n", r->builtin, r->recv, r->first, r->count);
+      bad++;
+      continue;
+    }
+    if (r->first == next) next += r->count;
+    builtins += new_builtin;
+    bad += bop_cb_check_row(r);
+    if (star) bad += bop_cb_check_union(i, end);
+  }
+  if (next != BOP_CB_PAIRS) {
+    fprintf(stderr, "check-bop-callbacks: %d callbacks are in no row\n", BOP_CB_PAIRS - next);
+    bad++;
+  }
+  for (int i = 0; i < BOP_CB_ROLES; i++) {
+    const BopCallback *c = &bop_cb_roles[i];
+    unsigned want = 0;
+    for (int j = 0; j < BOP_CB_ROWS; j++)
+      if (sp_streq(bop_cb_rows[j].recv, "*")) want |= bop_cb_rows_roles(j, j + 1, c->name);
+    if (want != c->roles) {
+      fprintf(stderr, "check-bop-callbacks: the roles of %s are %u, the rows' union %u\n", c->name, c->roles, want);
+      bad++;
+    }
+    if (i && strcmp(bop_cb_roles[i - 1].name, c->name) >= 0) {
+      fprintf(stderr, "check-bop-callbacks: roles not sorted at %s\n", c->name);
+      bad++;
+    }
+  }
+  fprintf(stderr, "check-bop-callbacks: %d builtins, %d rows, %d callbacks, %d callback names, %d problems\n",
+          builtins, BOP_CB_ROWS, BOP_CB_PAIRS, BOP_CB_ROLES, bad);
+  return bad;
+}
+
 static const BuiltinZeroOp bop_zero_ops[] = {
 #define BZ_IO(name, fn, ret, max, mode, poly_ret, tail) \
   { TY_IO, name, #fn, poly_ret, tail },
@@ -912,7 +1114,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_STR_RANGE, "each_with_index", 0, 0, BF_NONE,    TY_ENUMERATOR,  BOPE_TEMPLATE, "sp_srange_ewi(sp_box_srange($r))" },
   { TY_STR_RANGE, "each_slice",   1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_regroup(_t$y, _t$u, 0); })" },
   { TY_STR_RANGE, "each_cons",    1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_int _t$u = $i0; sp_srange_regroup(_t$y, _t$u, 1); })" },
-  { TY_STR_RANGE, "find_index",   1,   1, BF_NONE,     TY_POLY,        BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_RbVal _t$u = $b0; SP_GC_ROOT_RBVAL(_t$u); sp_box_oint(sp_srange_find_index(_t$y, _t$u)); })" },
+  { TY_STR_RANGE, "find_index",   1,   1, BF_ANY,      TY_POLY,        BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_RbVal _t$u = $b0; SP_GC_ROOT_RBVAL(_t$u); sp_box_oint(sp_srange_find_index(_t$y, _t$u)); })" },
   { TY_STR_RANGE, "step",         1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$y, $b0, SPL(\"step\")); })" },
   { TY_STR_RANGE, "%",            1,   1, BF_NONE,     TY_ENUMERATOR,  BOPE_TEMPLATE, "({ sp_RbVal _t$y = sp_box_srange($r); SP_GC_ROOT_RBVAL(_t$y); sp_srange_step_enum(_t$y, $b0, SPL(\"%\")); })" },
   { TY_STR_RANGE, "class",        0, 127, BF_ANY,      TY_CLASS,       BOPE_NONE },
@@ -1063,7 +1265,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_ENUMERATOR, "take_while",      0, 127, BF_REQUIRED, TY_POLY_ARRAY,  BOPE_NONE },  /* the same lazy driver (#3590) */
   { TY_ENUMERATOR, "include?",        1,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
   { TY_ENUMERATOR, "member?",         1,   1, BF_NONE,     TY_BOOL,        BOPE_NONE },
-  { TY_ENUMERATOR, "find_index",      1,   1, BF_NONE,     TY_INT,         BOPE_NONE },
+  { TY_ENUMERATOR, "find_index",      1,   1, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_ENUMERATOR, "next_values",     0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "sp_Enumerator_next_values($r)", 0 },
   { TY_ENUMERATOR, "next_values",     0, 127, BF_ANY,      TY_POLY_ARRAY,  BOPE_NONE },  /* #2482 */
   { TY_ENUMERATOR, "peek_values",     0,   0, BF_ANY,      TY_POLY_ARRAY,  BOPE_TEMPLATE, "sp_Enumerator_peek_values($r)", 0 },
@@ -1541,8 +1743,8 @@ static const BuiltinOp bop_rows[] = {
 
   /* Symbol: result kinds; emission stays in emit_call_body. <=> and
      casecmp/casecmp? are typed by the operand (nil for a non-Symbol). */
-  { TY_SYMBOL, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_sym_to_s_chilled($r)", 0 },
-  { TY_SYMBOL, "id2name",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_sym_to_s_chilled($r)", 0 },
+  { TY_SYMBOL, "to_s",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_sym_to_s_frozen($r)", 0 },
+  { TY_SYMBOL, "id2name",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_sym_to_s_frozen($r)", 0 },
   { TY_SYMBOL, "name",            0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_str_uminus_val(sp_sym_to_s($r))", 0 },
   { TY_SYMBOL, "inspect",         0, 127, BF_ANY,      TY_STRING,     BOPE_TEMPLATE, "sp_sym_inspect($r)", 0 },
   { TY_SYMBOL, "upcase",          0, 127, BF_ANY,      TY_SYMBOL,     BOPE_TEMPLATE, "sp_sym_intern(sp_str_upcase$C(sp_sym_to_s($r)))", 0 },
@@ -1669,6 +1871,13 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "clone",       0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "freeze",      0,   0, BF_ANY,      TY_INT,         BOPE_NONE },
   { TY_INT,   "size",        0,   0, BF_ANY,      TY_INT,         BOPE_TEMPLATE, "((void)($r), (sp_int)sizeof(sp_int))" },
+  /* Numeric#singleton_method_added is public, and an Integer or a Float
+     answers it with a TypeError: no singleton can be defined on one. The
+     name is converted first, as rb_to_id converts it: a Symbol, a String
+     or an object's #to_str (sp_poly_check_str), any other value CRuby's
+     TypeError naming it. A block is ignored, as CRuby ignores it. The nil
+     kind keeps the raise's slot valid. */
+  { TY_INT,   "singleton_method_added", 1, 1, BF_ANY,  TY_NIL, BOPE_TEMPLATE, "((void)($r), ({ sp_RbVal _t$t = $b0; SP_GC_ROOT_RBVAL(_t$t); if (_t$t.tag != SP_TAG_SYM && !sp_poly_check_str(_t$t)) sp_raise_cls(\"TypeError\", sp_sprintf(\"%s is not a symbol nor a string\", sp_poly_inspect(_t$t))); }), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
   { TY_INT,   "to_int",      1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "ord",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "($r)" },
   { TY_INT,   "infinite?",   1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "((void)($r), sp_oint_nil())" },
@@ -1752,6 +1961,7 @@ static const BuiltinOp bop_rows[] = {
   { TY_INT,   "to_s",        1,   1, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_int_to_s_base($r, $i0)" },
   /* Float: arms with no inference row of their own */
   /* a receiver that can be nil answers as nil does: "" / "nil" / 0.0 */
+  { TY_FLOAT, "singleton_method_added", 1, 1, BF_ANY,  TY_NIL, BOPE_TEMPLATE, "((void)($r), ({ sp_RbVal _t$t = $b0; SP_GC_ROOT_RBVAL(_t$t); if (_t$t.tag != SP_TAG_SYM && !sp_poly_check_str(_t$t)) sp_raise_cls(\"TypeError\", sp_sprintf(\"%s is not a symbol nor a string\", sp_poly_inspect(_t$t))); }), sp_raise_cls(\"TypeError\", \"can't define singleton\"), $<sp_oint_nil()$>)" },
   { TY_FLOAT, "to_s",        0, 127, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_float_opt_to_s($N)" },
   { TY_FLOAT, "inspect",     0, 127, BF_ANY,      TY_STRING,      BOPE_TEMPLATE, "sp_float_opt_inspect($N)" },
   { TY_FLOAT, "arg",         1, 127, BF_ANY,      TY_UNKNOWN,     BOPE_TEMPLATE, "sp_float_arg($r)" },
@@ -2022,7 +2232,7 @@ static const BuiltinOp bop_rows[] = {
      legacy chain. Each fits only calls no row above fits. */
   { TY_STRING, "%",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one */
+  { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one -- K-035: was a TY_UNKNOWN placeholder, never consulted for its result by the direct-call path (BOPF_SELF_CLASS alone decides that), but needed concrete for a yield site to widen (same shape as -@, already TY_STRING on the line above) */
   { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
   { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
@@ -2520,9 +2730,9 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "dig",                   2, 127, BF_ANY,      TY_POLY,       BOPE_ARRAY_DIG_N },
   { BOP_ANY_ARRAY, "sum",                   1,   1, BF_NONE,     BOPR_ARRAY_SUM_SEED, BOPE_ARRAY_SUM1 },
   { BOP_ANY_ARRAY, "concat",                1, 127, BF_ANY,      BOPR_SELF,     BOPE_ARRAY_CONCAT, NULL, 0, 0, BOPF_SELF | BOPF_ARGS_BUILTIN },
-  { BOP_ANY_ARRAY, "index",                 1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
-  { BOP_ANY_ARRAY, "find_index",            1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
-  { BOP_ANY_ARRAY, "rindex",                1,   1, BF_NONE,     BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
+  { BOP_ANY_ARRAY, "index",                 1,   1, BF_ANY,      BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
+  { BOP_ANY_ARRAY, "find_index",            1,   1, BF_ANY,      BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
+  { BOP_ANY_ARRAY, "rindex",                1,   1, BF_ANY,      BOPR_ARRAY_INDEX, BOPE_ARRAY_INDEX_V },
 
   /* Array, any kind: the forms of CRuby's Array methods no row above
      covers, so that each has a row with its counts, its block rule and
@@ -2559,7 +2769,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "push",                  0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "append",                0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "unshift",               0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "prepend",               0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "prepend",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; SP_GC_ROOT(_t$t); if (_t$t && _t$t->frozen) sp_raise_frozen_array_at(_t$t, $Y); _t$t; })", 0, 0, BOPF_SELF },  /* no values: self, or FrozenError (K-035, mirrors insert's identical argc-0 row) */
+  { BOP_ANY_ARRAY, "prepend",               1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "fill",                  0,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* fill(v, ...) or fill(...) { } */
   { BOP_ANY_ARRAY, "map!",                  0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "collect!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
@@ -3460,10 +3671,9 @@ static const BopShareRow bop_share_rows[] = {
      comparators (sort, sort!, min, max, minmax, bsearch, slice_when,
      chunk_while), cycle, find, detect, min_by and max_by with an argument,
      the seedless inject, product without an argument or zip with other
-     than one. ty_block_yield reads none of the in-place filters and
-     maps, uniq, uniq!, sort_by!, inject, each_with_object, the
-     comparators, cycle, or the run and tuple iterators but
-     each_slice and each_cons. Neither reads slice_before or slice_after:
+     than one. ty_block_yield reads none of uniq, uniq!, inject,
+     each_with_object, the comparators, cycle, or the run and tuple
+     iterators but each_slice and each_cons. Neither reads slice_before or slice_after:
      only the share analysis does.
    - Hash. The share analysis does not read each_entry, reverse_each,
      collect_concat, find_all, filter!, find_index, one?, take_while,
@@ -3514,17 +3724,17 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "flat_map",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, 0 },
   { BOP_ANY_ARRAY, "collect_concat",  0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, IRF_GAP_SHARE },
   { BOP_ANY_ARRAY, "filter_map",      0, 0, 1, { YS_ELEM }, IA_BLOCKVALS, 0 },
-  { BOP_ANY_ARRAY, "map!",            0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
-  { BOP_ANY_ARRAY, "collect!",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_GAP_FWD | IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "map!",            0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_SHAPE_BOXED },
+  { BOP_ANY_ARRAY, "collect!",        0, 0, 1, { YS_ELEM }, IA_BLOCKVALS_INPLACE, IRF_SHAPE_BOXED },
   { BOP_ANY_ARRAY, "select",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "filter",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "reject",          0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
   { BOP_ANY_ARRAY, "find_all",        0, 0, 1, { YS_ELEM }, IA_SOME, IRF_GAP_SHARE | IRF_GAP_SHAPE },
-  { BOP_ANY_ARRAY, "select!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "filter!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "reject!",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "keep_if",         0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
-  { BOP_ANY_ARRAY, "delete_if",       0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "select!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "filter!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "reject!",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "keep_if",         0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
+  { BOP_ANY_ARRAY, "delete_if",       0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
   { BOP_ANY_ARRAY, "find",            0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
   { BOP_ANY_ARRAY, "find",            1, 1, 1, { YS_ELEM }, IA_ONE, IRF_GAP_SHAPE },
   { BOP_ANY_ARRAY, "detect",          0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
@@ -3535,7 +3745,7 @@ static const IterRow iter_rows[] = {
   { BOP_ANY_ARRAY, "max_by",          0, 0, 1, { YS_ELEM }, IA_ONE, 0 },
   { BOP_ANY_ARRAY, "max_by",          1, 1, 1, { YS_ELEM }, IA_SOME, IRF_GAP_SHAPE },
   { BOP_ANY_ARRAY, "sort_by",         0, 0, 1, { YS_ELEM }, IA_SOME, 0 },
-  { BOP_ANY_ARRAY, "sort_by!",        0, 0, 1, { YS_ELEM }, IA_RECV, IRF_GAP_FWD },
+  { BOP_ANY_ARRAY, "sort_by!",        0, 0, 1, { YS_ELEM }, IA_RECV, 0 },
   { BOP_ANY_ARRAY, "group_by",        0, 0, 1, { YS_ELEM }, IA_GROUPS, 0 },
   { BOP_ANY_ARRAY, "partition",       0, 0, 1, { YS_ELEM }, IA_PARTS, 0 },
   { BOP_ANY_ARRAY, "sum",             0, 1, 1, { YS_ELEM }, IA_OTHER, 0 },

@@ -522,6 +522,20 @@ static void interp_plan(Compiler *c, int id, InterpPlan *pl) {
         else buf_printf(&conv, "sp_%sArray_inspect(_t%d)", array_kind(t), ntv);
         buf_puts(&conv, " : sp_str_empty; })");
       }
+      else if (ty_is_object(t) && comp_ary_is_str(c, ty_object_class(t))) {
+        /* a String subclass instance is a String: its bytes, with no #to_s
+           call -- CRuby's rb_obj_as_string takes any T_STRING as it is, so
+           a `def to_s` of the subclass does not run here (`"#{sb}"`), while
+           its answer, the instance again for a SafeBuffer's `self`, reads
+           the same way (`"#{sb.to_s}"`); called through the struct's own
+           #to_s, the instance's pointer landed in the const char * and the
+           C did not build. A part that may be nil is nil's to_s, the empty
+           String. */
+        int to = ++g_tmp;
+        buf_printf(&conv, "({ sp_String *_t%d = (sp_String *)(", to);
+        EMIT_IV();
+        buf_printf(&conv, "); _t%d ? sp_strbuf_read(_t%d) : sp_str_empty; })", to, to);
+      }
       else if (ty_is_object(t) && obj_str_cname(c, ty_object_class(t), 0)) {
         const char *cn = obj_str_cname(c, ty_object_class(t), 0);
         /* a poly-returning to_s (String unioned with e.g. nil) yields a boxed
@@ -2008,13 +2022,13 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
   const int *argv = call_args(nt, id, &argc);
   if (!nm) return 0;
   if (sp_streq(nm, "to_r") && argc == 0 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
-      comp_method_in_chain(c, comp_class_index(c, "Float"), "to_r", NULL) < 0) {
+      comp_method_in_chain(c, comp_core_class(c, CORE_FLOAT), "to_r", NULL) < 0) {
     /* boxed, so a Float that may be nil answers nil's (0/1) */
     buf_puts(b, "sp_poly_to_r_m("); emit_boxed(c, recv, b); buf_puts(b, ")");
     return 1;
   }
   if (sp_streq(nm, "rationalize") && argc <= 1 && recv >= 0 && comp_ntype(c, recv) == TY_FLOAT &&
-      comp_method_in_chain(c, comp_class_index(c, "Float"), "rationalize", NULL) < 0) {
+      comp_method_in_chain(c, comp_core_class(c, CORE_FLOAT), "rationalize", NULL) < 0) {
     buf_puts(b, "sp_poly_rationalize_m("); emit_boxed(c, recv, b);
     buf_printf(b, ", %d, ", argc);
     if (argc) emit_boxed(c, argv[0], b); else buf_puts(b, "sp_box_nil()");
@@ -2030,6 +2044,7 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
 }
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
+  if (emit_const_class_call_wrap(c, id, b, emit_expr)) return;
   /* a block's statement an emitter inlines (gsub!'s `{ |m| m + m }`): its
      operands are not held across the block, and two copies of one live
      String, neither rooted, let the second's allocation collect the first */
@@ -2613,7 +2628,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
        store below writes (civ_Toplevel_x): without its kind the value went
        in as it was, and `y = (@a = [])` put an Integer array into a slot
        a later write had made a poly array */
-    if (ivcls2 < 0) ivcls2 = comp_class_index(c, "Toplevel");
+    if (ivcls2 < 0) ivcls2 = c->toplevel_class;
     TyKind ivt2 = TY_UNKNOWN;
     int ivnull2 = 0, iveh2 = 0;
     if (ivcls2 >= 0) {
@@ -2641,7 +2656,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
       snprintf(ref2e, sizeof ref2e, "%s%siv_%s", g_self, g_self_deref, iv_c(nm + 1));
       fz_cid = g_ie_class_id;
     }
-    else if (cid2 < 0 && comp_class_index(c, "Toplevel") >= 0)
+    else if (cid2 < 0 && c->toplevel_class >= 0)
       snprintf(ref2e, sizeof ref2e, "civ_Toplevel_%s", iv_c(nm + 1));
     else if (ivar_class_body_slot(c, id, cws, ref2e, sizeof ref2e)) {}
     else {
@@ -2784,7 +2799,7 @@ static int emit_local_ivar_write_expr(Compiler *c, int id, Buf *b, const NodeTab
     /* a toplevel method's ivar is the Toplevel pseudo-class global, as in
        the statement form */
     int tl3 = cid3 < 0 && g_ie_class_id < 0 && cws3 && !cws3->is_cmethod;
-    if (tl3) cid3 = comp_class_index(c, "Toplevel");
+    if (tl3) cid3 = c->toplevel_class;
     TyKind ivt3 = TY_UNKNOWN;
     int eh3 = 0;
     /* inside an instance_eval/exec block the slot is the receiver's, as the
@@ -2997,9 +3012,24 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       if (!has) is_nil = 1;
       else { snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref); buf_printf(&ref, "%siv_%s", pfx, iv_c(nm + 1)); }
     }
+    else if (cs && cs->class_id < 0 && holder_cbody(c, id) >= 0 && ie_class_of(c, id) < 0) {
+      /* A block or a proc written in a class or module body (`%w(a b).each
+         do |m| ... lambda { @x } ... end`): its scope is no class's, but
+         the ivar is the body class's own, as the write emitters take it
+         (civ_class_of) and as a lambda written straight in the body reads
+         it. Taken for the top level's, the read named `self` where no
+         self exists, or an undeclared Toplevel slot. One the class never
+         names is nil, as on the class object. */
+      int cb = holder_cbody(c, id);
+      if (comp_ivar_index(&c->classes[cb], nm) >= 0) {
+        buf_printf(&ref, "civ_%s_%s", c->classes[cb].name, iv_c(nm + 1));
+        is_static = 1;
+      }
+      else is_nil = 1;
+    }
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
-      int tl = comp_class_index(c, "Toplevel");
+      int tl = c->toplevel_class;
       if (tl >= 0) { buf_printf(&ref, "civ_Toplevel_%s", iv_c(nm + 1)); is_static = 1; }
       else { snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref); buf_printf(&ref, "%siv_%s", pfx, iv_c(nm + 1)); }
     }
@@ -3367,27 +3397,42 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
   return 0;
 }
 
-/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
-static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+/* The NameError raise of a constant defined nowhere, valued as a Class
+   placeholder. `checks` is the text of the parents' presence checks (it opens
+   a comma expression and ends with ", "), or empty: they go into the message
+   operand, which C evaluates before the raise, so an unset parent's NameError
+   still comes first and the raise stays at the head of the text. */
+static void emit_const_undefined_raise(Buf *b, const char *checks, const char *name) {
+  buf_puts(b, "(sp_raise_cls(\"NameError\", ");
+  if (checks && checks[0]) buf_printf(b, "%s\"uninitialized constant %s\")", checks, name);
+  else buf_printf(b, "\"uninitialized constant %s\"", name);
+  buf_puts(b, "), ((sp_Class){-1}))");
+}
+
+/* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order).
+   `checks` holds the parents' presence checks of a path: the raise of an
+   undefined path takes them and empties the buffer, any other form leaves
+   them to the caller. */
+static int emit_constant_value(Compiler *c, int id, Buf *b, Buf *checks, const NodeTable *nt, const char *ty, int slot) {
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cv && !slot && repr_of_slot(c, cv).kind == RK_STRBUF && !cv->init_guarded) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cv, b);
+      emit_const_read_open(c, id, cv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cv, b);
+      emit_const_read_close(c, id, cv, b);
       return 1;
     }
     if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
-        emit_const_check_open(c, id, cv, b);
+        emit_const_read_open(c, id, cv, b);
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
                       " \"uninitialized constant %s\"), %scst_%s) : %scst_%s)",
                    nm, nm, slot ? "&" : "", nm, slot ? "&" : "", nm);
-        emit_const_check_close(c, id, cv, b);
+        emit_const_read_close(c, id, cv, b);
       }
       else emit_const_slot_read(c, id, cv, nm, slot, 1, b);
       return 1;
@@ -3456,7 +3501,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
              NameError is legal Ruby, and ruby/spec does exactly that. */
           if (!const_ref_is_rescued(c, id) && !const_ref_is_guarded(c, id))
             warn_undefined_constant(c, id, nm);
-          buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", nm);
+          emit_const_undefined_raise(b, NULL, nm);
         }
       }
     }
@@ -3479,9 +3524,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        whose class only the value knows, so it takes the run-time read below --
        treating it as a path looked the leaf up and answered a top-level
        constant of that name (#4259). */
-    if (par_nmc && par_tyc_k == NK_ConstantReadNode &&
-        comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
-        comp_const(c, par_nmc))
+    if (par_nmc && par_tyc_k == NK_ConstantReadNode && an_const_read_is_value(c, par_idc))
       par_nmc = NULL;
     /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
        plain-constant table, or a same-leaf plain constant in another module
@@ -3595,9 +3638,9 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cpcv && !slot && repr_of_slot(c, cpcv).kind == RK_STRBUF) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cpcv, b);
+      emit_const_read_open(c, id, cpcv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cpcv, b);
+      emit_const_read_close(c, id, cpcv, b);
       return 1;
     }
     if (cpcv && cpcv->type != TY_UNKNOWN) { emit_const_slot_read(c, id, cpcv, nm, slot, 1, b); return 1; }
@@ -3738,7 +3781,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* class/module constant as value */
     if (nm) {
       int _cpidx = comp_class_index(c, nm);
-      if (_cpidx >= 0) { buf_printf(b, "((sp_Class){%d})", _cpidx); return 1; }
+      if (_cpidx >= 0) {
+        buf_printf(b, "((sp_Class){%d})", _cpidx);
+        return 1;
+      }
       int _bcpid = builtin_class_id(nm);
       if (_bcpid != 0) { buf_printf(b, "((sp_Class){%d})", _bcpid); return 1; }
     }
@@ -3770,7 +3816,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          "uninitialized constant Mylib" */
       { int segs[32], ns = 0;
         for (int s = nt_ref(nt, id, "parent"); s >= 0 && ns < 32 &&
-             (nt_kind(nt, s) == NK_ConstantReadNode || nt_kind(nt, s) == NK_ConstantPathNode);
+             (nt_kind_is_constant(nt_kind(nt, s)));
              s = nt_kind(nt, s) == NK_ConstantPathNode ? nt_ref(nt, s, "parent") : -1)
           segs[ns++] = s;
         for (int i = ns - 1; i >= 0; i--)
@@ -3780,7 +3826,8 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
             if (miss[0]) snprintf(fullname, sizeof fullname, "%s", miss);
             break;
           } }
-      buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), ((sp_Class){-1}))", fullname);
+      emit_const_undefined_raise(b, checks->p, fullname);
+      checks->len = 0;
     }
     return 1;
   }
@@ -3793,7 +3840,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
    leaves no trace, its temporaries' numbers put back). */
 int const_read_raises(Compiler *c, int id) {
   NodeKind k = nt_kind(c->nt, id);
-  if ((k != NK_ConstantReadNode && k != NK_ConstantPathNode) || !comp_const_undefined(c, id)) return 0;
+  if (!nt_kind_is_constant(k) || !comp_const_undefined(c, id)) return 0;
   Buf t, pre;
   memset(&t, 0, sizeof t); memset(&pre, 0, sizeof pre);
   Buf *saved_pre = g_pre; int saved_tmp = g_tmp;
@@ -3804,6 +3851,22 @@ int const_read_raises(Compiler *c, int id) {
   int r = !pre.p && t.p && !strncmp(t.p, raise, sizeof raise - 1);
   free(t.p); free(pre.p);
   return r;
+}
+
+static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+  if (!nt_kind_is_constant(nt_kind(nt, id))) return 0;
+  int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+  int dynamic = nt_kind(nt, par) == NK_ConstantReadNode && an_const_read_is_value(c, par);
+  Buf pre = {0};
+  int effect = !dynamic && !view_const_read_done(c, id) ? emit_const_read_prefix(c, par, &pre) : 0;
+  if (!effect) return emit_constant_value(c, id, b, &pre, nt, ty, slot);
+  Buf v = {0};
+  int result = emit_constant_value(c, id, &v, &pre, nt, ty, slot);
+  /* checks no raise took lead the value; a raise that took them is the value */
+  if (pre.len) buf_printf(b, "%s%s)", pre.p, v.p ? v.p : "");
+  else buf_puts(b, v.p ? v.p : "");
+  free(pre.p); free(v.p);
+  return result;
 }
 
 void emit_constant_slot(Compiler *c, int id, Buf *b) {
@@ -4553,8 +4616,14 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       int fempty = 0;
       if (ln == 1 && ty_is_array(fres) && node_is_empty_container(c, lb[0]))
         fempty = an_empty_container_kind(c, lb[0]) == 1;
+      /* ...and an Integer / Float slot that holds its nil (an sp_oint, as the
+         analysis gives `x.is_a?(Integer) ? x : raise` while the dead arm is
+         still counted) takes the arm in its oint form, as the unfolded pair
+         renders each arm: emitted raw, a plain sp_int went into the sp_oint */
+      int fo = cond_res_oint(c, id, fres);
       if (ln == 1) {
-        if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
+        if (fo) emit_ternary_arm_o(c, lb[0], fres, 1, b);
+        else if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
       }
       /* The leading statements go into the PRELUDE, not inside a statement
@@ -4567,7 +4636,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          won and a branch reached its tail without running its own first
          line (#4139). The prelude keeps them in source order. */
       for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], g_pre, g_indent);
-      if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
+      if (fo) emit_ternary_arm_o(c, lb[ln - 1], fres, 1, b);
+      else if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
       else emit_expr(c, lb[ln - 1], b);
       return 1;
     }
@@ -4760,6 +4830,17 @@ int logic_value_handle(Compiler *c, int v) {
          repr_of(c, u).as_ty == TY_STRING;
 }
 
+/* Is `node` a call over a boxed receiver that the inference left untyped?
+   Its emission is the poly dispatch, which holds the answer of a call typed
+   as no value boxed (emit_poly_method_dispatch), or the boxed unresolved
+   token: an sp_RbVal either way. */
+static int untyped_boxed_call(Compiler *c, int node) {
+  node = nt_paren_single(c->nt, node);
+  if (node < 0 || nt_kind(c->nt, node) != NK_CallNode || comp_ntype(c, node) != TY_UNKNOWN) return 0;
+  int recv = nt_ref(c->nt, node, "receiver");
+  return recv >= 0 && repr_of(c, recv).kind == RK_BOXED;
+}
+
 /* And/or, a rescue modifier and a begin block in value position (emit_expr_node's arms, in their order) */
 static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
   if (sp_streq(ty, "AndNode") || sp_streq(ty, "OrNode")) {
@@ -4882,6 +4963,8 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        around the chain type-checks, and a chain nested in another reads as
        diverging too (#7164). */
     Buf lunk; memset(&lunk, 0, sizeof lunk);
+    /* the untyped left is a call over a boxed receiver: its text is boxed */
+    int lboxed = 0;
     if (lt == TY_UNKNOWN) {
       emit_expr(c, left, &lunk);
       if (text_diverges(lunk.p ? lunk.p : "")) {
@@ -4890,6 +4973,14 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
         free(lunk.p);
         return 1;
       }
+      /* A call over a boxed receiver the inference left untyped is the poly
+         dispatch, whose answer is boxed when its type is no value (every
+         candidate for the name unsettled: a method in a module nothing
+         includes, whose body is a deferred refusal), as the unresolved
+         token is: hold the left boxed and test its truth. Declared at the
+         result's type, `request.cookies_digest || "SHA1"` put the sp_RbVal
+         in a `const char *` and read it as always truthy. */
+      if (untyped_boxed_call(c, left)) { lt = TY_POLY; lboxed = 1; }
     }
     const char *ltxt = lunk.p ? lunk.p : "";
     /* an Integer or Float left that can be nil is held as its oint (lo);
@@ -4920,6 +5011,7 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
        when the left itself is unknown) rather than assigning the raw token. A
        normal left emits unchanged. */
     else if (lt == TY_UNKNOWN) emit_unresolved_coerced_text(c, left, res, ltxt, b);
+    else if (lboxed) buf_puts(b, ltxt);   /* the boxed dispatch, emitted above */
     else if (lo) emit_oint_expr(c, left, lt, b);
     else if (lt_hbox) emit_boxed(c, left, b);
     else if (lhandle) emit_strbuf_handle_of(c, left, b);
@@ -4999,7 +5091,13 @@ static int emit_and_or_begin_expr(Compiler *c, int id, Buf *b, const NodeTable *
                 plain type: wrapped where the result is an oint */ \
              else if (lt_falsy_const && oint_kind(res) && ro) buf_puts((TB), oint_nil(res)); /* a nil left's value is nil */ \
              else if (lt == TY_UNKNOWN && oint_kind(res) && ro) buf_printf((TB), "%s(_t%d)", oint_of(res), t); \
-             else if (lt == TY_POLY && ty_is_hash(res)) { \
+             /* a boxed left kept in a typed result (a Hash's; the boxed
+                dispatch of an untyped left beside a String right) is
+                unboxed to it, as its oint where the result is one */ \
+             else if (lt == TY_POLY && res != TY_POLY && ro && oint_kind(res)) { \
+               char kept[32]; snprintf(kept, sizeof kept, "_t%d", t); \
+               emit_unbox_nilable_text(c, res, kept, (TB)); } \
+             else if (lt == TY_POLY && res != TY_POLY) { \
                char kept[32]; snprintf(kept, sizeof kept, "_t%d", t); \
                emit_unbox_text(c, res, kept, (TB)); } \
              else buf_printf((TB), "_t%d", t); } \
@@ -5714,6 +5812,19 @@ static int masgn_hold_target_parts(Compiler *c, int id) {
   }
   return held;
 }
+/* A forwarded block call has the node's representation, including its nil
+   bit. The proc ABI returns a box; the optional conversion preserves nil
+   until the consuming operation unwraps the value. */
+static void emit_forwarded_block_value(Compiler *c, int id, Buf *b) {
+  TyKind ty = repr_of(c, id).as_ty;
+  int optional = oint_kind(ty) && node_is_oint(c, id);
+  if (optional) buf_printf(b, "%s(", oint_unbox(ty));
+  emit_yield_proc_call(c, nt_ref(c->nt, id, "arguments"),
+                       optional ? TY_POLY : ty != TY_UNKNOWN ? ty : g_yield_slot_ty,
+                       b, 0, 1);
+  if (optional) buf_puts(b, ")");
+}
+
 static void emit_expr_node(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *ty = nt_type(nt, id);
@@ -6246,15 +6357,11 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
       { /* the node's OWN type is what this expression position wants -- the
            inline's return slot is only the right answer when the yield IS the
            tail (a yield nested in a literal wants the element type, #3688) */
-        TyKind yt = repr_of(c, id).as_ty;
         /* A POLY node type is an answer, not an absence: the inline's return
            slot is only right when the call IS the tail, and a `&blk` forwarded
            into a map wants the element (boxed) form -- unboxing to the
            method's array type did not build (#3886). */
-        emit_yield_proc_call(c, nt_ref(nt, id, "arguments"),
-                             yt != TY_UNKNOWN
-                               ? yt : g_yield_slot_ty,
-                             b, 0, 1); }
+        emit_forwarded_block_value(c, id, b); }
     else if (nt_safe_nav(nt, id)) {
       /* `blk&.call`: the nil parameter answers nil instead of raising (an
          Integer / Float answer is the node's oint, as `&.` always is) */
@@ -6448,7 +6555,7 @@ static void emit_expr_node(Compiler *c, int id, Buf *b) {
     /* the slot is read back as the read of the ivar finds it: a top-level
        ivar is the Toplevel pseudo-class's file-scope global, where `self`
        names nothing (`x = (@i += 1)` at the top level, or a min/max block) */
-    int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? comp_class_index(c, "Toplevel") : -1;
+    int tl = cs && cs->class_id < 0 && g_ie_class_id < 0 ? c->toplevel_class : -1;
     if (cs && cs->is_cmethod && cs->class_id >= 0)
       snprintf(ref, sizeof ref, "civ_%s_%s", c->classes[cs->class_id].name, iv_c(nm + 1));
     else if (ivar_class_body_slot(c, id, cs, ref, sizeof ref)) sc = g_class_body_id;

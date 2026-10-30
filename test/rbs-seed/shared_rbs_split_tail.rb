@@ -56,7 +56,7 @@ class ShstCols
           @cols << name_of("#{key}.#{col}")
         end
       else
-        @cols << name_of(key.to_s)
+        @cols << name_of(+key.to_s)   # (+: a Symbol's to_s is frozen in Spinel)
       end
     end
     @cols << first_of(+"p-q") << first_of(+"") << nth_of(+"x,y", 1) << nth_of(+"x", 3)

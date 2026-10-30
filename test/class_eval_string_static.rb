@@ -2,9 +2,10 @@
 # the code it spells: a heredoc template stamped out per element of a
 # literal array (`METHODS.each { |m| class_eval <<-RUBY ... RUBY }`, the
 # shape activesupport's BroadcastLogger and core_ext use), and a plain
-# literal string. The __FILE__ / __LINE__ arguments are accepted and
-# ignored. Only a template whose interpolations are the loop variable
-# qualifies; anything else stays a runtime eval, which Spinel refuses.
+# literal string. The __FILE__ / __LINE__ arguments are what the text's
+# __FILE__ and __LINE__ answer. Only a template whose interpolations are the
+# loop variable qualifies; anything else stays a runtime eval, which Spinel
+# refuses.
 class Sink
   LEVELS = %w[debug info warn]
   LEVELS.each do |level|

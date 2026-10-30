@@ -327,13 +327,12 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
 }
 
 /* UnboundMethod#bind(obj): the same target with obj as self. */
-int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
+static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
   int mn2 = method_recv_node(c, recv);
-  int t2 = mn2 >= 0 ? method_obj_target_mi(c, mn2) : -1;
   if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0])) &&
       bind_owner_mismatch(c, t2, comp_ntype(c, argv[0]))) {
     /* obj of another class: CRuby's TypeError, at bind time, whether or
@@ -371,6 +370,34 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
+/* Binding preserves the captured fn. The entry's target list supplies
+   each definition's descriptor and ABI; its live cells are not read again. */
+int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mi = plan.mi;
+  if (plan.dispatch != CP_SWITCH) return emit_method_bind_target(c, x, b, mi);
+  size_t start = b->len;
+  int argc, to[VER_MAX_ARMS + 1], n = ver_entry_targets(c, mi, to, NULL);
+  const int *argv = call_args(c->nt, x->id, &argc);
+  int tr = ++g_tmp, vr;
+  buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, x->recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+  int rr = hold_operand(c, argv[0], repr_of(c, argv[0]).as_ty, 0, ++g_tmp, 1, " ", b);
+  vr = view_bind(argv[0], "_t%d", rr);
+  for (int i = 0; i < n; i++) {
+    if (i < n - 1) buf_printf(b, "_t%d->fn == (sp_int)(uintptr_t)&%s ? ", tr, mc_method(c, &c->scopes[to[i]]));
+    if (!emit_method_bind_target(c, x, b, to[i])) {
+      if (vr >= 0) view_unbind(vr);
+      buf_erase(b, start, b->len - start);
+      return 0;
+    }
+    if (i < n - 1) buf_puts(b, " : ");
+  }
+  view_unbind(vr);
+  buf_puts(b, "; })");
+  return 1;
+}
+
 /* <method>.to_proc wraps the bound method in a trampoline Proc. When the
    target method is statically known, emit a per-site trampoline that calls
    it with its real C signature (a top-level method has no self parameter;
@@ -381,10 +408,10 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
 int emit_op_method_to_proc(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
-  int mn = method_recv_node(c, recv);
-  int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mn = plan.method_node, target = plan.mi;
   int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
-  if (target >= 0) {
+  if (plan.dispatch == CP_DIRECT) {
     Scope *tm = &c->scopes[target];
     int np = tm->nparams;
     const char *tid = uid_new();
@@ -432,7 +459,7 @@ int emit_op_method_original_name(Compiler *c, const BopCtx *x, Buf *b) {
   if (tg4 >= 0 && c->scopes[tg4].name) {
     buf_puts(b, "((void)("); emit_expr(c, recv, b);
     buf_puts(b, "), sp_sym_intern(");
-    emit_str_literal(b, c->scopes[tg4].name);
+    emit_str_literal(b, comp_scope_user_name(&c->scopes[tg4]));
     buf_puts(b, "))");
   }
   else {
@@ -444,11 +471,9 @@ int emit_op_method_original_name(Compiler *c, const BopCtx *x, Buf *b) {
 
 /* Method#source_location: [file, line] of the target's def, from the same
    node position the #line machinery uses (#3247). */
-int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b) {
+static int emit_method_source_target(Compiler *c, const BopCtx *x, Buf *b, int tg4) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
-  int mn4 = method_recv_node(c, recv);
-  int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
   int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
   int ln4 = dn4 >= 0 ? (int)nt_int(nt, dn4, "node_line", 0) : 0;
   if (dn4 >= 0 && nt_int(nt, dn4, "cext_extension", 0)) {
@@ -519,13 +544,42 @@ int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
+int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b) {
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mi = plan.mi;
+  if (plan.dispatch != CP_SWITCH) return emit_method_source_target(c, x, b, mi);
+  size_t start = b->len;
+  int to[VER_MAX_ARMS + 1], n = ver_entry_targets(c, mi, to, NULL), tr = ++g_tmp;
+  buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, x->recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+  int vr = view_bind(x->recv, "_t%d", tr);
+  for (int i = 0; i < n; i++) {
+    if (i < n - 1) buf_printf(b, "_t%d->fn == (sp_int)(uintptr_t)&%s ? ", tr, mc_method(c, &c->scopes[to[i]]));
+    if (!emit_method_source_target(c, x, b, to[i])) {
+      if (vr >= 0) view_unbind(vr);
+      buf_erase(b, start, b->len - start);
+      return 0;
+    }
+    if (i < n - 1) buf_puts(b, " : ");
+  }
+  view_unbind(vr);
+  buf_puts(b, "; })");
+  return 1;
+}
+
 /* Method/UnboundMethod#parameters: [[:req, :a], [:opt, :b], ...] built
    statically from the target's parameter list (#3247). */
 int emit_op_method_parameters(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
-  int mn4 = method_recv_node(c, recv);
-  int tg4 = mn4 >= 0 ? method_obj_target_mi(c, mn4) : -1;
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mn4 = plan.method_node, tg4 = plan.mi;
+  if (plan.dispatch == CP_SWITCH) {
+    int tr = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); sp_bm_parameters(_t%d); })", tr, tr);
+    return 1;
+  }
   int dn4 = tg4 >= 0 ? c->scopes[tg4].def_node : -1;
   int pn4 = dn4 >= 0 ? nt_ref(nt, dn4, "parameters") : -1;
   /* A Method no one node names: the list its rendering carries, as a
@@ -547,13 +601,33 @@ int emit_op_method_parameters(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
+static void emit_method_owner_class(Compiler *c, int mi, Buf *b) {
+  const Scope *m = &c->scopes[mi];
+  int ci = m->origin_module_ci ? m->origin_module_ci - 1 : m->class_id;
+  if (ci < 0) buf_puts(b, "((sp_Class){(sp_int)-1, SPL(\"Object\")})");
+  else if (m->is_cmethod && !m->origin_module_ci) buf_printf(b, "((sp_Class){sp_sclass_id(%d), NULL})", ci);
+  else buf_printf(b, "((sp_Class){%d, NULL})", ci);
+}
+
 /* Method#owner (#2701). The creation site knows it: a user target's owner is its
    defining class; a builtin target's owner is the receiver's class. */
 int emit_op_method_owner(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
-  int mn = method_recv_node(c, recv);
-  int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mn = plan.method_node, target = plan.mi;
+  if (plan.dispatch == CP_SWITCH) {
+    int to[VER_MAX_ARMS + 1], n = ver_entry_targets(c, target, to, NULL), tr = ++g_tmp;
+    buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b);
+    buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+    for (int i = 0; i < n; i++) {
+      if (i < n - 1) buf_printf(b, "_t%d->fn == (sp_int)(uintptr_t)&%s ? ", tr, mc_method(c, &c->scopes[to[i]]));
+      emit_method_owner_class(c, to[i], b);
+      if (i < n - 1) buf_puts(b, " : ");
+    }
+    buf_puts(b, "; })");
+    return 1;
+  }
   int is_bam = target >= 0 && c->scopes[target].name &&
                strncmp(c->scopes[target].name, "__bam_", 6) == 0;
   int mrecv = mn >= 0 ? nt_ref(nt, mn, "receiver") : -1;
@@ -647,8 +721,12 @@ int emit_op_method_receiver(Compiler *c, const BopCtx *x, Buf *b) {
 int emit_op_method_arity(Compiler *c, const BopCtx *x, Buf *b) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
-  int mn = method_recv_node(c, recv);
-  int target = mn >= 0 ? method_obj_target_mi(c, mn) : -1;
+  CallPlan plan = cplan_method_call(c, x->id);
+  int mn = plan.method_node, target = plan.mi;
+  if (plan.dispatch == CP_SWITCH) {
+    buf_puts(b, "("); emit_expr(c, recv, b); buf_puts(b, ")->arity");
+    return 1;
+  }
   /* a builtin-receiver method object: the arity comes from the CRuby table
      keyed on the receiver's class and the literal method name (#2700). Such
      a method() was retargeted at a synthesized __bam_* wrapper, whose params
@@ -785,7 +863,7 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
   if (is_method_invoke(name)) plan = cplan_method_call(c, id);
   if (plan.method_call) {
     int mn = plan.method_node;
-    int target = plan.mi;
+    int target = plan.dispatch == CP_SWITCH ? -1 : plan.mi;
     if (g_plan_check && target >= 0 && is_call_alias(name)) ucall_observe(c, id, target, c->scopes[target].class_id, 0);
     int target_recvless = (mn >= 0 && nt_ref(nt, mn, "receiver") < 0);
     /* A bare `method(:sym)` in an instance method names no receiver but binds
@@ -1514,12 +1592,12 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
 
 /* Method and UnboundMethod objects: instance_method, method(:sym), bind / bind_call, owner,
    original_name, arity, parameters, receiver, unbind, super_method, source_location, to_proc */
-int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, int capture) {
   /* Klass.instance_method(:sym) -> the unbound object: the same
      sp_BoundMethod with a NULL self, so name/arity/owner ride the Method
      arms; #bind supplies the self (#2676). */
   if (sp_streq(name, "instance_method") && method_sym_arg(c, id) != NULL) {
-    int umi = method_obj_target_mi(c, id);
+    int umi = capture;
     if (umi >= 0) {
       buf_puts(b, "sp_bm_set_unbound(sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(NULL, SP_BM_SELF_NONE, (sp_int)(uintptr_t)&");
       buf_puts(b, mc_method(c, &c->scopes[umi]));
@@ -1566,6 +1644,22 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       sp_streq(name, "bind_call")) {
     CallPlan plan = cplan_method_call(c, id);
     int t2 = plan.mi;
+    if (plan.dispatch == CP_SWITCH) {
+      int tr = ++g_tmp;
+      BopCtx x = {0}; x.id = id; x.recv = recv;
+      size_t start = b->len;
+      buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr);
+      if (!emit_op_method_bind(c, &x, b)) {
+        buf_erase(b, start, b->len - start);
+        return 0;
+      }
+      buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
+      int vr = view_bind(recv, "_t%d", tr);
+      emit_call_callable_arms(c, id, b, nt, "call", recv, argc - 1, argv + 1);
+      view_unbind(vr);
+      buf_puts(b, "; })");
+      return 1;
+    }
     if (t2 >= 0 && c->scopes[t2].class_id >= 0 && !c->scopes[t2].is_cmethod &&
         ty_is_object(comp_ntype(c, argv[0]))) {
       emit_bind_call(c, id, t2, argv, argc, b);
@@ -1592,7 +1686,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
   /* method(:sym) / <recv>.method(:sym) -> a bound Method object. */
   if (sp_streq(name, "method") && method_sym_arg(c, id) != NULL) {
     const char *sym = method_sym_arg(c, id);
-    int mi = method_obj_target_mi(c, id);
+    int mi = capture;
     if ((mi < 0 || method_obj_of_native_func(c, recv, sym)) &&
         emit_method_obj_on_constant(c, id, recv, sym, b)) return 1;
     /* A poly receiver has no statically-known class, so method_obj_target_mi
@@ -1630,7 +1724,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        instance; false for a top-level method, a class method, or a
        receiverless Kernel wrapper. Persisted on the Method (#4395) because the
        raw `self != NULL` test cannot recover it later. */
-    int recv_bound = recv >= 0 ? (comp_ntype(c, recv) != TY_CLASS) : (self_bound ? 1 : 0);
+    int recv_bound = recv >= 0 ? (repr_of(c, recv).as_ty != TY_CLASS) : (self_bound ? 1 : 0);
     int mi_legacy = 0;
     char mi_sig[8 * 64 + 1]; mi_sig[0] = 0;
     int mi_fixed = 0, mi_rest = 0, mi_ret = 0, mi_poly = 0, mi_pfixed = 0, mi_pret = 0;
@@ -1657,7 +1751,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        self -- the class value is not a heap pointer, so pass NULL. */
     const char *self_kind = "SP_BM_SELF_NONE";
     int self_is_str = 0, self_rooted = 0;
-    int self_receiver = (recv >= 0 && comp_ntype(c, recv) != TY_CLASS);
+    int self_receiver = (recv >= 0 && repr_of(c, recv).as_ty != TY_CLASS);
     int self_tmp = 0;
     int tbr = 0;
     if (self_receiver && bam_poly) {
@@ -1702,7 +1796,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
     buf_puts(b, mi >= 0 ? "sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(" : "sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new(");
     if (self_rooted) buf_printf(b, "_t%d", self_tmp);
-    else if (recv >= 0 && comp_ntype(c, recv) == TY_CLASS) buf_puts(b, "NULL");
+    else if (recv >= 0 && repr_of(c, recv).as_ty == TY_CLASS) buf_puts(b, "NULL");
     else if (recv >= 0) { buf_puts(b, "(void *)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     else if (self_bound) { buf_printf(b, "(void *)%s", g_self); self_kind = "SP_BM_SELF_OBJ"; }
     else buf_puts(b, "NULL");
@@ -1936,6 +2030,37 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     }
   }
   return 0;
+}
+
+int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  CallPlan plan = cplan_method_call(c, id);
+  int mi = is_method_object_maker(name) ? plan.mi : -1;
+  if (mi < 0 || plan.dispatch != CP_SWITCH)
+    return emit_method_obj_target(c, id, b, nt, name, recv, argc, argv, mi);
+  size_t start = b->len;
+  int to[VER_MAX_ARMS + 1], tests[VER_MAX_ARMS + 1], n = ver_entry_targets(c, mi, to, tests);
+  int tr = ++g_tmp, vr = -1;
+  buf_puts(b, "({ ");
+  /* Evaluate and root the receiver before testing the cells. */
+  if (recv >= 0) {
+    int rr = hold_operand(c, recv, repr_of(c, recv).as_ty, 0, ++g_tmp, 1, " ", b);
+    vr = view_bind(recv, "_t%d", rr);
+  }
+  buf_printf(b, "sp_BoundMethod *_t%d; ", tr);
+  for (int i = 0; i < n; i++) {
+    if (i) buf_puts(b, "else ");
+    if (tests[i] >= 0) { buf_puts(b, "if ("); emit_expr(c, tests[i], b); buf_puts(b, ") "); }
+    buf_printf(b, "{ _t%d = ", tr);
+    if (!emit_method_obj_target(c, id, b, nt, name, recv, argc, argv, to[i])) {
+      if (vr >= 0) view_unbind(vr);
+      buf_erase(b, start, b->len - start);
+      return 0;
+    }
+    buf_puts(b, "; }\n");
+  }
+  if (vr >= 0) view_unbind(vr);
+  buf_printf(b, "_t%d; })", tr);
+  return 1;
 }
 
 /* a Method or a Proc read out of a container widened to poly: name / owner / receiver, arity, and call / () / yield answered from the boxed value */

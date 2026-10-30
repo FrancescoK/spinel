@@ -444,7 +444,29 @@ static int bop_result_fallback_allowed(const char *name) {
          !strcmp(name, "delete") || !strcmp(name, "delete_at") ||
          !strcmp(name, "assoc") || !strcmp(name, "rassoc") ||
          !strcmp(name, "values_at") || !strcmp(name, "pop") ||
-         !strcmp(name, "shift");
+         !strcmp(name, "shift") ||
+         /* K-034: the one-argument forms of names whose 0-arg form is
+            already answered above (by yield_site_listed, not this
+            allowlist) -- flatten(n)/max(n)/min(n) each have their own
+            concrete row for argc 0..1 (BOPR_SELF/BOPE_ARRAY_NMIN), and
+            insert(n) (one index, no values to insert) is BOPR_SELF, "self,
+            or FrozenError" -- none of the four was ever on this allowlist,
+            so the argument form fell through unanswered even though the
+            0-arg form already worked. A Hash receiver's own row for
+            max(n)/min(n) stays a TY_UNKNOWN placeholder (same as the 0-arg
+            form before the top-of-function redirect answers it) and Hash
+            has no #insert at all, so this allowlist addition only ever
+            resolves a plain-Array site for these two; a Hash site among
+            them is left exactly as unanswered as before. */
+         !strcmp(name, "flatten") || !strcmp(name, "max") || !strcmp(name, "min") ||
+         !strcmp(name, "insert") || !strcmp(name, "prepend") ||
+         /* K-035: slice!(start, length)'s two-argument form -- String and
+            Array both have a concrete row for it (BOPE_STRING_SLICE /
+            BOPR_SELF), same shape as "slice" above, just never added
+            alongside it. A String site mixed with Array ones compiles now,
+            but on a literal still hits #2332's frozen-literal limitation at
+            runtime, same as every other mutator this family has fixed. */
+         !strcmp(name, "slice!");
 }
 /* Whether a yield site answers `name` on a receiver of kind recv from the
    builtin-op rows rather than from a rule of its own: 1 for a listed pair,
@@ -457,9 +479,12 @@ static int bop_result_fallback_allowed(const char *name) {
 static int yield_site_listed(const char *name, TyKind recv) {
   int num = recv == TY_INT || recv == TY_FLOAT;
   if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) return num;
-  /* String#-@ is the deduplicated frozen String, so a String site belongs
-     here too; a String has no abs or magnitude. */
-  if (!strcmp(name, "-@")) return num || recv == TY_STRING;
+  /* String#-@/#+@ are the deduplicated-frozen and unfrozen-copy String
+     respectively, so a String site belongs to both too; a String has no
+     abs or magnitude. +@ was never listed here at all before K-035 (its
+     own bop_rows row was also a TY_UNKNOWN placeholder, fixed alongside
+     this), unlike -@ which already was. */
+  if (!strcmp(name, "-@") || !strcmp(name, "+@")) return num || recv == TY_STRING;
   /* itself alone also takes a Hash site (K-033) -- dup/clone already have
      a concrete Hash row too, but widening them here is untested outside a
      direct call and out of this fix's verified scope; freeze's Hash row is
@@ -486,8 +511,8 @@ static int yield_site_listed(const char *name, TyKind recv) {
       !strcmp(name, "upcase") || !strcmp(name, "swapcase"))
     return recv == TY_STRING || recv == TY_SYMBOL;
   if (!strcmp(name, "sort") || !strcmp(name, "reverse") || !strcmp(name, "uniq") ||
-      !strcmp(name, "compact") || !strcmp(name, "to_a") || !strcmp(name, "last") ||
-      !strcmp(name, "min") || !strcmp(name, "max") || !strcmp(name, "pop"))
+      !strcmp(name, "last") || !strcmp(name, "min") || !strcmp(name, "max") ||
+      !strcmp(name, "pop"))
     return ty_recv_is_plain_array(recv);
   /* first/shift's own row states a Hash kind too (the [key, value] pair --
      K-033/kilau), unlike min/max/uniq/minmax above, whose Hash row is a
@@ -496,10 +521,37 @@ static int yield_site_listed(const char *name, TyKind recv) {
      concrete for Hash belongs on this side of the list). */
   if (!strcmp(name, "first") || !strcmp(name, "shift"))
     return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
-  /* clear/flatten: BOPR_SELF and TY_POLY_ARRAY respectively, concrete for
-     both a plain Array and a Hash receiver (K-033). */
-  if (!strcmp(name, "clear") || !strcmp(name, "flatten"))
+  /* clear: BOPR_SELF for a plain Array (K-033) AND for a String (#2332),
+     AND BOPR_SELF for a Hash (K-033) -- the only name in this family whose
+     row is concrete for all three. K-033's own fix added the Hash case but
+     missed that String answers #clear too (kilau K-034): a site mix
+     including a String failed to compile the same way a Hash-less mix did
+     before K-033. flatten's own row is TY_POLY_ARRAY, concrete for a plain
+     Array and a Hash (K-033), but String has no #flatten. */
+  if (!strcmp(name, "clear"))
+    return ty_recv_is_plain_array(recv) || ty_is_hash(recv) || recv == TY_STRING;
+  if (!strcmp(name, "flatten")) return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
+  /* compact/to_a: each has its own concrete Hash row (BOPE_HASH_COMPACT,
+     BOPE_HASH_TO_A), same shape as clear/flatten above, just never gated
+     for a Hash receiver until now (kilau K-034). */
+  if (!strcmp(name, "compact") || !strcmp(name, "to_a"))
     return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
+  /* entries/fetch_values: concrete for both a plain Array and a Hash (the
+     only two receiver kinds either name answers on at all); never gated
+     here before K-034. */
+  if (!strcmp(name, "entries") || !strcmp(name, "fetch_values"))
+    return ty_recv_is_plain_array(recv) || ty_is_hash(recv);
+  /* concat: BOPR_SELF for a plain Array, and (#2309) for a String too --
+     neither was ever gated here before K-034, so even two plain Array
+     sites of differing element kind failed to compile. */
+  if (!strcmp(name, "concat")) return ty_recv_is_plain_array(recv) || recv == TY_STRING;
+  /* deconstruct/difference/intersection/to_ary/union: each exists only on
+     Array among this table's kinds (no String, Symbol or Hash row) --
+     never gated here before K-034, same "nobody tried the base case" gap
+     minmax turned out to have in K-033. */
+  if (!strcmp(name, "deconstruct") || !strcmp(name, "difference") ||
+      !strcmp(name, "intersection") || !strcmp(name, "to_ary") || !strcmp(name, "union"))
+    return ty_recv_is_plain_array(recv);
   /* minmax was never listed here at all (K-033) -- an Int Array site beside
      a String Array one failed to compile even with no Hash anywhere in the
      picture, a plainer bug than the Hash-specific one below. */
@@ -567,8 +619,12 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        receiver is never a known constant, so it always takes that mode's
        non-constant path (confirmed with --emit-types on a direct, non-yield
        call: an Integer local read back from an array answers poly under
-       promote). */
-    if (!strcmp(name, "succ")) {
+       promote). next is succ's alias (Integer/String/Symbol each have their
+       own separate bop_rows row for the name "next", not "succ" -- the
+       `bop_find(recv, name, 0, 0)` below already looks up by `name`, so no
+       change needed there); K-024/#9419 fixed 0-arg succ, including a
+       Symbol arm, but never added the alias name itself (kilau K-034). */
+    if (!strcmp(name, "succ") || !strcmp(name, "next")) {
       if (recv == TY_STRING) *out = TY_STRING;
       else if (recv == TY_SYMBOL) *out = TY_SYMBOL;
       else if (recv == TY_INT) *out = promote ? TY_POLY : TY_INT;
@@ -605,6 +661,25 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
        shuffle, sample). The dig/[] checks right after this block
        self-guard on argc>=1, so they simply no-op for an argc=0 name that
        reaches here. */
+  }
+  /* min(n)/max(n) on a Hash site: the one-argument form of the redirect
+     above, needed separately because that block only runs for argc==0 and
+     bop_result_fallback_allowed's own addition for this argument form
+     (kilau K-034) only ever resolves a plain-Array site -- a Hash site in
+     the same mix was left exactly as unanswered as the 0-arg form was
+     before K-033's redirect, and an unanswered site keeps the whole
+     method unwidened even though the Array sites alone would have been
+     fine. Confirmed CRuby answers {a: 1}.max(2) as [[:a, 1]] (an array of
+     up to n pairs), the same "Hash's pairs as a Poly Array" rule as the
+     0-arg form, so the row is looked up the same way: in TY_POLY_ARRAY's
+     own family at this argc, with `recv` passed to bop_result as
+     TY_POLY_ARRAY rather than the real Hash kind. */
+  if (argc == 1 && ty_is_hash(recv) && (!strcmp(name, "min") || !strcmp(name, "max"))) {
+    const BuiltinOp *op = bop_find(bop_family_of(TY_POLY_ARRAY), name, 1, 0);
+    TyKind r = op ? bop_result(op, TY_POLY_ARRAY) : TY_UNKNOWN;
+    if (r == TY_UNKNOWN) return 0;
+    *out = r; if (row) *row = op;
+    return 1;
   }
   /* Unlike succ/sum above, dig ignores `promote`: a one-index dig answers
      the same nilable element `[]` does (below), and `[]` is itself
@@ -716,6 +791,23 @@ int ty_recv_builtin_result(const char *name, int argc, TyKind arg0, TyKind arg1,
     TyKind r = op ? bop_result(op, recv) : TY_UNKNOWN;
     if (r == TY_UNKNOWN) return 0;
     *out = r; if (row) *row = op;
+    return 1;
+  }
+  /* flatten's generic-fallback row below is BOPR_SELF (the receiver's own
+     kind) -- right for a plain or Hash receiver (K-034), but WRONG for a
+     nested array receiver (TY_INT_ARRAY_ARRAY/TY_FLOAT_ARRAY_ARRAY):
+     flattening one level produces the ELEMENT kind (ty_array_elem), not
+     the still-nested receiver kind. Confirmed against spinel's own direct
+     (non-yield) call, which already answers mk.flatten(1) correctly where
+     mk returns a nested array -- this table must not disagree with it.
+     A yield's own forward inference never widens a literal
+     array-of-arrays to this concrete nested kind on its own (confirmed
+     empirically via --emit-types: it answers poly_array there instead),
+     but a value flowing in from a method's own post-fixpoint narrowed
+     return can still carry it to a yield site, so this is answered
+     explicitly ahead of the generic fallback rather than trusted to it. */
+  if (!strcmp(name, "flatten") && (recv == TY_INT_ARRAY_ARRAY || recv == TY_FLOAT_ARRAY_ARRAY)) {
+    *out = ty_array_elem(recv);
     return 1;
   }
   /* Every name above answers from its own hand-written rule, several of
@@ -1007,4 +1099,11 @@ int ty_builtin_ivar_less(TyKind t) {
    of it reads this predicate. */
 int ty_bivar_keyed(TyKind t) {
   return t == TY_RANDOM || t == TY_EXCEPTION || t == TY_STRING || t == TY_STRBUF || ty_is_array(t) || ty_is_hash(t);
+}
+
+int is_scalar_ret(TyKind t) {
+  /* a builtin kind's ty_traits row says (types.c); a user object and an
+     object array are pointers a method can return */
+  const TyTraits *tr = ty_traits_of(t);
+  return tr ? tr->scalar_ret : (ty_is_object(t) || ty_is_obj_array(t));
 }

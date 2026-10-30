@@ -1,0 +1,16 @@
+"a=1; path=/, b=2"
+["a=1; path=/", "b=2"]
+nil
+"1.1"
+[Net::HTTPBadResponse, "wrong status line: \"SMTP/1.0 hello\""]
+false
+StandardError
+["1.0", "404", "Not Found"]
+"hi"
+"opening connection to 127.0.0.1:PORT...\n"
+"opened\n"
+true
+true
+"Conn close\n"
+["ok", ["x-custom", "chunked"]]
+["ok", ["2", "2"]]

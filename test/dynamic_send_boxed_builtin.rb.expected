@@ -1,0 +1,9 @@
+[3, 2]
+2
+[2]
+[2, 1]
+[99, 3, 1]
+"ab  "
+"box 2"
+[true, true]
+"undefined method 'no_such_meth' for an instance of String"

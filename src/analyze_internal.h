@@ -145,7 +145,7 @@ const char *superclass_builtin_exc_name(const NodeTable *nt, int sc);   /* analy
 int is_syserr_family_name(const char *n);           /* analyze_util.c */
 int builtin_method_known(const char *cls, const char *m);
 int builtin_method_known_any(const char *m);   /* codegen_call.c */
-int builtin_object_method_known(const char *m);   /* codegen_call.c */
+int builtin_object_method_known(const char *m);   /* builtin_names.c */
 int core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 const char *core_class_ancestors(const char *cls);   /* codegen_call_class.c */
 int builtin_method_arity(const char *cls, const char *m, int *out);
@@ -172,6 +172,7 @@ const char *class_ruby_name(Compiler *c, int ci); /* codegen.c */
 int builtin_object_method_known(const char *m);
 int core_method_name(const char *n);   /* analyze_desugar.c: a core class's public method */
 int object_public_method_name(const char *n); /* analyze_desugar.c: one of Object's public instance methods */
+int object_instance_method_name(const char *n);        /* analyze_desugar.c: one of Object's instance methods, public or private */
 int class_inherits_builtin_exception(Compiler *c, int ci);
 /* 1 if super node n, in instance method mi `inspect` / `to_s` of a plain
    class, reaches Kernel's, which builds a new String each call. */
@@ -282,6 +283,7 @@ int ie_forwards_block_tail(Compiler *c, int node);
 int return_in_lambda(Compiler *c, int rid);
 /* 1 if scope `si` returns, other than at `guard_ret`, before it. */
 int return_before(Compiler *c, int si, int guard_ret);
+TyKind pinned_guard_unpin_ret(Compiler *c, int mi);
 /* A proc-typed local's proc_ret: the join of the answers of the procs it is written. 1 on a change. */
 int join_local_proc_rets(Compiler *c);
 /* Scan a subtree for BreakNode values and return their unified type.
@@ -311,6 +313,7 @@ int yield_value_diverges(Compiler *c, int mi);
 int node_is_scope_tail(Compiler *c, int mi, int id);
 TyKind yield_aware_elem_ty(Compiler *c, int node);
 int an_user_defines_method(Compiler *c, const char *name);
+int an_enum_own_find_index(Compiler *c);
 int an_native_defines_method(Compiler *c, const char *name);
 int an_user_recv_defines_method(Compiler *c, const char *name);
 int an_user_define_method(Compiler *c);
@@ -334,6 +337,10 @@ int proc_lit_carrier(Compiler *c, int v, int lit);
 int widen_hash_arg_for_store(Compiler *c, int arg, TyKind hk, TyKind hv);
 int pivs_settle_hash_stores(Compiler *c);
 int pivs_hash_stores_widened(Compiler *c);
+/* A builtin iterator moved onto its copy, `__enum_each_with_index__3(recv) { }`
+   (desugar_builtin_enum_calls), iterates its first argument as `recv.each_with_index { }`
+   does: the iterator's name in buf, 1 for such a call name. */
+int pivs_enum_iter(const char *name, char *buf, size_t n);
 int subtree_has_side_effect(Compiler *c, int id);   /* codegen_util.c */
 int call_unused_block(Compiler *c, int id);   /* codegen_util.c */
 
@@ -372,7 +379,7 @@ char *dm_lit_str(Compiler *c, int lit);
 char *dm_eval_name(Compiler *c, int node, const char *bv, int lit);
 TyKind dm_lit_type(Compiler *c, int lit);
 const char *builtin_class_of_type(TyKind t);
-const char *object_fallback_class_of_type(TyKind t);
+int object_fallback_class_of_type(TyKind t);
 /* Whether method `m` can take call `call_id`'s arguments (analyze_pass.c) */
 int method_takes_call_args(Compiler *c, Scope *m, int call_id);
 const char *resolve_class_alias(Compiler *c, const char *cname);
@@ -391,7 +398,10 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
    list (EP_LIST), whose elements are statements, or a lone expression
    (EP_NEW), which is one. Any other node is one of the statement's
    (EP_NODE). bits: LR_LATE / LR_BODY of the node; defer: a block whose call
-   keeps it to run later, so that its nodes are late. fmay: may, counted
+   keeps it to run later, so that its nodes are late; kept: on a block of a
+   call the record does not know (elab_block_runs 0), which may run it at
+   once or keep it to run later, so its statements may run after any later
+   point too. fmay: may, counted
    from the frame: a condition stands between the node and the body (or
    main's file) holding it; fpartial: partial, counted from the frame. sure:
    an else clause that runs whenever its
@@ -400,7 +410,7 @@ void walk_scope(Compiler *c, int id, int scope_idx, int class_id);
 typedef struct {
   int e, file, top, frame, depth, rep;
   int list;   /* the statement list the node is an element of (a StatementsNode), -1 for a lone expression */
-  unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure;
+  unsigned char may, partial, kind, bits, defer, fmay, fpartial, sure, kept;
 } ElabPos;
 enum { EP_NODE, EP_SPINE, EP_LIST, EP_NEW };
 ElabPos elab_child(const NodeTable *nt, int p, int ch, const ElabPos *pp);
@@ -649,6 +659,12 @@ int desugar_splat_to_a(Compiler *c);
 int desugar_builtin_splat_forward(Compiler *c);
 int builtin_class_arity_spec(const char *cls, const char *m, int *min, int *max,
                              const char **lo_exp, const char **hi_exp);
+/* The row an Integer or a Float (k) answers `name` with argc arguments
+   from (and a literal block, has_block, where the row's block form takes
+   one), for a boxed value that may be either, or NULL: only where CRuby's
+   argument counts prove argc right for the class, as a row's own range can
+   be the legacy any-count one (analyze_infer.c) */
+const struct BuiltinOp *poly_scalar_row(TyKind k, const char *name, int argc, int has_block);
 int desugar_lazy_method_call(Compiler *c);
 int desugar_value_callable_forwards(Compiler *c);
 int desugar_root_scoped_constants(Compiler *c);
@@ -675,6 +691,7 @@ int nested_row_iter_call(Compiler *c, int id);
 int fold_static_is_a(Compiler *c);
 int narrow_empty_array_args_by_yield(Compiler *c);
 int builtin_enum_name_index(const char *name);
+void enum_send_copy_take(NodeTable *nt, int call);
 int an_class_includes_enumerable(Compiler *c, int ci);
 int desugar_module_function_aliases(Compiler *c);
 int method_body_next_to_return(NodeTable *nt, int id);
@@ -796,8 +813,9 @@ int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts,
 void lower_settle(Compiler *c, LowerCtx *lc);   /* the rows spans left to the program, once per step */
 
 /* ---- the host (analyze_elab.c, #9898) ----
-   A step that splices code into a body after the load stage began hands it
-   to the host, which makes it what the program's own code is at that point:
+   A step that splices code into a body after the load stage began, or makes
+   a block a class body (Class.new do..end), hands it to the host, which
+   makes it what the program's own code is at that point:
    the static class_eval text in it is grafted (analyze_desugar.c's sce),
    and its statements are lowered by the rows that have run (lower_span), at
    host_end, once the step has spliced everything. What the text graft asks
@@ -809,10 +827,10 @@ typedef struct HostStep {
   int nspans, cspans;
 } HostStep;
 void host_begin(HostStep *h, LowerCtx *lc);
-int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* the n statements at body[at]: the count they become */
+int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* the n statements at body[at], in a frame of locals but gone (NULL: not known): the count they become */
 void host_end(Compiler *c, HostStep *h);
 int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
-int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n);   /* ... over spliced statements */
+int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);
 void lower_finish(Compiler *c, LowerCtx *lc);   /* frees; under the check, reports and exits */
 
@@ -905,10 +923,12 @@ int desugar_conditional_defs(Compiler *c);
 /* A dispatcher def over arms `<sel> == <val>` calling `callee` with the
    def's parameters passed on, and an else arm (disp_def_build,
    analyze_desugar.c); `raise NoMethodError, msg` for that arm */
-typedef struct { const char *sel; int val; const char *callee; } DispArm;
+typedef struct { const char *sel; int val; const char *callee; int hist; } DispArm;
 int disp_def_build(NodeTable *nt, int like, const char *name, int sg, int ar, int blk,
                    const DispArm *arm, int narm, int els);
 int disp_raise_no_method(NodeTable *nt, const char *msg);
+int disp_forward_call(NodeTable *nt, const char *callee, int ar, int blk);
+int disp_super_call(NodeTable *nt, int ar, int blk);
 int desugar_dynamic_respond_to(Compiler *c);
 int desugar_toplevel_instance_exec(Compiler *c);
 int desugar_binding_lvget(Compiler *c);
@@ -925,6 +945,7 @@ int desugar_interp_reopened_to_s(Compiler *c);
 int desugar_interp_elided_to_s(Compiler *c);
 int desugar_array_first_last(Compiler *c);
 int desugar_enum_iter_splat_args(Compiler *c);
+int desugar_index_value_block_pass(Compiler *c);
 int desugar_iter_splat_args(Compiler *c);
 int desugar_builtin_iter_block_shapes(Compiler *c);
 int desugar_enum_pair_lone_param(Compiler *c);
@@ -949,7 +970,7 @@ int desugar_reader_aliases_before_redef(Compiler *c);
 int desugar_readers_over_inherited_defs(Compiler *c);
 int desugar_inline_struct_blocks(Compiler *c);
 int desugar_singleton_class_meta(Compiler *c);
-int desugar_class_new_blocks(Compiler *c);
+int desugar_class_new_blocks(Compiler *c, HostStep *h);
 int desugar_included_hooks(Compiler *c, HostStep *h);
 int desugar_class_body_object_acts(Compiler *c);
 int desugar_struct_block_anonymous(Compiler *c);
@@ -964,6 +985,8 @@ int backprop_hash_return_types(Compiler *c);
 int backprop_call_target(Compiler *c, int call_id);
 int ivar_src_slot(Compiler *c, int v, const char **ivn);
 void cr_collect_calls(Compiler *c, const NodeTable *nt, int id, char ***out, int *n, int *cap, int instance_self);
+void cr_collect_program_end(Compiler *c, char ***out, int *n, int *cap);   /* the printer of an uncaught exception */
+int cr_ty_builtin_value(Compiler *c, TyKind t);
 void compute_reachable(Compiler *c, int typed);
 void refuse_native_singleton_reopen(Compiler *c, Scope *s);
 void compute_instantiated(Compiler *c, int early);
@@ -976,6 +999,7 @@ int anh_has(const ANameHash *st, const char *nm);
 int anh_find(const ANameHash *st, const char *nm);   /* insertion index, or -1 */
 void anh_add(ANameHash *st, const char *nm);
 void anh_free(ANameHash *st);
+void cr_class_only_names(Compiler *c, ANameHash *out);   /* the names only plain classes' methods hold */
 /* The scopes of a name, ascending: the first, and the next after s (-1 at
    the end); from a table while the scope index is frozen, else a scan
    (analyze.c). A pass walking every scope for a name's methods per call

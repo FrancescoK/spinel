@@ -364,7 +364,7 @@ const char *sp_poly_to_s(sp_RbVal v)
     case SP_TAG_FLT: return sp_float_to_s(v.v.f);
     case SP_TAG_BOOL: return v.v.b ? sp_str_frozen_true : sp_str_frozen_false;
     case SP_TAG_NIL: return sp_str_frozen_empty;
-    case SP_TAG_SYM: return sp_sym_to_s_chilled((sp_sym)v.v.i);
+    case SP_TAG_SYM: return sp_sym_to_s_frozen((sp_sym)v.v.i);
     case SP_TAG_CLASS: return sp_class_val_user(v, sp_class_user_to_s_fn);
     case SP_TAG_ENCODING: return v.v.s ? v.v.s : sp_str_empty;
     case SP_TAG_BIGINT: return sp_bigint_to_s((sp_Bigint *)v.v.p);

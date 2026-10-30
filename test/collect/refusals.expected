@@ -220,11 +220,11 @@ spinel: 1 refusal, nothing written
 == test/reject/class_eval_static_singleton_hook.rb [promote] rc=1
 spinel: test/reject/class_eval_static_singleton_hook.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
-== test/reject/class_eval_static_source_line.rb [default] rc=1
-spinel: test/reject/class_eval_static_source_line.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
+== test/reject/class_eval_text_hook_param.rb [default] rc=1
+spinel: test/reject/class_eval_text_hook_param.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
-== test/reject/class_eval_static_source_line.rb [promote] rc=1
-spinel: test/reject/class_eval_static_source_line.rb:6: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=3 arg0ty6
+== test/reject/class_eval_text_hook_param.rb [promote] rc=1
+spinel: test/reject/class_eval_text_hook_param.rb:7: unsupported call: node N (CallNode `class_eval`) recv=-/ty-1 argc=1 arg0ty6
 spinel: 1 refusal, nothing written
 == test/reject/class_named_like_monitor_path.rb [default] rc=1
 spinel: test/reject/class_named_like_monitor_path.rb:4: unsupported class name 'Monitor': collides with the builtin class of that name
@@ -506,6 +506,12 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/const_get_runtime_name.rb:7: unsupported const_get with a name known only at run time and no class or module receiver (an instance has no const_get; constants are resolved at compile time): node N (CallNode `const_get`) recv=-/ty-1 argc=1 arg0ty6
 == test/reject/const_get_runtime_name.rb [promote] rc=1
 spinel: test/reject/const_get_runtime_name.rb:7: unsupported const_get with a name known only at run time and no class or module receiver (an instance has no const_get; constants are resolved at compile time): node N (CallNode `const_get`) recv=-/ty-1 argc=1 arg0ty6
+== test/reject/const_parent_array_pattern.rb [default] rc=1
+spinel: test/reject/const_parent_array_pattern.rb:6: unsupported pattern sub-form inside a container pattern: node N (ConstantPathNode)
+spinel: 1 refusal, nothing written
+== test/reject/const_parent_array_pattern.rb [promote] rc=1
+spinel: test/reject/const_parent_array_pattern.rb:6: unsupported pattern sub-form inside a container pattern: node N (ConstantPathNode)
+spinel: 1 refusal, nothing written
 == test/reject/const_set_ambiguous_receiver.rb [default] rc=1
 spinel: test/reject/const_set_ambiguous_receiver.rb:11: const_set(:X, ...) on a receiver whose class or module is known only at run time is not supported when more than one module holds a constant X: constants are compile-time globals, and which module's X this sets is not known at compile time. Write `Mod.const_set(:X, v)` or `Mod::X = v` (see docs/limitations.md)
 spinel: 1 refusal, nothing written
@@ -543,10 +549,10 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/define_method_each_integer_name.rb:3: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/define_method_handed_block.rb [default] rc=1
-spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_handed_block.rb [promote] rc=1
-spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_handed_block.rb:7: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_implicit_rescue_captured_values.rb [default] rc=1
 spinel: test/reject/define_method_implicit_rescue_captured_values.rb:9: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
@@ -637,16 +643,16 @@ spinel: 1 refusal, nothing written
 spinel: test/reject/define_method_name_struct_block.rb:5: Module#define_method with a non-literal name is not supported; use a literal Symbol or String (see docs/limitations.md)
 spinel: 1 refusal, nothing written
 == test/reject/define_method_proc_ref_constant.rb [default] rc=1
-spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_proc_ref_constant.rb [promote] rc=1
-spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_proc_ref_constant.rb:6: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_proc_ref_in_method.rb [default] rc=1
-spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_proc_ref_in_method.rb [promote] rc=1
-spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result) is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
+spinel: test/reject/define_method_proc_ref_in_method.rb:8: Module#define_method with `&` of a block or Proc that is not a literal (`&block`, a parameter, a constant, a call's result), or with a Proc or Method passed as its body, is not supported: the defined method's body is known only at run time. Pass a block literal to define_method instead
 spinel: 1 refusal, nothing written
 == test/reject/define_method_struct_block_runtime_cond.rb [default] rc=1
 spinel: test/reject/define_method_struct_block_runtime_cond.rb:4: a define_method under a condition only the run time decides, in a Struct.new or Data.define block, is not supported: write the class with `class`; see docs/limitations.md
@@ -1826,11 +1832,25 @@ spinel: test/reject/time_parse_no_require.rb:7: Time.parse is not supported with
 spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported without `require "time"`, which defines it in CRuby (see docs/limitations.md)
 == test/reject/time_strptime_no_require.rb [promote] rc=1
 spinel: test/reject/time_strptime_no_require.rb:7: Time.strptime is not supported without `require "time"`, which defines it in CRuby (see docs/limitations.md)
+== test/reject/top_def_calls_main_singleton_class_self.rb [default] rc=1
+spinel: test/reject/top_def_calls_main_singleton_class_self.rb:6: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_class_self.rb [promote] rc=1
+spinel: test/reject/top_def_calls_main_singleton_class_self.rb:6: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_def_self.rb [default] rc=1
+spinel: test/reject/top_def_calls_main_singleton_def_self.rb:7: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
+== test/reject/top_def_calls_main_singleton_def_self.rb [promote] rc=1
+spinel: test/reject/top_def_calls_main_singleton_def_self.rb:7: a top-level method's self is not modelled: this call finds main's singleton method when the method runs on main and Object's when it runs on another object
 == test/reject/toplevel_include_yield_ivar_target.rb [default] rc=1
 spinel: test/reject/toplevel_include_yield_ivar_target.rb:14: unsupported top-level include of a module method that uses instance variables: node N (CallNode `pair`) recv=-/ty-1 argc=0
 spinel: 1 refusal, nothing written
 == test/reject/toplevel_include_yield_ivar_target.rb [promote] rc=1
 spinel: test/reject/toplevel_include_yield_ivar_target.rb:14: unsupported top-level include of a module method that uses instance variables: node N (CallNode `pair`) recv=-/ty-1 argc=0
+spinel: 1 refusal, nothing written
+== test/reject/typed_array_include_user_eq.rb [default] rc=1
+spinel: test/reject/typed_array_include_user_eq.rb:7: Array#include? of a user object defining == in a typed Array
+spinel: 1 refusal, nothing written
+== test/reject/typed_array_include_user_eq.rb [promote] rc=1
+spinel: test/reject/typed_array_include_user_eq.rb:7: Array#include? of a user object defining == in a typed Array
 spinel: 1 refusal, nothing written
 == test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb [default] rc=1
 spinel: test/reject/typed_array_kept_by_struct_into_boxed_param_store.rb:11: an Array[Integer] is passed to `m`'s parameter `arr`, which the method stores elements of other kinds into: the caller's array cannot hold them, and the store would go to a copy it never sees. Build the argument where the call can follow it (an array literal or a new array, through locals and method values), so it is widened with the parameter.

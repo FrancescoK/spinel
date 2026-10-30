@@ -341,9 +341,13 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
     /* a boxed value: an immediate's id is the one the typed arms above
        answer for it, any other value's its identity (sp_poly_object_id) */
     else if (rt == TY_POLY) {
-      buf_puts(b, "sp_poly_object_id(");
+      /* the call typed as a box (a program class aliasing `object_id` to a
+         method the compiler cannot read types a poly receiver's call so):
+         the id boxed for it, where the C stored an sp_int into the sp_RbVal */
+      int boxed_ans = repr_of(c, id).kind == RK_BOXED;
+      buf_puts(b, boxed_ans ? "sp_box_int(sp_poly_object_id(" : "sp_poly_object_id(");
       emit_expr(c, recv, b);
-      buf_puts(b, ")");
+      buf_puts(b, boxed_ans ? "))" : ")");
     }
     /* a String: a mutable one held as its shared sp_String has that
        handle's identity, the one a box of it carries (its text is a fresh
@@ -557,7 +561,7 @@ int emit_call_identity_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         buf_printf(b, ", \"%s\")", cn);
         return 1;
       }
-      int yes = ty_matches_class(at2, cn, 0);
+      int yes = ty_matches_class(c, at2, cn, 0);
       if (yes >= 0) {
         buf_puts(b, "((void)("); emit_expr(c, argv[0], b); buf_printf(b, "), %d)", yes);
         return 1;

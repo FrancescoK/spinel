@@ -89,6 +89,6 @@ Holder.new.run
 n = 42
 m = n.to_s
 m << "x"
-q = :sym.to_s
+q = :sym.to_s.dup
 q << "y"
 p n, m, q

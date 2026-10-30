@@ -1,0 +1,9 @@
+true
+false
+1
+year must be an Integer
+true
+true
+:yes
+[true, false, false, true, :yes]
+[false, false, true, false, :yes]

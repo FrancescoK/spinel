@@ -1,0 +1,69 @@
+load record: 36 points, 1 regions
+r0 #0 f0 ProgramNode line 9
+r0 #1 f0 ModuleNode Chime line 9
+  r0 #2 f0 DefNode ring line 10
+r0 #3 f0 ConstantWriteNode Point line 13
+  r0 #4 f0 DefNode twice line 14
+r0 #5 f0 ClassNode Fault line 17
+  r0 #6 f0 DefNode ring line 18
+  r0 #7 f0 ConstantWriteNode Fault__FIRST line 19
+  r0 #8 f0 CallNode include line 20
+r0 #9 f0 ClassNode Raised line 23
+  r0 #10 f0 DefNode ring line 24
+  r0 #11 f0 ConstantWriteNode Raised__FIRST line 25
+  r0 #12 f0 CallNode include line 30
+r0 #13 f0 ClassNode Called line 33
+  r0 #14 f0 DefNode ring line 34
+  r0 #15 f0 ConstantWriteNode Called__FIRST line 35
+  r0 #16 f0 CallNode include line 36
+r0 #17 f0 ClassNode Point line 39
+  r0 #18 f0 DefNode ring line 40
+r0 #19 f0 ConstantWriteNode POINT line 43
+r0 #20 f0 ClassNode Point line 45
+  r0 #21 f0 CallNode include line 46
+r0 #22 f0 ClassNode Bell line 49
+  r0 #23 f0 DefNode ring line 50
+  r0 #24 f0 CallNode include line 51
+r0 #25 f0 ClassNode Fault line 54
+  r0 #26 f0 DefNode ring line 55
+r0 #27 f0 ClassNode Raised line 58
+  r0 #28 f0 DefNode ring line 59
+r0 #29 f0 ClassNode Called line 62
+  r0 #30 f0 DefNode ring line 63
+r0 #31 f0 ClassNode Point line 66
+  r0 #32 f0 DefNode ring line 67
+r0 #33 f0 ClassNode Bell line 70
+  r0 #34 f0 DefNode ring line 71
+r0 #35 f0 CallNode puts line 74
+class Chime: body#1
+class Fault: body#5 body#25 include Chime#8
+class Raised: body#9 body#27 include Chime#12
+class Called: body#13 body#29 include Chime#16
+class Point: body#17 body#20 body#31 include Chime#21
+class Bell: body#22 body#33 include Chime#24
+entity Chime: owner main leaf Chime
+entity Fault: owner main leaf Fault
+entity Raised: owner main leaf Raised
+entity Called: owner main leaf Called
+entity Bell: owner main leaf Bell
+const Chime: write#1
+Chime#ring: def#2 runs=#7 end=yes
+const Point: write#3 write#17
+const Fault: write#5
+Fault#ring: def#6 runs=#7 def#26 runs=#7 end=yes
+const Fault::FIRST: write#7
+const Raised: write#9
+Raised#ring: def#10 runs=#11 def#28 runs=#11 end=yes
+const Raised::FIRST: write#11
+const Called: write#13
+Called#ring: def#14 runs=#15 def#30 runs=#15 end=yes
+const Called::FIRST: write#15
+Point#ring: def#18 runs=#19 def#32 runs=#19 end=yes
+const POINT: write#19
+const Bell: write#22
+Bell#ring: def#23 runs=#35 def#34 runs=#35 end=yes
+versions Fault#ring: def#6..#26 seen=unknown, def#26..end seen=def#26; 11 of the name
+versions Raised#ring: def#10..#28 seen=unknown, def#28..end seen=def#28; 11 of the name
+versions Called#ring: def#14..#30 seen=unknown, def#30..end seen=def#30; 11 of the name
+versions Point#ring: def#18..#32 seen=unknown, def#32..end seen=def#32; 11 of the name
+versions Bell#ring: def#23..#34 seen=def#23 idle, def#34..end seen=def#34; 11 of the name

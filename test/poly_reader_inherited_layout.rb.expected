@@ -1,0 +1,8 @@
+[Node, 1, 1]
+[Leaf, nil, 1]
+[Wide, 3, 2]
+[Named, "s", "three"]
+[Deep, 5, 4]
+:none
+[7]
+[1, 1, 2, "three", 4, nil]

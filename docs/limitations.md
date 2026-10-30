@@ -55,7 +55,7 @@ registry, or stack reification -- none of which exist in a flat compiled binary.
 | `WeakRef` (`require "weakref"`, packages/weakref) | keeps its object alive, `weakref_alive?` is true (CRuby's word for a true, false or nil) as long as the WeakRef lives, and it forwards no calls to the object: read it with `__getobj__` | the collector hands out no weak references, and CRuby's WeakRef is a Delegator, which forwards through `method_missing` (above) |
 | `class_eval` of a string | compiled when the string is a literal or a heredoc with no interpolation, or one whose interpolations are the loop variable of the `CONST.each` / `%w().each` around it, or a constant in call position (racc's `#{Racc_Main_Parsing_Routine}(_racc_setup(), false)`, the send of the method the constant names); any other string is refused | the text has to be known at compile time |
 | An Array a method yields to a C extension's block through a name the extension computes (`rb_block_call(recv, SYM2ID(mid), ...)`, racc's `yyparse(recv, mid)`) | reaches C as a poly Array copy of its elements, with its Strings shared; a change the C side makes to that Array does not reach the typed Array the method yielded | the analysis widens the Arrays that reach an extension by the routes it sees (an argument, an ivar's); a block handed to a method by a computed name reaches any method |
-| `define_method` with a runtime-computed name/body | calls with a non-literal name, in a class body or in a method body (instance or class method), are refused in reachable code, even when the defined method is never called; an unreachable method and pruned code are not refused. A program that defines or aliases its own `define_method` keeps those calls as ordinary calls; that check is program-wide, so a `def define_method` in an unrelated class turns the refusal off everywhere, and a computed-name class-building call then raises `NoMethodError` at run time as it always did. `send(:define_method, name)` is not refused either. Literal Symbol/String names and existing literal-list unrolling work (a list whose element is itself the name must hold Symbols or Strings: `[1].each { |n| define_method(n) { } }` is refused, where CRuby raises TypeError), and so does a class method, or a method of a module the class extends, that the class body calls with literal arguments and that hands `define_method` a block or a lambda under a name it builds from them (`def self.flag(name) = define_method("#{name}?") { ... }`, then `flag :color`): each call is expanded into the `def`s it makes; the class's own name (`self.name`, `to_s`, `inspect`, in a `class X` or `module X` body spelled by its path) is followed too, unless the program gives those names a method of its own anywhere, or runs code in a class's scope or singleton class anywhere (`class_eval`, `module_eval`, `class_exec`, `instance_eval`, `instance_exec`, `singleton_class`, `define_singleton_method`, a Forwardable `def_delegator`, or an `extend`, `prepend` or `include` of something that is not a constant). A constant holding a Symbol or String name is not supported yet. A body given as `&` of a Proc is supported for a Proc literal or a class-body local assigned one once; `&` of any other block or Proc (`&block`, a parameter, a constant, a call's result) is refused the same way, in a class body or a method body | the compiled method table cannot acquire a runtime-built method |
+| `define_method` with a runtime-computed name/body | calls with a non-literal name, in a class body or in a method body (instance or class method), are refused in reachable code, even when the defined method is never called; an unreachable method and pruned code are not refused. A program that defines or aliases its own `define_method` keeps those calls as ordinary calls; that check is program-wide, so a `def define_method` in an unrelated class turns the refusal off everywhere, and a computed-name class-building call then raises `NoMethodError` at run time as it always did. `send(:define_method, name)` is not refused either. Literal Symbol/String names and existing literal-list unrolling work (a list whose element is itself the name must hold Symbols or Strings: `[1].each { |n| define_method(n) { } }` is refused, where CRuby raises TypeError), and so does a class method, or a method of a module the class extends, that the class body calls with literal arguments and that hands `define_method` a block or a lambda under a name it builds from them (`def self.flag(name) = define_method("#{name}?") { ... }`, then `flag :color`): each call is expanded into the `def`s it makes; the class's own name (`self.name`, `to_s`, `inspect`, in a `class X` or `module X` body spelled by its path) is followed too, unless the program gives those names a method of its own anywhere, or runs code in a class's scope or singleton class anywhere (`class_eval`, `module_eval`, `class_exec`, `instance_eval`, `instance_exec`, `singleton_class`, `define_singleton_method`, a Forwardable `def_delegator`, or an `extend`, `prepend` or `include` of something that is not a constant). A constant holding a Symbol or String name is not supported yet. A body given as `&` of a Proc is supported for a Proc literal or a class-body local assigned one once; `&` of any other block or Proc (`&block`, a parameter, a constant, a call's result), and a Proc or Method passed as the second argument (`define_method(name, reader)`), are refused the same way, in a class body or a method body | the compiled method table cannot acquire a runtime-built method |
 | `define_method` in a method body (`def self.make_fancy! = define_method(:show) { ... }`) | the method is defined from the start, not when the enclosing method runs. That is right only for a method the class does not answer yet, so the rest is refused: one replacing the class's own method, one up its chain, a module's or a subclass's, a method every object has, a name a Symbol or String spells elsewhere (an attr, alias, Struct member, `respond_to?`), and a method object as the body. In a program that defines or aliases its own `define_method`, which the call may reach instead, so is a name that any call spells. A method nothing names defines nothing, and neither does a call in an `if` or `unless` arm whose condition is a literal that never selects it (`if false`); other code that never runs (`while false`, after a `return`) still defines its method. The refusal is raised at compile time even with `--defer-refusals`, since the earlier calls would already have gone wrong | the compiled method table is fixed before the program runs. A `define_method` that hands on a block or Proc the enclosing method receives (`def self.step(&block) = define_method(:m, &block)`) is refused: the defined method's body is the caller's block, which only the run time knows. Given with `&` (`&block`, or `&` of a constant or a call's result) it registers nothing, so that refusal is deferred by `--defer-refusals` like the non-literal name above |
 | `ObjectSpace` (`each_object`, `count_objects`) | unsupported | no class-keyed allocation registry; the GC tracks bytes, not a live-object index. `define_finalizer` / `undefine_finalizer` *are* supported (the collector watches the object; the callable runs at the first safe point after the collection that frees it -- a method entry, a loop back-edge, `GC.start` -- or at exit) |
 | `TracePoint` / `set_trace_func` | unsupported | require an interpreter loop to hook |
@@ -188,15 +188,26 @@ which arms resolve (the result is `poly`). A name that is not one of those
 literals, or not a method on the receiver, raises `NoMethodError` at runtime. A
 **computed** name (an interpolation, `to_sym`, a concatenation) sent to a user-class
 receiver dispatches over everything that class answers -- its methods, readers and
-writers, and the Object methods every instance has -- so the set is complete; on a
-boxed receiver it covers every user class plus the program's literals. A method's
-parameter is a computed name when a caller hands it one (`handle(name) =
-public_send(name)` called with `"on_#{ev}".to_sym`), also through a method that
-passes the parameter on; handed only literals, it keeps the literal arms. An element
-of a table filled with such names is computed too (`M = Hash.new { |h, t| h[t] =
-:"on_#{t}" }` then `send(M[t])`, or a table a `[]=` stores them into). A computed
-name sent to a builtin receiver (a String, an Array, ...) is still refused at compile
-time. A **literal** name is fully resolved -- see below.
+writers, and the Object methods every instance has -- so the set is complete; sent
+to a receiver typed as a builtin class (a String, an Array, ...) it dispatches over
+that class's methods, with what it inherits from Object, Comparable, Enumerable or
+Numeric and what the program adds by reopening them; on a boxed receiver it covers
+every user class, the program's literals, and the methods of the builtin classes a
+boxed value can be: Integer, Float, String, Symbol, Array, Hash, Range and nil
+always, and Time, File, Regexp, MatchData, Thread, Fiber and Random when some
+expression of the program has that type (the classes `builtin_class_of_type`
+names; a Proc, Rational, Complex, Exception, Queue, true or false in a boxed slot
+gets no arms of its own, so a builtin method of those raises `NoMethodError`
+there). The builtin arms come after the program's, so a send that
+would exceed the arm cap (1024) keeps the program's arms alone. A computed send
+that carries a block, splats its arguments or passes keywords takes the program's
+names alone on a boxed receiver, so a builtin's method raises `NoMethodError`
+there. A method's parameter is a computed name when a caller hands it one
+(`handle(name) = public_send(name)` called with `"on_#{ev}".to_sym`), also
+through a method that passes the parameter on; handed only literals, it keeps
+the literal arms. An element of a table filled with such names is computed too
+(`M = Hash.new { |h, t| h[t] = :"on_#{t}" }` then `send(M[t])`, or a table a
+`[]=` stores them into). A **literal** name is fully resolved -- see below.
 `public_send(*args, &blk)` with the name as the first element of a splatted
 variable (activesupport's `Object#try`) dispatches too: the arms take
 `*args.drop(1)`. The send's block -- written at the send or a forwarded `&blk`
@@ -987,8 +998,9 @@ pass the same kind).
 
 A typed Hash is handled the same way. A parameter the method stores keys or
 values of another kind into, by `[]=`, `store`, or a `merge!` or `update` of
-another of its parameters, widens a hash literal the call passes; a typed
-Hash it cannot follow back to one, such as a getter's, is refused:
+another of its parameters, widens a hash literal the call passes, or one it
+follows back to through locals and method values; a typed Hash it cannot
+follow back to one, such as a getter's, is refused:
 
 ```ruby
 class Holder
@@ -1310,6 +1322,14 @@ is ignored, and `--disable=frozen-string-literal` is rejected. (The
 whole-program shared-mutable-string machinery relies on the frozen-literal
 guarantee; a chilled mode would be a second, subtly different mutation
 semantics.)
+
+**`Symbol#to_s` answers a frozen String.** CRuby 4.0 answers a chilled
+String (not frozen; its first mutation warns, under `-W:deprecated`, that
+it "will be frozen in the future"); Spinel answers it frozen, as it does
+literals: `:a.to_s.frozen?`, `:a.id2name.frozen?` and `String(:a).frozen?`
+are `true`, `:a.to_s << "x"` raises FrozenError, and a mutable copy comes
+from `+:a.to_s` or `dup`. Each call still answers its own object
+(`:a.to_s.equal?(:a.to_s)` is `false`), as in CRuby.
 
 **Strings are UTF-8, whatever the source encoding.** An `# encoding:` (or
 `coding:`) magic comment naming another encoding warns at compile time,

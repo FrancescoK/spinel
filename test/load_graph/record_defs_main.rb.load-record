@@ -43,22 +43,22 @@ entity Speaker: owner main leaf Speaker
 entity Quiet: owner main leaf Quiet
 entity Util: owner main leaf Util
 const Loud: write#1
-Loud#say: def#2 end=yes
+Loud#say: def#2 runs=#30 end=yes
 const Speaker: write#3
-Speaker#say: def#4 end=yes
+Speaker#say: def#4 runs=#30 end=yes
 visibility in #3: vis#5 private vis#7 public
 Speaker#secret: def#6 private vis#20 protected end=yes
 Speaker#volume: reader#8 end=yes
 Speaker#volume=: writer#8 end=yes
 Speaker.inherited: def#9 end=yes
 const Quiet: write#12
-Quiet#say: def#13 end=yes
+Quiet#say: def#13 runs=#30 end=yes
 Speaker#shout: alias#17 (say: def#4) end=yes
 Speaker#hum: define_method#19 end=yes
 Speaker.make: def#22 end=yes
 const Util: write#23
 visibility in #23: vis#24 module_function
-Util#twice: def#25 private end=yes
+Util#twice: def#25 runs=never private end=yes
 Util.twice: copy#25 end=yes
 $level: write#26
 main @main_ivar: write#27

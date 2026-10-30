@@ -104,9 +104,9 @@ static inline void comp_touch_key(int key) {
    bitset, its nw nonzero words w at word indices wi (ascending), n members.
    A member at or past nclasses is the Class object of (member - nclasses),
    which a call dispatches to class methods. `bv`: the value may also be a
-   builtin (a container, a Proc), whose own methods then answer too. Read
-   with cls_set_has and cls_set_next. */
-typedef struct { unsigned char all, bv, os; int n, nw; unsigned long long *w; int *wi; } ClsSet;
+   builtin (a container, a Proc), whose own methods then answer too; `os`
+   an OpenStruct; `pr` (with bv) a Proc, whose `[]` is its call. Read with cls_set_has and cls_set_next. */
+typedef struct { unsigned char all, bv, os, pr; int n, nw; unsigned long long *w; int *wi; } ClsSet;
 /* the position of the first word at word index q or past it */
 static inline int cls_set_word_from(const ClsSet *s, int q) {
   int lo = 0, hi = s->nw;
@@ -447,6 +447,7 @@ static inline int lv_set_proc_ret(LocalVar *lv, int t) {
 #define STRBUF_LIFT_FRESH_CALL 2
 
 enum { RBS_CONT_HASH = 1, RBS_CONT_ARRAY = 2 };   /* Scope.ret_rbs_cont: the class a container return seed checks */
+enum { SHADOW_NONE = 0, SHADOW_INC, SHADOW_PREP };   /* Scope.shadow: the kind of hidden copy */
 typedef struct {
   char *name;       /* method name; NULL for the top-level scope */
   int idx;          /* its index in Compiler.scopes: the owner its slots' writes move */
@@ -461,9 +462,21 @@ typedef struct {
      class), so call_target binds a call of it to the version it runs;
      replaced, a later version replaces this one in its class's history, so
      only the calls bound to it reach it; version_n, codegen's number for a
-     replaced version in its C name (mc_method), 0 for none */
+     replaced version in its C name (mc_method), 0 for none; entry, the
+     method a call whose version is known only at run time reaches
+     (call_plan.c's version entries): it calls the version the run-time
+     cells name, one per parameter count the calls need (version_n
+     numbers the later ones in C). It has the method's name, as a replaced
+     version does; ENTRY_DISPATCH marks this argument-specific forwarding
+     entry. No lookup of the method by name answers it (sm_owns),
+     only the calls call_target binds to it reach it. entry == ENTRY_TABLE is a
+     general prepend guard: the table answers it under the ordinary name,
+     and its guard_behind names the hidden copy; main_n, codegen's
+     number for a method of main's own whose name Object's methods have
+     too (both are top-level functions in C) */
   unsigned char versioned, replaced;
-  int version_n;
+  enum { ENTRY_NONE, ENTRY_DISPATCH, ENTRY_TABLE } entry;
+  int version_n, main_n;
   unsigned char cand_bound; /* a call on a poly receiver bound its arguments
                                here as one of the methods it may reach
                                (analyze_pass.c): what its parameters hold is
@@ -485,9 +498,23 @@ typedef struct {
                                  front of the class's own (its super reaches
                                  that one -- the builtin's, for a builtin) */
   int mixin_guarded;          /* such a copy of a prepend a later top-level
-                                 reopening makes: it hands the call to the
-                                 class's own method until that statement has
-                                 run (mixin_guard_body) */
+                                 reopening makes: the number of the cell that
+                                 statement sets (n_prepend_cells), 0 for
+                                 none. A call reaches it through its guard
+                                 entry (call_plan.c), which runs the method
+                                 behind it, guard_behind, until the cell is
+                                 set */
+  int guard_behind;
+  /* a hidden copy: a body the compiler moved behind another method of its
+     name. A SHADOW_PREP copy is named apart from every method the program
+     names (comp_shadow_name); a SHADOW_INC copy's name is not checked against
+     them. SHADOW_PREP: a prepend's `__prep <n> m` (the class's own body
+     behind the module's copy, or a later prepend's guarded copy); SHADOW_INC:
+     an include's, extend's or alias's `__inc <n> m`. shadow_user is m, the
+     name the program wrote (a proc-form clone's with its "#pf"). SHADOW_NONE
+     and NULL for every method the program names, however it is spelled. */
+  unsigned char shadow;
+  char *shadow_user;
   int is_extend_copy;         /* the class method an `extend` copied in: a later
                                  extend of a module defining the same name
                                  replaces it the same way */
@@ -960,9 +987,17 @@ typedef struct {
                           switch can drop its `case` arm (the referenced method
                           then becomes an unreferenced static the C compiler
                           DCEs). Set by compute_instantiated. */
+  int unreferenced;    /* a class the program opens with `class` that no reached
+                          code names (compute_reachable, #10592): none of its
+                          methods is reached and it has no instance */
+  int no_instance;     /* such a class whose instance side no reached code
+                          opens: its singleton methods may run, but nothing
+                          builds one, and its instance methods stay unreached */
+  int live_sides;      /* the sides an earlier compute_reachable opened: 1 its
+                          singleton methods, 2 its instances; kept open */
   /* Prepend shadow chain: when `prepend M` is called on this class,
      M's methods overwrite the active slot; the previous slot is
-     renamed to a shadow `__prep_N_<m>`.  The chain maps each name
+     renamed to a shadow `__prep N <m>`.  The chain maps each name
      (user name or shadow name) to the next shadow in the chain,
      so `emit_super` can follow it rather than the parent class. */
   char **prep_from;      /* source name in the chain link */
@@ -1369,8 +1404,10 @@ typedef struct {
                            strlen would end it there (#nul symbols) */
   int nsymbols, csymbols;
 
+  int core_cls[CORE_N];     /* first class of each core name, -1 before creation */
   ClassInfo *classes;
   int nclasses, cclasses;
+  int toplevel_class;
   int *class_head, *class_next, class_buckets;   /* name -> class index (comp_class_index) */
   unsigned char class_hash_check;   /* SPINEL_ELAB_CHECK: each lookup also scans the classes */
   int object_standin;   /* +1-based index (0 = none) of the empty root class an
@@ -1386,6 +1423,7 @@ typedef struct {
 
   LocalVar *gvars;    /* global variables ($g), name without '$' */
   int ngvars, cgvars;
+  int *gvar_ix, gvar_ix_cap;   /* open addressing over the names, by index into gvars (-1 free); a program with thousands of globals asks by name on every read */
   LocalVar *consts;   /* top-level constants (FOO) */
   int nconsts, cconsts;
 
@@ -1474,6 +1512,9 @@ typedef struct {
   /* the program has a `**` operand and defines #to_hash: the bridge carries
      the #to_hash row a boxed operand converts through (sp_kw_splat_conv). */
   int uses_kw_to_hash;
+  /* the methods CRuby calls that the program does not name, as the last
+     reachability run found them (implicit_calls.h); freed with the Compiler */
+  struct IcState *ic;
   int uses_exc_text_handle;  /* emitted shared exception text routes, to_s/message bits */
   char *exc_text_late;  /* the plain exception text dispatchers, defined after the globals (emit_exc_text_dispatch) */
   int exc_text_super;        /* exc_text_override_calls_super's memo: 0 unasked, 1 no, 2 yes */
@@ -1518,6 +1559,13 @@ typedef struct {
   /* --share-strings: does the program make an Enumerator over a String
      handle (str_enum_h_made): 0 not asked yet, 1 no, 2 yes */
   unsigned char str_enum_h;
+  /* does any call find no method where it runs (cplan_program_missing):
+     0 not asked yet, 1 no, 2 yes */
+  unsigned char missing_calls;
+  /* per node, once asked: the node cplan_missing_in_order answers for it,
+     + 2 (1: none; 0: not asked yet) */
+  int *missing_order;
+  int missing_order_n;
   /* per local write node, once asked: the source lazy_alias_src_hoist
      answers for it, + 2 (1: none; 0: not asked yet) */
   int *lazy_hoist;
@@ -1572,6 +1620,18 @@ typedef struct {
      (nbyref_elig scopes; NULL before it runs) */
   char *byref_elig;
   int nbyref_elig;
+  /* the names the program's global writes assign, as of the node table it
+     was made for (analyze_infer.c, gvar_has_write; NULL before the first ask) */
+  struct GvarWrites *gvar_writes;
+  /* the inline hint's call counts (codegen.c, mih_count_calls): the first
+     scope of each name, hashed (mih_head, mih_cap slots), and each scope's
+     first scope of its name (mih_first) */
+  int *mih_head, *mih_first, mih_cap;
+  /* ...and its counts: the AST nodes of each scope (mih_nodes) and the call
+     sites naming each first scope's method (mih_calls), for the node table
+     mih_nt held mih_ntcount nodes of and mih_nscopes scopes */
+  int *mih_nodes, *mih_calls, mih_nscopes, mih_ntcount;
+  const NodeTable *mih_nt;
   /* the classes a boxed receiver can be an instance of, per call, and the
      name indexes the walk that answers it reads (analyze_scope.c's
      poly_ivar_set_reaches), built on first use and freed with the compiler */
@@ -1613,9 +1673,36 @@ typedef struct {
   int pres_noinit;
   int **pres_ord;
   int pres_ord_n;
-  /* the flags of the later prepends that guard their copies
-     (mixin_guard_body): $__spinel_mixin_ran_1 .. n_mixin_flags */
-  int n_mixin_flags;
+  /* the cells of the later prepends whose copies a guard entry chooses
+     (Scope.mixin_guarded, ver_prepend_cell_name): 1 .. n_prepend_cells */
+  int n_prepend_cells;
+  /* the version entries (call_plan.c, ver_entries_build): one method per
+     (class, side, name, parameter count) for the calls whose version is
+     known only at run time, or with guard, for the calls that reach a
+     later prepend's copy (Scope.mixin_guarded), and each of its arms'
+     calls pinned to the method it runs */
+  struct VerEntry { const char *name; int guard, cls, sg, ar, scope; } *ver_entries;
+  int nver_entries;
+  struct VerChain *ver_chain;   /* how many versions a class's chain holds of a name, by (class, side, name) (call_plan.c, ver_chain_count) */
+  struct VerHold *ver_hold;   /* the holders of a name worth asking, by name (call_plan.c, ver_holders) */
+  /* ...by name: ver_ix chains the entries of one (class, side, name, parameter
+     count) and ver_names one scope-holding entry of each name (ver_entries_index) */
+  int *ver_ix, *ver_ix_next, *ver_names, *ver_names_next;
+  unsigned ver_ix_nb;
+  struct VerPin { int node, scope; } *ver_pins;
+  int nver_pins;
+  /* the entries are made (ver_entries_build): the versions the calls get
+     are kept, and a call that reaches a later prepend's copy binds its
+     guard entry */
+  int ver_built;
+  /* the scopes that are hidden copies (Scope.shadow), which
+     comp_name_is_shadow_copy reads */
+  int *shadow_copies, nshadow_copies, cshadow_copies;
+  /* the version each call asked on a class runs, once the entries are
+     made (call_plan.c, ct_version): open addressing, name NULL for a free
+     slot; dc the class it answers, -2 for the table's */
+  struct VerMemo { const char *name; int id, cls; unsigned flags; int vi, dc; } *ver_memo;
+  int ver_memo_cap, ver_memo_n;
   /* the operand-local reads splat_dispatch_on_length marked splat_view,
      which desugar_splat_view_scalars rewrites once typed (-1 once seen) */
   int *splat_views;
@@ -1642,6 +1729,7 @@ enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
 Compiler *comp_new(const NodeTable *nt);
 void comp_free(Compiler *c);
+void ic_free(Compiler *c);   /* implicit_calls.c */
 /* Is `name` one of the n strings in `list`? (0 for a NULL name) */
 int name_list_has(char **list, int n, const char *name);
 
@@ -1746,6 +1834,7 @@ int comp_sret_first(Compiler *c, int scope_idx);
 int comp_sret_next(const Compiler *c, int r);
 int comp_bare_gets_is_argf(Compiler *c);
 int    comp_method_index(Compiler *c, const char *name); /* -1 if none */
+int    comp_main_method(Compiler *c, const char *name);  /* main's singleton method (`def self.k` at the top level); -1 if none */
 /* A receiverless call's target: the enclosing self's ancestry first, a
    top-level def (a private Object method, and so last in every ancestry) only
    as the fallback. See analyze_util.c. */
@@ -1878,7 +1967,11 @@ int const_seg_builtin(Compiler *c, int id);
 
 /* Classes. */
 ClassInfo *comp_class_new(Compiler *c, const char *name, int def_node);
+int comp_toplevel_class_make(Compiler *c);
 int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
+/* The first-created class for a CORE_* slot, -1 if no class has been made
+   or the slot is negative. */
+int        comp_core_class(const Compiler *c, int k);   /* CORE_* or a negative slot; -1 if none */
 int        comp_any_computed_ivar_set(Compiler *c);
 int        comp_is_wellknown_const(const char *cn);
 int        const_name_resolves_top_level(Compiler *c, const char *cn);
@@ -1963,7 +2056,6 @@ const char *time_strict_parser_call(Compiler *c, int id);
    directly in); ignored for constant receivers. */
 int        class_eval_reopen_class(Compiler *c, int id, int enclosing_class);
 int        class_reopen_cmethod(Compiler *c, int call, int recv, const char *name); /* a method the program adds to Class, run by `call` (-1: no call) */
-int        class_reopen_class(Compiler *c);   /* the module that holds the program's methods of Class (`class Class`), -1 for none */
 int        comp_ivar_index(ClassInfo *ci, const char *name);  /* -1 if none */
 int        comp_ivar_intern(ClassInfo *ci, const char *name); /* find or add; returns index */
 int        comp_member_intern(ClassInfo *ci, const char *name);
@@ -2053,7 +2145,7 @@ const int *comp_name_reader_owners(Compiler *c, const char *name, int *n);
    marked builtin_only (the super of a program's own reflection, rewritten to
    self's builtin) does not. */
 static inline int comp_object_defines(Compiler *c, const char *name) {
-  int oc = comp_class_index(c, "Object");
+  int oc = comp_core_class(c, CORE_OBJECT);
   return oc >= 0 && comp_method_in_chain(c, oc, name, NULL) >= 0;
 }
 /* does Object's program method of the name answer call id for the receivers no class arm of its
@@ -2098,7 +2190,7 @@ int        comp_ary_is_hash(Compiler *c, int cid);
 int        comp_ary_is_str(Compiler *c, int cid);
 int        comp_arysub_emb(Compiler *c, int cid);
 int        comp_arysub_str_boxed(const char *n);
-const char *comp_arysub_builtin(Compiler *c, int cid);
+int        comp_arysub_builtin(Compiler *c, int cid);
 /* a name the builtin cid's chain embeds answers (comp_array_method_name, or Hash's) */
 int        comp_arysub_builtin_name(Compiler *c, int cid, const char *n);
 int        comp_arysub_reopen(Compiler *c, int cid);
@@ -2209,6 +2301,9 @@ int        comp_enum_answers_first(Compiler *c, int cid, const char *name);
 int        comp_comparable_answers_first(Compiler *c, int cid, const char *name);
 int        comp_comparable_reaches(Compiler *c, int cid);
 int        comp_enum_reaches(Compiler *c, int cid);   /* Enumerable among its ancestors */
+int        class_builtin_parent(Compiler *c, int cid);   /* codegen.c: the builtin class above the user chain of the class */
+int        class_is_exc_subclass(Compiler *c, int ci);   /* analyze.c */
+int        comp_plain_class(Compiler *c, int cid);    /* only Object's and Kernel's builtin methods behind the class: no core class or core module among its ancestors */
 int        comp_enum_behind(Compiler *c, int cid);    /* Enumerable's methods behind the class: Enumerable, or an Array, Struct or native ancestor */
 int        core_method_vis(const char *cls, const char *m, int inherit);   /* codegen_call_class.c */
 int        comp_is_writer(ClassInfo *ci, const char *name);
@@ -2244,7 +2339,14 @@ const char *comp_prep_chain_target(Compiler *c, int class_id, const char *name);
    method of the same name. */
 const char *comp_super_shadow(Compiler *c, const Scope *s);
 void comp_cprep_chain_add(ClassInfo *ci, const char *from, const char *to);
-const char *comp_prep_user_name(const char *name);
+/* The hidden copies (Scope.shadow): the name a new `__prep <n> <name>` copy of
+   class ci's gets, set on the scope where the copy is made, carried by the
+   clones, and read back as the name the program wrote. */
+void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t size);
+void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user);
+void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix);
+const char *comp_scope_user_name(const Scope *s);
+int comp_name_is_shadow_copy(Compiler *c, const char *name, int kind);
 const char *comp_super_name(Compiler *c, int parent, const char *name, int is_cmethod);
 const char *comp_scope_def_name(Compiler *c, const Scope *s);
 int comp_super_is_class_new(Compiler *c, int id);
@@ -2391,6 +2493,7 @@ int poly_string_read_p(const char *name);
    receiver, which resolve statically (#3415). */
 int class_recv_is_dynamic(Compiler *c, int recv);
 int self_class_static_ci(Compiler *c, int recv);  /* self.class naming one class */
+int self_class_base_ci(Compiler *c, int recv);    /* self.class: the instance method's own class */
 int allocate_on_own_class(Compiler *c, int id);    /* allocate on the method's own class */
 
 /* An ivar whose type came from an --rbs seed (class_pin_ivar). Codegen reads

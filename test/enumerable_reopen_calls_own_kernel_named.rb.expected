@@ -1,0 +1,62 @@
+42
+42
+42
+"own %d items 2"
+"own %d items 4"
+"own %d items 2"
+"HI"
+"HI"
+"1"
+"1"
+:array_rand
+42
+42
+42
+:prot
+private method 'warn' called for an instance of Array
+:array_mix
+:hash_mix
+:range_mix
+:nested
+1
+:enum_mix
+1
+1
+:deep2
+:deep1
+:enumerable
+:behind_only
+:ahead
+:secret
+:second
+:arg_a
+:pre_a
+NoMethodError
+:hidden
+NoMethodError
+:prot
+NoMethodError
+:late
+:re
+NoMethodError
+:mf
+:own_gets
+:own_sleep
+private method 'gets' called for an instance of Array
+private method 'sleep' called for an instance of Range
+NoMethodError
+40
+:comparable_putc
+:comparable_putc
+:comparable_zork
+:comparable_zork
+:comparable_zork
+:comparable_zork
+[3, 2, 1]
+[2, 1]
+:pong
+:ping
+:pong
+:integer_both
+:integer_both
+:comparable_zork

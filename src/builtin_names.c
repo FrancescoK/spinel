@@ -2,6 +2,7 @@
    Each family is spelled once here; the order is the order its compares run
    in, the one most of the replaced chains used. */
 #include <stddef.h>
+#include <stdlib.h>
 #include <string.h>
 #include "types.h"
 #include "builtin_names.h"
@@ -294,6 +295,20 @@ int is_class_eval_family(const char *n) {
 
 int is_eval_exec_family(const char *n) {
   return is_class_eval_family(n) || sp_streq(n, "instance_eval") || sp_streq(n, "instance_exec");
+}
+
+/* The calls that run a String in the class or module they are called on, as
+   its body's code: class_eval and module_eval (their exec kin take only a
+   block) */
+int is_class_eval_text_name(const char *n) {
+  return sp_streq(n, "class_eval") || sp_streq(n, "module_eval");
+}
+
+/* The calls that read the frame a String of code runs in: one that runs
+   code itself, the frame's binding, and its file's directory, which an
+   eval's text answers its own */
+int is_eval_frame_reader(const char *n) {
+  return is_code_eval_name(n) || is_eval_exec_family(n) || sp_streq(n, "binding") || sp_streq(n, "__dir__");
 }
 
 int is_key_query(const char *n) {
@@ -649,9 +664,10 @@ int is_method_owner_query(const char *n) {
   return sp_streq(n, "owner");
 }
 
+int is_instance_method_name(const char *n) { return n && (sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method")); }
 int is_method_object_maker(const char *n) {
-  return sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
-         sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method");
+  return n && (sp_streq(n, "method") || sp_streq(n, "public_method") || sp_streq(n, "singleton_method") ||
+               sp_streq(n, "instance_method") || sp_streq(n, "public_instance_method"));
 }
 
 int is_constant_or_object_reflection(const char *n) {
@@ -683,21 +699,26 @@ int is_definition_hook_name(const char *n) {
 
 /* The hooks definition form `form` (given its arguments) fires, on the
    class that receives it (sg: as its singleton's), into out[0..1]: a
-   mixin's on the module (included, extended, prepended); a form that adds a
+   mixin's on the module (included and append_features, extended and
+   extend_object, prepended and prepend_features); a form that adds a
    method or changes one's visibility, method_added (singleton_method_added
    for a singleton's; module_function both); remove_method method_removed,
    undef_method method_undefined. Answers how many. */
 int definition_form_hooks(const char *form, int sg, const char **out) {
   if (!form) return 0;
-  if (sp_streq(form, "include")) { out[0] = "included"; return 1; }
-  if (sp_streq(form, "extend")) { out[0] = "extended"; return 1; }
-  if (sp_streq(form, "prepend")) { out[0] = "prepended"; return 1; }
+  if (sp_streq(form, "include")) { out[0] = "included"; out[1] = "append_features"; return 2; }
+  if (sp_streq(form, "extend")) { out[0] = "extended"; out[1] = "extend_object"; return 2; }
+  if (sp_streq(form, "prepend")) { out[0] = "prepended"; out[1] = "prepend_features"; return 2; }
   if (sp_streq(form, "remove_method")) { out[0] = sg ? "singleton_method_removed" : "method_removed"; return 1; }
   if (sp_streq(form, "undef_method")) { out[0] = sg ? "singleton_method_undefined" : "method_undefined"; return 1; }
   if (sp_streq(form, "module_function")) { out[0] = "singleton_method_added"; out[1] = "method_added"; return 2; }
   if (sp_streq(form, "define_singleton_method")) { out[0] = "singleton_method_added"; return 1; }
   if (is_method_naming_call(form) || visibility_of_name(form)) { out[0] = sg ? "singleton_method_added" : "method_added"; return 1; }
   return 0;
+}
+
+int is_method_missing_name(const char *n) {
+  return n && (sp_streq(n, "method_missing") || sp_streq(n, "respond_to_missing?"));
 }
 
 int is_const_missing_name(const char *n) {
@@ -732,6 +753,40 @@ int is_marshal_dump(const char *recv, const char *meth) {
 /* `Marshal.load`, which builds the objects it reads without their initialize */
 int is_marshal_load(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "load") && sp_streq(recv, "Marshal");
+}
+
+/* A core call that makes objects of whatever classes its data names (or
+   finds any object): Marshal.load and restore, YAML's and Psych's load
+   family, JSON.load, JSON.parse given options (create_additions),
+   ObjectSpace._id2ref; argc its argument count */
+int is_object_loader(const char *recv, const char *meth, int argc) {
+  if (!recv || !meth) return 0;
+  if (sp_streq(recv, "Marshal")) return sp_streq(meth, "load") || sp_streq(meth, "restore");
+  if (sp_streq(recv, "YAML") || sp_streq(recv, "Psych"))
+    return sp_streq(meth, "load") || sp_streq(meth, "unsafe_load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load_file");
+  if (sp_streq(recv, "ObjectSpace")) return sp_streq(meth, "_id2ref");
+  return sp_streq(recv, "JSON") && (sp_streq(meth, "load") || sp_streq(meth, "load_file") || sp_streq(meth, "unsafe_load") ||
+                                    ((sp_streq(meth, "parse") || sp_streq(meth, "parse!")) && argc > 1));
+}
+
+/* UnboundMethod#bind and bind_call */
+int is_method_bind_name(const char *n) {
+  return n && (sp_streq(n, "bind") || is_bind_call(n));
+}
+
+/* Timeout.timeout(sec, klass): raises klass.new when the time runs out */
+int is_timeout_call(const char *recv, const char *meth) {
+  return recv && meth && sp_streq(recv, "Timeout") && sp_streq(meth, "timeout");
+}
+
+/* exception: Exception's class-level constructor (raise calls it) */
+int is_exception_ctor_name(const char *n) {
+  return n && sp_streq(n, "exception");
+}
+
+/* to_enum and enum_for: an Enumerator that calls the method they name */
+int is_enumerator_maker(const char *n) {
+  return n && (sp_streq(n, "to_enum") || sp_streq(n, "enum_for"));
 }
 
 /* Class#allocate, an object without its initialize run */
@@ -1117,6 +1172,12 @@ int is_initialize_name(const char *n) {
   return sp_streq(n, "initialize");
 }
 
+/* The names CRuby's core asks a receiver through rb_check_funcall, which
+   calls method_missing when respond_to_missing? answers true */
+int is_check_funcall_name(const char *n) {
+  return n && (sp_streq(n, "respond_to?") || sp_streq(n, "respond_to_missing?") || sp_streq(n, "method_missing"));
+}
+
 /* The methods CRuby makes private wherever they are defined:
    initialize, its copy forms, and respond_to_missing? */
 int is_implicitly_private_name(const char *n) {
@@ -1166,6 +1227,38 @@ int is_range_or_time_class(const char *n) {
 
 int is_object_base_name(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject");
+}
+
+/* The first row of each name, through a table hashed on the first ask: the
+   lookup compared the name with every row, and is asked of class names per
+   call (is_builtin_reopen, of each class a poly block dispatch weighs). */
+#define BUILTIN_ROW_CAP 512   /* a power of two above 4 * the rows */
+static short builtin_row_slot[BUILTIN_ROW_CAP];
+static int builtin_row_built;
+int builtin_core_class_slot(const char *n) {
+  if (!n) return -1;
+  const BuiltinClass *r;
+  if (!builtin_row_built) {
+    for (int i = 0; i < BUILTIN_ROW_CAP; i++) builtin_row_slot[i] = -1;
+    for (int i = 0; (r = builtin_class_at(i)) != NULL; i++) {
+      unsigned h = sp_strhash(r->name) & (BUILTIN_ROW_CAP - 1);
+      while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, r->name))
+        h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+      if (builtin_row_slot[h] < 0) builtin_row_slot[h] = (short)i;   /* a later row of the name: the first answers */
+    }
+    builtin_row_built = 1;
+  }
+  unsigned h = sp_strhash(n) & (BUILTIN_ROW_CAP - 1);
+  while (builtin_row_slot[h] >= 0 && !sp_streq(builtin_class_at(builtin_row_slot[h])->name, n))
+    h = (h + 1) & (BUILTIN_ROW_CAP - 1);
+  if (builtin_row_slot[h] >= 0) return builtin_row_slot[h];
+  if (sp_streq(n, "StringIO")) return CORE_STRINGIO;
+  if (sp_streq(n, "Set")) return CORE_SET;
+  if (sp_streq(n, CLASS_REOPEN_NAME)) return CORE_CLASS_REOPEN;
+  if (sp_streq(n, "FileTest")) return CORE_FILETEST;
+  if (sp_streq(n, "Errno")) return CORE_ERRNO;
+  if (sp_streq(n, "Warning")) return CORE_WARNING;
+  return -1;
 }
 
 /* A class or module besides the builtin classes (is_builtin_reopen) whose
@@ -1610,6 +1703,67 @@ int is_kernel_module_function(const char *m) {
   return m && builtin_name_in(m, K);
 }
 
+/* Is m one of Object's own methods every object answers? */
+int builtin_object_method_known(const char *m) {
+  static const char *const OBJM2[] = {
+    "class", "clone", "dup", "display", "enum_for", "eql?", "equal?",
+    "extend", "freeze", "frozen?", "hash", "inspect", "instance_of?",
+    "instance_variable_get", "instance_variable_set", "instance_variables",
+    "is_a?", "itself", "kind_of?", "method", "methods", "nil?",
+    "object_id", "public_send", "respond_to?", "send", "__send__",
+    "tap", "then", "to_s", "yield_self", "==", "!=", "!", "===", NULL };
+  return m && builtin_name_in(m, OBJM2);
+}
+
+/* The names CRuby's own facts give Object, BasicObject, Kernel, Module and
+   Class (builtin_arity.inc), sorted once per self kind for
+   builtin_self_method_known */
+#define BAI(c,m,...) {c,m},
+#define BAM(c,m,a) {c,m},
+#define BAS(c,m,...) {c,m},
+#define BAC(...)
+#define BAK(...)
+static const struct { const char *cls, *m; } self_fact_rows[] = {
+#include "builtin_arity.inc"
+};
+#undef BAI
+#undef BAM
+#undef BAS
+#undef BAC
+#undef BAK
+static int self_fact_cmp(const void *a, const void *b) { return strcmp(*(const char *const *)a, *(const char *const *)b); }
+/* main's own methods, beside Object's: its singleton's (`to_s`, `inspect`
+   answer "main") and the private ones a top-level body calls as a class
+   body would (`include`, `private`, `define_method`, ...) */
+static int main_self_method(const char *m) {
+  static const char *const MAINM[] = { "to_s", "inspect", "include", "public", "private", "define_method",
+                                       "using", "ruby2_keywords", NULL };
+  return builtin_name_in(m, MAINM);
+}
+/* See builtin_names.h. Kernel's module functions and Object's surface
+   answer on every self; the facts' Object, BasicObject and Kernel methods
+   too, Module's on a module or class, Class's on a class. A binary search
+   over each kind's names, sorted at the first ask. */
+int builtin_self_method_known(const char *name, int kind) {
+  enum { N = sizeof self_fact_rows / sizeof self_fact_rows[0] };
+  static const char *names[BSELF_N][N];
+  static int n[BSELF_N] = { -1, -1, -1 };
+  if (!name || kind < 0 || kind >= BSELF_N) return 0;
+  if (is_kernel_module_function(name) || builtin_object_method_known(name) ||
+      (kind == BSELF_MAIN && main_self_method(name))) return 1;
+  if (n[kind] < 0) {
+    static const char *const owners[BSELF_N][6] = {
+      { "Object", "BasicObject", "Kernel", NULL },
+      { "Object", "BasicObject", "Kernel", "Module", NULL },
+      { "Object", "BasicObject", "Kernel", "Module", "Class", NULL } };
+    n[kind] = 0;
+    for (int i = 0; i < N; i++)
+      if (builtin_name_in(self_fact_rows[i].cls, owners[kind])) names[kind][n[kind]++] = self_fact_rows[i].m;
+    qsort(names[kind], (size_t)n[kind], sizeof names[kind][0], self_fact_cmp);
+  }
+  return bsearch(&name, names[kind], (size_t)n[kind], sizeof names[kind][0], self_fact_cmp) != NULL;
+}
+
 /* the builtins whose subclass instance IS the builtin (#7449) */
 int is_embedding_builtin(const char *nm) {
   return nm && (sp_streq(nm, "Array") || sp_streq(nm, "Hash") || sp_streq(nm, "String"));
@@ -1869,139 +2023,55 @@ const PackageFact *package_fact_at(int i) {
    The `CRUBY_KNOWN` list in codegen_call.c is a fifth list, for a different
    question (names CRuby defines that spinel does not implement), and is left
    alone here. */
-static const BuiltinClass BUILTIN_CLASSES[] = {
-  { "Integer",                      -100,  BC_CLASS },
-  { "Float",                        -101,  BC_CLASS },
-  { "String",                       -102,  BC_CLASS },
-  { "Symbol",                       -103,  BC_CLASS },
-  { "Array",                        -104,  BC_CLASS },
-  { "Hash",                         -105,  BC_CLASS },
-  { "Range",                        -106,  BC_CLASS },
-  { "Time",                         -107,  BC_CLASS },
-  { "Module",                       -108,  BC_CLASS },
-  { "Class",                        -109,  BC_CLASS },
-  { "NilClass",                     -110,  BC_CLASS },
-  { "TrueClass",                    -111,  BC_CLASS },
-  { "FalseClass",                   -112,  BC_CLASS },
-  { "Numeric",                      -113,  BC_CLASS },
-  { "Comparable",                   -114,  BC_CLASS | BC_MODULE },
-  { "Enumerable",                   -115,  BC_CLASS | BC_MODULE },
-  { "Object",                       -116,  BC_CLASS | BC_PLAIN },
-  { "BasicObject",                  -117,  BC_CLASS | BC_PLAIN },
-  { "Proc",                         -118,  BC_CLASS },
-  { "Kernel",                       -119,  BC_CLASS | BC_MODULE },
-  { "IO",                           -120,  BC_CLASS },
-  { "File",                         -121,  BC_CLASS },
-  { "Exception",                    -122,  BC_CLASS | BC_EXCEPTION },
-  { "StandardError",                -123,  BC_CLASS | BC_EXCEPTION },
-  { "RuntimeError",                 -124,  BC_CLASS | BC_EXCEPTION },
-  { "TypeError",                    -125,  BC_CLASS | BC_EXCEPTION },
-  { "ArgumentError",                -126,  BC_CLASS | BC_EXCEPTION },
-  { "NameError",                    -127,  BC_CLASS | BC_EXCEPTION },
-  { "NoMethodError",                -128,  BC_CLASS | BC_EXCEPTION },
-  { "StopIteration",                -129,  BC_CLASS | BC_EXCEPTION },
-  { "Math",                         -130,  BC_CLASS | BC_MODULE },
-  { "Complex",                      -131,  BC_CLASS },
-  { "IndexError",                   -132,  BC_CLASS | BC_EXCEPTION },
-  { "KeyError",                     -133,  BC_CLASS | BC_EXCEPTION },
-  { "RangeError",                   -134,  BC_CLASS | BC_EXCEPTION },
-  { "FloatDomainError",             -135,  BC_CLASS | BC_EXCEPTION },
-  { "ZeroDivisionError",            -136,  BC_CLASS | BC_EXCEPTION },
-  { "FrozenError",                  -137,  BC_CLASS | BC_EXCEPTION },
-  { "IOError",                      -138,  BC_CLASS | BC_EXCEPTION },
-  { "LocalJumpError",               -139,  BC_CLASS | BC_EXCEPTION },
-  { "NotImplementedError",          -140,  BC_CLASS | BC_EXCEPTION },
-  { "ScriptError",                  -141,  BC_CLASS | BC_EXCEPTION },
-  { "Rational",                     -142,  BC_CLASS },
-  { "Regexp",                       -143,  BC_CLASS },
-  { "Enumerator",                   -144,  BC_CLASS },
-  { "Struct",                       -145,  BC_CLASS },
-  { "Data",                         -146,  BC_CLASS | BC_PLAIN },
-  { "SyntaxError",                  -147,  BC_CLASS | BC_EXCEPTION },
-  { "SecurityError",                -148,  BC_CLASS | BC_EXCEPTION },
-  { "RegexpError",                  -149,  BC_CLASS | BC_EXCEPTION },
-  { "EncodingError",                -150,  BC_CLASS | BC_EXCEPTION },
-  { "SignalException",              -151,  BC_CLASS | BC_EXCEPTION },
-  { "Interrupt",                    -152,  BC_CLASS | BC_EXCEPTION },
-  { "ThreadError",                  -153,  BC_CLASS | BC_EXCEPTION },
-  { "FiberError",                   -154,  BC_CLASS | BC_EXCEPTION },
-  { "ClosedQueueError",             -155,  BC_CLASS | BC_EXCEPTION },
-  { "UncaughtThrowError",           -156,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternError",       -157,  BC_CLASS | BC_EXCEPTION },
-  { "NoMatchingPatternKeyError",    -158,  BC_CLASS | BC_EXCEPTION },
-  { "EOFError",                     -159,  BC_CLASS | BC_EXCEPTION },
-  { "Math::DomainError",            -160,  BC_EXCEPTION },
-  { "SystemExit",                   -161,  BC_CLASS | BC_EXCEPTION },
-  { "Signal",                       -162,  BC_CLASS | BC_MODULE },
-  { "Process::Status",              -163,  BC_CLASS },
-  { "Process::Tms",                 -164,  0 },
-  { "Dir",                          -165,  BC_CLASS },
-  { "BasicSocket",                  -166,  BC_CLASS | BC_SOCKET },
-  { "IPSocket",                     -167,  BC_CLASS | BC_SOCKET },
-  { "TCPSocket",                    -168,  BC_CLASS | BC_SOCKET },
-  { "TCPServer",                    -169,  BC_CLASS | BC_SOCKET },
-  { "UDPSocket",                    -170,  BC_CLASS | BC_SOCKET },
-  { "UNIXSocket",                   -171,  BC_CLASS | BC_SOCKET },
-  { "UNIXServer",                   -172,  BC_CLASS | BC_SOCKET },
-  { "Socket",                       -173,  BC_CLASS | BC_SOCKET },
-  { "Thread",                       -174,  BC_CLASS },
-  { "Mutex",                        -175,  BC_CLASS },
-  { "Thread::Mutex",                -175,  0 },
-  { "Queue",                        -176,  BC_CLASS },
-  { "Thread::Queue",                -176,  0 },
-  { "SizedQueue",                   -177,  BC_CLASS },
-  { "Thread::SizedQueue",           -177,  0 },
-  { "ConditionVariable",            -178,  BC_CLASS },
-  { "Thread::ConditionVariable",    -178,  0 },
-  { "Fiber",                        -179,  BC_CLASS },
-  { "MatchData",                    -180,  BC_CLASS },
-  { "Encoding",                     0,     BC_CLASS },
-  { "Enumerator::Chain",            0,     BC_CLASS },
-  { "Enumerator::Lazy",             0,     BC_CLASS },
-  { "Enumerator::Product",          0,     BC_CLASS },
-  /* the json package's errors, which lib/sp_exc.c gives their parents (JSONError < StandardError):
-     a known name makes `rescue JSON::JSONError` climb that hierarchy, not compare a name (#7797) */
-  { "JSON::JSONError",              0,     BC_EXCEPTION },
-  { "JSON::ParserError",            0,     BC_EXCEPTION },
-  { "JSON::NestingError",           0,     BC_EXCEPTION },
-  { "JSON::GeneratorError",         0,     BC_EXCEPTION },
-  { "Encoding::CompatibilityError",        0, BC_EXCEPTION },
-  { "Encoding::ConverterNotFoundError",    0, BC_EXCEPTION },
-  { "Encoding::InvalidByteSequenceError",  0, BC_EXCEPTION },
-  { "Encoding::UndefinedConversionError",  0, BC_EXCEPTION },
-  { "Errno::ENOENT",                0,     BC_EXCEPTION },
-  { "GC",                           0,     BC_CLASS | BC_MODULE },
-  { "IO::EAGAINWaitReadable",       0,     BC_EXCEPTION },
-  { "IO::TimeoutError",            0,     BC_EXCEPTION },
-  /* the socket library's: lib/sp_exc.c gives them their parents, so
-     `rescue SocketError` catches a failed lookup's Socket::ResolutionError */
-  { "SocketError",                  0,     BC_EXCEPTION },
-  { "Socket::ResolutionError",      0,     BC_EXCEPTION },
-  { "IO::EAGAINWaitWritable",       0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EINPROGRESSWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitReadable",  0,     BC_EXCEPTION },
-  { "IO::EWOULDBLOCKWaitWritable",  0,     BC_EXCEPTION },
-  { "IO::WaitReadable",             0,     BC_EXCEPTION },
-  { "IO::WaitWritable",             0,     BC_EXCEPTION },
-  { "LoadError",                    0,     BC_EXCEPTION },
-  { "Marshal",                      0,     BC_CLASS | BC_MODULE },
-  { "Method",                       0,     BC_CLASS },
-  { "NoMemoryError",                0,     BC_EXCEPTION },
-  { "ObjectSpace",                  0,     BC_CLASS | BC_MODULE },
-  { "Process",                      0,     BC_CLASS | BC_MODULE },
-  { "Random",                       0,     BC_CLASS },
-  { "StringScanner::Error",         0,     BC_EXCEPTION },
-  { "SystemCallError",              0,     BC_EXCEPTION },
-  { "SystemStackError",             0,     BC_EXCEPTION },
-  { "UnboundMethod",                0,     BC_CLASS },
-};
+#define X(k, n, id, flags) { n, id, flags },
+static const BuiltinClass BUILTIN_CLASSES[] = { SP_BUILTIN_CLASSES(X) };
+#undef X
 #define BUILTIN_CLASS_N ((int)(sizeof BUILTIN_CLASSES / sizeof BUILTIN_CLASSES[0]))
 
 /* The i-th row, NULL past the last. The socket rows are a constant only
    after `require "socket"`: the analysis's predicates ask that themselves. */
 const BuiltinClass *builtin_class_at(int i) {
   return i >= 0 && i < BUILTIN_CLASS_N ? &BUILTIN_CLASSES[i] : NULL;
+}
+/* The core class of a receiver kind; each reader keeps its own kind filter. */
+int core_of_type(TyKind t) {
+  if (t == TY_INT || t == TY_BIGINT) return CORE_INTEGER;
+  if (t == TY_FLOAT) return CORE_FLOAT;
+  if (t == TY_STRING || t == TY_STRBUF) return CORE_STRING;
+  if (t == TY_SYMBOL) return CORE_SYMBOL;
+  if (t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE) return CORE_RANGE;
+  if (t == TY_TIME) return CORE_TIME;
+  if (t == TY_IO) return CORE_FILE;
+  if (t == TY_CLASS) return CORE_CLASS;
+  if (t == TY_NIL) return CORE_NILCLASS;
+  if (t == TY_MATCHDATA) return CORE_MATCHDATA;
+  if (t == TY_REGEX) return CORE_REGEXP;
+  if (t == TY_THREAD) return CORE_THREAD;
+  if (t == TY_FIBER) return CORE_FIBER;
+  if (t == TY_RANDOM) return CORE_RANDOM;
+  if (ty_is_array(t) || ty_is_obj_array(t)) return CORE_ARRAY;
+  if (ty_is_hash(t)) return CORE_HASH;
+  if (t == TY_ENUMERATOR) return CORE_ENUMERATOR;
+  if (t == TY_RATIONAL) return CORE_RATIONAL;
+  if (t == TY_COMPLEX) return CORE_COMPLEX;
+  if (t == TY_PROC) return CORE_PROC;
+  if (t == TY_QUEUE) return CORE_QUEUE;
+  if (t == TY_EXCEPTION) return CORE_EXCEPTION;
+  return -1;
+}
+/* The spelling held by a core row, including the library and synthetic slots. */
+const char *core_class_name(int k) {
+  const BuiltinClass *r = builtin_class_at(k);
+  if (r) return r->name;
+  switch (k) {
+  case CORE_STRINGIO: return "StringIO";
+  case CORE_SET: return "Set";
+  case CORE_CLASS_REOPEN: return CLASS_REOPEN_NAME;
+  case CORE_FILETEST: return "FileTest";
+  case CORE_ERRNO: return "Errno";
+  case CORE_WARNING: return "Warning";
+  default: return NULL;
+  }
 }
 /* Is `n` a class or module Spinel has natively (any row, the socket ones
    whether or not "socket" is required)? The load graph asks it of a
@@ -2064,6 +2134,11 @@ int class_method_vis_of_name(const char *n) {
   return !n ? 0 : sp_streq(n, "private_class_method") ? BVIS_PRIVATE : sp_streq(n, "public_class_method") ? BVIS_PUBLIC : 0;
 }
 int is_refine_name(const char *n) { return n && sp_streq(n, "refine"); }
+/* The compiler's own enumerable helpers, which a receiverless call names the way
+   a Kernel function is named */
+int is_enum_helper_name(const char *n) {
+  return n && (sp_streq(n, "__enum_pairs") || sp_streq(n, "__enum_count_int"));
+}
 /* The calls by which a method body changes what the load record holds:
    ones that define, undefine or set methods, constants or variables, mix
    a module in or refine, load a file, or run code it cannot follow from
@@ -2083,26 +2158,22 @@ int is_const_visibility_name(const char *n) {
 }
 /* class_variable_set remove_class_variable */
 int is_cvar_write_name(const char *n) { return n && (sp_streq(n, "class_variable_set") || sp_streq(n, "remove_class_variable")); }
-/* The names CRuby's core and standard library call on an object by
-   themselves besides the runtime protocols (method_name_implicitly_invoked):
-   an operator, method_missing and respond_to_missing?, a pattern's
-   deconstruct, a conversion, a Range's endpoints and succ, an exception's
-   readers, Marshal's and dup's hooks, a Hash's default, an IO-like's
-   writer and readers, pp's and YAML's hooks, and the Numeric helpers
-   numeric core methods call on a subclass. This is the instance side of
-   is_core_callback_name (the record's reachability work), with
-   method_missing; whichever lands second keeps one predicate. */
-int is_runtime_callback_name(const char *n) {
-  static const char *const names[] = {
-    "method_missing", "deconstruct", "deconstruct_keys", "respond_to?", "respond_to_missing?", "to_f", "to_r",
-    "to_c", "to_sym", "to_regexp", "to_open", "succ", "begin", "end", "exclude_end?", "size", "message",
-    "detailed_message", "full_message", "backtrace", "backtrace_locations", "cause", "exception", "result",
-    "marshal_dump", "_dump", "marshal_load", "initialize_dup", "initialize_clone", "default", "write", "read",
-    "readpartial", "flush", "pretty_print", "pretty_print_cycle", "encode_with", "init_with", "zero?",
-    "nonzero?", "positive?", "negative?", "integer?", "real?", "abs", "floor", "ceil", "round", "truncate",
-    "div", "modulo", "divmod", "remainder", "fdiv", "quo", NULL };
-  if (!n) return 0;
-  return !((n[0] >= 'a' && n[0] <= 'z') || (n[0] >= 'A' && n[0] <= 'Z') || n[0] == '_') || builtin_name_in(n, names);
+int is_hook_protocol_name(const char *n) {
+  return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
+}
+
+int is_port_gvar_name(const char *n) {
+  return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
+}
+
+int synth_stands_for(const char *name, int i, const char **proto) {
+  const char *stands = NULL;
+  if (!name || i < 0) return 0;
+  if (sp_streq(name, "__noarg to_s")) stands = i == 0 ? "to_s" : NULL;
+  else if (sp_streq(name, "__noarg inspect")) stands = i == 0 ? "inspect" : NULL;
+  else if (sp_streq(name, "__enum_to_a")) stands = i == 0 ? "each" : i == 1 ? "to_a" : i == 2 ? "deconstruct" : NULL;
+  if (stands && proto) *proto = stands;
+  return stands != NULL;
 }
 int is_method_list_call(const char *n) {
   return n && (sp_streq(n, "attr") || is_attr_reader_family(n) || is_attr_writer_family(n) ||

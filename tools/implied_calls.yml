@@ -1,0 +1,331 @@
+# Implied calls: the methods CRuby calls for a node that the program's text
+# does not name.
+#
+# `x = "#{o}"` calls o.to_s, `a, b = o` calls o.to_ary, `for i in o` calls
+# o.each, `case v when o` calls o === v, a class header calls the superclass's
+# `inherited`; no call node says so. This file lists, for every node kind the
+# compiler's node table has (src/node_kinds.inc), the calls the node makes.
+# tools/gen_implied_calls.rb turns it into src/implied_calls.inc (checked in,
+# so a build needs no Ruby), which nt_implied_calls (src/node_table.c) reads,
+# and checks it: every node kind is either under `nodes` or under `none`, once,
+# so a PRISM_VERSION bump that adds a node kind fails the check until someone
+# decides what it implies (`make implied-calls-check`, one of test-run's legs).
+# `make implied-calls-regen` writes the generated file after an edit.
+#
+# The calls are CRuby 4.0's, taken from the interpreter, not from what Spinel's
+# own code calls: ic/ic_probe.rb of the notes, run on one snippet per form,
+# logs every method of a program object that CRuby calls. A row is one call:
+#
+#   name        the method called, or
+#   name_field  the field of the node that holds its name (`binary_operator`,
+#               `write_name`, a call target's `name`; an attribute assignment's
+#               reader is `name`, which is Prism's read_name: spinel_parse.c
+#               keeps it under that name)
+#   operand     the node whose value receives the call:
+#                 expression        a child field
+#                 conditions.*      every element of a list field
+#                 elements.*.value  a field of every element
+#                 value[CallNode].receiver
+#                                   through a child that must be of the kind in
+#                                   brackets, else the row says nothing
+#                 receiver[CallNode]^
+#                                   a trailing ^ goes on down a chain: the
+#                                   receiver, and that call's receiver, and so
+#                                   on while it is of the kind in brackets
+#               or a word for the receiver that no child holds:
+#                 node      the node itself (`x += 1` calls + on x's value)
+#                 self      the method's or the class body's self
+#                 yielded   the value yielded to the block, or to the loop
+#                 matched   the value a pattern is matched against
+#                 none      no node holds it (the value a read answers, the
+#                           class a hook is sent to, an exception at exit)
+#   side        inst: a method of the object's class; class: a method of the
+#               class object (`def self.inherited`); both: either, as the
+#               operand may be an object or a class (`when K` calls K's ===)
+#   when        a condition on the node, one of:
+#                 nonliteral    the operand is not a scalar literal (see
+#                               `literal`): a number, string, symbol, nil,
+#                               true, false or regexp has no method of the
+#                               program's to call
+#                 no_else       the node has no else clause
+#                 multi_target  the node takes more than one value apart: a
+#                               block of two or more parameters, _1 and _2
+#                 gvar_port     the global variable is $stdout, $stderr or $>
+#   absent      what a missing operand field means: skip (default) the row
+#               says nothing, self the call is on self, none the call is made
+#               on something no node holds
+#
+# Reading the table: an operand that is a pattern construct or an assignment
+# target (see `not_value`) is not a value and receives no call; a node that
+# several rows fit gives all of them (a `for` over `a, b` gives `each` here and
+# `to_ary` from its MultiTargetNode). Conditions only ever remove a call that
+# cannot reach a method of the program's, never one that can: where a node's
+# shape cannot tell (`1..x` calls Integer#<=> with x, which asks x for
+# `coerce`) the row stays.
+#
+# A `super` is no row: it calls the method of its enclosing def's name in the
+# next ancestor, which is the program's own method when an ancestor of the
+# program has one (that method's scope is the one kept) and otherwise a core
+# class's or module's builtin of that name, called with the super's arguments
+# and block on self. The kinds that do are listed under `super`, and
+# nt_implied_super says so.
+#
+# Not rows, on purpose: a call node's own builtin (`a != b` asks both for
+# `==`; src/builtin_callbacks.inc says so by the name), `include`/`extend`/
+# `prepend` and the other hooks that call forms send (definition_form_hooks in
+# builtin_names.c), and `method_missing`, which any call may reach.
+
+nodes:
+  # ---- conversions: a value is made into the type the syntax needs ----
+  EmbeddedStatementsNode:  {calls: [{name: to_s, operand: statements, side: inst, when: nonliteral}]}
+  EmbeddedVariableNode:    {calls: [{name: to_s, operand: variable, side: inst}]}
+  SplatNode:               {calls: [{name: to_a, operand: expression, side: inst, when: nonliteral}]}
+  AssocSplatNode:          {calls: [{name: to_hash, operand: value, side: inst, when: nonliteral}]}
+  BlockArgumentNode:       {calls: [{name: to_proc, operand: expression, side: inst, when: nonliteral}]}
+  MultiWriteNode:          {calls: [{name: to_ary, operand: value, side: inst, when: nonliteral}]}
+  MultiTargetNode:         {calls: [{name: to_ary, operand: yielded, side: inst}]}
+  ImplicitRestNode:        {calls: [{name: to_ary, operand: yielded, side: inst}]}
+  BlockParametersNode:     {calls: [{name: to_ary, operand: yielded, side: inst, when: multi_target}]}
+  NumberedParametersNode:  {calls: [{name: to_ary, operand: yielded, side: inst, when: multi_target}]}
+  XStringNode:             {calls: [{name: "`", operand: self, side: both}]}
+  InterpolatedXStringNode: {calls: [{name: "`", operand: self, side: both}]}
+
+  # ---- a Hash literal hashes its keys (and compares those that meet), as
+  # does a keyword argument whose key is not a symbol ----
+  AssocNode:               {calls: [{name: hash, operand: key, side: both, when: nonliteral},
+                                    {name: eql?, operand: key, side: both, when: nonliteral}]}
+
+  # ---- iteration and comparison ----
+  ForNode:                 {calls: [{name: each, operand: collection, side: inst}]}
+  WhenNode:                {calls: [{name: "===", operand: conditions.*, side: both}]}
+  RescueNode:              {calls: [{name: "===", operand: exceptions.*, side: class}]}
+  RangeNode:               {calls: [{name: "<=>", operand: left, side: inst, when: nonliteral},
+                                    {name: "<=>", operand: right, side: inst, when: nonliteral}]}
+  CaseMatchNode:           {calls: [{name: inspect, operand: predicate, side: inst, when: no_else}]}
+  MatchRequiredNode:       {calls: [{name: inspect, operand: value, side: inst},
+                                    {name: "===", operand: pattern, side: both}]}
+  MatchPredicateNode:      {calls: [{name: "===", operand: pattern, side: both}]}
+  # `defined?(a.b.c)` asks each receiver of the chain whether it answers the
+  # next name (a.rtm(b), then b.rtm(c); the inner calls are made, with
+  # method_missing, on the way); `defined?(zz)` asks self. The arguments of the
+  # call are checked the same way and are not rows here: `defined?(f(g.h))`
+  # asks g about h, which this table leaves to the call nodes inside.
+  DefinedNode:             {calls: [{name: respond_to_missing?, operand: "value[CallNode].receiver[CallNode]^", side: inst, absent: self}]}
+
+  # ---- patterns: the matched value is asked to deconstruct itself, a value
+  # pattern is compared with ===, and a constant is checked with its === ----
+  InNode:                  {calls: [{name: "===", operand: pattern, side: both}]}
+  AlternationPatternNode:  {calls: [{name: "===", operand: left, side: both},
+                                    {name: "===", operand: right, side: both}]}
+  CapturePatternNode:      {calls: [{name: "===", operand: value, side: both}]}
+  ArrayPatternNode:        {calls: [{name: deconstruct, operand: matched, side: inst},
+                                    {name: "===", operand: constant, side: both},
+                                    {name: "===", operand: requireds.*, side: both},
+                                    {name: "===", operand: posts.*, side: both}]}
+  FindPatternNode:         {calls: [{name: deconstruct, operand: matched, side: inst},
+                                    {name: "===", operand: constant, side: both},
+                                    {name: "===", operand: requireds.*, side: both}]}
+  HashPatternNode:         {calls: [{name: deconstruct_keys, operand: matched, side: inst},
+                                    {name: "===", operand: constant, side: both},
+                                    {name: "===", operand: elements.*.value, side: both}]}
+
+  # ---- assignments that read or write through a method ----
+  CallTargetNode:          {calls: [{name_field: name, operand: receiver, side: inst}]}
+  IndexTargetNode:         {calls: [{name: "[]=", operand: receiver, side: inst}]}
+  CallOperatorWriteNode:   {calls: [{name_field: name, operand: receiver, side: inst, absent: self},
+                                    {name_field: binary_operator, operand: none, side: inst},
+                                    {name_field: write_name, operand: receiver, side: inst, absent: self}]}
+  CallOrWriteNode:         {calls: [{name_field: name, operand: receiver, side: inst, absent: self},
+                                    {name_field: write_name, operand: receiver, side: inst, absent: self}]}
+  CallAndWriteNode:        {calls: [{name_field: name, operand: receiver, side: inst, absent: self},
+                                    {name_field: write_name, operand: receiver, side: inst, absent: self}]}
+  IndexOperatorWriteNode:  {calls: [{name: "[]", operand: receiver, side: inst, absent: self},
+                                    {name_field: binary_operator, operand: none, side: inst},
+                                    {name: "[]=", operand: receiver, side: inst, absent: self}]}
+  IndexOrWriteNode:        {calls: [{name: "[]", operand: receiver, side: inst, absent: self},
+                                    {name: "[]=", operand: receiver, side: inst, absent: self}]}
+  IndexAndWriteNode:       {calls: [{name: "[]", operand: receiver, side: inst, absent: self},
+                                    {name: "[]=", operand: receiver, side: inst, absent: self}]}
+  # `x += 1` calls + on the variable's value
+  LocalVariableOperatorWriteNode:    {calls: [{name_field: binary_operator, operand: node, side: inst}]}
+  InstanceVariableOperatorWriteNode: {calls: [{name_field: binary_operator, operand: node, side: inst}]}
+  ClassVariableOperatorWriteNode:    {calls: [{name_field: binary_operator, operand: node, side: inst}]}
+  GlobalVariableOperatorWriteNode:   {calls: [{name_field: binary_operator, operand: node, side: inst},
+                                              {name: write, operand: value, side: inst, when: gvar_port}]}
+  ConstantOperatorWriteNode:         {calls: [{name_field: binary_operator, operand: node, side: inst},
+                                              {name: const_added, operand: none, side: class}]}
+  ConstantPathOperatorWriteNode:     {calls: [{name_field: binary_operator, operand: node, side: inst},
+                                              {name: const_added, operand: none, side: class}]}
+
+  # ---- $stdout and $stderr: assigning an object asks it for write ----
+  GlobalVariableWriteNode:    {calls: [{name: write, operand: value, side: inst, when: gvar_port}]}
+  GlobalVariableOrWriteNode:  {calls: [{name: write, operand: value, side: inst, when: gvar_port}]}
+  GlobalVariableAndWriteNode: {calls: [{name: write, operand: value, side: inst, when: gvar_port}]}
+  GlobalVariableTargetNode:   {calls: [{name: write, operand: none, side: inst, when: gvar_port}]}
+
+  # ---- hooks the interpreter calls ----
+  ClassNode:               {calls: [{name: inherited, operand: superclass, side: class, absent: none},
+                                    {name: const_added, operand: none, side: class}]}
+  ModuleNode:              {calls: [{name: const_added, operand: none, side: class}]}
+  DefNode:                 {calls: [{name: method_added, operand: none, side: class},
+                                    {name: singleton_method_added, operand: receiver, side: both}]}
+  AliasMethodNode:         {calls: [{name: method_added, operand: none, side: class}]}
+  UndefNode:               {calls: [{name: method_undefined, operand: none, side: class}]}
+  ConstantWriteNode:       {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantOrWriteNode:     {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantAndWriteNode:    {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantTargetNode:      {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantPathWriteNode:   {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantPathOrWriteNode: {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantPathAndWriteNode: {calls: [{name: const_added, operand: none, side: class}]}
+  ConstantPathTargetNode:  {calls: [{name: const_added, operand: none, side: class}]}
+  # a constant nothing defines: const_missing of the module it is looked up in.
+  # CRuby does not call it for the name a class or module header defines
+  # (`class Foo` with no Foo; checked with a const_missing that prints), but the
+  # node cannot tell the header's constant_path from a read, so the rows are
+  # sound but coarse: a consumer with the parent map skips the constant_path of
+  # a ClassNode or ModuleNode.
+  ConstantReadNode:        {calls: [{name: const_missing, operand: none, side: class}]}
+  ConstantPathNode:        {calls: [{name: const_missing, operand: parent, side: class, absent: none}]}
+  # the end of the program: an uncaught exception is printed with these, an
+  # uncaught throw with inspect
+  ProgramNode:             {calls: [{name: message, operand: none, side: inst},
+                                    {name: detailed_message, operand: none, side: inst},
+                                    {name: to_s, operand: none, side: inst},
+                                    {name: backtrace, operand: none, side: inst},
+                                    {name: inspect, operand: none, side: inst}]}
+
+# Node kinds that hold a scalar literal: a value no method of the program's can
+# be called on, which `nonliteral` tests.
+literal:
+  - FalseNode
+  - FloatNode
+  - ImaginaryNode
+  - IntegerNode
+  - InterpolatedRegularExpressionNode
+  - InterpolatedStringNode
+  - InterpolatedSymbolNode
+  - NilNode
+  - RationalNode
+  - RegularExpressionNode
+  - SourceEncodingNode
+  - SourceFileNode
+  - SourceLineNode
+  - StringNode
+  - SymbolNode
+  - TrueNode
+
+# Node kinds that are not values: a pattern construct (it matches, it does not
+# answer) or an assignment target. No row's operand is one.
+not_value:
+  - AlternationPatternNode
+  - ArrayPatternNode
+  - CallTargetNode
+  - CapturePatternNode
+  - ClassVariableTargetNode
+  - ConstantPathTargetNode
+  - ConstantTargetNode
+  - FindPatternNode
+  - GlobalVariableTargetNode
+  - HashPatternNode
+  - IndexTargetNode
+  - InstanceVariableTargetNode
+  - LocalVariableTargetNode
+  - MultiTargetNode
+
+# Node kinds that imply no call.
+super:
+  - ForwardingSuperNode
+  - SuperNode
+
+none:
+  - AliasGlobalVariableNode
+  - AndNode
+  - ArgumentsNode
+  - ArrayNode
+  - BackReferenceReadNode
+  - BeginNode
+  - BlockLocalVariableNode
+  - BlockNode
+  - BlockParameterNode
+  - BreakNode
+  - CallNode
+  - CaseNode
+  - ClassVariableAndWriteNode
+  - ClassVariableOrWriteNode
+  - ClassVariableReadNode
+  - ClassVariableTargetNode
+  - ClassVariableWriteNode
+  - ElseNode
+  - EnsureNode
+  - FalseNode
+  - FlipFlopNode
+  - FloatNode
+  - ForwardingArgumentsNode
+  - ForwardingParameterNode
+  - GlobalVariableReadNode
+  - HashNode
+  - IfNode
+  - ImaginaryNode
+  - ImplicitNode
+  - InstanceVariableAndWriteNode
+  - InstanceVariableOrWriteNode
+  - InstanceVariableReadNode
+  - InstanceVariableTargetNode
+  - InstanceVariableWriteNode
+  - IntegerNode
+  - InterpolatedMatchLastLineNode
+  - InterpolatedRegularExpressionNode
+  - InterpolatedStringNode
+  - InterpolatedSymbolNode
+  - ItLocalVariableReadNode
+  - ItParametersNode
+  - KeywordHashNode
+  - KeywordRestParameterNode
+  - LambdaNode
+  - LoadNode
+  - LocalVariableAndWriteNode
+  - LocalVariableOrWriteNode
+  - LocalVariableReadNode
+  - LocalVariableTargetNode
+  - LocalVariableWriteNode
+  - MatchLastLineNode
+  - MatchWriteNode
+  - MissingNode
+  - NextNode
+  - NilNode
+  - NoKeywordsParameterNode
+  - NumberedReferenceReadNode
+  - OptionalKeywordParameterNode
+  - OptionalParameterNode
+  - OrNode
+  - ParametersNode
+  - ParenthesesNode
+  - PinnedExpressionNode
+  - PinnedVariableNode
+  - PostExecutionNode
+  - PreExecutionNode
+  - RationalNode
+  - RedoNode
+  - RegularExpressionNode
+  - RequiredKeywordParameterNode
+  - RequiredParameterNode
+  - RescueModifierNode
+  - RestParameterNode
+  - RetryNode
+  - ReturnNode
+  - SelfNode
+  - ShareableConstantNode
+  - SingletonClassNode
+  - SourceEncodingNode
+  - SourceFileNode
+  - SourceLineNode
+  - StatementsNode
+  - StringNode
+  - SymbolNode
+  - TrueNode
+  - UnlessNode
+  - UnsupportedNode
+  - UntilNode
+  - WhileNode
+  - YieldNode

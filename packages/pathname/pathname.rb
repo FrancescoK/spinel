@@ -291,6 +291,14 @@ class Pathname
     File.ctime(@path)
   end
 
+  def stat
+    File.stat(@path)
+  end
+
+  def lstat
+    File.lstat(@path)
+  end
+
   def realpath
     Pathname.new(File.realpath(@path))
   end

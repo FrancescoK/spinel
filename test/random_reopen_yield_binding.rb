@@ -55,7 +55,7 @@ p "ab".string_yield { |v| v * 2 }
 p [1].array_yield { |v| v + [2] }
 p({a: 1}.hash_yield { |v| v.size })
 class Symbol
-  def appended = yield(to_s)
+  def appended = yield(to_s.dup)
 end
 class Float
   def appended = yield(to_s)

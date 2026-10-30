@@ -1,0 +1,71 @@
+load record: 37 points, 1 regions
+r0 #0 f0 ProgramNode line 10
+r0 #1 f0 ModuleNode Chime line 10
+  r0 #2 f0 DefNode ring line 11
+r0 #3 f0 ClassNode Sent line 14
+  r0 #4 f0 DefNode ring line 15
+  r0 #5 f0 ConstantWriteNode Sent__FIRST line 16
+  r0 #6 f0 CallNode include line 17
+r0 #7 f0 ClassNode Public line 20
+  r0 #8 f0 DefNode ring line 21
+  r0 #9 f0 ConstantWriteNode Public__FIRST line 22
+  r0 #10 f0 CallNode include line 23
+r0 #11 f0 ClassNode Bare line 26
+  r0 #12 f0 DefNode ring line 27
+  r0 #13 f0 ConstantWriteNode Bare__FIRST line 28
+  r0 #14 f0 CallNode include line 29
+r0 #15 f0 ClassNode Bell line 33
+  r0 #16 f0 DefNode ring line 34
+  r0 #17 f0 DefNode make line 35
+r0 #18 f0 ClassNode Drum line 38
+  r0 #19 f0 DefNode ring line 39
+r0 #20 f0 CallNode puts line 42
+r0 #21 f0 ClassNode Bell line 44
+  r0 #22 f0 CallNode include line 45
+r0 #23 f0 ClassNode Drum line 48
+  r0 #24 f0 CallNode include line 49
+r0 #25 f0 ClassNode Sent line 52
+  r0 #26 f0 DefNode ring line 53
+r0 #27 f0 ClassNode Public line 56
+  r0 #28 f0 DefNode ring line 57
+r0 #29 f0 ClassNode Bare line 60
+  r0 #30 f0 DefNode ring line 61
+r0 #31 f0 ClassNode Bell line 64
+  r0 #32 f0 DefNode ring line 65
+r0 #33 f0 ClassNode Drum line 68
+  r0 #34 f0 DefNode ring line 69
+r0 #35 f0 CallNode puts line 72
+r0 #36 f0 CallNode puts line 73
+class Chime: body#1
+class Sent: body#3 body#25 include Chime#6
+class Public: body#7 body#27 include Chime#10
+class Bare: body#11 body#29 include Chime#14
+class Bell: body#15 body#21 body#31 include Chime#22
+class Drum: body#18 body#23 body#33 include Chime#24
+entity Chime: owner main leaf Chime
+entity Sent: owner main leaf Sent
+entity Public: owner main leaf Public
+entity Bare: owner main leaf Bare
+entity Bell: owner main leaf Bell
+entity Drum: owner main leaf Drum
+const Chime: write#1
+Chime#ring: def#2 runs=#5 end=yes
+const Sent: write#3
+Sent#ring: def#4 runs=#5 def#26 runs=#5 end=yes
+const Sent::FIRST: write#5
+const Public: write#7
+Public#ring: def#8 runs=#9 def#28 runs=#9 end=yes
+const Public::FIRST: write#9
+const Bare: write#11
+Bare#ring: def#12 runs=#13 def#30 runs=#13 end=yes
+const Bare::FIRST: write#13
+const Bell: write#15
+Bell#ring: def#16 runs=#20 def#32 runs=#20 end=yes
+Bell.make: def#17 end=yes
+const Drum: write#18
+Drum#ring: def#19 runs=#36 def#34 runs=#36 end=yes
+versions Sent#ring: def#4..#26 seen=unknown, def#26..end seen=def#26; 11 of the name
+versions Public#ring: def#8..#28 seen=unknown, def#28..end seen=def#28; 11 of the name
+versions Bare#ring: def#12..#30 seen=unknown, def#30..end seen=def#30; 11 of the name
+versions Bell#ring: def#16..#32 seen=unknown, def#32..end seen=def#32; 11 of the name
+versions Drum#ring: def#19..#34 seen=def#19 idle, def#34..end seen=def#34; 11 of the name

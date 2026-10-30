@@ -1,0 +1,3 @@
+#<Pt:X @x=1, @y=2, @name="a\"b\n", @ok=true, @tag=:sym, @f=1.5>
+#<Pt:X @x=1, @y=nil, @name="a\"b\n", @ok=true, @tag=:sym, @f=1.5>
+#<Pt:X @x=-3, @y=4, @name="", @ok=false, @tag=:"odd sym", @f=1.0e+20>

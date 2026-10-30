@@ -1384,7 +1384,17 @@ int emit_call_poly_io_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, con
         free(kc.p);
       }
       else if (sp_streq(name, "readlines")) buf_printf(b, "sp_File_readlines(_t%d); })", tio2);
-      else if (sp_streq(name, "rewind")) buf_printf(b, "sp_File_rewind(_t%d); })", tio2);
+      /* rewind reaches this arm with an argument only a splat supplies (a
+         forwarded `**kwargs`, as Active Support's `try` hands every call
+         on). A poly receiver's rewind is typed as a box, since an
+         Enumerator answers itself (analyze: `rewind` on a TY_POLY
+         receiver), so the stream's 0 goes into the call's slot boxed, as
+         the zero-argument arm above boxes it: bare, the sp_int stored into
+         the sp_RbVal the dispatch answers into did not build. */
+      else if (sp_streq(name, "rewind")) {
+        int boxed = repr_of(c, id).kind == RK_BOXED;
+        buf_printf(b, "%ssp_File_rewind(_t%d)%s; })", boxed ? "sp_box_int(" : "", tio2, boxed ? ")" : "");
+      }
       /* a stat's predicates, answered as the TY_IO arms answer them, for a
          stat's handle only */
       else if (argc == 0 && boxed_stat_pred(name) >= 100) {

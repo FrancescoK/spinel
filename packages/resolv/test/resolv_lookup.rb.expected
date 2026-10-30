@@ -1,0 +1,9 @@
+["192.0.2.7"]
+["::1"]
+"10.1.2.3"
+true
+["127.0.0.1"]
+[]
+no address for no-such-host.invalid
+true
+[true, false, true, true, false]
