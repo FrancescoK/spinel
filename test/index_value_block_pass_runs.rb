@@ -28,3 +28,10 @@ c = [3, 2]
 p c.index(2, &(c = [2]; mk))
 @a = [5, 6]
 p @a.index(6, &(@a = [6]; mk))
+# a runtime-name send keeps the arm for the name
+n = ARGV.size > 5 ? :rindex : :index
+p [3, 2].public_send(n, 2, &mk)
+p [3, 2].send(n, 2, &mk)
+f = ARGV.size > 5 ? :index : :find_index
+p [3, 2].public_send(f, 2, &mk)
+p K.new.public_send(n, 7, &mk)

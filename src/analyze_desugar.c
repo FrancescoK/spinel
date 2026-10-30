@@ -14170,6 +14170,13 @@ int desugar_index_value_block_pass(Compiler *c) {
     nt_node_set_ref(nt, nblk, "expression", hwi_lread(nt, tn));
     int call = nblk >= 0 ? spl_arm_on(nt, id, recv, &arg, 1, nblk) : -1;
     if (call < 0) break;
+    /* An arm of a runtime-name send is found by its dyn_name and keeps the
+       send's visibility rule: the sequence that replaces it carries the name
+       (as fwd_branch_on_callable does), the call carries the rule. */
+    const char *dn = nt_str(nt, id, "dyn_name");
+    static const char *const keep[] = { "vis_enforce", "send_blind", "dyn_name", NULL };
+    for (int k = 0; keep[k]; k++)
+      if (nt_str(nt, id, keep[k])) nt_node_set_str(nt, call, keep[k], nt_str(nt, id, keep[k]));
     int stmts[4];
     for (int i = 0; i < npre; i++) stmts[i] = pre[i];
     stmts[npre] = call;
@@ -14178,6 +14185,10 @@ int desugar_index_value_block_pass(Compiler *c) {
     nt_node_set_arr(nt, body, "body", stmts, npre + 1);
     nt_node_reset(nt, id, "ParenthesesNode");
     nt_node_set_ref(nt, id, "body", body);
+    if (dn) {
+      nt_node_set_int(nt, id, "dyn_arm", 1);
+      nt_node_set_str(nt, id, "dyn_name", nt_str(nt, call, "dyn_name"));
+    }
     nt_node_set_int(nt, id, "node_line", line);
     nt_node_set_int(nt, id, "node_file", file);
     comp_grow_node_arrays(c);
