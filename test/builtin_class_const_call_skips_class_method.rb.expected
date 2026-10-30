@@ -1,0 +1,8 @@
+registry main
+[0, 2, 4]
+{x: 2}
+abcd
+4
+file.rb
+dir/file.rb
+[:z, :z]
