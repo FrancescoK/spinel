@@ -158,18 +158,18 @@ static int cmp_elem_read(Compiler *c, int node, TyKind t, int *arr, int *idx) {
    the boxed method dispatch, any other the runtime's compare
    (sp_poly_spaceship), which knows only the builtin one. */
 static int poly_cmp_reopen_test(Compiler *c, const char *v, char *out, size_t cap) {
-  static const struct { const char *cls; const char *tags; } owners[] = {
-    { "Integer", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT" },
-    { "Float",   "%s.tag == SP_TAG_FLT" },
-    { "Numeric", "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
-    { "String",  "%s.tag == SP_TAG_STR" },
-    { "Symbol",  "%s.tag == SP_TAG_SYM" },
-    { "TrueClass",  "(%s.tag == SP_TAG_BOOL && %s.v.i)" },
-    { "FalseClass", "(%s.tag == SP_TAG_BOOL && !%s.v.i)" },
+  static const struct { int cls; const char *tags; } owners[] = {
+    { CORE_INTEGER, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT" },
+    { CORE_FLOAT,   "%s.tag == SP_TAG_FLT" },
+    { CORE_NUMERIC, "%s.tag == SP_TAG_INT || %s.tag == SP_TAG_BIGINT || %s.tag == SP_TAG_FLT" },
+    { CORE_STRING,  "%s.tag == SP_TAG_STR" },
+    { CORE_SYMBOL,  "%s.tag == SP_TAG_SYM" },
+    { CORE_TRUECLASS,  "(%s.tag == SP_TAG_BOOL && %s.v.i)" },
+    { CORE_FALSECLASS, "(%s.tag == SP_TAG_BOOL && !%s.v.i)" },
   };
   size_t n = 0; out[0] = '\0';
   for (size_t i = 0; i < sizeof owners / sizeof owners[0]; i++) {
-    int k = comp_class_index(c, owners[i].cls);
+    int k = comp_core_class(c, owners[i].cls);
     if (k < 0 || comp_method_in_chain(c, k, "<=>", NULL) < 0) continue;
     char one[200];
     snprintf(one, sizeof one, owners[i].tags, v, v, v);
@@ -1455,9 +1455,9 @@ static int emit_poly_reopened_binop(Compiler *c, int id, const char *name, int r
                     sp_streq(name, "%") ? "sp_poly_mod" : NULL;
   if (!pfn) return 0;
   int mis[2] = { -1, -1 };
-  const char *cn[2] = { "Integer", "Float" };
+  static const int cn[2] = { CORE_INTEGER, CORE_FLOAT };
   for (int i = 0; i < 2; i++) {
-    int k = comp_class_index(c, cn[i]);
+    int k = comp_core_class(c, cn[i]);
     if (k < 0 || !class_is_prim_reopen(c, k)) continue;
     int def = -1, mi = call_target(c, id, k, name, 0, &def);
     if (mi < 0 || def != k || c->scopes[mi].nparams != 1 || c->scopes[mi].rest_idx >= 0) continue;

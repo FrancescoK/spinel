@@ -3865,9 +3865,9 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       if (ncc == 0) {
         char cid_expr[40]; snprintf(cid_expr, sizeof cid_expr, "_cl%d.cls_id", _clt);
         buf_printf(b, "({ sp_Class _cl%d = ", _clt); emit_expr(c, recv, b);
-        buf_puts(b, "; "); emit_class_id_is(c, "Thread", cid_expr, b); buf_puts(b, " ? ");
+        buf_puts(b, "; "); emit_class_id_is(c, CORE_THREAD, cid_expr, b); buf_puts(b, " ? ");
         emit_boxed_text(c, TY_THREAD, "sp_Thread_current()", b);
-        buf_puts(b, " : "); emit_class_id_is(c, "Fiber", cid_expr, b); buf_puts(b, " ? ");
+        buf_puts(b, " : "); emit_class_id_is(c, CORE_FIBER, cid_expr, b); buf_puts(b, " ? ");
         emit_boxed_text(c, TY_FIBER, "sp_fiber_current", b);
         buf_puts(b, " : (sp_raise_cls(\"NoMethodError\", (&(\"\\xff\" \"undefined method 'current' for class\")[1])), sp_box_nil()); })");
         return 1;
@@ -5092,23 +5092,17 @@ int emit_call_reopen_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
         return 1;
       }
     }
-    const char *oc_cn = NULL;
+    int oc_cn = -1;
     switch (rt) {
-    case TY_STRING: case TY_STRBUF: oc_cn = "String"; break;
-    case TY_INT:    oc_cn = "Integer"; break;
-    case TY_FLOAT:  oc_cn = "Float"; break;
-    case TY_SYMBOL: oc_cn = "Symbol"; break;
-    case TY_RANGE:  oc_cn = "Range"; break;
-    case TY_TIME:   oc_cn = "Time"; break;
-    case TY_THREAD: oc_cn = "Thread"; break;
-    case TY_FIBER:  oc_cn = "Fiber"; break;
-    case TY_ENUMERATOR: oc_cn = "Enumerator"; break;
-    case TY_IO:     oc_cn = "File"; break;
-    case TY_CLASS:  oc_cn = "Class"; break;
+    case TY_STRING: case TY_STRBUF: case TY_INT:
+    case TY_FLOAT: case TY_SYMBOL: case TY_RANGE:
+    case TY_TIME: case TY_THREAD: case TY_FIBER:
+    case TY_ENUMERATOR: case TY_IO: case TY_CLASS:
+      oc_cn = core_of_type(rt); break;
     default: break;
     }
-    if (oc_cn) {
-      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_class_index(c, oc_cn);
+    if (oc_cn >= 0) {
+      int oc_ci = rt == TY_IO ? io_reopen_class(c, name) : comp_core_class(c, oc_cn);
       if (oc_ci >= 0) {
         int oc_mi = call_target(c, id, oc_ci, name, 0, NULL);
         if (oc_mi >= 0 && rt == TY_IO) { emit_io_reopen_call(c, id, recv, name, b); return 1; }

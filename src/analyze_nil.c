@@ -563,10 +563,10 @@ static int nf_region_writes_before(NF *f, int region, const char *nm, int rd) {
    Kernel, BasicObject, or at the top level), for call `call`? Then the call
    on nil raises nothing. */
 static int nf_nil_user_method(Compiler *c, int call, const char *name) {
-  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  static const int owners[] = { CORE_NILCLASS, CORE_OBJECT, CORE_KERNEL, CORE_BASIC_OBJECT, -1 };
   if (call_target(c, call, -1, name, CT_TOP, NULL) >= 0) return 1;
-  for (int i = 0; owners[i]; i++) {
-    int k = comp_class_index(c, owners[i]);
+  for (int i = 0; owners[i] >= 0; i++) {
+    int k = comp_core_class(c, owners[i]);
     if (k >= 0 && call_target(c, call, k, name, 0, NULL) >= 0) return 1;
   }
   return 0;

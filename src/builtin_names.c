@@ -2032,6 +2032,46 @@ static const BuiltinClass BUILTIN_CLASSES[] = { SP_BUILTIN_CLASSES(X) };
 const BuiltinClass *builtin_class_at(int i) {
   return i >= 0 && i < BUILTIN_CLASS_N ? &BUILTIN_CLASSES[i] : NULL;
 }
+/* The core class of a receiver kind; each reader keeps its own kind filter. */
+int core_of_type(TyKind t) {
+  if (t == TY_INT || t == TY_BIGINT) return CORE_INTEGER;
+  if (t == TY_FLOAT) return CORE_FLOAT;
+  if (t == TY_STRING || t == TY_STRBUF) return CORE_STRING;
+  if (t == TY_SYMBOL) return CORE_SYMBOL;
+  if (t == TY_RANGE || t == TY_FLOAT_RANGE || t == TY_STR_RANGE) return CORE_RANGE;
+  if (t == TY_TIME) return CORE_TIME;
+  if (t == TY_IO) return CORE_FILE;
+  if (t == TY_CLASS) return CORE_CLASS;
+  if (t == TY_NIL) return CORE_NILCLASS;
+  if (t == TY_MATCHDATA) return CORE_MATCHDATA;
+  if (t == TY_REGEX) return CORE_REGEXP;
+  if (t == TY_THREAD) return CORE_THREAD;
+  if (t == TY_FIBER) return CORE_FIBER;
+  if (t == TY_RANDOM) return CORE_RANDOM;
+  if (ty_is_array(t) || ty_is_obj_array(t)) return CORE_ARRAY;
+  if (ty_is_hash(t)) return CORE_HASH;
+  if (t == TY_ENUMERATOR) return CORE_ENUMERATOR;
+  if (t == TY_RATIONAL) return CORE_RATIONAL;
+  if (t == TY_COMPLEX) return CORE_COMPLEX;
+  if (t == TY_PROC) return CORE_PROC;
+  if (t == TY_QUEUE) return CORE_QUEUE;
+  if (t == TY_EXCEPTION) return CORE_EXCEPTION;
+  return -1;
+}
+/* The spelling held by a core row, including the library and synthetic slots. */
+const char *core_class_name(int k) {
+  const BuiltinClass *r = builtin_class_at(k);
+  if (r) return r->name;
+  switch (k) {
+  case CORE_STRINGIO: return "StringIO";
+  case CORE_SET: return "Set";
+  case CORE_CLASS_REOPEN: return CLASS_REOPEN_NAME;
+  case CORE_FILETEST: return "FileTest";
+  case CORE_ERRNO: return "Errno";
+  case CORE_WARNING: return "Warning";
+  default: return NULL;
+  }
+}
 /* Is `n` a class or module Spinel has natively (any row, the socket ones
    whether or not "socket" is required)? The load graph asks it of a
    library's `class X`: a native X is reopened, and the methods the library

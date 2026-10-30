@@ -9934,7 +9934,7 @@ static int desugar_symbol_string_methods(Compiler *c) {
     /* a Symbol reopen's own method of the name is the call's target, which
        the call plan takes for a Symbol receiver (`class Symbol; def index(x)
        = 0; end`): the call stays on the Symbol */
-    if (an_reopen_owner(c, id, "Symbol") >= 0) continue;
+    if (an_reopen_owner(c, id, CORE_SYMBOL) >= 0) continue;
     /* Symbol#<=> is defined only between Symbols: reading both sides as text
        would make :a <=> "a" answer 0 where Ruby answers nil, so leave a
        non-Symbol operand alone and let codegen emit the nil (#3081). */
@@ -10619,9 +10619,9 @@ static int sbo_call(NodeTable *nt, int recv, const char *name, const int *argv, 
    Object, or one on an instance_eval block's receiver? */
 int std_stream_bare_call_own(Compiler *c, int id, const char *nm) {
   if (an_bare_call_class_owned(c, id) || call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) return 1;
-  static const char *const roots[] = { "Kernel", "Object", "BasicObject" };
+  static const int roots[] = { CORE_KERNEL, CORE_OBJECT, CORE_BASIC_OBJECT };
   for (int r = 0; r < 3; r++) {
-    int rc = comp_class_index(c, roots[r]);
+    int rc = comp_core_class(c, roots[r]);
     if (rc >= 0 && call_target(c, id, rc, nm, 0, NULL) >= 0) return 1;
   }
   int iec = ie_class_of(c, id);
@@ -11562,7 +11562,7 @@ static int desugar_enum_named_call(Compiler *c, int id, NodeTable *nt, const cha
                  nt_kind(nt, hrc) == NK_SelfNode))) &&
               comp_builtin_kind_reopen_mi(c, TY_POLY_POLY_HASH, "[]=") < 0;
     if (hrc >= 0 && hac == 2 && nt_ref(nt, id, "block") < 0 &&
-        (ty_is_hash(hrt) || sub) && an_reopen_owner(c, id, "Hash") < 0) {
+        (ty_is_hash(hrt) || sub) && an_reopen_owner(c, id, CORE_HASH) < 0) {
       nt_node_set_str(nt, id, "name", "[]=");
       if (sub) nt_node_set_int(nt, id, "builtin_only", 1);
       *changed = 1;
@@ -26085,8 +26085,8 @@ static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
       comp_class_index(c, nt_str(nt, rc, "name")) >= 0) return 0;
   TyKind rt = infer_type(c, rc);
   if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) return 0;
-  const char *bc = rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
-  int bci = bc ? comp_class_index(c, bc) : -1;
+  int bc = core_of_type(rt);
+  int bci = bc >= 0 && (bc == CORE_STRING || builtin_class_of_type(rt)) ? comp_core_class(c, bc) : -1;
   if (bci >= 0 && call_target(c, u, bci, un, 0, NULL) >= 0) return 0;
   int oci = comp_core_class(c, CORE_OBJECT);
   if (oci >= 0 && call_target(c, u, oci, un, 0, NULL) >= 0) return 0;
@@ -36989,10 +36989,10 @@ static void nn_structure(Compiler *c) {
   nn_no_ivar_slots = nn_no_local_slots = nn_array_reopened = comp_core_class(c, CORE_ARRAY) >= 0;
   /* ... and a reopened Integer, Float or class above them can give `<` or
      `+` a method that takes a nil (nn_operands_nonnil) */
-  static const char *const reopen[] = { "NilClass", "Integer", "Float", "Numeric", "Comparable",
-                                        "Object", "Kernel", "BasicObject", NULL };
+  static const int reopen[] = { CORE_NILCLASS, CORE_INTEGER, CORE_FLOAT, CORE_NUMERIC, CORE_COMPARABLE,
+                               CORE_OBJECT, CORE_KERNEL, CORE_BASIC_OBJECT, -1 };
   nn_numeric_reopened = 0;
-  for (int i = 0; reopen[i]; i++) if (comp_class_index(c, reopen[i]) >= 0) nn_numeric_reopened = 1;
+  for (int i = 0; reopen[i] >= 0; i++) if (comp_core_class(c, reopen[i]) >= 0) nn_numeric_reopened = 1;
   nn_nattrs = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, a) {
     const char *an = nt_str(nt, a, "name");
@@ -40175,8 +40175,8 @@ static void mark_nullable_int_locals(Compiler *c) {
              (`class Float; def <(other)`): the reopen answers the call, so
              the nil an argument can be reaches its parameter, which holds it
              beside the value */
-          const char *bcn = builtin_class_of_type(rt);
-          int bci = bcn ? comp_class_index(c, bcn) : -1;
+          int bcn = builtin_class_of_type(rt) ? core_of_type(rt) : -1;
+          int bci = bcn >= 0 ? comp_core_class(c, bcn) : -1;
           int bmi = bci >= 0 ? call_target(c, id, bci, nt_str(nt, id, "name"), CT_OWN, NULL) : -1;
           if (bmi >= 0) mi = bmi;
         }
@@ -43493,7 +43493,7 @@ static int arysub_zsuper_args(Compiler *c, int at, Scope *s) {
    `self.allocate.replace(Array.new(args) { blk })`. */
 static void arysub_super_into(Compiler *c, int at, int n, const char *mname, int init, int args, int blk) {
   Scope *s = comp_scope_of(c, at);
-  const char *bn = s ? comp_arysub_builtin(c, s->class_id) : "Array";
+  const char *bn = s ? core_class_name(comp_arysub_builtin(c, s->class_id)) : "Array";
   int an = 0;
   if (args >= 0) nt_arr(c->nt, args, "arguments", &an);
   int self = arysub_node(c, "SelfNode", at);
@@ -43631,7 +43631,7 @@ static void rewrite_array_subclass_super(Compiler *c, int id) {
       char msg[256];
       snprintf(msg, sizeof msg, "a bare `super` into %s from a method with keyword, "
                "post-rest or destructured parameters is not supported yet; "
-               "pass the arguments explicitly", comp_arysub_builtin(c, s->class_id));
+               "pass the arguments explicitly", core_class_name(comp_arysub_builtin(c, s->class_id)));
       unsupported_feature(c, id, msg);
       return;
     }
@@ -43773,7 +43773,7 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
     src = arysub_node(c, "ArrayNode", id);
     if (src >= 0) nt_node_set_arr((NodeTable *)nt, src, "elements", av, an);
   }
-  else src = arysub_builtin_call(c, id, comp_arysub_builtin(c, k), "new", args, blk);
+  else src = arysub_builtin_call(c, id, core_class_name(comp_arysub_builtin(c, k)), "new", args, blk);
   if (alloc < 0 || src < 0) return;
   arysub_set_call(c, id, alloc, "replace", arysub_args(c, id, &src, 1), -1);
   /* Array's and Hash's own construction: a `replace` of the class's own is
@@ -43839,7 +43839,7 @@ static void arysub_builtin_alias_recv_call(Compiler *c, int id) {
     char msg[400];
     snprintf(msg, sizeof msg, "calling `%s`, an alias of %s#%s in %s, on a receiver is not supported "
              "yet (it would run the class's own `%s`); call it without a receiver inside the class",
-             nm, comp_arysub_builtin(c, k), rn, c->classes[k].name, rn);
+             nm, core_class_name(comp_arysub_builtin(c, k)), rn, c->classes[k].name, rn);
     unsupported_feature(c, id, msg);
     return;
   }
@@ -52445,7 +52445,7 @@ static void an_phase_reconcile_check(Compiler *c) {
     if (!snm || !sp_streq(snm, "store") || nt_ref(c->nt, sid, "block") >= 0) continue;
     int src = nt_ref(c->nt, sid, "receiver"), sa = nt_ref(c->nt, sid, "arguments"), sac = 0;
     if (sa >= 0) nt_arr(c->nt, sa, "arguments", &sac);
-    if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)) && an_reopen_owner(c, sid, "Hash") < 0)
+    if (src >= 0 && sac == 2 && ty_is_hash(comp_ntype(c, src)) && an_reopen_owner(c, sid, CORE_HASH) < 0)
       nt_node_set_str((NodeTable *)c->nt, sid, "name", "[]=");
   }
   mark_scan_rtchecks(c);

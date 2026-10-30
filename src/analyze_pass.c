@@ -11418,9 +11418,9 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
     /* A builtin receiver's own reopening takes this call's arguments too,
        including non-Symbol keys that widen its keyword-rest hash. */
     else if (rt != TY_UNKNOWN && rt != TY_VOID && name) {
-      const char *bc = rt == TY_RANDOM ? "Random" :
-                       rt == TY_STRBUF ? "String" : builtin_class_of_type(rt);
-      int bci = bc ? comp_class_index(c, bc) : -1;
+      int bc = core_of_type(rt);
+      int bci = bc >= 0 && (bc == CORE_RANDOM || bc == CORE_STRING || builtin_class_of_type(rt))
+                ? comp_core_class(c, bc) : -1;
       int bmi = bci >= 0 && !nt_int(nt, id, "builtin_only", 0)
                 ? call_target(c, id, bci, name, 0, NULL) : -1;
       if (bmi >= 0) { changed |= bind_call_params(c, id, bmi); continue; }

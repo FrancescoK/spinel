@@ -41,21 +41,15 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->rkind = CR_NONE; p->msg = NULL; p->rfrom = CRF_NONE;
 }
 
-/* the class a builtin receiver kind is reopened as, or NULL */
-static const char *cplan_reopen_class(TyKind rt) {
+/* The core id of the class a builtin receiver kind is reopened as, or -1. */
+static int cplan_reopen_class(TyKind rt) {
   switch (rt) {
-  case TY_STRING: case TY_STRBUF: return "String";
-  case TY_INT:    return "Integer";
-  case TY_FLOAT:  return "Float";
-  case TY_SYMBOL: return "Symbol";
-  case TY_RANGE:  return "Range";
-  case TY_TIME:   return "Time";
-  case TY_THREAD: return "Thread";
-  case TY_FIBER:  return "Fiber";
-  case TY_ENUMERATOR: return "Enumerator";
-  case TY_RANDOM: return "Random";
-  case TY_CLASS:  return "Class";
-  default:        return NULL;
+  case TY_STRING: case TY_STRBUF: case TY_INT:
+  case TY_FLOAT: case TY_SYMBOL: case TY_RANGE:
+  case TY_TIME: case TY_THREAD: case TY_FIBER:
+  case TY_ENUMERATOR: case TY_RANDOM: case TY_CLASS:
+    return core_of_type(rt);
+  default:        return -1;
   }
 }
 
@@ -67,9 +61,9 @@ int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi) {
   *tmi = *fmi = -1;
   const char *name = nt_str(c->nt, id, "name");
   if (!name || nt_int(c->nt, id, "builtin_only", 0)) return 0;
-  static const char *const CN[2] = { "TrueClass", "FalseClass" };
+  static const int CN[2] = { CORE_TRUECLASS, CORE_FALSECLASS };
   for (int k = 0; k < 2; k++) {
-    int ci = comp_class_index(c, CN[k]);
+    int ci = comp_core_class(c, CN[k]);
     int mi = ci >= 0 ? call_target(c, id, ci, name, 0, NULL) : -1;
     if (mi >= 0 && c->scopes[mi].class_id == ci) *(k ? fmi : tmi) = mi;
   }
@@ -418,9 +412,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
       return;
     }
   }
-  const char *rc = cplan_reopen_class(rt);
-  if (rc) {
-    int ci = comp_class_index(c, rc);
+  int rc = cplan_reopen_class(rt);
+  if (rc >= 0) {
+    int ci = comp_core_class(c, rc);
     int mi = ci >= 0 ? call_target(c, id, ci, rname, 0, NULL) : -1;
     /* (--share-strings: a String reopening's yielding method of a name,
        which a call with a literal block reaches, is the builtin's still for
@@ -442,7 +436,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   /* an Array or Hash reopen's own method of the name */
   if ((ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) && nt_ref(nt, id, "block") < 0) {
-    int aci = comp_class_index(c, ty_is_hash(rt) ? "Hash" : "Array");
+    int aci = comp_core_class(c, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY);
     int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, rname, 0, &adc) : -1;
     if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, rname)) {
       cplan_set(p, ami, aci, UC_REOPEN, CP_DIRECT);
@@ -451,8 +445,8 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   /* last, a program's own Object method for a name the receiver's builtin
      class and Object's own surface do not have (object_reopen_answers) */
-  const char *bcls = object_fallback_class_of_type(rt);
-  if (rt == TY_BOOL || (bcls && !builtin_method_known(bcls, name))) cplan_object_reopen(c, id, name, p);
+  int bcls = object_fallback_class_of_type(rt);
+  if (rt == TY_BOOL || (bcls >= 0 && !builtin_method_known(core_class_name(bcls), name))) cplan_object_reopen(c, id, name, p);
 }
 
 static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
@@ -3498,10 +3492,10 @@ static int cplan_nil_family(TyKind t) {
    Object, Kernel or BasicObject, or at the top level (a private Object
    method, which CRuby names as such), for call `call`? */
 static int cplan_nil_user_method(Compiler *c, int call, const char *name) {
-  static const char *const owners[] = { "NilClass", "Object", "Kernel", "BasicObject", NULL };
+  static const int owners[] = { CORE_NILCLASS, CORE_OBJECT, CORE_KERNEL, CORE_BASIC_OBJECT, -1 };
   if (call_target(c, call, -1, name, CT_TOP, NULL) >= 0) return 1;
-  for (int i = 0; owners[i]; i++) {
-    int k = comp_class_index(c, owners[i]);
+  for (int i = 0; owners[i] >= 0; i++) {
+    int k = comp_core_class(c, owners[i]);
     if (k >= 0 && call_target(c, call, k, name, 0, NULL) >= 0) return 1;
   }
   return 0;

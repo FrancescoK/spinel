@@ -10,6 +10,8 @@
 #ifndef SPINEL_BUILTIN_NAMES_H
 #define SPINEL_BUILTIN_NAMES_H
 
+#include "types.h"
+
 int is_zip_name(const char *n);       /* zip: tuple-yielding iteration */
 int is_dig_name(const char *n);       /* dig: a path through containers */
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
@@ -436,6 +438,8 @@ enum {
 };
 /* CORE_* for any builtin row or non-row slot above, -1 for any other name. */
 int builtin_core_class_slot(const char *n);
+int core_of_type(TyKind t);
+const char *core_class_name(int k);
 int is_builtin_method_host_name(const char *n); /* Object BasicObject Kernel Comparable Enumerable Module */
 int is_boolean_class_name(const char *n); /* FalseClass TrueClass */
 int is_numeric_literal_tag(const char *n); /* Float Int */
