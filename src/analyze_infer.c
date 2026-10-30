@@ -2854,17 +2854,23 @@ TyKind infer_call(Compiler *c, int id) {
       if (ty_is_array(ort) && nt_ref(c->nt, id, "block") >= 0 && !face_active() && view_depth() == 0)
         return infer_call_inner(c, id); }
     const char *on = nt_str(c->nt, id, "name");
-    TyKind r = TY_UNKNOWN; int pending = 0;
+    TyKind r = TY_UNKNOWN;
     for (int k = 0; on && k < c->nclasses; k++) {
       /* not Enumerable's own method: the arm never dispatches to it
          (desugar_builtin_enum_calls), its includers' copies answer */
       if (c->classes[k].is_native_class || sp_streq(c->classes[k].name, "Enumerable")) continue;
       int mi = call_target(c, id, k, on, CT_OWN, NULL);
       if (mi < 0) continue;
-      if (c->scopes[mi].ret == TY_UNKNOWN) { pending = 1; continue; }
+      /* A class whose own return has not settled contributes nothing, as
+         the poly dispatch's union rule has it: it unifies in on a later
+         round once it does. Holding the whole arm unknown until every
+         class settled held it forever where one never does (a method that
+         reads an ivar no code assigns), and the unknown reached codegen,
+         which seeded the dispatch's slot as an Integer while the arms
+         stored the Strings and Hashes their methods answer. */
+      if (c->scopes[mi].ret == TY_UNKNOWN) continue;
       r = r == TY_UNKNOWN ? (TyKind)c->scopes[mi].ret : ty_unify(r, (TyKind)c->scopes[mi].ret);
     }
-    if (pending) return TY_UNKNOWN;
     if (r != TY_UNKNOWN) {
       /* the arm shares its slot with the builtin's; a class answering what
          the builtin would keeps that type, any other answer rides boxed */
