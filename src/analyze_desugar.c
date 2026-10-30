@@ -10877,7 +10877,9 @@ static const char *const ee_enum_names[] = {
   "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy", "map", "max", "max_by",
   "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "reduce", "reject",
   "reverse_each", "select", "slice_after", "slice_before", "slice_when", "sort", "sort_by", "sum",
-  "take", "take_while", "tally", "to_a", "to_h", "to_set", "uniq", "zip", NULL };
+  "take", "take_while", "tally", "to_a", "to_h", "to_set", "uniq", "zip",
+  "is_a?", "kind_of?",   /* (the test of Enumerable itself, which a class method may answer too) */
+  NULL };
 static int ee_is_enumerable_ref(const NodeTable *nt, int n) {
   NodeKind k = nt_kind(nt, n);
   return (k == NK_ConstantReadNode || (k == NK_ConstantPathNode && nt_ref(nt, n, "parent") < 0)) &&
@@ -10899,6 +10901,7 @@ typedef struct {
   int in_set;    /* extends Enumerable, or a subclass of one that does */
   int extends;
   int used;      /* a call went to its twin, or to a superclass's */
+  int en_seen;   /* (the walk of its bodies in program order) Enumerable extended so far */
   unsigned char shadow[EE_NNAMES];   /* a class method of that name, which comes ahead of Enumerable */
 } EeClass;
 static int ee_find(const EeClass *v, int n, const char *key) {
@@ -11005,9 +11008,10 @@ static int ee_cmethod_owner(const NodeTable *nt, const int *parent, int d, char 
    `class << self`, `define_singleton_method(:first)`, `def_delegators :@a,
    :first`) but one of the body's declarations of instance methods, an
    alias's new name in `class << self`, and, in the body itself, each
-   method of a program's module it extends ahead of Enumerable: after the
-   body's `extend Enumerable` (ahead), or before it in the same `extend`,
-   which mixes its last module in first */
+   method of a program's module it extends ahead of Enumerable: every one
+   with ahead (once Enumerable is extended, in this body or an earlier
+   one, by a subclass, or a singleton prepend), else one before Enumerable
+   in the same `extend`, which mixes its last module in first */
 static int ee_instance_decl(const char *nm) {
   static const char *const decl[] = {
     "attr", "attr_reader", "attr_writer", "attr_accessor", "alias_method", "define_method", "private",
@@ -11036,7 +11040,7 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
     for (int j = 0; j < an && en < 0; j++) if (ee_is_enumerable_ref(nt, av[j])) en = j;
     for (int j = 0; j < an; j++) {
       char mk[512];
-      if ((en >= 0 ? j >= en : !ahead) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
+      if (j == en || (!ahead && (en < 0 || j > en)) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
       NT_FOREACH_KIND(nt, NK_DefNode, d) {
         int ni = ee_name_index(nt_str(nt, d, "name"));
         int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
@@ -11145,10 +11149,10 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     int i = ee_find(v, nv, key);
     if (i < 0 || !v[i].in_set) continue;
     int bn = 0; const int *bb = ee_body_list(nt, id, &bn);
-    int en_at = -1;   /* the body's `extend Enumerable` */
-    for (int j = 0; j < bn && en_at < 0; j++) if (ee_extends_enumerable(nt, bb[j])) en_at = j;
     for (int j = 0; j < bn; j++) {
-      ee_mark_stmt(nt, parent, v, i, id, bb[j], 0, j > en_at);
+      ee_mark_stmt(nt, parent, v, i, id, bb[j], 0,
+                   !v[i].extends || v[i].en_seen || nt_int(nt, bb[j], "sclass_prepend", 0));
+      if (ee_extends_enumerable(nt, bb[j])) v[i].en_seen = 1;
       if (ee_sclass_owner(nt, parent, bb[j]) < 0) continue;
       int sn = 0; const int *ss = nt_arr(nt, nt_ref(nt, bb[j], "body"), "body", &sn);
       for (int q = 0; q < sn; q++) ee_mark_stmt(nt, parent, v, i, id, ss[q], 1, 1);
@@ -11188,7 +11192,7 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
       if (!ee_ref_key(nt, ctx, recv, key, sizeof key)) continue;
       ci = ee_find(v, nv, key);
     }
-    if (ci < 0 || !v[ci].in_set || (!is_test && ee_shadowed(v, nv, ci, ni, on_self))) continue;
+    if (ci < 0 || !v[ci].in_set || ee_shadowed(v, nv, ci, ni, on_self)) continue;
     site[nsite++] = id;
     site[nsite++] = ci;
   }
