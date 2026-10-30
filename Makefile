@@ -4590,10 +4590,11 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	  [ "$$(grep -cE '^static inline sp_o?int sp_(run|count)\(sp_RbVal lv_ops[^;]*\{$$' "$$tmp/pse.c")" = 2 ] || { echo "infer-test: FAIL (poly_each_struct_elsewhere: run or count not found)"; ok=0; }; \
 	  [ "$$(awk '/^static inline sp_o?int sp_(run|count)\(sp_RbVal lv_ops[^;]*\{$$/,/^\}/' "$$tmp/pse.c" | grep -c 'sp_proc_new')" = 0 ] || { echo "infer-test: FAIL (a block over a boxed Array became a proc because a Struct the receiver cannot hold has an each)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_each_struct_reaches.rb -c --no-line-map -o "$$tmp/pesr.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_each_struct_reaches: -c)"; ok=0; }; \
-	  grep -q 'sp_proc_new' "$$tmp/pesr.c" || { echo "infer-test: FAIL (a block over a boxed value that may be a Struct lost its dispatch)"; ok=0; }; \
+	  [ "$$(awk '/ sp_show_all\(.*\) \{$$/,/^\}/' "$$tmp/pesr.c" | grep -c 'sp_proc_new')" -ge 1 ] || { echo "infer-test: FAIL (a block over a boxed value that may be a Struct lost its dispatch)"; ok=0; }; \
 	  $(SPINEL) $$flags test/poly_each_split_builtin_inline.rb -c --no-line-map -o "$$tmp/psb.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_each_split_builtin_inline: -c)"; ok=0; }; \
 	  [ "$$(grep -cE '^static inline sp_RbVal sp_(total|first_big)\(sp_RbVal lv_v\) \{$$' "$$tmp/psb.c")" = 2 ] || { echo "infer-test: FAIL (poly_each_split_builtin_inline: total or first_big not found)"; ok=0; }; \
 	  [ "$$(awk '/^static inline sp_RbVal sp_(total|first_big)\(sp_RbVal lv_v\) \{$$/,/^\}/' "$$tmp/psb.c" | grep -c 'sp_poly_iter_walk')" = 2 ] || { echo "infer-test: FAIL (a block over a boxed Array went only through the dispatch beside a class with its own each)"; ok=0; }; \
+	  [ "$$(awk '/^static [^;]*_proc_nest3_[0-9]+\(.*\) \{$$/,/^\}/' "$$tmp/psb.c" | grep -c 'sp_poly_iter_walk')" = 0 ] || { echo "infer-test: FAIL (a boxed each in a split's dispatch arm split again in the arm's proc)"; ok=0; }; \
 	  $(SPINEL) $$flags test/loop_stop_iteration_kept_blocks.rb -c --no-line-map -o "$$tmp/lsk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_blocks: -c)"; ok=0; }; \
 	  [ "$$(grep -c 'setjmp(sp_exc_stack' "$$tmp/lsk.c")" = 4 ] || { echo "infer-test: FAIL (a kept block that may raise StopIteration left a loop without its handler)"; ok=0; }; \
 	  $(SPINEL) $$flags test/loop_stop_iteration_kept_yield.rb -c --no-line-map -o "$$tmp/lky.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (loop_stop_iteration_kept_yield: -c)"; ok=0; }; \
