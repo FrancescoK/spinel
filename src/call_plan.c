@@ -436,7 +436,9 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     }
   }
   /* an Array or Hash reopen's own method of the name */
-  if ((ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) && nt_ref(nt, id, "block") < 0) {
+  if ((ty_is_array(rt) || ty_is_obj_array(rt) || ty_is_hash(rt)) &&
+      (nt_ref(nt, id, "block") < 0 ||
+       ((ty_is_array(rt) || ty_is_obj_array(rt)) && sp_streq(rname, "concat")))) {
     int aci = comp_core_class(c, ty_is_hash(rt) ? CORE_HASH : CORE_ARRAY);
     int adc = -1, ami = aci >= 0 ? call_target(c, id, aci, rname, 0, &adc) : -1;
     if (ami >= 0 && adc == aci && c->scopes[ami].name && sp_streq(c->scopes[ami].name, rname)) {
