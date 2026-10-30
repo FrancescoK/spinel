@@ -2002,6 +2002,16 @@ int range_enum_redispatch(Compiler *c, int id) {
   return 0;
 }
 
+/* Does Enumerable's method chain hold a find_index the program wrote (an
+   Enumerable reopen; the builtin definition carries node_bi)? That method
+   then answers a Hash's or an Enumerator's find_index, block and all. */
+int an_enum_own_find_index(Compiler *c) {
+  int en = comp_class_index(c, "Enumerable");
+  int mi = en >= 0 ? comp_method_in_chain(c, en, "find_index", NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
+
 /* A Hash Enumerable method served by materializing the hash into its
    [key, value] pair array (sp_enum_items_from) and re-dispatching as a poly
    array: reduce/inject and each_with_index block forms. The hash-native
@@ -2032,6 +2042,8 @@ int hash_enum_redispatch(Compiler *c, int id) {
   /* pair-array Enumerables with no dedicated hash emitter: find_index, uniq,
      zip, tally, reverse_each ride the materialized redispatch, block or not
      (#2372) */
+  /* (an Enumerable reopen's own find_index is the call's target) */
+  if (sp_streq(name, "find_index") && an_enum_own_find_index(c)) return 0;
   if (sp_streq(name, "find_index") || sp_streq(name, "uniq") ||
       sp_streq(name, "zip") || sp_streq(name, "tally") ||
       sp_streq(name, "reverse_each")) return 1;
