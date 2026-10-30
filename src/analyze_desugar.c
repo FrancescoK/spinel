@@ -15977,7 +15977,7 @@ static int bs_strip_keywords(Compiler *c, int blk, int bp, int pn) {
 int desugar_enum_iter_splat_args(Compiler *c) {
   static const char *const names[] = {
     "map", "collect", "flat_map", "collect_concat", "filter_map", "take_while",
-    "find_index", "each", "uniq", "select", "filter", "find_all", "reject", "sort_by",
+    "each", "uniq", "select", "filter", "find_all", "reject", "sort_by",
     "group_by", "min_by", "max_by", "minmax_by", "each_entry", "partition", "drop_while",
     "each_with_index", NULL };
   NodeTable *nt = (NodeTable *)c->nt;

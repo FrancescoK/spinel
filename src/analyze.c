@@ -40732,6 +40732,12 @@ static int splat_builtin_spec_range(Compiler *c, int id, const char *name, int *
   if (hi) *hi = h;
   return 1;
 }
+/* A name whose call takes a value or a block (`find_index(v)`,
+   `find_index { |x| .. }`), never both: a value beside a block leaves the
+   block unused. */
+static int splat_value_or_block_name(const char *name) {
+  return sp_streq(name, "index") || sp_streq(name, "rindex") || sp_streq(name, "find_index");
+}
 static int splat_builtin_keeps_kwsplat(const char *name) {
   static const char *const kw[] = { "round", "encode", "encode!", "each_line", "lines", "readlines", "readline",
                                     "gets", "unpack", "unpack1", "clone", "Integer", "Float", "Rational", "Complex",
@@ -41241,9 +41247,14 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
   else if (!splat_builtin_range(cnm, &lo, &hi, &variadic)) {
     if (splat_dyn_arm_range(c, id, cnm, blk >= 0, &lo, &hi, &variadic)) odyn = 1;
     /* another builtin name the list above leaves out */
-    else if (blk >= 0 || !splat_builtin_spec_range(c, id, cnm, &lo, &hi)) return 0;
+    else if ((blk >= 0 && !splat_value_or_block_name(cnm)) ||
+             !splat_builtin_spec_range(c, id, cnm, &lo, &hi)) return 0;
     else { variadic = 0; spec = 1; }
   }
+  /* index, rindex and find_index take a value or a block: the empty splat
+     is the block's form and one element the value's, which leaves the block
+     unused. So the block goes on the arm with no arguments. */
+  int vob = blk >= 0 && splat_value_or_block_name(cnm);
   /* A block goes on one arm only. The substitutions take it at one
      argument, the pattern alone (`s.gsub(*a) { |m| .. }`), and ignore it
      beside a replacement, as CRuby does, so their two-argument arm is the
@@ -41268,7 +41279,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     int bx = nt_ref(nt, blk, "expression");
     if (bx >= 0 && nt_kind(nt, bx) == NK_LocalVariableReadNode) fwd_blk = 1;
   }
-  if (blk >= 0 && !subst && !splat_binary_operator(cnm) && !odyn && !fwd_blk && ctor < 0) return 0;
+  if (blk >= 0 && !subst && !vob && !splat_binary_operator(cnm) && !odyn && !fwd_blk && ctor < 0) return 0;
   if (blk >= 0 && subst) lo = 1;
   /* insert(i, *objs) spreads at run time (emit_array_splat_mutator) */
   if (sp_streq(cnm, "insert") && sp_at > 0) return 0;
@@ -41586,6 +41597,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
     nt_node_set_int(nt, cl, "dyn_arm", nt_int(nt, id, "dyn_arm", 0));
     nt_node_set_ref(nt, cl, "receiver", nt_clone_subtree(nt, recv));
     nt_node_set_ref(nt, cl, "block", fwd_blk ? nt_clone_subtree(nt, blk) :
+                                     vob ? (m == 0 ? blk : -1) :
                                      blk >= 0 && (m == 1 || odyn || ctor >= 0) ? blk : -1);
     int an = -1;
     if (m > 0) {
@@ -41593,6 +41605,13 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       nt_node_set_arr(nt, an, "arguments", args, m);
     }
     nt_node_set_ref(nt, cl, "arguments", an);
+    /* the block's arm is the call the site's copy of the Enumerable method
+       serves (desugar_builtin_enum_calls ran before this) */
+    if (vob && m == 0 && nt_int(nt, id, "enum_copy", -1) >= 0) {
+      int cp = (int)nt_int(nt, id, "enum_copy", -1);
+      nt_node_set_int(nt, cl, "enum_copy", cp);
+      if (nt_int(nt, cp, "enum_site", -1) == id) nt_node_set_int(nt, cp, "enum_site", cl);
+    }
     if (krow >= 0) kwb_clone_split(c, cl, comp_scope_of(c, id));
     if (orow >= 0) kwb_optional_split(nt, cl, orow, comp_scope_of(c, id));
     int ard = splat_operand_read(c, nt, anm, adepth, aview);
@@ -41670,7 +41689,8 @@ void expand_static_splat_args(Compiler *c, int from, int count) {
     if (!listed && splat_constructor_arity(nt, id, cnm) < 0 &&
         !splat_builtin_range(cnm, NULL, NULL, NULL) &&
         !splat_dyn_arm_range(c, id, cnm, nt_ref(nt, id, "block") >= 0, NULL, NULL, NULL) &&
-        (nt_ref(nt, id, "block") >= 0 || !splat_builtin_spec_range(c, id, cnm, NULL, NULL))) continue;
+        ((nt_ref(nt, id, "block") >= 0 && !splat_value_or_block_name(cnm)) ||
+         !splat_builtin_spec_range(c, id, cnm, NULL, NULL))) continue;
     /* ...but the name has to BE the builtin. A receiverless call to a
        top-level `def count(*args)` is the user's own variadic method, and
        expanding its splat to the builtin's arity handed it one element where
