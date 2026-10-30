@@ -459,7 +459,14 @@ static int bop_result_fallback_allowed(const char *name) {
             resolves a plain-Array site for these two; a Hash site among
             them is left exactly as unanswered as before. */
          !strcmp(name, "flatten") || !strcmp(name, "max") || !strcmp(name, "min") ||
-         !strcmp(name, "insert");
+         !strcmp(name, "insert") || !strcmp(name, "prepend") ||
+         /* K-035: slice!(start, length)'s two-argument form -- String and
+            Array both have a concrete row for it (BOPE_STRING_SLICE /
+            BOPR_SELF), same shape as "slice" above, just never added
+            alongside it. A String site mixed with Array ones compiles now,
+            but on a literal still hits #2332's frozen-literal limitation at
+            runtime, same as every other mutator this family has fixed. */
+         !strcmp(name, "slice!");
 }
 /* Whether a yield site answers `name` on a receiver of kind recv from the
    builtin-op rows rather than from a rule of its own: 1 for a listed pair,
@@ -472,9 +479,12 @@ static int bop_result_fallback_allowed(const char *name) {
 static int yield_site_listed(const char *name, TyKind recv) {
   int num = recv == TY_INT || recv == TY_FLOAT;
   if (!strcmp(name, "abs") || !strcmp(name, "magnitude")) return num;
-  /* String#-@ is the deduplicated frozen String, so a String site belongs
-     here too; a String has no abs or magnitude. */
-  if (!strcmp(name, "-@")) return num || recv == TY_STRING;
+  /* String#-@/#+@ are the deduplicated-frozen and unfrozen-copy String
+     respectively, so a String site belongs to both too; a String has no
+     abs or magnitude. +@ was never listed here at all before K-035 (its
+     own bop_rows row was also a TY_UNKNOWN placeholder, fixed alongside
+     this), unlike -@ which already was. */
+  if (!strcmp(name, "-@") || !strcmp(name, "+@")) return num || recv == TY_STRING;
   /* itself alone also takes a Hash site (K-033) -- dup/clone already have
      a concrete Hash row too, but widening them here is untested outside a
      direct call and out of this fix's verified scope; freeze's Hash row is

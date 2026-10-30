@@ -1697,7 +1697,17 @@ static int str_self_chain_root(Compiler *c, int n) {
    copy of a frozen literal (`+"abc"`, BOPF_SELF_CLASS), or a builtin String
    method that answers a String of its own (no SELF-like flag on its row,
    the String family's BSH_PURE share)? A mutator's change of it is seen by
-   nobody. */
+   nobody.
+
+   A yield receiver (a per-call-site-inlined builtin call on it, kilau
+   K-035) answers the SAME question about the expression this specific
+   site's block actually tails in -- the inlined copy substitutes that
+   expression for `yield` one-for-one, so its freshness is the question's
+   answer too, not a reason to decline outright the way every OTHER name
+   in this file's dispatch treats a yield receiver (falling through to the
+   unresolved-call gate). The lookup mirrors sp_yield_site_type's own
+   (codegen_util.c): the current block's (g_block_id) own tail expression,
+   across any level of yield-forwarding (`wrap { yield }`). */
 int str_fresh_value(Compiler *c, int n) {
   const NodeTable *nt = c->nt;
   switch (vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
@@ -1706,6 +1716,20 @@ int str_fresh_value(Compiler *c, int n) {
   case VP1_MANY: return 0;
   }
   if (nt_kind(nt, n) == NK_InterpolatedStringNode) return 1;
+  if (nt_kind(nt, n) == NK_YieldNode) {
+    int bbody = g_block_id >= 0 ? nt_ref(nt, g_block_id, "body") : -1;
+    int bn = 0;
+    const int *bb = bbody >= 0 ? nt_arr(nt, bbody, "body", &bn) : NULL;
+    if (bn <= 0 || !bb) return 0;
+    int tail = bb[bn - 1];
+    for (int k = 1; nt_kind(nt, tail) == NK_YieldNode && yield_block_out(k) >= 0; k++) {
+      int fbody = nt_ref(nt, yield_block_out(k), "body");
+      int fn = 0; const int *fb = fbody >= 0 ? nt_arr(nt, fbody, "body", &fn) : NULL;
+      if (fn <= 0 || !fb) return 0;
+      tail = fb[fn - 1];
+    }
+    return nt_kind(nt, tail) == NK_YieldNode ? 0 : str_fresh_value(c, tail);
+  }
   if (nt_kind(nt, n) != NK_CallNode || nt_ref(nt, n, "block") >= 0 || comp_ntype(c, n) != TY_STRING) return 0;
   int r = nt_ref(nt, n, "receiver");
   const char *nm = nt_str(nt, n, "name");

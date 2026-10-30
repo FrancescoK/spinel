@@ -2232,7 +2232,7 @@ static const BuiltinOp bop_rows[] = {
      legacy chain. Each fits only calls no row above fits. */
   { TY_STRING, "%",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE },
   { TY_STRING, "+",                   1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
-  { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one */
+  { TY_STRING, "+@",                  0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver, or a copy of a frozen one -- K-035: was a TY_UNKNOWN placeholder, never consulted for its result by the direct-call path (BOPF_SELF_CLASS alone decides that), but needed concrete for a yield site to widen (same shape as -@, already TY_STRING on the line above) */
   { TY_STRING, "-@",                  0,   0, BF_ANY,      TY_STRING,     BOPE_NONE, NULL, 0, 0, BOPF_SELF_CLASS },  /* the receiver if frozen, else a frozen copy */
   { TY_STRING, "==",                  1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
   { TY_STRING, "===",                 1,   1, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_ARGS_BUILTIN },
@@ -2769,7 +2769,8 @@ static const BuiltinOp bop_rows[] = {
   { BOP_ANY_ARRAY, "push",                  0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "append",                0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "unshift",               0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
-  { BOP_ANY_ARRAY, "prepend",               0, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
+  { BOP_ANY_ARRAY, "prepend",               0,   0, BF_ANY,      BOPR_SELF,     BOPE_TEMPLATE, "({ sp_$AArray *_t$t = $r; SP_GC_ROOT(_t$t); if (_t$t && _t$t->frozen) sp_raise_frozen_array_at(_t$t, $Y); _t$t; })", 0, 0, BOPF_SELF },  /* no values: self, or FrozenError (K-035, mirrors insert's identical argc-0 row) */
+  { BOP_ANY_ARRAY, "prepend",               1, 127, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "fill",                  0,   3, BF_ANY,      TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },  /* fill(v, ...) or fill(...) { } */
   { BOP_ANY_ARRAY, "map!",                  0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },
   { BOP_ANY_ARRAY, "collect!",              0,   0, BF_REQUIRED, TY_UNKNOWN,    BOPE_NONE, NULL, 0, 0, BOPF_SELF },

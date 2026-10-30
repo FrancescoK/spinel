@@ -1152,6 +1152,23 @@ static int yield_operator_site_type(const Compiler *c, int id, TyKind *out) {
     if (g_promote_mode && promotes) return 0;
     *out = TY_INT; return 1;
   }
+  /* Array#*: a String argument joins (TY_STRING, same rule as the String
+     receiver above); an Integer or Float count repeats, answering the
+     receiver's own kind (analyze_infer.c's identical rule for a direct,
+     non-yield call). Never answered here before (kilau K-035) -- the
+     widening decision already recognized this site (the call reaches
+     codegen typed poly at all only because of that), but this per-site
+     recovery function had no Array arm, so the site's own array pointer
+     got assigned into the shared poly slot unboxed, failing to compile.
+     Every other arithmetic operator (+/-//'%) answers TY_STRING for an
+     Array site already from the receiver == TY_STRING branch above
+     (Array has no #+/#-/#// on an Integer or Float argument to collide
+     with), so only `*` needs its own Array case. */
+  if (ty_is_array(rt) && sp_streq(op, "*")) {
+    if (at == TY_STRING) { *out = TY_STRING; return 1; }
+    if (at == TY_INT || at == TY_FLOAT) { *out = rt; return 1; }
+    return 0;
+  }
   return 0;
 }
 
