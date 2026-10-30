@@ -11010,7 +11010,8 @@ static int ee_cmethod_owner(const NodeTable *nt, const int *parent, int d, char 
    `class << self`, `define_singleton_method(:first)`, `def_delegators :@a,
    :first`) but one of the body's declarations of instance methods, an
    alias's new name in `class << self`, and, in the body itself, each
-   method of a program's module it extends ahead of Enumerable: every one
+   method of a program's module it extends ahead of Enumerable (or of one
+   that module includes): every one
    with ahead (once Enumerable is extended, in this body or an earlier
    one, by a subclass, or a singleton prepend), else one before Enumerable
    in the same `extend`, which mixes its last module in first */
@@ -11020,6 +11021,36 @@ static int ee_instance_decl(const char *nm) {
     "public", "protected", "private_constant", "public_constant", "remove_method", "undef_method", NULL };
   for (int i = 0; nm && decl[i]; i++) if (sp_streq(decl[i], nm)) return 1;
   return 0;
+}
+/* mark the Enumerable names module mk (a key) defines, or a module it
+   includes or prepends does */
+static void ee_mark_module(const NodeTable *nt, const int *parent, EeClass *v, int i, const char *mk, int depth) {
+  if (depth > 16) return;
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    int ni = ee_name_index(nt_str(nt, d, "name"));
+    int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
+    char dk[512];
+    if (m < 0 || nt_kind(nt, m) != NK_ModuleNode) continue;
+    ee_own_key(nt, m, dk, sizeof dk);
+    if (sp_streq(dk, mk)) v[i].shadow[ni] = 1;
+  }
+  NT_FOREACH_KIND(nt, NK_ModuleNode, m) {
+    char dk[512];
+    ee_own_key(nt, m, dk, sizeof dk);
+    if (!sp_streq(dk, mk)) continue;
+    int bn = 0; const int *bb = ee_body_list(nt, m, &bn);
+    for (int j = 0; j < bn; j++) {
+      const char *cn = nt_kind(nt, bb[j]) == NK_CallNode && nt_ref(nt, bb[j], "receiver") < 0
+                       ? nt_str(nt, bb[j], "name") : NULL;
+      if (!cn || (!sp_streq(cn, "include") && !sp_streq(cn, "prepend"))) continue;
+      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, bb[j], "arguments"), "arguments", &an);
+      for (int q = 0; q < an; q++) {
+        char ik[512];
+        if (!ee_is_enumerable_ref(nt, av[q]) && ee_ref_key(nt, mk, av[q], ik, sizeof ik) && !sp_streq(ik, mk))
+          ee_mark_module(nt, parent, v, i, ik, depth + 1);
+      }
+    }
+  }
 }
 static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int i, int ct, int st, int sclass,
                          int ahead) {
@@ -11043,14 +11074,7 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
     for (int j = 0; j < an; j++) {
       char mk[512];
       if (j == en || (!ahead && (en < 0 || j > en)) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
-      NT_FOREACH_KIND(nt, NK_DefNode, d) {
-        int ni = ee_name_index(nt_str(nt, d, "name"));
-        int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
-        char dk[512];
-        if (m < 0 || nt_kind(nt, m) != NK_ModuleNode) continue;
-        ee_own_key(nt, m, dk, sizeof dk);
-        if (sp_streq(dk, mk)) v[i].shadow[ni] = 1;
-      }
+      ee_mark_module(nt, parent, v, i, mk, 0);
     }
     return;
   }
@@ -11199,12 +11223,33 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     site[nsite++] = ci;
   }
   free(parent);
+  /* The twin's name and its class method's are ones the program gives
+     nothing -- no class, module, constant, method or call -- so the twin's
+     declaration reopens none of the program's classes and the accessor
+     replaces none of its methods, nor one of them it. */
+  char twin[64], acc[64];
+  for (int serial = 0;; serial++) {
+    char sfx[16] = "";
+    if (serial) snprintf(sfx, sizeof sfx, "%d", serial);
+    snprintf(twin, sizeof twin, "SpinelEnumerableSelf%s", sfx);
+    snprintf(acc, sizeof acc, "__spinel_enum_self%s", sfx);
+    int taken = 0;
+    for (int id = 0; id < n0 && !taken; id++) {
+      NodeKind k = nt_kind(nt, id);
+      const char *cn = k == NK_ClassNode || k == NK_ModuleNode ? nt_str(nt, nt_ref(nt, id, "constant_path"), "name")
+                     : k == NK_ConstantWriteNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode ||
+                       k == NK_DefNode || k == NK_CallNode ? nt_str(nt, id, "name")
+                     : k == NK_SymbolNode ? nt_str(nt, id, "value") : NULL;
+      taken = cn && (sp_streq(cn, twin) || sp_streq(cn, acc));
+    }
+    if (!taken) break;
+  }
   int changed = 0;
   for (int k = 0; k < nsite; k += 2) {
     int id = site[k], ci = site[k + 1];
     int tw = fwd_new_node_like(nt, id, "CallNode");
     if (tw < 0) break;
-    nt_node_set_str(nt, tw, "name", "__spinel_enum_self");
+    nt_node_set_str(nt, tw, "name", acc);
     nt_node_set_ref(nt, tw, "receiver", nt_ref(nt, id, "receiver"));
     nt_node_set_ref(nt, id, "receiver", tw);
     nt_set_vcall(nt, id, 0);
@@ -11229,8 +11274,8 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     if (pl >= 2) path[pl - 2] = 0;   /* the key's trailing "::" */
     char text[1536];
     snprintf(text, sizeof text,
-             "class SpinelEnumerableSelf\n  include Enumerable\n  def each\n    %s.each { |*x| yield(*x) }\n  end\nend\n"
-             "def self.__spinel_enum_self\n  SpinelEnumerableSelf.new\nend\n", path);
+             "class %s\n  include Enumerable\n  def each\n    %s.each { |*x| yield(*x) }\n  end\nend\n"
+             "def self.%s\n  %s.new\nend\n", twin, path, acc, twin);
     NodeTable *tmp = sp_parse_snippet(text);
     if (!tmp) continue;
     int st = nt_ref(tmp, tmp->root_id, "statements"), tn = 0;
