@@ -7010,6 +7010,50 @@ static int emit_hash_merge_to_hash_widen(Compiler *c, int recv, int arg, TyKind 
   free(cb.p);
   return 1;
 }
+/* `h.fetch(key[, default], &blk)` with a proc handed in (`&b` holding one,
+   or nil): the stored value, else the proc called with the key, else the
+   default, else KeyError (emit_hash_call) */
+static int emit_hash_fetch_block_arg(Compiler *c, int id, int recv, int argc, const int *argv, TyKind rt, const char *hn, Buf *b) {
+  const NodeTable *nt = c->nt;
+  Buf pp; memset(&pp, 0, sizeof pp);
+  int pb = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
+  const char *fwd = forwarded_real_proc(nt_ref(nt, id, "block"), pb);
+  if (pb >= 0) emit_forwarded_proc_arg(c, pb, &pp);
+  else buf_puts(&pp, fwd ? fwd : "NULL");
+  TyKind vt = ty_hash_val(rt), kt = ty_hash_key(rt);
+  int th = ++g_tmp, tk = ++g_tmp, tp = ++g_tmp, tb = ++g_tmp, td = -1;
+  buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
+  buf_printf(b, "; SP_GC_ROOT(_t%d); %s _t%d = ", th, c_type_name(kt), tk);
+  emit_hash_key(c, argv[0], kt, b);
+  /* the default, an argument, evaluates before the lookup; a nil
+     block (`fetch(k, d, &nil)` is the two-argument fetch) answers it
+     where the key misses, as CRuby does, rather than KeyError */
+  if (argc == 2) {
+    td = ++g_tmp;
+    buf_printf(b, "; sp_RbVal _t%d = ", td); emit_boxed(c, argv[1], b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d)", td);
+  }
+  buf_printf(b, "; sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d; ", tp, pp.p ? pp.p : "NULL", tp, tb);
+  free(pp.p);
+  char getexpr[128], keyexpr[32];
+  snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
+  snprintf(keyexpr, sizeof keyexpr, "_t%d", tk);
+  buf_printf(b, "if (sp_%sHash_has_key(_t%d, _t%d)) _t%d = ", hn, th, tk, tb);
+  emit_boxed_text(c, vt, getexpr, b);
+  buf_printf(b, "; else if (_t%d) { _sp_proc_poly_args[0] = ", tp);
+  emit_boxed_text(c, kt, keyexpr, b);
+  buf_printf(b, "; sp_int _sl[1] = { sp_poly_slot_i(_sp_proc_poly_args[0]) };"
+                " _t%d = sp_poly_callable_call(sp_box_obj(_t%d, SP_BUILTIN_PROC), 1, _sl); }", tb, tp);
+  if (td >= 0) {
+    buf_printf(b, " else _t%d = _t%d; _t%d; })", tb, td, tb);
+    return 1;
+  }
+  buf_printf(b, " else { _t%d = sp_box_nil(); sp_raise_key_not_found(", tb);
+  emit_boxed_text(c, kt, keyexpr, b);
+  buf_printf(b, "); } _t%d; })", tb);
+  return 1;
+}
+
 int emit_hash_call(Compiler *c, int id, Buf *b) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
@@ -7289,31 +7333,7 @@ int emit_hash_call(Compiler *c, int id, Buf *b) {
            at run time, after the nil check a missing block raises KeyError
            for; the call is typed boxed (infer: a block argument) */
         if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
-          Buf pp; memset(&pp, 0, sizeof pp);
-          int pb = resolve_forwarded_block(c, nt_ref(nt, id, "block"));
-          const char *fwd = forwarded_real_proc(nt_ref(nt, id, "block"), pb);
-          if (pb >= 0) emit_forwarded_proc_arg(c, pb, &pp);
-          else buf_puts(&pp, fwd ? fwd : "NULL");
-          TyKind vt = ty_hash_val(rt), kt = ty_hash_key(rt);
-          int th = ++g_tmp, tk = ++g_tmp, tp = ++g_tmp, tb = ++g_tmp;
-          buf_printf(b, "({ %s _t%d = ", c_type_name(rt), th); emit_expr(c, recv, b);
-          buf_printf(b, "; SP_GC_ROOT(_t%d); %s _t%d = ", th, c_type_name(kt), tk);
-          emit_hash_key(c, argv[0], kt, b);
-          buf_printf(b, "; sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d); sp_RbVal _t%d; ", tp, pp.p ? pp.p : "NULL", tp, tb);
-          free(pp.p);
-          char getexpr[128], keyexpr[32];
-          snprintf(getexpr, sizeof getexpr, "sp_%sHash_get(_t%d, _t%d)", hn, th, tk);
-          snprintf(keyexpr, sizeof keyexpr, "_t%d", tk);
-          buf_printf(b, "if (sp_%sHash_has_key(_t%d, _t%d)) _t%d = ", hn, th, tk, tb);
-          emit_boxed_text(c, vt, getexpr, b);
-          buf_printf(b, "; else if (_t%d) { _sp_proc_poly_args[0] = ", tp);
-          emit_boxed_text(c, kt, keyexpr, b);
-          buf_printf(b, "; sp_int _sl[1] = { sp_poly_slot_i(_sp_proc_poly_args[0]) };"
-                        " _t%d = sp_poly_callable_call(sp_box_obj(_t%d, SP_BUILTIN_PROC), 1, _sl); }"
-                        " else { _t%d = sp_box_nil(); sp_raise_key_not_found(", tb, tp, tb);
-          emit_boxed_text(c, kt, keyexpr, b);
-          buf_printf(b, "); } _t%d; })", tb);
-          return 1;
+          return emit_hash_fetch_block_arg(c, id, recv, argc, argv, rt, hn, b);
         }
         if (blk >= 0 && hash_key_misses(c, argv[0], ty_hash_key(rt))) {
           /* the block receives the missing key, and its parameter is typed
