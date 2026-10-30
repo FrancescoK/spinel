@@ -2304,8 +2304,8 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
     /* the readers that render the receiver and the arguments: builtin-op rows */
     if (emit_builtin_op(c, id, recv, TY_ENUMERATOR, name, b)) return 1;
     /* find_index(v) walks it only as far as the hit, so an endless one
-       answers too */
-    if (sp_streq(name, "find_index") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+       answers too; a block beside the value is not used */
+    if (sp_streq(name, "find_index") && argc == 1) {
       int t = ++g_tmp;
       int as_int = repr_of(c, id).as_ty == TY_INT;
       if (as_int && !node_is_oint(c, id)) buf_puts(b, "sp_oint_arg(");

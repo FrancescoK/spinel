@@ -10466,8 +10466,13 @@ int desugar_enumerable_via_to_a(Compiler *c) {
        included, the same carve-out find/detect already have below; only the
        value-argument form (`find_index(v)`, no walk of its own -- kept on
        its own emitter) still wants the faithfully-raising to_a hop on an
-       endless Range. */
-    if (sp_streq(nm, "find_index") && nt_ref(nt, id, "block") >= 0) continue;
+       endless Range. A block beside the value is not used, so
+       `find_index(v) { }` is the value form too. */
+    if (sp_streq(nm, "find_index") && nt_ref(nt, id, "block") >= 0) {
+      int fa = nt_ref(nt, id, "arguments"), fac = 0;
+      if (fa >= 0) nt_arr(nt, fa, "arguments", &fac);
+      if (fac == 0) continue;
+    }
     /* A Range's blockless minmax is [min, max] off its endpoints, its own
        arm (sp_range_minmax_poly): the hop built the whole member array to
        read two numbers, and an end written as a Float was truncated */
@@ -14270,6 +14275,13 @@ int desugar_builtin_enum_calls(Compiler *c) {
        (undefined reference at link time). Only the block form is a
        rewrite target. */
     if (sp_streq(name, "find_index") && nt_ref(nt, id, "block") < 0) continue;
+    /* find_index(v) { } is the value form too: CRuby ignores the block
+       (with a warning), and the definition has no parameter for v */
+    if (sp_streq(name, "find_index")) {
+      int fa = nt_ref(nt, id, "arguments"), fac = 0;
+      if (fa >= 0) nt_arr(nt, fa, "arguments", &fac);
+      if (fac > 0) continue;
+    }
     /* reduce/inject without a block is the symbol form (`reduce(:+)`), the
        seeded form (`reduce(seed)`, `reduce(seed, :+)`), or the bare argless
        call, which must raise CRuby's ArgumentError; the definition has no

@@ -1882,7 +1882,7 @@ int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b) {
   if (rt != TY_POLY_ARRAY) return 0;
   /* rindex(obj): last matching index, or nil (an sp_oint, matching
      the index/find_index int-or-nil convention). */
-  if (rt == TY_POLY_ARRAY && sp_streq(name, "rindex") && argc == 1 && nt_ref(nt, id, "block") < 0) {
+  if (rt == TY_POLY_ARRAY && sp_streq(name, "rindex") && argc == 1) {
     Buf rb; int ch = hold_recv_open(c, recv, 0, "sp_PolyArray *", "SP_GC_ROOT", b, &rb);
     int t = ++g_tmp;
     oint_open(c, id, TY_INT, b);
@@ -1897,7 +1897,7 @@ int emit_op_array_index_v(Compiler *c, const BopCtx *x, Buf *b) {
      position whose element == v (sp_poly_eq), or nil (an sp_oint),
      mirroring the count(v)/any?(v) idiom (doom: @map.sectors.index(sector)). */
   if (rt == TY_POLY_ARRAY && (sp_streq(name, "index") || sp_streq(name, "find_index")) &&
-      argc == 1 && nt_ref(nt, id, "block") < 0) {
+      argc == 1) {
     int trecv = ++g_tmp, ta = ++g_tmp, tres = ++g_tmp, ti = ++g_tmp;
     Buf ra = expr_buf(c, recv);
     /* Root the receiver and the boxed needle: sp_poly_eq can allocate
