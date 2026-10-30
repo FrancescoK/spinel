@@ -2301,6 +2301,14 @@ int emit_call_enum_random_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv >= 0 && comp_ntype(c, recv) == TY_ENUMERATOR) {
     /* a method the program defines on Enumerator answers first */
     if (emit_call_reopen_arms(c, id, b, nt, name, recv, TY_ENUMERATOR)) return 1;
+    /* find_index(v) { } where an Enumerable reopen of the program defines
+       find_index: that method answers for the Enumerator, not a value row */
+    if (sp_streq(name, "find_index") && argc >= 1 && nt_ref(nt, id, "block") >= 0) {
+      int en = comp_class_index(c, "Enumerable");
+      int mi = en >= 0 ? comp_method_in_chain(c, en, name, NULL) : -1;
+      if (mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+          !nt_int(nt, c->scopes[mi].def_node, "node_bi", 0)) return 0;
+    }
     /* the readers that render the receiver and the arguments: builtin-op rows */
     if (emit_builtin_op(c, id, recv, TY_ENUMERATOR, name, b)) return 1;
     /* find_index(v) walks it only as far as the hit, so an endless one
