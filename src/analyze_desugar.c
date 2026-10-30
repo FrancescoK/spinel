@@ -10411,16 +10411,16 @@ int desugar_sort_by_with_index_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-/* Does the program define its own find_index (on a class of its own, or
-   in an Enumerable reopen, which replaces the builtin definition)? Then a
-   find_index call keeps its route to that definition, block and all. These
-   passes run before the classes are registered, so it reads the defs. */
+/* Does an Enumerable reopen of the program define find_index? Such a
+   program goes without the builtin definitions, and the reopen's own takes
+   their name on the generic dispatch (__enum_find_index__N, with no
+   node_bi mark), so a find_index call keeps its route to it, block and
+   all. A find_index of another class keeps its own name and does not
+   answer for a Hash or a Range. */
 static int find_index_program_own(const NodeTable *nt) {
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
     const char *dn = nt_str(nt, d, "name");
-    if (!dn || nt_int(nt, d, "node_bi", 0)) continue;
-    /* an Enumerable reopen's own is renamed onto the generic dispatch */
-    if (sp_streq(dn, "find_index") || strncmp(dn, "__enum_find_index__", 19) == 0) return 1;
+    if (dn && !nt_int(nt, d, "node_bi", 0) && strncmp(dn, "__enum_find_index__", 19) == 0) return 1;
   }
   return 0;
 }
