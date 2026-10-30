@@ -4648,6 +4648,14 @@ infer-test: $(SPINEL) $(SP_RT_LIB)
 	done; \
 	$(SPINEL) test/poly_length_unbuilt_class.rb -c --no-line-map -o "$$tmp/plu.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (poly_length_unbuilt_class: -c)"; ok=0; }; \
 	grep -q 'sp_int sp_count(sp_RbVal lv_x) {' "$$tmp/plu.c" || { echo "infer-test: FAIL (a class nothing constructs widened a poly receiver's return)"; ok=0; }; \
+	$(SPINEL) test/builtin_class_const_call_skips_class_method.rb -c --no-line-map -o "$$tmp/bcs.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_class_const_call_skips_class_method: -c)"; ok=0; }; \
+	! grep -Eq 'sp_Registry_(basename|join|sqrt|note_name|note_root)' "$$tmp/bcs.c" || { echo "infer-test: FAIL (a call on a core class's constant kept a program class's method of the same name, and all it calls)"; ok=0; }; \
+	$(SPINEL) test/builtin_class_const_call_keeps_marking.rb -c --no-line-map -o "$$tmp/bck.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_class_const_call_keeps_marking: -c)"; ok=0; }; \
+	grep -q 'sp_Cell_s_new__m(' "$$tmp/bck.c" && grep -q 'sp_Cell_s_seed(' "$$tmp/bck.c" && grep -q 'sp_Array_s_zeros(' "$$tmp/bck.c" || { echo "infer-test: FAIL (a class value of no known class, or a reopened core class, lost the class method its call reaches)"; ok=0; }; \
+	$(SPINEL) test/builtin_numeric_operator_reaches_coerce.rb -c --no-line-map -o "$$tmp/bnc.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_numeric_operator_reaches_coerce: -c)"; ok=0; }; \
+	grep -q 'sp_Meters__plus(' "$$tmp/bnc.c" && grep -q 'sp_Meters__minus(' "$$tmp/bnc.c" && grep -q 'sp_Meters__star(' "$$tmp/bnc.c" && grep -q 'sp_Meters__slash(' "$$tmp/bnc.c" && grep -q 'sp_Meters__star_star(' "$$tmp/bnc.c" || { echo "infer-test: FAIL (a Rational's operator with an operand that has coerce lost the operator coerce hands the call to)"; ok=0; }; \
+	$(SPINEL) test/builtin_value_kinds_skip_program_method.rb -c --no-line-map -o "$$tmp/bvk.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (builtin_value_kinds_skip_program_method: -c)"; ok=0; }; \
+	! grep -Eq 'sp_Probe_(helper_|freeze|source|to_a|year|numerator|real|pre_match)' "$$tmp/bvk.c" || { echo "infer-test: FAIL (a call on a Regexp, Range, Time, Rational, Complex or MatchData kept a program class's method of the same name, and all it calls)"; ok=0; }; \
 	$(SPINEL) test/byref_string_selective_volatile.rb -c --no-line-map -o "$$tmp/bsv.c" >/dev/null 2>&1 || { echo "infer-test: FAIL (byref_string_selective_volatile: -c)"; ok=0; }; \
 	for m in rb_plain_append unrelated_begin; do \
 	  grep -q "sp_$$m($(STR_BYREF_S)) {" "$$tmp/bsv.c" || { echo "infer-test: FAIL (an ordinary borrowed String gained volatile: $$m)"; ok=0; }; \

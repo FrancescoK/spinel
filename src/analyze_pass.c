@@ -19145,20 +19145,39 @@ static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
 const ANameHash *g_cr_typed = NULL;
 static int g_cr_user_coerce = 0;
 
+/* Whether a value of type t is one of a core class's: the one list of the
+   builtin value kinds, read by the reachability pass and by the implicit calls
+   (implicit_calls.c). An Array or a Hash counts only while no program class
+   subclasses one (has_arysub). */
 int cr_ty_builtin_value(Compiler *c, TyKind t) {
-  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_STRING || t == TY_STRBUF || t == TY_SYMBOL ||
-         t == TY_BOOL || t == TY_NIL || ((ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub);
+  switch (t) {
+  case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_TIME: case TY_COMPLEX:
+  case TY_RATIONAL: case TY_MATCHDATA: case TY_REGEX:
+  case TY_INT: case TY_BIGINT: case TY_FLOAT: case TY_STRING: case TY_STRBUF: case TY_SYMBOL: case TY_BOOL: case TY_NIL:
+    return 1;
+  default:
+    return (ty_is_array(t) || ty_is_hash(t)) && !c->has_arysub;
+  }
 }
 
-/* A call whose receiver has settled on a builtin value (an Integer, a Float,
-   a String, a Symbol, true / false, nil, an Array or a Hash with no program
-   subclass) runs that builtin's method, never a program's method of the
-   name. Marking it by bare name kept every class's `+` alive for any
+/* Whether the operators of a value of type t hand an operand they do not know
+   to its `coerce` (CRuby 4.0: an Integer, a Float, a Rational and a Complex do;
+   a Time, a Range, a Regexp and a MatchData do not). */
+static int cr_ty_coerces(TyKind t) {
+  return t == TY_INT || t == TY_BIGINT || t == TY_FLOAT || t == TY_RATIONAL || t == TY_COMPLEX;
+}
+
+/* A call whose receiver has settled on a builtin value (cr_ty_builtin_value:
+   an Integer, a Float, a String, a Symbol, true / false, nil, a Range, a
+   Regexp, a Time, a Rational, a Complex, a MatchData, an Array or a Hash with
+   no program subclass) runs that builtin's method, never a program's method
+   of the name. Marking it by bare name kept every class's `+` alive for any
    `i + 1`, and with them all they call: uri's Generic#+ and #- brought merge
    and route_from into every program requiring uri. Only a name every scope
    of which is a plain class's method is left unmarked: a reopened builtin's,
    a module's or a top-level def's may be the one called, and an alias has no
-   scope to tell. A number's operator with an operand that may be an object
+   scope to tell. A number's operator (cr_ty_coerces: an Integer's, a Float's,
+   a Rational's or a Complex's) with an operand that may be an object
    still marks where a class defines coerce, whose pair the operator is
    applied to; the names a builtin hands on to its operand (`str =~ obj`,
    `a != b`) always do. The protocol names (==, <=>, hash, to_s, ...) are
@@ -19179,7 +19198,7 @@ static int cr_recv_builtin_value(Compiler *c, const NodeTable *nt, int id, const
   int boxed_builtin = 0;
   if (rt == TY_POLY) { const ClsSet *cs = cls_fact_node(c, r); boxed_builtin = cs && cs->n == 0; }
   if (!boxed_builtin && !cr_ty_builtin_value(c, rt)) return 0;
-  if ((rt == TY_INT || rt == TY_BIGINT || rt == TY_FLOAT || boxed_builtin) && g_cr_user_coerce) {
+  if ((cr_ty_coerces(rt) || boxed_builtin) && g_cr_user_coerce) {
     int an = opw ? -1 : nt_ref(nt, id, "arguments"), n = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &n) : NULL;
     int ov = opw ? nt_ref(nt, id, "value") : -1;
@@ -19398,6 +19417,26 @@ void cr_collect_program_end(Compiler *c, char ***out, int *n, int *cap) {
   }
 }
 
+/* A call on the constant of a core class or module (`Array.new`,
+   `Integer.sqrt`, `File.open`) runs that builtin's own singleton method, never
+   a method of the program's of the name, on either side of a class: marking
+   it by bare name kept every program method called `new` or `open` alive, and
+   with it what that method calls. The program names no class of the
+   constant's name (a reopened core class has one, and its methods are among
+   the scopes that keep the name out of the class-only set), and only a name
+   every scope of which is a plain class's method is left unmarked, as for a
+   builtin value. A receiver that is not the constant itself (`Foo::Array`, a
+   local holding a class) marks as before. */
+static int cr_recv_builtin_class(Compiler *c, const NodeTable *nt, int id, const char *nm) {
+  const ANameHash *only = g_cr_typed ? g_cr_typed : g_cr_untyped;
+  if (!only || !anh_has(only, nm)) return 0;
+  int r = nt_ref(nt, id, "receiver");
+  NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
+  if (rk != NK_ConstantReadNode && !(rk == NK_ConstantPathNode && nt_ref(nt, r, "parent") < 0)) return 0;
+  const char *cn = nt_str(nt, r, "name");
+  return cn && comp_class_index(c, cn) < 0 && is_builtin_class_name(cn);
+}
+
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
@@ -19557,6 +19596,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
       !sp_streq(nm, "=~") && !sp_streq(nm, "!~") && !sp_streq(nm, "!=") && !sp_streq(nm, "===") &&
       cr_literal_local(c, nt, nt_ref(nt, id, "receiver")))
     builtin_recv = 1;
+  if (!builtin_recv && k0 == NK_CallNode && nm && names[0] == nm) builtin_recv = cr_recv_builtin_class(c, nt, id, nm);
   if (builtin_recv) names[0] = NULL;
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);

@@ -81,15 +81,13 @@ static int ic_plain_receiver(Compiler *c, int id) {
   return sc->class_id >= 0 ? ic_plain_class(c, sc->class_id) : sc == c->scopes;
 }
 
-static int ic_builtin_type(Compiler *c, TyKind t);
-
 /* The core class of the receiver of call `id` when its type has settled on a
    builtin value (a String, an Array with no program subclass, ...), else NULL */
 static const char *ic_core_receiver(Compiler *c, int id) {
   int recv = nt_ref(c->nt, id, "receiver");
   if (!c->ic || !c->ic->typed || recv < 0 || nt_kind(c->nt, recv) == NK_SelfNode) return NULL;
   TyKind t = comp_ntype(c, recv);
-  if (!ic_builtin_type(c, t) || ((ty_is_array(t) || ty_is_hash(t)) && c->has_arysub)) return NULL;
+  if (!cr_ty_builtin_value(c, t)) return NULL;
   return builtin_class_of_type(t);
 }
 
@@ -244,23 +242,14 @@ int ic_runs_program_method(Compiler *c, int id) {
   return ic_plain_class(c, cls) && !object_instance_method_name(name);
 }
 
-/* A value of a builtin type calls a method of its builtin class, never one of
-   a program's class: unless the program reopened a builtin class with a method
-   of that name (the name is not one only plain classes hold). */
-static int ic_builtin_type(Compiler *c, TyKind t) {
-  switch (t) {
-  case TY_RANGE: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_TIME: case TY_COMPLEX:
-  case TY_RATIONAL: case TY_MATCHDATA: case TY_REGEX:
-    return 1;
-  default:
-    return cr_ty_builtin_value(c, t);
-  }
-}
-
+/* A value of a builtin type (cr_ty_builtin_value) calls a method of its
+   builtin class, never one of a program's class: unless the program reopened a
+   builtin class with a method of that name (the name is not one only plain
+   classes hold). */
 static int ic_builtin_only(Compiler *c, TyKind t, const char *name) {
   if (!c->ic || !anh_has(&c->ic->class_only, name)) return 0;
   if (t == TY_POLY) return 0;
-  return ic_builtin_type(c, t);
+  return cr_ty_builtin_value(c, t);
 }
 
 /* A boxed value (an Integer that may outgrow a machine word under promote)
@@ -283,12 +272,12 @@ static int ic_type_holds(Compiler *c, TyKind t, const char *name, int depth) {
   if (depth > 4) return 1;
   if (ty_is_array(t)) {
     TyKind et = ty_array_elem(t);
-    return ic_type_holds(c, et, name, depth + 1) || (!ic_builtin_type(c, et) && !ty_is_array(et) && !ty_is_hash(et));
+    return ic_type_holds(c, et, name, depth + 1) || (!cr_ty_builtin_value(c, et) && !ty_is_array(et) && !ty_is_hash(et));
   }
   if (ty_is_hash(t))
     return ic_type_holds(c, ty_hash_key(t), name, depth + 1) || ic_type_holds(c, ty_hash_val(t), name, depth + 1) ||
-           (!ic_builtin_type(c, ty_hash_key(t)) && !ty_is_array(ty_hash_key(t)) && !ty_is_hash(ty_hash_key(t))) ||
-           (!ic_builtin_type(c, ty_hash_val(t)) && !ty_is_array(ty_hash_val(t)) && !ty_is_hash(ty_hash_val(t)));
+           (!cr_ty_builtin_value(c, ty_hash_key(t)) && !ty_is_array(ty_hash_key(t)) && !ty_is_hash(ty_hash_key(t))) ||
+           (!cr_ty_builtin_value(c, ty_hash_val(t)) && !ty_is_array(ty_hash_val(t)) && !ty_is_hash(ty_hash_val(t)));
   if (t == TY_RANGE || t == TY_STR_RANGE || t == TY_FLOAT_RANGE) return 0;
   return !ic_builtin_only(c, t, name);
 }
