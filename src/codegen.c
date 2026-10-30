@@ -3991,7 +3991,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
 /* Is scope `s` a class's initialize, under any of the names the analysis
    files one under? Its own; an included module's copy kept behind a later
    one for its super ("__inc N initialize") or a prepended module's
-   ("__prep_N_initialize"), both of which comp_prep_user_name strips; and
+   ("__prep_N_initialize"), both of which comp_scope_user_name answers as initialize; and
    the proc-form clone of any of these ("...#pf", make_yield_proc_forms).
    Each is the same kind of body, run for its writes to self, and what it
    answers is discarded: typed by its last expression instead, a copy whose
@@ -3999,7 +3999,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
    `super(...)` reached a void initialize came out as `return <void call>`. */
 static int scope_is_initialize(const Scope *s) {
   if (s->class_id < 0 || !s->name) return 0;
-  const char *u = comp_prep_user_name(s->name);
+  const char *u = comp_scope_user_name(s);
   size_t n = strlen(u);
   if (n > 3 && strcmp(u + n - 3, "#pf") == 0) n -= 3;
   return n == 10 && strncmp(u, "initialize", 10) == 0;
