@@ -1866,6 +1866,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   if (!op) { perror("calloc"); exit(1); }
   if (!prepare_concat_operands(c, argv, argc, op)) { free(op); return 0; }
   int int_bulk = bulk && argc == 1 && rt == TY_INT_ARRAY && !op[0].boxed && op[0].repr.as_ty == rt;
+  int single_length = argc == 1 && !op[0].boxed && !int_bulk;
   int tr = ++g_tmp, base = g_tmp + 1;
   g_tmp += argc;
   int lengths = g_tmp + 1; g_tmp += argc;
@@ -1873,6 +1874,11 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   emit_concat_hold(c, recv, rt, 0, fresh, tr, b);
   for (int i = 0; i < argc; i++)
     emit_concat_hold(c, argv[i], op[i].repr.as_ty, op[i].boxed, 0, base + i, b);
+  /* The sole typed operand has no later conversion. Keep its pure length
+     read beside its hold, as on the typed route; NULL still raises only
+     after the entry-frozen check below. */
+  if (single_length)
+    buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths, arr_kind(op[0].repr.as_ty), base);
   /* Argument expressions have run. This guard precedes the boxed
      conversions below, even for an empty concat. Nonempty appends test
      frozen again if a callback has frozen the receiver. */
@@ -1896,7 +1902,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
       if (op[i].repr.may_nil)
         buf_printf(b, " if (!_t%d) sp_raise_cls(\"TypeError\", \"no implicit conversion of nil into Array\");", tv);
       if (op[i].snapshot) buf_printf(b, " _t%d = sp_%sArray_dup(_t%d);", tv, ak, tv);
-      if (!int_bulk) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
+      if (!int_bulk && !single_length) buf_printf(b, " sp_int _t%d = sp_%sArray_length(_t%d);", lengths + i, ak, tv);
     }
   }
   for (int i = 0; i < argc; i++) {
