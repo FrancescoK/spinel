@@ -2030,6 +2030,7 @@ static int emit_promote_rat_exact(Compiler *c, int id, Buf *b) {
 }
 void emit_expr(Compiler *c, int id, Buf *b) {
   if (b == g_pre && g_pre) { emit_into_pre_line(c, emit_expr, id); return; }
+  if (emit_const_class_call_wrap(c, id, b, emit_expr)) return;
   /* a block's statement an emitter inlines (gsub!'s `{ |m| m + m }`): its
      operands are not held across the block, and two copies of one live
      String, neither rooted, let the second's allocation collect the first */
@@ -3368,26 +3369,26 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
 }
 
 /* A constant read: ConstantReadNode and ConstantPathNode (A::B) (emit_expr_node's arms, in their order) */
-static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+static int emit_constant_value(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
   if (sp_streq(ty, "ConstantReadNode")) {
     const char *nm = nt_str(nt, id, "name");
     LocalVar *cv = nm ? comp_const(c, nm) : NULL;
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cv && !slot && repr_of_slot(c, cv).kind == RK_STRBUF && !cv->init_guarded) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cv, b);
+      emit_const_read_open(c, id, cv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cv, b);
+      emit_const_read_close(c, id, cv, b);
       return 1;
     }
     if (cv && cv->type != TY_UNKNOWN) {
       if (cv->init_guarded) {
         /* a read during the const's own Class.new init raises NameError */
-        emit_const_check_open(c, id, cv, b);
+        emit_const_read_open(c, id, cv, b);
         buf_printf(b, "(sp_init_in_progress_%s ? (sp_raise_cls(\"NameError\","
                       " \"uninitialized constant %s\"), %scst_%s) : %scst_%s)",
                    nm, nm, slot ? "&" : "", nm, slot ? "&" : "", nm);
-        emit_const_check_close(c, id, cv, b);
+        emit_const_read_close(c, id, cv, b);
       }
       else emit_const_slot_read(c, id, cv, nm, slot, 1, b);
       return 1;
@@ -3479,9 +3480,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
        whose class only the value knows, so it takes the run-time read below --
        treating it as a path looked the leaf up and answered a top-level
        constant of that name (#4259). */
-    if (par_nmc && par_tyc_k == NK_ConstantReadNode &&
-        comp_class_index(c, par_nmc) < 0 && !is_builtin_class_name(par_nmc) &&
-        comp_const(c, par_nmc))
+    if (par_nmc && par_tyc_k == NK_ConstantReadNode && an_const_read_is_value(c, par_idc))
       par_nmc = NULL;
     /* An ffi_const is parent-qualified; resolve it BEFORE the leaf-keyed
        plain-constant table, or a same-leaf plain constant in another module
@@ -3595,9 +3594,9 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* --share-strings: a constant holding the shared handle (#6765) */
     if (cpcv && !slot && repr_of_slot(c, cpcv).kind == RK_STRBUF) {
       char sref[256]; snprintf(sref, sizeof sref, "cst_%s", nm);
-      emit_const_check_open(c, id, cpcv, b);
+      emit_const_read_open(c, id, cpcv, b);
       emit_strbuf_slot_read(c, id, repr_of(c, id), sref, b);
-      emit_const_check_close(c, id, cpcv, b);
+      emit_const_read_close(c, id, cpcv, b);
       return 1;
     }
     if (cpcv && cpcv->type != TY_UNKNOWN) { emit_const_slot_read(c, id, cpcv, nm, slot, 1, b); return 1; }
@@ -3738,7 +3737,10 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     /* class/module constant as value */
     if (nm) {
       int _cpidx = comp_class_index(c, nm);
-      if (_cpidx >= 0) { buf_printf(b, "((sp_Class){%d})", _cpidx); return 1; }
+      if (_cpidx >= 0) {
+        buf_printf(b, "((sp_Class){%d})", _cpidx);
+        return 1;
+      }
       int _bcpid = builtin_class_id(nm);
       if (_bcpid != 0) { buf_printf(b, "((sp_Class){%d})", _bcpid); return 1; }
     }
@@ -3770,7 +3772,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
          "uninitialized constant Mylib" */
       { int segs[32], ns = 0;
         for (int s = nt_ref(nt, id, "parent"); s >= 0 && ns < 32 &&
-             (nt_kind(nt, s) == NK_ConstantReadNode || nt_kind(nt, s) == NK_ConstantPathNode);
+             (nt_kind_is_constant(nt_kind(nt, s)));
              s = nt_kind(nt, s) == NK_ConstantPathNode ? nt_ref(nt, s, "parent") : -1)
           segs[ns++] = s;
         for (int i = ns - 1; i >= 0; i--)
@@ -3793,7 +3795,7 @@ static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, 
    leaves no trace, its temporaries' numbers put back). */
 int const_read_raises(Compiler *c, int id) {
   NodeKind k = nt_kind(c->nt, id);
-  if ((k != NK_ConstantReadNode && k != NK_ConstantPathNode) || !comp_const_undefined(c, id)) return 0;
+  if (!nt_kind_is_constant(k) || !comp_const_undefined(c, id)) return 0;
   Buf t, pre;
   memset(&t, 0, sizeof t); memset(&pre, 0, sizeof pre);
   Buf *saved_pre = g_pre; int saved_tmp = g_tmp;
@@ -3804,6 +3806,16 @@ int const_read_raises(Compiler *c, int id) {
   int r = !pre.p && t.p && !strncmp(t.p, raise, sizeof raise - 1);
   free(t.p); free(pre.p);
   return r;
+}
+
+static int emit_constant_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty, int slot) {
+  if (!nt_kind_is_constant(nt_kind(nt, id))) return 0;
+  int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+  int dynamic = nt_kind(nt, par) == NK_ConstantReadNode && an_const_read_is_value(c, par);
+  int effect = !dynamic && !view_const_read_done(c, id) ? emit_const_read_prefix(c, par, b) : 0;
+  int result = emit_constant_value(c, id, b, nt, ty, slot);
+  if (effect) buf_puts(b, ")");
+  return result;
 }
 
 void emit_constant_slot(Compiler *c, int id, Buf *b) {

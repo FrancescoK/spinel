@@ -1,0 +1,32 @@
+assigned
+false
+true
+false
+true
+float assigned
+false
+true
+float rhs
+false
+float rhs
+true
+false
+true
+false
+nil
+3
+3
+3
+earlier
+uninitialized constant BuildOuter::PARENT
+parent assigned
+a
+uninitialized constant Missing::LATE_K
+late assigned
+a
+nil
+4
+rhs
+false
+rhs
+true

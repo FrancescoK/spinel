@@ -1824,17 +1824,18 @@ static inline const char *isa_match_name(const NodeTable *nt, int arg, char *buf
    (codegen_call_exception.c), or NULL for no constant */
 const char *isa_exc_class_name(Compiler *c, int arg, char *buf, size_t bufsz);
 const char *c_type_name(TyKind t);
-int is_scalar_ret(TyKind t);
 /* A constant whose slot has a presence flag, cst_NAME__set (LocalVar.const_early):
    every assignment sets it (emit_const_flag_set) and the reads that see
    whether the constant exists test it. */
-int const_has_flag(const LocalVar *lv);
 void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent);
 /* The test of a read of node id that raises NameError while the constant is
    unset, as a `(test, ...)` prefix around the read: open before it, close
    after. They emit nothing for a constant with no flag. */
-void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b);
-void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b);
+int emit_const_read_stmt(Compiler *c, int id, Buf *b, int indent);
+int emit_const_read_prefix(Compiler *c, int id, Buf *b);
+void emit_const_read_open(Compiler *c, int id, const LocalVar *lv, Buf *b);
+void emit_const_read_close(Compiler *c, int id, const LocalVar *lv, Buf *b);
+int emit_const_class_call_wrap(Compiler *c, int id, Buf *b, void (*emit)(Compiler *, int, Buf *));
 int emit_const_recv_wrap(Compiler *c, int id, Buf *b);
 int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail);
 void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *key, int slot, int own, Buf *b);
@@ -2533,6 +2534,8 @@ int view_bind(int node, const char *fmt, ...) __attribute__((format(printf, 2, 3
 void view_unbind(int n);
 /* One representation flag of node id seen as v for one nested emission,
    restored by view_pop (or view_unwind on a refusal) like a type view. */
+int view_const_read_done(Compiler *c, int id);
+int view_push_const_read(Compiler *c, int id);
 enum { VR_STRBUF_BOX, VR_HANDLE_DEMAND, VR_POLY_LIFT, VR_NILNARROW, VR_NIL_TESTED, VR_HEAD_HELD };
 int view_push_repr(Compiler *c, int id, int flag, int v);
 /* A splice's alias of a caller's variable that the call's block assigns

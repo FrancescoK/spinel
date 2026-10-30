@@ -1,0 +1,31 @@
+uninitialized constant Outer::HOLDER
+uninitialized constant Outer::HOLDER
+assigned
+7
+arguments
+7
+uninitialized constant ModOuter::PARENT
+module assigned
+8
+uninitialized constant Two::LINK
+two assigned
+9
+uninitialized constant Top::LATE
+top assigned
+7
+uninitialized constant FoldOuter::METHOD_PARENT
+earlier
+uninitialized constant FoldOuter::METHOD_PARENT
+fold assigned
+5
+earlier
+argument
+initialized
+consumed
+uninitialized constant QueryOuter::QUERY_PARENT
+uninitialized constant QueryOuter::QUERY_PARENT
+uninitialized constant QueryOuter::QUERY_PARENT
+query assigned
+true
+false
+true

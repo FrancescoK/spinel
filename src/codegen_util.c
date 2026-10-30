@@ -793,6 +793,8 @@ int subtree_has_side_effect(Compiler *c, int id) {
   const char *ty = nt_type(nt, id);
   NodeKind k = nt_kind(nt, id);
   if (!ty) return 0;
+  if (view_const_read_done(c, id)) return 0;
+  if (k == NK_ConstantPathNode && an_const_read_effect(c, nt_ref(nt, id, "parent")) != NULL) return 1;
   if (k == NK_SuperNode || k == NK_ForwardingSuperNode ||
       k == NK_YieldNode || strstr(ty, "WriteNode"))
     return 1;
@@ -1763,7 +1765,7 @@ int re_lit_node(Compiler *c, int nid) {
   NodeKind ty_k = nt_kind(nt, nid);
   if (!ty) return -1;
   if (ty_k == NK_RegularExpressionNode) return nid;
-  int want_const = ty_k == NK_ConstantReadNode || ty_k == NK_ConstantPathNode;
+  int want_const = nt_kind_is_constant(ty_k);
   int want_local = ty_k == NK_LocalVariableReadNode && comp_ntype(c, nid) == TY_REGEX;
   if (!want_const && !want_local) return -1;
   const char *nm = nt_str(nt, nid, "name");
@@ -4670,15 +4672,6 @@ const char *c_type_name(TyKind t) {
   const TyTraits *tr = ty_traits_of(t);
   return tr ? tr->ctype : NULL;
 }
-int is_scalar_ret(TyKind t) {
-  /* a builtin kind's ty_traits row says (types.c); a user object and an
-     object array are pointers a method can return */
-  const TyTraits *tr = ty_traits_of(t);
-  return tr ? tr->scalar_ret : (ty_is_object(t) || ty_is_obj_array(t));
-}
-int const_has_flag(const LocalVar *lv) {
-  return lv && lv->const_early && (lv->type == TY_NIL || is_scalar_ret(lv->type));
-}
 void emit_const_flag_set(const LocalVar *lv, const char *key, Buf *b, int indent) {
   if (!const_has_flag(lv)) return;
   emit_indent(b, indent);
@@ -4692,7 +4685,7 @@ static void const_read_name(Compiler *c, int id, char *out, size_t cap) {
   const char *segs[16]; int n = 0;
   for (int k = id; k >= 0 && n < 16; k = nt_kind(nt, k) == NK_ConstantPathNode ? nt_ref(nt, k, "parent") : -1) {
     /* a receiver that is no constant (a class held in a variable) has no name here */
-    const char *nm = k == id || nt_kind(nt, k) == NK_ConstantReadNode || nt_kind(nt, k) == NK_ConstantPathNode
+    const char *nm = k == id || nt_kind_is_constant(nt_kind(nt, k))
                      ? nt_str(nt, k, "name") : NULL;
     const char *us = nm ? strstr(nm, "__") : NULL;
     while (us && strstr(us + 2, "__")) us = strstr(us + 2, "__");
@@ -4719,7 +4712,7 @@ static void const_read_name(Compiler *c, int id, char *out, size_t cap) {
 static int const_value_recv(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   int par = nt_kind(nt, id) == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
-  if (par < 0 || nt_kind(nt, par) == NK_ConstantReadNode || nt_kind(nt, par) == NK_ConstantPathNode) return -1;
+  if (par < 0 || nt_kind_is_constant(nt_kind(nt, par))) return -1;
   return comp_ntype(c, par) == TY_CLASS || comp_ntype(c, par) == TY_POLY ? par : -1;
 }
 /* ... and one whose evaluation is more than a read (a call): the read then
@@ -4733,8 +4726,7 @@ static void emit_const_recv_class(Compiler *c, int par, Buf *b) {
   if (repr_of(c, par).kind == RK_BOXED) { buf_puts(b, "sp_unbox_class("); emit_boxed(c, par, b); buf_puts(b, ")"); }
   else emit_expr(c, par, b);
 }
-void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
-  if (!const_has_flag(lv)) return;
+static void emit_const_read_open_checked(Compiler *c, int id, const LocalVar *lv, Buf *b) {
   int par = const_value_recv(c, id);
   if (par >= 0) {
     const NodeTable *nt = c->nt;
@@ -4755,9 +4747,37 @@ void emit_const_check_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
   const_read_name(c, id, nm, sizeof nm);
   buf_printf(b, "((cst_%s__set ? (void)0 : sp_raise_cls(\"NameError\", \"uninitialized constant %s\")), ", lv->name, nm);
 }
-void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
-  if (!const_has_flag(lv)) return;
+void emit_const_read_open(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (!view_const_read_done(c, id) && const_has_flag(lv)) emit_const_read_open_checked(c, id, lv, b);
+}
+void emit_const_read_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
+  if (view_const_read_done(c, id) || !const_has_flag(lv)) return;
   buf_puts(b, const_recv_held(c, id) >= 0 ? "; })" : ")");
+}
+/* The effects of a statically resolved path, outermost parent first. The
+   opening comma expression lets a caller retain the folded value or call. */
+int emit_const_read_prefix(Compiler *c, int id, Buf *b) {
+  NodeKind k = nt_kind(c->nt, id);
+  if (!nt_kind_is_constant(k) || view_const_read_done(c, id)) return 0;
+  int n = k == NK_ConstantPathNode ? emit_const_read_prefix(c, nt_ref(c->nt, id, "parent"), b) : 0;
+  LocalVar *lv = an_const_read_effect(c, id);
+  if (lv) {
+    if (!n) buf_puts(b, "(");
+    emit_const_read_open_checked(c, id, lv, b);
+    buf_puts(b, "0");
+    buf_puts(b, const_recv_held(c, id) >= 0 ? "; })" : ")");
+    buf_puts(b, ", ");
+    n = 1;
+  }
+  return n;
+}
+/* A discarded read, retained as a statement before a folded consumer. */
+int emit_const_read_stmt(Compiler *c, int id, Buf *b, int indent) {
+  size_t mark = b->len;
+  emit_indent(b, indent);
+  if (emit_const_read_prefix(c, id, b)) { buf_puts(b, "0); "); return 1; }
+  buf_erase(b, mark, b->len - mark);
+  return 0;
 }
 /* A call on a flagged constant read through a receiver that runs (`pick::BUF
    << "y"`): the receiver and the flag test run once, into a pointer to the
@@ -4765,9 +4785,16 @@ void emit_const_check_close(Compiler *c, int id, const LocalVar *lv, Buf *b) {
    mutator names its receiver twice). Declares the pointer in b and marks the
    receiver node with its temp; the caller emits the call and unmarks. -1
    when the call is no such one. */
-static int const_recv_hold(Compiler *c, int id, Buf *b) {
+static int const_recv_hold(Compiler *c, int id, Buf *b, int *view) {
   const NodeTable *nt = c->nt;
   int r = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  *view = -1;
+  /* Class receivers can be folded away by constructors and reflection. */
+  if (r >= 0 && an_const_read_keeps_class(c, r) && const_value_recv(c, r) < 0 &&
+      !view_const_read_done(c, r) && (!an_const_read_is_value(c, r) || cplan_const_user(c, id, r, 0)) && emit_const_read_stmt(c, r, b, 0)) {
+    *view = view_push_const_read(c, r);
+    return r;
+  }
   if (r < 0 || nt_kind(nt, r) != NK_ConstantPathNode || nt_int(nt, r, "const_ptr", 0)) return -1;
   const char *nm = nt_str(nt, r, "name");
   LocalVar *lv = nm ? comp_const(c, nm) : NULL;
@@ -4788,13 +4815,33 @@ static int const_recv_hold(Compiler *c, int id, Buf *b) {
   nt_node_set_int((NodeTable *)nt, r, "const_ptr", t);
   return r;
 }
+/* A class receiver can disappear before the ordinary call emitter is
+   reached (a boxed constructor or a folded expression). */
+int emit_const_class_call_wrap(Compiler *c, int id, Buf *b, void (*emit)(Compiler *, int, Buf *)) {
+  if (nt_kind(c->nt, id) != NK_CallNode) return 0;
+  int r = nt_ref(c->nt, id, "receiver"), view;
+  if (r < 0 || !an_const_read_keeps_class(c, r) || const_value_recv(c, r) >= 0 || view_const_read_done(c, r)) return 0;
+  for (int i = g_n_argov - 1; i >= 0; i--)
+    if (g_argov_node[i] == id || g_argov_node[i] == r) return 0;
+  Buf pre = {0};
+  if (const_recv_hold(c, id, &pre, &view) < 0) { free(pre.p); return 0; }
+  buf_puts(b, "({ "); buf_puts(b, pre.p); free(pre.p);
+  Buf own = {0}, value = {0}; Buf *saved_pre = g_pre;
+  g_pre = &own; emit(c, id, &value); g_pre = saved_pre;
+  if (own.p) buf_puts(b, own.p);
+  buf_puts(b, value.p ? value.p : "0"); free(own.p); free(value.p);
+  view_pop(c, view);
+  buf_puts(b, "; })");
+  return 1;
+}
 int emit_const_recv_wrap(Compiler *c, int id, Buf *b) {
   Buf pre; memset(&pre, 0, sizeof pre);
-  int r = const_recv_hold(c, id, &pre);
+  int view;
+  int r = const_recv_hold(c, id, &pre, &view);
   if (r < 0) { free(pre.p); return 0; }
   /* with a prelude buffer the pointer is declared there: a call that
      hoists its loop into the prelude (`K::H.map { }`) reads it from there */
-  if (g_pre) {
+  if (g_pre && view < 0) {
     emit_indent(g_pre, g_indent); buf_puts(g_pre, pre.p ? pre.p : ""); buf_puts(g_pre, "\n");
     free(pre.p);
     emit_call(c, id, b);
@@ -4803,22 +4850,29 @@ int emit_const_recv_wrap(Compiler *c, int id, Buf *b) {
   }
   buf_puts(b, "({ "); buf_puts(b, pre.p ? pre.p : ""); free(pre.p);
   emit_call(c, id, b);
-  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  if (view >= 0) view_pop(c, view);
+  else nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
   buf_puts(b, "; })");
   return 1;
 }
-/* The same for a call that is a statement: the pointer is held in a block of its own. */
+/* For a call that is a statement, a held pointer gets a block of its own
+   only in a non-tail statement. A class read emits only its checks, without
+   a block: a spliced body may use an ordinary statement as its last expression.
+   A tail keeps its value in the caller's statement expression. */
 int emit_const_recv_stmt_wrap(Compiler *c, int id, Buf *b, int indent, int tail) {
   Buf pre; memset(&pre, 0, sizeof pre);
-  int r = const_recv_hold(c, id, &pre);
+  int view;
+  int r = const_recv_hold(c, id, &pre, &view);
   if (r < 0) { free(pre.p); return 0; }
   emit_indent(b, indent);
-  buf_puts(b, "{ "); buf_puts(b, pre.p ? pre.p : ""); buf_puts(b, "\n"); free(pre.p);
-  if (tail) emit_stmt_tail(c, id, b, indent + 1);
-  else emit_stmt(c, id, b, indent + 1);
-  nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
-  emit_indent(b, indent);
-  buf_puts(b, "}\n");
+  int scoped = !tail && view < 0;
+  if (scoped) buf_puts(b, "{ ");
+  buf_puts(b, pre.p ? pre.p : ""); buf_puts(b, "\n"); free(pre.p);
+  if (tail) emit_stmt_tail(c, id, b, indent);
+  else emit_stmt(c, id, b, indent + scoped);
+  if (view >= 0) view_pop(c, view);
+  else nt_node_set_int((NodeTable *)c->nt, r, "const_ptr", 0);
+  if (scoped) { emit_indent(b, indent); buf_puts(b, "}\n"); }
   return 1;
 }
 /* The plain read of a constant's slot, or its address: behind its test the
@@ -4838,9 +4892,9 @@ void emit_const_slot_read(Compiler *c, int id, const LocalVar *lv, const char *k
     return;
   }
   buf_puts(b, slot ? "" : "(*");
-  emit_const_check_open(c, id, lv, b);
+  emit_const_read_open(c, id, lv, b);
   buf_printf(b, "&cst_%s", key);
-  emit_const_check_close(c, id, lv, b);
+  emit_const_read_close(c, id, lv, b);
   buf_puts(b, slot ? "" : ")");
 }
 /* native binding (Path B): map a spinel type spec to the C type at the ABI
@@ -5201,7 +5255,7 @@ void emit_coerce(Compiler *c, int node, TyKind slot, int how, const char *what, 
        to its NameError raise with a Class value behind it: into a slot of
        another kind (`Version = Version_C` beside `Version = "1.0"`) it
        answers that slot's zero instead */
-    if ((nt_kind(c->nt, node) == NK_ConstantReadNode || nt_kind(c->nt, node) == NK_ConstantPathNode) &&
+    if ((nt_kind_is_constant(nt_kind(c->nt, node))) &&
         comp_ntype(c, node) == TY_UNKNOWN && slot != TY_POLY && slot != TY_CLASS && slot != TY_UNKNOWN) {
       Buf t; memset(&t, 0, sizeof t);
       emit_expr(c, node, &t);
@@ -7500,7 +7554,7 @@ static int tmc_body_includes(const Compiler *c, int k, int mod) {
         const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
         for (int a = 0; a < an; a++) {
           NodeKind ak = nt_kind(nt, av[a]);
-          const char *an2 = ak == NK_ConstantReadNode || ak == NK_ConstantPathNode ? nt_str(nt, av[a], "name") : NULL;
+          const char *an2 = nt_kind_is_constant(ak) ? nt_str(nt, av[a], "name") : NULL;
           if (an2 && sp_streq(an2, mn)) return 1;
         }
       }
