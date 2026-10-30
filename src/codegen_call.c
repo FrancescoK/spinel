@@ -32021,7 +32021,7 @@ static int emit_const_user_call(Compiler *c, int id, Buf *b) {
   int recv = nt_ref(nt, id, "receiver");
   NodeKind rk = nt_kind(nt, recv);
   if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
-  const CallPlan *pl = cplan_const_user(c, id, nt_str(nt, recv, "name"), 0);
+  const CallPlan *pl = cplan_const_user(c, id, recv, 0);
   if (!pl) return 0;
   int yields = c->scopes[pl->mi].yields;
   if (emit_vis_refusal(c, id, b) || emit_operands_in_order(c, id, b)) return 1;

@@ -3501,7 +3501,7 @@ static int emit_class_value_singleton_methods(Compiler *c, int id, Buf *b, const
                     ? nt_str(nt, recv, "name") : NULL;
   int ci2 = cn2 ? comp_class_index(c, cn2) : -1;
   int all = argc == 0 || nt_kind(nt, argv[0]) == NK_TrueNode;
-  if (!cn2 || (argc == 1 && !all && nt_kind(nt, argv[0]) != NK_FalseNode) || !an_singleton_methods_foldable(c, cn2)) return 0;
+  if (!cn2 || (argc == 1 && !all && nt_kind(nt, argv[0]) != NK_FalseNode) || !an_singleton_methods_foldable(c, recv)) return 0;
   ReflNames r = {0};
   refl_builtin_singleton_methods(cn2, all, &r);
   if (ci2 >= 0) refl_class_singleton_methods(c, ci2, all, &r);

@@ -861,7 +861,7 @@ int node_is_empty_container(Compiler *c, int node) {
   if (!rn || (!sp_streq(rn, "Array") && !sp_streq(rn, "Hash"))) return 0;
   int ca = nt_ref(nt, node, "arguments");
   int argc = 0; if (ca >= 0) nt_arr(nt, ca, "arguments", &argc);
-  return argc == 0 && !cplan_const_user(c, node, rn, 1);
+  return argc == 0 && !cplan_const_user(c, node, r, 1);
 }
 
 int is_arith_op(const char *op) {
@@ -4709,7 +4709,7 @@ int an_kernel_const_recv(Compiler *c, int id, int recv, int fresh) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) return 0;
   const char *rn = nt_str(nt, recv, "name");
-  return rn && sp_streq(rn, "Kernel") && !cplan_const_user(c, id, rn, fresh);
+  return rn && sp_streq(rn, "Kernel") && !cplan_const_user(c, id, recv, fresh);
 }
 
 /* Is `recv` a receiver Kernel#` answers call `id` for: the Kernel module
@@ -4918,8 +4918,9 @@ static const char *const si_protocol_names[] = {
   "method_missing", "respond_to?", "respond_to_missing?", "initialize_copy", "initialize_dup",
   "initialize_clone", "succ", "<", ">", "<=", ">=", "+", "-", "*", "/", "%", "**", NULL };
 
-/* May a `raise` of class name nm raise a StopIteration? */
-static int si_class_may_stop(Compiler *c, const char *nm, int depth) {
+/* May a `raise` of the class constant ref raise a StopIteration? */
+static int si_class_may_stop(Compiler *c, int ref, int depth) {
+  const char *nm = nt_str(c->nt, ref, "name");
   if (!nm || depth > 64) return 1;
   if (sp_streq(nm, "StopIteration") || sp_streq(nm, "ClosedQueueError")) return 1;
   int k = comp_class_index(c, nm);
@@ -4932,7 +4933,7 @@ static int si_class_may_stop(Compiler *c, const char *nm, int depth) {
     if (sup < 0) return 0;
     NodeKind sk = nt_kind(c->nt, sup);
     if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) return 1;
-    return si_class_may_stop(c, nt_str(c->nt, sup, "name"), depth + 1);
+    return si_class_may_stop(c, sup, depth + 1);
   }
   return 1;
 }
@@ -4950,7 +4951,7 @@ static int si_raise_may_stop(Compiler *c, int id) {
       (sp_streq(nt_str(nt, a, "name"), "new") || sp_streq(nt_str(nt, a, "name"), "exception")))
     a = nt_ref(nt, a, "receiver"), ak = nt_kind(nt, a);
   if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) return 1;
-  return si_class_may_stop(c, nt_str(nt, a, "name"), 0);
+  return si_class_may_stop(c, a, 0);
 }
 
 /* The per-compile facts: per scope, whether its body may raise

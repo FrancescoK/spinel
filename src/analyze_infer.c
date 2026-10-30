@@ -2322,7 +2322,8 @@ int an_class_singleton_methods_listable(Compiler *c, int cid) {
   return 1;
 }
 
-int an_singleton_methods_foldable(Compiler *c, const char *cn) {
+int an_singleton_methods_foldable(Compiler *c, int recv) {
+  const char *cn = nt_str(c->nt, recv, "name");
   int ci = comp_class_index(c, cn);
   if (builtin_class_id(cn)) return ci < 0 || comp_cmethod_in_chain(c, ci, "singleton_methods", NULL) < 0;
   return an_class_singleton_methods_listable(c, ci);
@@ -4572,7 +4573,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
     if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir")) {
       if (is_dir_blockless_iter(name) && nt_ref(nt, id, "block") < 0 &&
-          (an_builtin_only || !cplan_const_user(c, id, "Dir", 1)))
+          (an_builtin_only || !cplan_const_user(c, id, recv, 1)))
         { *out = TY_ENUMERATOR; return 1; }
       if (sp_streq(name, "pwd") || sp_streq(name, "home")) { *out = TY_STRING; return 1; }
       if (sp_streq(name, "glob") || sp_streq(name, "entries") || sp_streq(name, "children")) { *out = TY_STR_ARRAY; return 1; }
@@ -5900,7 +5901,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
                       sp_streq(name, "protected_instance_methods"))) { *out = TY_POLY; return 1; }
     if (argc <= 1 && sp_streq(name, "singleton_methods") &&
         nt_kind(nt, recv) == NK_ConstantReadNode &&
-        an_singleton_methods_foldable(c, nt_str(nt, recv, "name")))
+        an_singleton_methods_foldable(c, recv))
       { *out = TY_POLY; return 1; }
     /* a user class method on a Class-typed value carried in a plain variable
        (`model.table_name`): unify the return types of every user class
@@ -8220,7 +8221,7 @@ static int infer_constant_query_call(Compiler *c, int id, const NodeTable *nt, c
      call plan wins in emission and sharing. Inference reads a fresh plan. */
   NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
   const char *cn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL;
-  const CallPlan *pl = an_builtin_only ? NULL : cplan_const_user(c, id, cn, 1);
+  const CallPlan *pl = an_builtin_only ? NULL : cplan_const_user(c, id, recv, 1);
   if (pl) {
     *out = an_user_call(c, id, pl->mi, UC_CMETH, pl->owner_ci);
     return 1;
@@ -9280,7 +9281,7 @@ static TyKind infer_call_inner(Compiler *c, int id) {
   { TyKind ed; if (recv < 0 && infer_enum_desugar_call(name, argc, &ed)) return ed; }
   /* Dir surface (#2823, #2828, #2830) */
   if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode &&
-      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") && (an_builtin_only || !cplan_const_user(c, id, nt_str(nt, recv, "name"), 1))) {
+      nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "Dir") && (an_builtin_only || !cplan_const_user(c, id, recv, 1))) {
     if (sp_streq(name, "empty?") && argc == 1) return TY_BOOL;
     if (sp_streq(name, "home") && argc == 1) return TY_STRING;
     if (sp_streq(name, "glob") && (argc == 1 || argc == 2)) return TY_STR_ARRAY;

@@ -475,11 +475,13 @@ static void cplan_resolve(Compiler *c, int id, CallPlan *p) {
 /* A constant call's user singleton target, shared by inference, rewrites
    and builtin emitters. Unregistered constants need no target lookup.
    Ordinary user classes never need this precedence decision; native package
-   bindings supply their own builtin names. The caller supplies the constant
-   receiver name, or NULL for any other receiver. */
-const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh) {
-  if (!cn || c->nclasses == 0) return NULL;
+   bindings supply their own builtin names. The caller supplies the receiver
+   node; a receiver that is not a constant has no target. */
+const CallPlan *cplan_const_user(Compiler *c, int id, int recv, int fresh) {
   const NodeTable *nt = c->nt;
+  NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
+  const char *cn = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? nt_str(nt, recv, "name") : NULL;
+  if (!cn || c->nclasses == 0) return NULL;
   int ci = comp_class_index(c, cn);
   if (ci < 0) return NULL;
   if (!c->classes[ci].is_native_class && !c->classes[ci].is_builtin_const &&

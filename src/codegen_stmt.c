@@ -7793,7 +7793,8 @@ static int g_pm_sentinel_t = -1;
    segment, so comparing it directly never matched and the branch was silently
    skipped (#3373). Resolve through the class table and use the name the
    exception actually has. */
-static const char *exc_when_cls_name(Compiler *c, const char *cn) {
+static const char *exc_when_cls_name(Compiler *c, int pat, char *buf, size_t bufsz) {
+  const char *cn = isa_match_name(c->nt, pat, buf, bufsz);
   int ci = cn ? comp_class_index(c, cn) : -1;
   const char *q = ci >= 0 ? class_ruby_name(c, ci) : NULL;
   return q ? q : cn;
@@ -8147,7 +8148,7 @@ static int emit_pm_cond_subj(Compiler *c, int pat, int t, TyKind pt, int subj, B
     }
     if (pt == TY_EXCEPTION) {
       /* an exception scrutinee matches by name up its class chain (#2759) */
-      buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+      buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, pat, NULL, 0));
       return 1;
     }
     if (pt == TY_BOOL && (is_boolean_class_name(cn2)) &&
@@ -11072,7 +11073,7 @@ void emit_case(Compiler *c, int id, Buf *b, int indent) {
           }
           else if (cn2 && pt == TY_EXCEPTION) {
             /* an exception scrutinee matches by name up its class chain (#2759) */
-            buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+            buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, conds[j], cq2, sizeof cq2));
           }
           else if (cn2 && pt == TY_BOOL &&
                    (is_boolean_class_name(cn2))) {
@@ -11507,7 +11508,7 @@ static void emit_case_expr_in(Compiler *c, int id, Buf *b) {
         }
         else if (cn2 && pt == TY_EXCEPTION) {
           /* an exception scrutinee matches by name up its class chain (#2759) */
-          buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, cn2));
+          buf_printf(b, "sp_exc_is_a((sp_Exception *)_t%d, \"%s\")", t, exc_when_cls_name(c, conds[j], cq2, sizeof cq2));
         }
         else if (cn2 && pt == TY_BOOL &&
                  (is_boolean_class_name(cn2))) {

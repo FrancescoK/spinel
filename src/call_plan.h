@@ -126,7 +126,7 @@ void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, 
    analyze_nil.c): it answers from the types as they stand. The answer
    lasts until the next call. */
 const CallPlan *cplan_user_fresh(Compiler *c, int id);
-const CallPlan *cplan_const_user(Compiler *c, int id, const char *cn, int fresh);
+const CallPlan *cplan_const_user(Compiler *c, int id, int recv, int fresh);
 /* A constant receiver's builtin new reaches this initialize, or -1. */
 int cplan_initialize(Compiler *c, int id);
 int cplan_initializers(Compiler *c, int id, int *out, int cap);
