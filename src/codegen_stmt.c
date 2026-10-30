@@ -24454,10 +24454,6 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
-  /* A contextual user target (or refusal) owns this call. The ordinary
-     path emits that plan; the Array-kind gate below admits only its
-     builtin arm. Decline before any output, including the fresh route. */
-  if (sp_streq(name, "concat") && cplan_user(c, id)->dispatch != CP_NONE) return 0;
   /* --share-strings: a `&.` mutator over a call answering its receiver over
      a handle (`id(s).upcase!&.clear`) is its value form, whose guard holds
      that handle and skips a nil (emit_call_safe_nav_arms); the statement
@@ -24472,6 +24468,10 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
     return 1;
   }
   TyKind rt = comp_ntype(c, recv);
+  /* A contextual user target (or refusal) owns this Array call. Decline
+     before output, including the fresh route; the ordinary path emits
+     that plan. Other receiver families keep their own admission. */
+  if (ty_is_array(rt) && sp_streq(name, "concat") && cplan_user(c, id)->dispatch != CP_NONE) return 0;
   /* a `&.` String mutator's guard, unless the receiver is a shim's shadow
      (sb_shadowed_reader): the shim took the receiver and tested it, and the
      guard read the shadow ahead of the statement, before the shim declared it */
