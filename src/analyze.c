@@ -53456,6 +53456,29 @@ void analyze_program(Compiler *c) {
   /* once more on the settled types, which tell a builtin receiver's call
      from a program method's (cr_recv_builtin_value) */
   AN_STEP_V("compute_reachable", compute_reachable(c, 2));
+  /* The census again, on what this pass reached: it opens the instances of
+     a class reached code is typed with (an object built only where nothing
+     runs), and a construction in one of its methods, now reached, builds
+     its class too. Taken as more, never less: the dispatch's arms and the
+     types settled on the census above. Without it a reached
+     `SSLSocket#initialize` called `SSLContext.new`, whose constructor the
+     C left out (#10643). */
+  {
+    int nk = c->nclasses;
+    unsigned char *was = malloc((size_t)(nk ? nk : 1) * 3);
+    for (int k = 0; k < nk; k++) {
+      was[3 * k] = (unsigned char)c->classes[k].instantiated;
+      was[3 * k + 1] = (unsigned char)c->classes[k].ctor_site;
+      was[3 * k + 2] = (unsigned char)c->classes[k].ctor_reachable;
+    }
+    compute_instantiated(c, 0);
+    for (int k = 0; k < nk; k++) {
+      c->classes[k].instantiated |= was[3 * k];
+      c->classes[k].ctor_site |= was[3 * k + 1];
+      c->classes[k].ctor_reachable |= was[3 * k + 2];
+    }
+    free(was);
+  }
   if (g_dump_implicit) { ic_dump(c, stdout); exit(0); }   /* the methods CRuby calls that the program does not name, and the defs kept */
 
   if (getenv("SP_FIXPOINT_LOG"))
