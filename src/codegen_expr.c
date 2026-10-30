@@ -4553,8 +4553,14 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
       int fempty = 0;
       if (ln == 1 && ty_is_array(fres) && node_is_empty_container(c, lb[0]))
         fempty = an_empty_container_kind(c, lb[0]) == 1;
+      /* ...and an Integer / Float slot that holds its nil (an sp_oint, as the
+         analysis gives `x.is_a?(Integer) ? x : raise` while the dead arm is
+         still counted) takes the arm in its oint form, as the unfolded pair
+         renders each arm: emitted raw, a plain sp_int went into the sp_oint */
+      int fo = cond_res_oint(c, id, fres);
       if (ln == 1) {
-        if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
+        if (fo) emit_ternary_arm_o(c, lb[0], fres, 1, b);
+        else if (fbox || fempty) emit_ternary_arm(c, lb[0], fres, b); else emit_expr(c, lb[0], b);
         return 1;
       }
       /* The leading statements go into the PRELUDE, not inside a statement
@@ -4567,7 +4573,8 @@ static int emit_if_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const 
          won and a branch reached its tail without running its own first
          line (#4139). The prelude keeps them in source order. */
       for (int j = 0; j < ln - 1; j++) emit_stmt(c, lb[j], g_pre, g_indent);
-      if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
+      if (fo) emit_ternary_arm_o(c, lb[ln - 1], fres, 1, b);
+      else if (fbox) emit_ternary_arm(c, lb[ln - 1], fres, b);
       else emit_expr(c, lb[ln - 1], b);
       return 1;
     }
