@@ -37,7 +37,17 @@ p "caf\xC3\xA9".b.hash == "café".hash, ("caf\xC3\xA9" * 5).b.hash == ("café" *
 
 # a key the program builds and then changes
 k = +"mutable_key_longer_than_16"
-mh = { k.dup => 1 }
+mh = { k => 1 }
 p mh[k]
 k << "!"
 p mh[k], mh[k.chop]
+
+# a boxed Hash's delete_if removes the key it deleted from the insertion
+# order, not an earlier key that agrees up to an embedded NUL
+class Shelf
+  def delete_if = :shelf
+end
+def box(x) = [x, Shelf.new].first
+g = { "a\0x" => 1, "a\0y" => :two, "b" => "three" }
+box(g).delete_if { |key, _| key == "a\0y" }
+p g, g.keys
