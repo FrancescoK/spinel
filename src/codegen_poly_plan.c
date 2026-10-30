@@ -21,10 +21,12 @@ static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
 static long g_pa_trial_kept, g_pa_trial_dropped;
 
 /* (codegen_internal.h) the kinds sp_poly_enum_proc walks */
-void emit_penum_kind_test(Buf *b, int tv) {
+void emit_penum_kind_test(Buf *b, int tv, int enumerator) {
   buf_printf(b, "_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || "
-                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)",
-             tv, tv, tv, tv, tv, tv);
+                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE",
+             tv, tv, tv, tv, tv);
+  if (enumerator) buf_printf(b, " || _t%d.cls_id == SP_BUILTIN_ENUMERATOR", tv);
+  buf_puts(b, ")");
 }
 
 int pa_begin(int id) {
@@ -2306,7 +2308,7 @@ int emit_poly_prearms0_blk(Compiler *c, int id, const char *name, const PolySpec
          user-class switch's NoMethodError (#4840). So does a String Range
          (a Range of Symbols too), over its members. */
       buf_puts(b, "if (");
-      emit_penum_kind_test(b, tv);
+      emit_penum_kind_test(b, tv, 1);
       buf_printf(b, ") { _t%d = ", tr);
       if (ret == TY_POLY) buf_puts(b, pcall);
       else emit_unbox_text(c, ret, pcall, b);

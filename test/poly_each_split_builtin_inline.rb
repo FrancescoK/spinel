@@ -57,7 +57,6 @@ gen = box(Enumerator.new { |y| n = 0; loop { y << (n += 1) } })
 got = []
 gen.each { |x| got << x; break if x == 3 }
 p got
-p(box([1, 2, 3].each).each { |x| x })
 got = []
 box(1..1_000_000).each { |x| got << x; break if x >= 4 }
 p got
@@ -102,3 +101,32 @@ grow = box([1, 2, 3])
 seen = []
 grow.each { |x| seen << x; grow << 9 if x == 1; grow.pop if x == 2 }
 p seen, grow
+
+# a generator keeps the dispatch: its body runs once
+runs = 0
+gen2 = box(Enumerator.new { |y| runs += 1; y << 1; y << 2; :body_done })
+seen = []
+gen2.each { |x| seen << x }
+p seen, runs
+
+# reverse_each keeps the dispatch beside a class with one of its own,
+# whose walk ends where the block shortened the Array
+class Rev
+  def reverse_each = yield(42)
+end
+Rev.new.reverse_each { |x| p x }
+def mk(x) = [x, 1].first
+shrink = mk([1, 2, 3, 4])
+out = []
+shrink.reverse_each { |x| shrink.pop(2) if x == 4; out << x }
+p out
+
+# a boxed each inside a split's dispatch arm (the block's proc) takes the
+# dispatch: the inline arm keeps its inner splits, the proc does not split
+# again
+def nest3(v)
+  n = 0
+  box(v).each { |a| box(a).each { |b| box(b).each { |x| n += x } } }
+  n
+end
+p nest3([[[1, 2]], [[3]]])

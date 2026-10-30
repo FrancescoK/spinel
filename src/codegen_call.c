@@ -1055,15 +1055,17 @@ int poly_block_call_needs_dispatch(Compiler *c, int id) {
         !(es && (es->is_proc_form || es->is_lowered_yield))) return 0; }
   /* Only a class the receiver can hold: an IO::Buffer the program makes
      elsewhere (its `each` yields) sent every boxed Hash's `each` in the
-     program through a proc, where the walk bounds them to builtins. A
-     class the receiver's class fact keeps out does not count either, as
-     the dispatch has no arm for it (comp_poly_candidates_at). */
+     program through a proc, where the walk bounds them to builtins. For
+     `each`, a class the receiver's class fact keeps out does not count
+     either, as the dispatch has no arm for it (comp_poly_candidates_at);
+     the other names keep it, whose element loops differ from the
+     dispatch's walk on a receiver the block changes (reverse_each). */
   int nk = 0;
   const int *ks = poly_recv_classes(c, id, &nk);
   for (int i = 0; i < (ks ? nk : c->nclasses); i++) {
     int k = ks ? ks[i] : i;
     if (k < 0 || k >= c->nclasses || !c->classes[k].instantiated) continue;
-    if (cls_fact_excludes(c, recv, k)) continue;
+    if (is_each_name(name) && cls_fact_excludes(c, recv, k)) continue;
     int mi = call_target(c, id, k, name, 0, NULL);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];

@@ -6,7 +6,10 @@
 Point = Struct.new(:x, :y)
 pt = Point.new(1, 2)
 mixed = [pt, [10, 20]]
-mixed.each { |m| m.each { |v| print v, " " } }
+def show_all(rows)
+  rows.each { |m| m.each { |v| print v, " " } }
+end
+show_all(mixed)
 puts
 p mixed.map { |m| m.map { |v| v * 2 } }
 total = 0

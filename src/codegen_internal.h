@@ -2114,8 +2114,9 @@ int poly_block_call_needs_dispatch(Compiler *c, int id);
    kind (cplan_each_split, outside either of its arms)? (codegen_iter.c) */
 int each_split_applies(Compiler *c, int id);
 /* The condition the dispatch's enum-proc arm tests `_t<tv>` with: an Array,
-   Hash, Range, String Range or Enumerator (codegen_poly_plan.c) */
-void emit_penum_kind_test(Buf *b, int tv);
+   Hash, Range, String Range, or (enumerator) an Enumerator
+   (codegen_poly_plan.c) */
+void emit_penum_kind_test(Buf *b, int tv, int enumerator);
 void emit_obj_alloc_expr(Compiler *c, int cid, Buf *b);
 void emit_pool_fwd(Compiler *c, int cid);
 void emit_own_class_alloc(Compiler *c, int id, int base, Buf *b);
