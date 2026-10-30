@@ -24454,6 +24454,10 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name || recv < 0) return 0;
+  /* A contextual user target (or refusal) owns this call. The ordinary
+     path emits that plan; the Array-kind gate below admits only its
+     builtin arm. Decline before any output, including the fresh route. */
+  if (sp_streq(name, "concat") && cplan_user(c, id)->dispatch != CP_NONE) return 0;
   /* --share-strings: a `&.` mutator over a call answering its receiver over
      a handle (`id(s).upcase!&.clear`) is its value form, whose guard holds
      that handle and skips a nil (emit_call_safe_nav_arms); the statement
@@ -24970,6 +24974,8 @@ static int emit_array_mutate_stmt_body(Compiler *c, int id, Buf *b, int indent) 
   }
   if (sp_streq(name, "concat") && argc >= 1) {
     Buf cat = {0};
+    /* The contextual plan declined a user target above, and this route's
+       receiver-kind gate established Array's builtin arm. */
     if (!emit_builtin_array_concat(c, id, recv, rt, argv, argc, 1, &cat)) return 0;
     emit_indent(b, indent); buf_puts(b, "(void)"); buf_puts(b, cat.p);
     free(cat.p);
