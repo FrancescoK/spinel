@@ -1784,7 +1784,9 @@ void compute_instantiated(Compiler *c, int early) {
     /* no reached code can make one (compute_reachable) */
     if (c->classes[k].no_instance) c->classes[k].instantiated = 0;
     c->classes[k].ctor_site = c->classes[k].instantiated;
-    if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
+    /* a TypedData class (or a Ruby subclass of one) has its objects made by
+       C, with TypedData_Make_Struct, and no `new` of the program names it */
+    if (c->classes[k].is_struct || c->classes[k].is_native_class || c->classes[k].cext_extension) c->classes[k].instantiated = 1;
     /* a C extension makes any exception class of the program's by name
        (rb_exc_new2 through sp_cext_exception_new_fn), with no `.new` here */
     if (c->n_cext_extensions && class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
