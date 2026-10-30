@@ -13403,6 +13403,8 @@ static int class_inspectable(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
   if (is_builtin_reopen(ci->name)) return 0;
   if (ci->is_native_class) return 0;   /* the package owns the struct */
+  /* no instance of it can exist (compute_reachable) */
+  if (ci->no_instance) return 0;
   /* an exception subclass renders as #<Cls: msg>, which the dispatch below
      routes to sp_exc_inspect: without a case here `p e` fell to the default
      and printed #<Object> (#3813) */
@@ -13448,20 +13450,22 @@ static void emit_inspect_ivar_value(Compiler *c, TyKind t, const char *expr, con
   else if (t == TY_POLY_ARRAY) buf_printf(b, "(%s ? sp_PolyArray_inspect(%s) : \"nil\")", expr, expr);
   else if (ty_is_hash(t) && ty_hash_cname(t))
     buf_printf(b, "(%s ? sp_%sHash_inspect(%s) : \"nil\")", expr, ty_hash_cname(t), expr);
-  /* an Integer / Float ivar boxes by its nil bit */
-  else if (t == TY_INT || t == TY_FLOAT) {
-    buf_puts(b, "sp_poly_inspect(");
-    emit_marshal_box_ivar_n(c, t, expr, nilt, b);
-    buf_puts(b, ")");
+  /* a scalar renders through its own kind's inspect, as sp_poly_inspect's
+     arm for its box does: through sp_poly_inspect, one Integer ivar linked
+     every kind's inspect (bignums, floats, regexps, times) into a program
+     that had no other use for them */
+  else if (t == TY_INT || t == TY_FLOAT || t == TY_UNKNOWN) {
+    const char *fn = t == TY_FLOAT ? "sp_float_to_s" : "sp_int_to_s";
+    if (nilt && t != TY_UNKNOWN) buf_printf(b, "(%s ? SPL(\"nil\") : %s(%s))", nilt, fn, expr);
+    else buf_printf(b, "%s(%s)", fn, expr);
   }
+  else if (t == TY_STRING) buf_printf(b, "(%s ? sp_str_inspect(%s) : SPL(\"nil\"))", expr, expr);
+  else if (t == TY_STRBUF) buf_printf(b, "(%s ? sp_str_inspect(sp_String_cstr(%s)) : SPL(\"nil\"))", expr, expr);
+  else if (t == TY_BOOL) buf_printf(b, "(%s ? sp_str_frozen_true : sp_str_frozen_false)", expr);
+  else if (t == TY_SYMBOL) buf_printf(b, "sp_sym_inspect(%s)", expr);
   else if (marshal_ivar_type_ok(t) && !marshal_container_type(t) && t != TY_UNKNOWN) {
     buf_puts(b, "sp_poly_inspect(");
     emit_marshal_box_ivar(c, t, expr, b);
-    buf_puts(b, ")");
-  }
-  else if (t == TY_UNKNOWN) {
-    buf_puts(b, "sp_poly_inspect(");
-    emit_marshal_box_ivar(c, TY_INT, expr, b);
     buf_puts(b, ")");
   }
   else buf_puts(b, "\"#<?>\"");
@@ -13531,7 +13535,7 @@ static void emit_inspect_class_row(Compiler *c, int i, MarRows *R, Buf *b) {
   else buf_puts(b, "NULL };\n");
 }
 /* the walk over the rows, as the arm per class wrote it */
-static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
+static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_computed, Buf *b) {
   buf_printf(b,
     "static int sp_insp_set(const sp_insp_iv *v, const char *o) {\n"
     "  switch (v->set) {\n"
@@ -13547,9 +13551,14 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     MSET_FLAG, MSET_UMARK, SP_IVAR_UNSET_MARK, MSET_NB, MSET_POLY, MSET_NONNULL, MSET_BOOL);
   buf_puts(b,
     "static const char *sp_insp_value(const sp_insp_iv *v, char *o) {\n"
-    "  void *s = o + v->off;\n"
-    "  if (v->obj == 2) return sp_poly_inspect(sp_box_nullable_obj_dyn(*(void **)s, v->arg));\n"
-    "  if (v->obj) return sp_poly_inspect(*(void **)s ? sp_box_obj(*(void **)s, v->arg) : sp_box_nil());\n"
+    "  void *s = o + v->off;\n");
+  /* an object ivar renders by its class, through sp_poly_inspect; with
+     none, the walk does not link it */
+  if (any_obj)
+    buf_puts(b,
+      "  if (v->obj == 2) return sp_poly_inspect(sp_box_nullable_obj_dyn(*(void **)s, v->arg));\n"
+      "  if (v->obj) return sp_poly_inspect(*(void **)s ? sp_box_obj(*(void **)s, v->arg) : sp_box_nil());\n");
+  buf_puts(b,
     "  return sp_insp_fn[v->arg](s, v->nb >= 0 ? (const uint8_t *)(o + v->nb) : NULL);\n"
     "}\n");
   buf_printf(b,
@@ -13590,7 +13599,7 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     "      sp_String_append(_s, \"=\"); sp_String_append(_s, sp_insp_value(v, o));\n"
     "    }\n"
     "  }\n"
-    "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n"
+    "%s"
     "  sp_String_append(_s, \">\");\n"
     "  if (d->niv > 0) sp_poly_recur_pop(_rcm);\n"
     "  return _s->data;\n"
@@ -13600,6 +13609,7 @@ static void emit_inspect_walk(Compiler *c, int any_anon, Buf *b) {
     "  return d ? sp_insp_walk_row(d, cls_id, p) : \"#<Object>\";\n"
     "}\n",
     any_anon ? "d->name ? d->name : sp_class_display((sp_Class){cls_id})" : "d->name",
+    any_computed ? "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n" : "",
     c->nclasses > 0 ? c->nclasses : 1);
 }
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
@@ -13841,7 +13851,14 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
       if (iwalk[i] & 2) buf_printf(b, "%s[%d] = &sp_insp_c_%d", icol++ ? ", " : " ", i, i);
     buf_puts(b, icol ? " };\n" : " NULL };\n");
   }
-  emit_inspect_walk(c, any_anon_walk, b);
+  int any_obj_walk = 0;
+  for (int i = 0; i < c->nclasses && !any_obj_walk; i++)
+    if (iwalk[i])
+      for (int j = 0; j < c->classes[i].nivars && !any_obj_walk; j++)
+        any_obj_walk = inspect_ivar_is_obj(c->classes[i].ivar_types[j]);
+  int any_computed_walk = 0;
+  for (int i = 0; i < c->nclasses; i++) if (iwalk[i] && c->classes[i].computed_ivar_set) any_computed_walk = 1;
+  emit_inspect_walk(c, any_anon_walk, any_obj_walk, any_computed_walk, b);
   if (sw.p) buf_puts(b, sw.p);
   free(sw.p); free(irows.p); free(IR.pool.p); free(IR.kinds); free(IR.pnames); free(IR.poffs); free(iwalk);
 }
