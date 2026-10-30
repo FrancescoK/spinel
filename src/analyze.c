@@ -1584,6 +1584,25 @@ void compute_reachable(Compiler *c, int typed) {
    not require the origination site to be reachable), so it only over-marks,
    never under-marks. The poly-dispatch switch reads `instantiated` to skip the
    `case` arm of a class no value can be (codegen_call.c). */
+/* Is the Marshal module read as a value anywhere: a constant read that is not
+   the receiver of Marshal's own dump or load? Any other call on it may answer
+   the module (`Marshal.freeze`, `itself`, `then`, `tap`). Only then can a
+   receiver the types cannot name hold it. */
+static int marshal_read_as_value(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  int *par = an_parent_map(nt), ans = 0;
+  for (int id = 0; id < nt->count && !ans; id++) {
+    if (nt_kind(nt, id) != NK_ConstantReadNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!is_marshal_const(nm)) continue;
+    int p = par ? par[id] : -1;
+    const char *meth = p >= 0 && nt_kind(nt, p) == NK_CallNode && nt_ref(nt, p, "receiver") == id ? nt_str(nt, p, "name") : NULL;
+    if (!meth || !(is_marshal_dump(nm, meth) || is_object_loader(nm, meth, 1))) ans = 1;
+  }
+  free(par);
+  return ans;
+}
+
 /* Twice: `early`, before the type fixpoint, so that the return type a poly
    receiver's call unifies over its candidates (analyze_infer.c) leaves out a
    class no reachable code constructs -- a dead FFI wrapper's `Vector2.new`
@@ -1596,7 +1615,7 @@ void compute_reachable(Compiler *c, int typed) {
    un-mark, so an arm codegen drops was never in the inferred union. */
 void compute_instantiated(Compiler *c, int early) {
   const NodeTable *nt = c->nt;
-  int disable = 0;
+  int disable = 0, marshal_val = -1;   /* marshal_val: Marshal is read as a value (found on first need) */
   /* The early pass writes ctor_reachable and leaves `instantiated` as the
      fixpoint has always seen it (unset); the late pass writes both. */
   int *keep = NULL;
@@ -1633,6 +1652,14 @@ void compute_instantiated(Compiler *c, int early) {
       Scope *encl = comp_scope_of(c, id);
       if (rk == NK_ConstantReadNode && rn && sp_streq(rn, "Marshal") && (!encl || encl->reachable)) {
         disable = 1; break;
+      }
+      /* the same on a receiver that may hold the Marshal module (`m.load(s)`
+         with Marshal handed in as an argument), when the program reads
+         Marshal as a value anywhere */
+      if (rk != NK_ConstantReadNode && (!encl || encl->reachable) &&
+          (comp_ntype(c, recv) == TY_CLASS || comp_ntype(c, recv) == TY_POLY || comp_ntype(c, recv) == TY_UNKNOWN)) {
+        if (marshal_val < 0) marshal_val = marshal_read_as_value(c);
+        if (marshal_val) { disable = 1; break; }
       }
     }
     /* allocate on the method's own class, or `self.class.new(...)` in one of
