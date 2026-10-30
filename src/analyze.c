@@ -16910,8 +16910,30 @@ static const char *nng_guard_param(Compiler *c, Scope *s, int st) {
    TY_BIGINT, which holds every Integer, so gcd's and lcm's arithmetic stays
    exact; elsewhere the reads stay boxed, where the boxed dispatch answers
    for both. */
-static TyKind isa_narrow_type(const char *cn, const Scope *s) {
+int class_has_subclass(Compiler *c, int ocid);
+static TyKind isa_narrow_type(Compiler *c, const char *cn, const Scope *s) {
   if (!cn) return TY_UNKNOWN;
+  /* A user class with no subclass: is_a?(K) proves the exact class, so the
+     read unboxes to K and its calls bind statically. A subclass instance
+     would also pass, and K's static dispatch would skip its overrides. */
+  int ci = is_builtin_class_name(cn) || is_builtin_module_name(cn) ? -1 : comp_class_index(c, cn);
+  if (ci >= 0) {
+    const ClassInfo *k = &c->classes[ci];
+    if (!(k->def_node >= 0 && nt_kind(c->nt, k->def_node) == NK_ClassNode &&
+          !k->is_builtin_const && !k->is_native_class && k->ary_root <= 0 &&
+          !class_has_subclass(c, ci)))
+      return TY_UNKNOWN;
+    /* Not one with a mixin on its chain: narrowing runs after the fixpoint,
+       too late to bring in a module's methods (Enumerable#min) for the
+       narrowed call, which then has no method to bind. */
+    for (int a = ci; a >= 0; a = c->classes[a].parent) {
+      const ClassInfo *ak = &c->classes[a];
+      if (ak->nincluded_mods || ak->enum_inc_at || ak->cmp_inc_at ||
+          ak->cmp_prepended || ak->enum_prepended)
+        return TY_UNKNOWN;
+    }
+    return ty_object(ci);
+  }
   if (sp_streq(cn, "Array")) return TY_POLY_ARRAY;
   if (sp_streq(cn, "String")) return TY_STRING;
   if (is_integer_class_name(cn))
@@ -16937,7 +16959,7 @@ static const char *isa_guard_local(Compiler *c, int pred, Scope *s, TyKind *out_
   int args = nt_ref(nt, pred, "arguments");
   int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
   if (an != 1 || !av || nt_kind(nt, av[0]) != NK_ConstantReadNode) return NULL;
-  TyKind t = isa_narrow_type(nt_str(nt, av[0], "name"), s);
+  TyKind t = isa_narrow_type(c, nt_str(nt, av[0], "name"), s);
   if (t == TY_UNKNOWN) return NULL;
   *out_t = t;
   return pn;
