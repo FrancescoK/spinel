@@ -13987,18 +13987,22 @@ static int spl_if(NodeTable *nt, int pred, int yes, int no) {
 /* An arm: the original call with these arguments and block, cloned so it
    keeps what earlier passes marked on the site (the Ruby-defined builtin
    copy an Enumerable name was given) */
-static int spl_arm(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
+static int spl_arm_on(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
   int call = nt_new_node(nt, "CallNode");
   if (call < 0) return -1;
   const SpNode *src = &nt->nodes[id];
   for (int i = 0; i < src->ni; i++) nt_node_set_int(nt, call, src->i[i].key, src->i[i].val);
   nt_node_set_str(nt, call, "name", nt_str(nt, id, "name"));
-  nt_node_set_ref(nt, call, "receiver", nt_clone_subtree(nt, recv));
+  nt_node_set_ref(nt, call, "receiver", recv);
   int an = -1;
   if (argc > 0) { an = nt_new_node(nt, "ArgumentsNode"); nt_node_set_arr(nt, an, "arguments", args, argc); }
   nt_node_set_ref(nt, call, "arguments", an);
   nt_node_set_ref(nt, call, "block", blk);
   return call;
+}
+/* (on a copy of the receiver, each arm its own) */
+static int spl_arm(NodeTable *nt, int id, int recv, const int *args, int argc, int blk) {
+  return spl_arm_on(nt, id, nt_clone_subtree(nt, recv), args, argc, blk);
 }
 int desugar_builtin_splat_forward(Compiler *c) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -14102,6 +14106,89 @@ int desugar_builtin_splat_forward(Compiler *c) {
     }
     changed = 1;
   }
+  return changed;
+}
+
+/* `recv.index(v, &expr)` (rindex, find_index): with a value the block is
+   not used, so the emitters of the value form left `expr` out, and a
+   `def mk = (puts "made"; proc { })` in `a.index(2, &mk)` never ran. CRuby
+   evaluates it once, after the receiver and the value. It is bound to a
+   local first, `(r = recv; x = v; b = expr; r.index(x, &b))`, and so are
+   the receiver and the value, so the order stays: expr may assign the
+   local the receiver reads (`a.index(2, &(a = [2]; mk))`). Only self, a
+   constant or a literal is read as it is. A read of a local or an instance
+   variable, a Symbol, nil or a lambda literal as expr does nothing, and
+   the call stays as it is. */
+static int value_block_pass_pure(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_LocalVariableReadNode || k == NK_InstanceVariableReadNode || k == NK_SymbolNode ||
+         k == NK_NilNode || k == NK_LambdaNode;
+}
+static int value_arg_pure(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  return k == NK_SelfNode || k == NK_ConstantReadNode || k == NK_ConstantPathNode || k == NK_IntegerNode || k == NK_FloatNode || k == NK_SymbolNode ||
+         k == NK_NilNode || k == NK_TrueNode || k == NK_FalseNode;
+}
+int desugar_index_value_block_pass(Compiler *c) {
+  static const char *const names[] = { "index", "rindex", "find_index", NULL };
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *calls, ncalls = an_calls_named_any(c, names, n0, &calls);
+  for (int q = 0; q < ncalls; q++) {
+    int id = calls[q];
+    if (nt_kind(nt, id) != NK_CallNode || nt_safe_nav(nt, id)) continue;
+    int recv = nt_ref(nt, id, "receiver"), args = nt_ref(nt, id, "arguments"), blk = nt_ref(nt, id, "block");
+    if (recv < 0 || args < 0 || blk < 0 || nt_kind(nt, blk) != NK_BlockArgumentNode) continue;
+    int ex = nt_ref(nt, blk, "expression");
+    if (ex < 0 || value_block_pass_pure(nt, ex)) continue;
+    int argc = 0; const int *av = nt_arr(nt, args, "arguments", &argc);
+    if (argc != 1 || nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode ||
+        nt_kind(nt, av[0]) == NK_BlockArgumentNode) continue;
+    int encl = c->nscope[id];
+    if (encl < 0 || encl >= c->nscopes) continue;
+    Scope *sc = &c->scopes[encl];
+    int base = nt->count;
+    int pre[3], npre = 0;
+    char tn[64];
+    if (!value_arg_pure(nt, recv)) {
+      snprintf(tn, sizeof tn, "_spvr%s", comp_node_tag(c, id));
+      scope_local_intern(sc, tn);
+      pre[npre++] = hwi_lwrite(nt, tn, recv);
+      recv = hwi_lread(nt, tn);
+    }
+    int arg = av[0];
+    if (!value_arg_pure(nt, arg)) {
+      snprintf(tn, sizeof tn, "_spva%s", comp_node_tag(c, id));
+      scope_local_intern(sc, tn);
+      pre[npre++] = hwi_lwrite(nt, tn, arg);
+      arg = hwi_lread(nt, tn);
+    }
+    snprintf(tn, sizeof tn, "_spvb%s", comp_node_tag(c, id));
+    scope_local_intern(sc, tn);
+    pre[npre++] = hwi_lwrite(nt, tn, ex);
+    int nblk = nt_new_node(nt, "BlockArgumentNode");
+    nt_node_set_ref(nt, nblk, "expression", hwi_lread(nt, tn));
+    int call = nblk >= 0 ? spl_arm_on(nt, id, recv, &arg, 1, nblk) : -1;
+    if (call < 0) break;
+    int stmts[4];
+    for (int i = 0; i < npre; i++) stmts[i] = pre[i];
+    stmts[npre] = call;
+    long long line = nt_int(nt, id, "node_line", 0), file = nt_int(nt, id, "node_file", 0);
+    int body = nt_new_node(nt, "StatementsNode");
+    nt_node_set_arr(nt, body, "body", stmts, npre + 1);
+    nt_node_reset(nt, id, "ParenthesesNode");
+    nt_node_set_ref(nt, id, "body", body);
+    nt_node_set_int(nt, id, "node_line", line);
+    nt_node_set_int(nt, id, "node_file", file);
+    comp_grow_node_arrays(c);
+    for (int j = base; j < nt->count; j++) {
+      c->nscope[j] = c->nscope[id];
+      nt_node_set_int(nt, j, "node_line", line);
+      nt_node_set_int(nt, j, "node_file", file);
+    }
+    changed = 1;
+  }
+  free(calls);
   return changed;
 }
 
