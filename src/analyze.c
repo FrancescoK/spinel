@@ -1773,6 +1773,13 @@ void compute_instantiated(Compiler *c, int early) {
       c->classes[p].instantiated = 1;
     c->classes[c->classes[k].is_singleton_of - 1].instantiated = 1;
   }
+  for (int k = 0; k < c->nclasses; k++) c->classes[k].inst_below = 0;
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated) continue;
+    int hops = 0;
+    for (int p = c->classes[k].parent; p >= 0 && p < c->nclasses && hops <= c->nclasses; p = c->classes[p].parent, hops++)
+      c->classes[p].inst_below = 1;
+  }
   for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
   comp_touch_global();   /* instantiated and ctor_reachable moved: inference reads them (respond_to? on a box, the plans) */

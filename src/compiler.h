@@ -993,6 +993,10 @@ typedef struct {
   int no_instance;     /* such a class whose instance side no reached code
                           opens: its singleton methods may run, but nothing
                           builds one, and its instance methods stay unreached */
+  int inst_below;      /* some proper descendant of this class is instantiated
+                          (compute_instantiated): the class has no objects of
+                          its own, but the methods that descendant inherits
+                          run on it */
   int live_sides;      /* the sides an earlier compute_reachable opened: 1 its
                           singleton methods, 2 its instances; kept open */
   /* Prepend shadow chain: when `prepend M` is called on this class,
