@@ -12742,7 +12742,7 @@ void emit_raise_class_value(Compiler *c, int kn, int mn, Buf *b) {
   CtorArityArms aerr = {0};
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
-    if (!class_is_exc_subclass(c, ci)) continue;
+    if (!class_is_exc_subclass(c, ci) || !class_has_ctor(&c->classes[ci])) continue;
     int initm = comp_method_in_chain(c, ci, "initialize", NULL);
     if (initm < 0 || !c->scopes[initm].reachable) continue;
     Scope *is = &c->scopes[initm];
@@ -12875,6 +12875,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
   for (int ci = 0; ci < c->nclasses; ci++) {
     if (is_builtin_reopen(c->classes[ci].name) || c->classes[ci].is_native_class) continue;
     if (emit_user_new_arm(c, id, ci, argc, NULL, 0, rt2, b)) continue;
+    if (!class_has_ctor(&c->classes[ci])) continue;
     int initm = comp_method_in_chain(c, ci, "initialize", NULL);
     /* A Struct or Data class's generated constructor, reached with a sole
        `*args` or a sole keyword hash: the arm builds it as the static

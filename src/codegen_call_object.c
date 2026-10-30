@@ -3019,8 +3019,12 @@ int emit_call_print_arms(Compiler *c, Buf *b, const NodeTable *nt, const char *n
   if (recv >= 0 && argc == 0 && sp_streq(name, "inspect") && ty_is_object(rt) &&
       !comp_ty_value_obj(c, rt)) {
     /* default Object#inspect: the generated per-class ivar walk */
-    buf_printf(b, "sp_obj_inspect_sw(%d, (void *)(", ty_object_class(rt));
-    emit_expr(c, recv, b); buf_puts(b, "))");
+    int pv = ++g_tmp;
+    char pn[24]; snprintf(pn, sizeof pn, "_oi%d", pv);
+    buf_printf(b, "({ void *%s = (void *)(", pn);
+    emit_expr(c, recv, b); buf_printf(b, "); %s ? ", pn);
+    emit_obj_default_inspect(c, ty_object_class(rt), pn, b);
+    buf_puts(b, " : \"nil\"; })");
     return 1;
   }
   if (recv >= 0 && argc == 0 && sp_streq(name, "to_s") && ty_is_object(rt) &&

@@ -717,7 +717,9 @@ void emit_p_one(Compiler *c, int arg, Buf *b, int indent) {
     }
     else {
       buf_printf(b, "{ void *_po = (void *)("); emit_expr(c, arg, b);
-      buf_printf(b, "); sp_puts_line(_po ? sp_obj_inspect_sw(%d, _po) : \"nil\"); }\n", cid);
+      buf_puts(b, "); sp_puts_line(_po ? ");
+      emit_obj_default_inspect(c, cid, "_po", b);
+      buf_puts(b, " : \"nil\"); }\n");
     }
   }
   else if (ty_is_ptr_array(t) || ty_is_obj_array(t)) {

@@ -11140,6 +11140,21 @@ int emit_exc_reopen_pick_head(Compiler *c, const int *xr, int xn, const char *cl
   return t;
 }
 
+/* The default #inspect of the object the void * variable `p` holds, for a
+   receiver typed as class cid: the generated per-class switch, asked with the
+   class id the object carries where the representation says its box reads
+   one (repr_dyn_cls: a class that others inherit from, whose objects start
+   with their cls_id), because the switch has an arm for the class of the
+   object, not for the type it is held as (P#show's `p self` on a C or a D).
+   Any other class is asked with the id it is typed as. With no class given an
+   arm there is no switch (g_emit_obj_dispatch), and no object of a program
+   class exists, so the object is nil. */
+void emit_obj_default_inspect(Compiler *c, int cid, const char *p, Buf *b) {
+  if (!g_emit_obj_dispatch) buf_puts(b, "\"nil\"");
+  else if (repr_dyn_cls(c, ty_object(cid))) buf_printf(b, "sp_obj_inspect_sw((int)*(sp_int *)%s, %s)", p, p);
+  else buf_printf(b, "sp_obj_inspect_sw(%d, %s)", cid, p);
+}
+
 /* The class name a default Object#to_s / #inspect of class `ci` prints, as the
    two halves of a C format: `name` goes inside "#<...>" and `arg` leads the
    call's arguments. A Class.new class prints at run time (a constant may
@@ -11850,6 +11865,19 @@ static void emit_ctor_param_roots(Compiler *c, int init, Buf *b) {
 }
 static void anon_name_expr(char *out, size_t cap, int ci);
 
+/* Does a class get a constructor (sp_X_new)? One no object of which can
+   exist (compute_instantiated) does not, except a value type, whose boxing
+   function is defined with it and is named by the methods taking self. */
+int class_has_ctor(const ClassInfo *ci) {
+  return ci->instantiated || ci->is_value_type;
+}
+/* Are class cid's instances kept in a per-class pool? An exception, an Array
+   subclass and a subclass of a native class are built otherwise. */
+static int class_pooled(Compiler *c, int cid) {
+  ClassInfo *ci = &c->classes[cid];
+  return !class_is_exc_subclass(c, cid) && ci->ary_root <= 0 && ci->nsub_root <= 0;
+}
+
 void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
   /* Native (C-backed) class: constructor + methods live in the package; nothing
      is generated here (see the native_method externs + .new emission). */
@@ -12071,6 +12099,12 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
     }
     return;
   }
+  /* Nothing builds an object of this class, so it has no constructor. The pool
+     stays: dup and allocate on a receiver typed as the class name it. */
+  if (!class_has_ctor(ci)) {
+    if (class_pooled(c, cid) && !comp_class_is_module(c, ci)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+    return;
+  }
   int initcls = cid;
   int init = comp_method_in_chain(c, cid, "initialize", &initcls);
   /* An explicit `&blk` block parameter on a non-yielding initialize is a real
@@ -12129,7 +12163,7 @@ void emit_class_new(Compiler *c, ClassInfo *ci, Buf *b) {
      the pool instead of free()ing them, and sp_X_new reuses them -- this
      removes the malloc/free churn of allocation-heavy workloads. Exception
      subclasses use sp_exc_new_sub storage, so they are not pooled. */
-  if (!class_is_exc_subclass(c, cid) && ci->ary_root <= 0 && ci->nsub_root <= 0) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
+  if (class_pooled(c, cid)) buf_printf(b, "SP_POOL_DEFINE(%s)\n", ci->c_name);
   int init_pf = ctor_init_proc_form(c, cid);
   buf_printf(b, "static sp_%s *sp_%s_new%s(", ci->c_name, ci->c_name, init_pf >= 0 ? "_noinit" : "");
   emit_ctor_params(c, init, init_has_blk, b);
@@ -13241,6 +13275,20 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
      real function the child casts into */
   return (ddk == NK_ModuleNode) ? i : tdef;
 }
+/* Whether the per-class object switches (to_s, inspect, the conversions and
+   the Marshal rows) have an arm for class i, and so whether the dispatch is
+   written at all. An arm answers an object whose run-time class is i, so only
+   a class such an object may exist of (compute_instantiated) has one; a
+   builtin reopen and a module have no objects of their own. */
+static int class_has_obj_arm(Compiler *c, int i) {
+  ClassInfo *ci = &c->classes[i];
+  return ci->instantiated && !class_is_builtin_reopen(c, i) && !comp_class_is_module(c, ci);
+}
+static int program_has_obj_arm(Compiler *c) {
+  for (int i = 0; i < c->nclasses; i++)
+    if (class_has_obj_arm(c, i)) return 1;
+  return 0;
+}
 /* A conversion method declared with a named `&block` parameter takes it as a
    second C parameter (emit_method_signature's rule: a named block on a method
    that does not yield); the bridges declare it and pass no block, as a bare
@@ -13275,7 +13323,7 @@ static void emit_conv_bridge(Compiler *c, Buf *b, const char *mname, TyKind want
   buf_printf(b, "%s {\n  switch (cls_id) {\n", sig);
   for (int i = 0; i < c->nclasses; i++) {
     int tmi = -1;
-    int callee = conv_bridge_callee(c, i, mname, want, 0, &tmi);
+    int callee = class_has_obj_arm(c, i) ? conv_bridge_callee(c, i, mname, want, 0, &tmi) : -1;
     if (callee < 0) continue;
     /* A conversion whose answer is BOXED is still a conversion. Its static
        type is the analysis's business and changes with the mode -- under
@@ -13358,6 +13406,7 @@ static void emit_kconv_bridge(Compiler *c, Buf *b) {
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     int rows = 0;
+    if (!class_has_obj_arm(c, i)) continue;
     for (int w = 0; w < 4; w++)
       if (kconv_row_wanted(c, w)) emit_kconv_row(c, i, w, &rows, b);
     /* row 4: #to_f for a Math argument, which rb_to_float converts only
@@ -13658,6 +13707,13 @@ static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_co
     any_computed ? "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n" : "",
     c->nclasses > 0 ? c->nclasses : 1);
 }
+/* The name of a program class by its id, which a class value is asked for too
+   (the C extension bridge, pack, a poly value's class): written wherever a
+   program class exists, among the object switches or, with none, alone. */
+static void emit_obj_cls_name_rt(Buf *b) {
+  buf_puts(b, "static const char *sp_obj_cls_name_rt(int cls_id) {\n"
+              "  sp_Class _c = {cls_id}; return sp_class_to_s(_c);\n}\n");
+}
 static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   /* Forward-declare the user to_s/inspect methods the switches dispatch to --
      the switch bodies are emitted ahead of the method definitions. */
@@ -13688,6 +13744,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
     ClassInfo *tci = &c->classes[i];
+    if (!class_has_obj_arm(c, i)) continue;
     /* a native class binding its own to_s (IO::Buffer): dispatch to the
        declared C symbol so a boxed instance renders like a typed receiver */
     if (tci->is_native_class && tci->c_struct) {
@@ -13769,8 +13826,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
                    "const char *", "static const char *sp_obj_to_path_sw(int cls_id, void *p)",
                    0, "return NULL;");
   if (c->uses_kconv || c->uses_kw_to_hash) emit_kconv_bridge(c, b);
-  buf_puts(b, "static const char *sp_obj_cls_name_rt(int cls_id) {\n"
-              "  sp_Class _c = {cls_id}; return sp_class_to_s(_c);\n}\n");
+  emit_obj_cls_name_rt(b);
   /* the switch is built aside: the walk's table, built with it, comes first */
   Buf sw; memset(&sw, 0, sizeof sw);
   Buf irows; memset(&irows, 0, sizeof irows);
@@ -13783,6 +13839,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   emit_hook_object_root(b, "SP_GC_ROOT", "p");
   buf_puts(b, "  switch (cls_id) {\n");
   for (int i = 0; i < c->nclasses; i++) {
+    if (!class_has_obj_arm(c, i)) continue;
     /* native classes with a bound #inspect, same as the to_s dispatcher */
     if (c->classes[i].is_native_class && c->classes[i].c_struct) {
       int nin = comp_native_method_find(c, i, "inspect", 0, 0);
@@ -13854,7 +13911,7 @@ static void emit_obj_inspect_dispatch(Compiler *c, Buf *b) {
   int kernel = obj_kernel_inspect_used(c);
   for (int i = 0; kernel && i < c->nclasses; i++) {
     ClassInfo *ci = &c->classes[i];
-    if (ci->is_native_class || comp_class_is_module(c, ci) || !class_inspectable(c, i) || ci->is_struct || ci->is_data ||
+    if (!class_has_obj_arm(c, i) || ci->is_native_class || !class_inspectable(c, i) || ci->is_struct || ci->is_data ||
         class_is_exc_subclass(c, i) || ci->ary_root > 0)
       continue;
     iwalk[i] |= 2;
@@ -14207,7 +14264,7 @@ static void emit_marshal_dispatch(Compiler *c, Buf *b) {
   if (!has) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int any_anon = 0;
   for (int i = 0; i < c->nclasses; i++) {
-    has[i] = (unsigned char)emit_marshal_class_row(c, i, &R, &rows);
+    has[i] = class_has_obj_arm(c, i) ? (unsigned char)emit_marshal_class_row(c, i, &R, &rows) : 0;
     any_anon |= has[i] && !marshal_sg_raises(c, i) && comp_class_anonymous(c, i);
   }
   /* the conversion pairs, then the pool, the rows and the table */
@@ -15267,7 +15324,14 @@ void emit_super(Compiler *c, int id, Buf *b) {
     char cls[96];
     if (!vt && class_has_subclass(c, cid)) snprintf(cls, sizeof cls, "(%s)->cls_id", g_self);
     else snprintf(cls, sizeof cls, "%d", cid);
-    if (sp_streq(s->name, "inspect"))
+    /* with no switch written no object of a program class exists, and the
+       rendering is the one the name gives (obj_default_name) */
+    if (!g_emit_obj_dispatch) {
+      char drn[512], darg[96];
+      obj_default_name(c, cid, drn, sizeof drn, darg, sizeof darg);
+      buf_printf(b, "sp_sprintf(\"#<%s:0x%%016llx>\", %s(unsigned long long)(uintptr_t)%s%s)", drn, darg, vt ? "&" : "", g_self);
+    }
+    else if (sp_streq(s->name, "inspect"))
       buf_printf(b, "sp_obj_kernel_inspect(%s, (void *)%s%s)", cls, vt ? "&" : "", g_self);
     else
       buf_printf(b, "sp_sprintf(\"#<%%s:0x%%016llx>\", sp_obj_cls_name_rt(%s), (unsigned long long)(uintptr_t)%s%s)",
@@ -16971,8 +17035,8 @@ void emit_regex_section(Compiler *c, Buf *b) {
     buf_puts(b, "  sp_obj_to_str_fn = sp_obj_to_str_sw;\n");
     buf_puts(b, "  sp_obj_to_path_fn = sp_obj_to_path_sw;\n");
     if (c->uses_kconv || c->uses_kw_to_hash) buf_puts(b, "  sp_obj_conv_fn = sp_obj_conv_sw;\n");
-    buf_puts(b, "  sp_obj_cls_name_fn = sp_obj_cls_name_rt;\n");
   }
+  if (c->nclasses > 0) buf_puts(b, "  sp_obj_cls_name_fn = sp_obj_cls_name_rt;\n");
   if (program_has_arysub(c)) buf_puts(b, "  sp_bsub_cls_fn = sp_bsub_cls_of;\n");   /* #7449 */
   if (g_needs_class_machinery && program_has_masquerade(c))
     buf_puts(b, "  sp_cls_visible_fn = sp_cls_visible;\n");
@@ -18414,7 +18478,7 @@ static void scan_prologue_features(Compiler *c) {
      helper is emitted; `puts "hello"` sets neither. */
   g_emit_sym_rt = g_uses_symbols;
   g_emit_class_names = (c->nclasses > 0) || g_needs_class_machinery;
-  g_emit_obj_dispatch = (c->nclasses > 0);
+  g_emit_obj_dispatch = program_has_obj_arm(c);
   {
     int polyish = 0, has_class = 0;
 #define SP_TT(t) do { TyKind _t = (t);       if (_t == TY_POLY || ty_is_array(_t) || ty_is_hash(_t)) polyish = 1;       else if (_t == TY_SYMBOL) g_emit_sym_rt = 1;       else if (_t == TY_CLASS) has_class = 1; } while (0)
@@ -21232,7 +21296,10 @@ static void prepare_obj_cmp_dispatch(Compiler *c) {
 static void emit_obj_dispatchers(Compiler *c, Buf *body) {
   unit_begin_in(body, "dispatch", "dispatch");
   if (g_uses_marshal) emit_marshal_dispatch(c, body);
+  /* with the switches it is written among them; a program class that has no
+     switch still has a name */
   if (g_emit_obj_dispatch) emit_obj_inspect_dispatch(c, body);
+  else if (c->nclasses > 0) emit_obj_cls_name_rt(body);
   emit_obj_to_hash_dispatch(c, body);
   emit_obj_to_json_dispatch(c, body);
   emit_obj_to_h_dispatch(c, body);
@@ -21717,8 +21784,8 @@ char *codegen_program(const NodeTable *nt) {
     buf_puts(&b, "static const char *sp_obj_to_path_sw(int cls_id, void *p) SP_COLD SP_NOINLINE;\n");
     if (c->uses_kconv || c->uses_kw_to_hash)
       buf_puts(&b, "static int sp_obj_conv_sw(int cls_id, void *p, int which, sp_RbVal *out) SP_COLD SP_NOINLINE;\n");
-    buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) SP_COLD SP_NOINLINE;\n");
   }
+  if (c->nclasses > 0) buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) SP_COLD SP_NOINLINE;\n");
   /* The #message / #to_s dispatchers below call these bodies unconditionally,
      so a program that defines an override without ever querying it left the
      dispatcher calling an undeclared function (#3834). Mark them before the
@@ -21779,7 +21846,7 @@ char *codegen_program(const NodeTable *nt) {
       if (comp_method_in_chain(c, i, "to_s", NULL) < 0)
         buf_printf(&b, "static const char *sp_%s_to_s(sp_%s *self);\n", ci->c_name, ci->c_name);
     }
-    else {
+    else if (class_has_ctor(ci)) {
       int icid = i;
       int init = comp_method_in_chain(c, i, "initialize", &icid);
       const char *star = ci->is_value_type ? "" : "*";

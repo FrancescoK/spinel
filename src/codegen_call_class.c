@@ -2579,6 +2579,9 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           ctor_arity_add(&aerr, ci, am);
           continue;
         } }
+      /* a module has no `new`, and a class no object of may exist has no
+         constructor to name (class_has_ctor, as in the arms below) */
+      if (!class_has_ctor(&c->classes[ci])) continue;
       int np = initm >= 0 ? c->scopes[initm].nparams : 0;
       int nreq = initm >= 0 ? c->scopes[initm].nrequired : 0;
       /* A Struct or Data class has a GENERATED constructor taking its members
@@ -2742,6 +2745,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
           ctor_arity_add(&aerr, ci, am);
           continue;
         } }
+      if (!class_has_ctor(&c->classes[ci])) continue;
       if (initm >= 0 && c->scopes[initm].nrequired != 0) continue;
       if (c->classes[ci].is_native_class) continue;
       if (emit_ctor_splice_arm(c, id, ci, initm, rt2, b)) continue;
@@ -4630,7 +4634,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
             if (subtree_has_side_effect(c, av0[a])) plain = 0;
           int nsub = 0;
           for (int k = 0; plain && k < c->nclasses; k++) {
-            if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+            if (k == new_cls || !is_descendant(c, k, new_cls) || !class_has_ctor(&c->classes[k])) continue;
             ClassInfo *kc = &c->classes[k];
             int ik = comp_method_in_chain(c, k, "initialize", NULL);
             if (kc->is_value_type || kc->is_struct || kc->is_native_class ||
@@ -4641,7 +4645,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
           if (plain && nsub > 0) {
             buf_puts(b, "(");
             for (int k = 0; k < c->nclasses; k++) {
-              if (k == new_cls || !is_descendant(c, k, new_cls)) continue;
+              if (k == new_cls || !is_descendant(c, k, new_cls) || !class_has_ctor(&c->classes[k])) continue;
               int ik = comp_method_in_chain(c, k, "initialize", NULL);
               buf_printf(b, "%s.cls_id == %d ? (sp_%s *)sp_%s_new(", cmethod_cls_token(c, encl), k, ncls->c_name, c->classes[k].c_name);
               if (ik >= 0) emit_args_filled(c, ik, nt_ref(nt, id, "arguments"), "", b);

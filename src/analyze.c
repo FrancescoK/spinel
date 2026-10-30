@@ -1695,8 +1695,11 @@ void compute_instantiated(Compiler *c, int early) {
        scope), so it must not mark the class instantiated. */
     if (recv < 0 && sp_streq(name, "new")) {
       Scope *encl = comp_scope_of(c, id);
+      /* the singleton method is inherited: it builds the receiving class,
+         this one or a descendant (cmethod_super_receiving_class) */
       if (encl && encl->class_id >= 0 && encl->is_cmethod && encl->reachable)
-        c->classes[encl->class_id].instantiated = 1;
+        for (int k = 0; k < c->nclasses; k++)
+          if (k == encl->class_id || is_descendant(c, k, encl->class_id)) c->classes[k].instantiated = 1;
     }
     /* raise Cls / raise Cls, msg : constructs an instance of Cls */
     if (recv < 0 && sp_streq(name, "raise")) {
@@ -1722,6 +1725,25 @@ void compute_instantiated(Compiler *c, int early) {
       }
     }
   }
+  /* The object a `rescue ... => e` binds is built at the clause when the
+     exception was raised with none (Thread#raise, Fiber#raise,
+     Timeout.timeout(n, Cls) and the runtime's own raises take a class, not an
+     object): a binding typed as a program exception class is handed an
+     instance of the class the clause names, or a subclass of it, which no
+     `new` of the program writes (emit_rescue). */
+  if (!early && !disable)
+    for (int id = 0; id < nt->count; id++) {
+      if (nt_kind(nt, id) != NK_RescueNode) continue;
+      int ref = nt_ref(nt, id, "reference");
+      if (ref < 0 || nt_kind(nt, ref) != NK_LocalVariableTargetNode) continue;
+      Scope *encl = comp_scope_of(c, ref);
+      if (!encl || !encl->reachable) continue;
+      LocalVar *lv = scope_local(encl, nt_str(nt, ref, "name"));
+      int xc = lv && ty_is_object(lv->type) ? ty_object_class(lv->type) : -1;
+      if (xc < 0 || !class_is_exc_subclass(c, xc)) continue;
+      for (int k = 0; k < c->nclasses; k++)
+        if (k == xc || is_descendant(c, k, xc)) c->classes[k].instantiated = 1;
+    }
   if (disable)
     for (int k = 0; k < c->nclasses; k++) {
       /* main's ivars live on the Toplevel pseudo-class, which is never built */
@@ -1739,6 +1761,17 @@ void compute_instantiated(Compiler *c, int early) {
     /* a C extension makes any exception class of the program's by name
        (rb_exc_new2 through sp_cext_exception_new_fn), with no `.new` here */
     if (c->n_cext_extensions && class_is_exc_subclass(c, k)) c->classes[k].instantiated = 1;
+  }
+  /* A singleton class's constructor stamps its objects with the parent's id
+     until the singleton's first method runs (ctor_cls_id), and each `extend`
+     moves the object up one link of the chain (sg_chain_link, whose parent is
+     the previous link), so an object whose exact class is the original class,
+     or any link below the last, exists wherever the last link is built. */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (!c->classes[k].instantiated || !c->classes[k].is_singleton_of) continue;
+    for (int p = c->classes[k].parent; p >= 0 && p < c->nclasses && c->classes[p].is_singleton_of; p = c->classes[p].parent)
+      c->classes[p].instantiated = 1;
+    c->classes[c->classes[k].is_singleton_of - 1].instantiated = 1;
   }
   for (int k = 0; k < c->nclasses; k++) { c->classes[k].ctor_reachable = c->classes[k].instantiated; comp_touch_class(c->classes[k].idx); }
   if (early) { for (int k = 0; k < c->nclasses; k++) c->classes[k].instantiated = keep[k]; free(keep); }
