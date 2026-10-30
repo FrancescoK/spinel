@@ -977,6 +977,8 @@ int desugar_eval_method_block(Compiler *c);
 int desugar_singleton_body_self(Compiler *c);
 int desugar_inherited_hooks(Compiler *c);
 int desugar_self_const_get(Compiler *c);
+int desugar_holder_block_self_const(Compiler *c);
+int holder_subclass_defines(const NodeTable *nt, const char *holder, const char *name);
 int desugar_dynamic_const_get(Compiler *c);
 TyKind return_node_type(Compiler *c, int id);
 int infer_return_types(Compiler *c);
