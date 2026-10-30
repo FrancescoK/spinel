@@ -17553,6 +17553,30 @@ static int emit_array_arith_call(Compiler *c, int id, Buf *b) {
                      : sp_streq(name, "%") ? "sp_poly_mod"
                      : sp_streq(name, "**") ? poly_pow_fn(rt) : NULL;
       if (pf) {
+        /* A receiver that is a missing method's raise (the gate's
+           sp_raise_nomethod token, the value of a call typed as nothing)
+           never answers, so the operator never runs, and CRuby never
+           evaluates the argument: the expression is the receiver's raise.
+           Spelled as that token it is still one where a typed slot stores
+           it (emit_unresolved_coerced_text); held as the operand of the
+           boxed arithmetic it was a statement expression the store took
+           raw, and `missing(...) + "\n" + sb` assigned to a String subclass
+           local did not build. The receiver's text is tried first, and
+           what it hoisted is taken back when it is not the token. */
+        {
+          size_t pre_mark = g_pre ? g_pre->len : 0;
+          int saved_tmp = g_tmp;
+          Buf rb; memset(&rb, 0, sizeof rb);
+          emit_boxed(c, recv, &rb);
+          if (strncmp(past_open_parens(rb.p ? rb.p : ""), "sp_raise_nomethod(", 18) == 0) {
+            buf_puts(b, rb.p);
+            free(rb.p);
+            return 1;
+          }
+          if (g_pre && g_pre->len > pre_mark) { g_pre->len = pre_mark; g_pre->p[pre_mark] = '\0'; }
+          g_tmp = saved_tmp;
+          free(rb.p);
+        }
         int tp2 = ++g_tmp;
         buf_puts(b, "({ "); tp2 = hold_operand(c, recv, TY_POLY, 1, tp2, 1, " ", b);
         buf_printf(b, "%s(_t%d, ", pf, tp2);
