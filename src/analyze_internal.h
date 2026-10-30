@@ -283,6 +283,7 @@ int ie_forwards_block_tail(Compiler *c, int node);
 int return_in_lambda(Compiler *c, int rid);
 /* 1 if scope `si` returns, other than at `guard_ret`, before it. */
 int return_before(Compiler *c, int si, int guard_ret);
+TyKind pinned_guard_unpin_ret(Compiler *c, int mi);
 /* A proc-typed local's proc_ret: the join of the answers of the procs it is written. 1 on a change. */
 int join_local_proc_rets(Compiler *c);
 /* Scan a subtree for BreakNode values and return their unified type.

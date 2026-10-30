@@ -49573,8 +49573,11 @@ static int an_lower_yielders(Compiler *c) {
     /* `if block_given? ... else ... end` was typed per call form while the
        method was inlined (Scope.ret_noblock); as one emitted function both
        arms are live at run time, so its value is the two joined */
-    if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
-    scope_set_ret_pin_guard(m, -1);   /* one function answers both: its own ret */
+    /* one function answers both: its own ret, the Enumerator a guard pin
+       stands for joined with the body's values (pinned_guard_unpin_ret) */
+    scope_set_ret(m, pinned_guard_unpin_ret(c, mi));
+    if (m->ret_noblock != TY_UNKNOWN) scope_set_ret_noblock(m, TY_UNKNOWN);
+    scope_set_ret_pin_guard(m, -1);
     /* The return the fixpoint derived stands. This forced TY_INT, which was
        right only by coincidence: the body's own tail already types the method,
        and overwriting it made `walk` answer Integer where it answers nil, and
@@ -49695,7 +49698,8 @@ static void an_phase_procs(Compiler *c) {
       LocalVar *bl = m->yields && m->blk_param && m->blk_param[0] ? scope_local(m, m->blk_param) : NULL;
       if (!bl || !bl->is_cell || scope_has_yield_node(c, m)) continue;
       m->yields = 0;
-      if (m->ret_noblock != TY_UNKNOWN) { scope_set_ret(m, ty_unify(m->ret, m->ret_noblock)); scope_set_ret_noblock(m, TY_UNKNOWN); }
+      scope_set_ret(m, pinned_guard_unpin_ret(c, mi));
+      if (m->ret_noblock != TY_UNKNOWN) scope_set_ret_noblock(m, TY_UNKNOWN);
       scope_set_ret_pin_guard(m, -1);
       again = 1;
     }
