@@ -11001,11 +11001,22 @@ static int ee_cmethod_owner(const NodeTable *nt, const int *parent, int d, char 
 }
 /* mark in v[i].shadow each Enumerable name a statement `st` of the class's
    body (in a `class << self` of it with sclass) may define as a class
-   method: a Symbol or String argument of a call (`attr_accessor :count`,
-   `define_singleton_method(:first)`, `def_delegators :@a, :first`), an
-   alias's new name, and, in the body itself, each method of a program's
-   module it extends */
-static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int i, int ct, int st, int sclass) {
+   method: a Symbol or String argument of a call (`attr_accessor :count` in
+   `class << self`, `define_singleton_method(:first)`, `def_delegators :@a,
+   :first`) but one of the body's declarations of instance methods, an
+   alias's new name in `class << self`, and, in the body itself, each
+   method of a program's module it extends ahead of Enumerable: after the
+   body's `extend Enumerable` (ahead), or before it in the same `extend`,
+   which mixes its last module in first */
+static int ee_instance_decl(const char *nm) {
+  static const char *const decl[] = {
+    "attr", "attr_reader", "attr_writer", "attr_accessor", "alias_method", "define_method", "private",
+    "public", "protected", "private_constant", "public_constant", "remove_method", "undef_method", NULL };
+  for (int i = 0; nm && decl[i]; i++) if (sp_streq(decl[i], nm)) return 1;
+  return 0;
+}
+static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int i, int ct, int st, int sclass,
+                         int ahead) {
   NodeKind k = nt_kind(nt, st);
   if (k == NK_AliasMethodNode) {
     int nn = nt_ref(nt, st, "new_name");
@@ -11021,9 +11032,11 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
   if (nm && sp_streq(nm, "extend") && !sclass) {
     char ctx[512];
     ee_own_key(nt, ct, ctx, sizeof ctx);
+    int en = -1;
+    for (int j = 0; j < an && en < 0; j++) if (ee_is_enumerable_ref(nt, av[j])) en = j;
     for (int j = 0; j < an; j++) {
       char mk[512];
-      if (ee_is_enumerable_ref(nt, av[j]) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
+      if ((en >= 0 ? j >= en : !ahead) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
       NT_FOREACH_KIND(nt, NK_DefNode, d) {
         int ni = ee_name_index(nt_str(nt, d, "name"));
         int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
@@ -11036,6 +11049,7 @@ static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int
     return;
   }
   if (nm && (sp_streq(nm, "extend") || sp_streq(nm, "include") || sp_streq(nm, "prepend"))) return;
+  if (!sclass && ee_instance_decl(nm)) return;
   for (int j = 0; j < an; j++) {
     NodeKind ak = nt_kind(nt, av[j]);
     const char *s = ak == NK_SymbolNode ? nt_str(nt, av[j], "value")
@@ -11131,11 +11145,13 @@ int desugar_extend_enumerable(Compiler *c, HostStep *h) {
     int i = ee_find(v, nv, key);
     if (i < 0 || !v[i].in_set) continue;
     int bn = 0; const int *bb = ee_body_list(nt, id, &bn);
+    int en_at = -1;   /* the body's `extend Enumerable` */
+    for (int j = 0; j < bn && en_at < 0; j++) if (ee_extends_enumerable(nt, bb[j])) en_at = j;
     for (int j = 0; j < bn; j++) {
-      ee_mark_stmt(nt, parent, v, i, id, bb[j], 0);
+      ee_mark_stmt(nt, parent, v, i, id, bb[j], 0, j > en_at);
       if (ee_sclass_owner(nt, parent, bb[j]) < 0) continue;
       int sn = 0; const int *ss = nt_arr(nt, nt_ref(nt, bb[j], "body"), "body", &sn);
-      for (int q = 0; q < sn; q++) ee_mark_stmt(nt, parent, v, i, id, ss[q], 1);
+      for (int q = 0; q < sn; q++) ee_mark_stmt(nt, parent, v, i, id, ss[q], 1, 1);
     }
   }
   /* the calls that go to a twin, all chosen before any is rewritten */

@@ -1,8 +1,9 @@
 # A class that extends Enumerable keeps the class methods that come ahead
 # of it: an accessor of its singleton class, define_singleton_method, a
-# module extended after it; a constant names the class its namespace
-# reaches; a body with rescue extends it too; and the class's constants
-# are its own.
+# module extended after it (or before it in one `extend`), but not one
+# extended before it, nor the body's own instance declarations; a constant
+# names the class its namespace reaches; a body with rescue extends it too;
+# and the class's constants are its own.
 
 class Counter
   extend Enumerable
@@ -70,3 +71,49 @@ end
 p Color.to_a
 p Color.constants.sort
 
+
+module Firsts
+  def first = "module first"
+  def min = "module min"
+end
+class Early
+  extend Firsts
+  extend Enumerable
+  def self.each
+    yield 3
+    yield 1
+  end
+end
+p Early.first
+class Both
+  extend Firsts, Enumerable
+  def self.each
+    yield 3
+    yield 1
+  end
+end
+p Both.first
+class Rev
+  extend Enumerable, Firsts
+  def self.each
+    yield 3
+    yield 1
+  end
+end
+p Rev.first
+class Inst
+  extend Enumerable
+  attr_accessor :count
+  alias_method :total, :count
+  define_method(:sum) { 0 }
+  def self.each
+    yield 3
+    yield 1
+  end
+end
+p Inst.count
+p Inst.sum
+o = Inst.new
+o.count = 7
+p o.count
+p o.sum
