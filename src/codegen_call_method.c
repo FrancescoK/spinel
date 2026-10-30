@@ -459,7 +459,7 @@ int emit_op_method_original_name(Compiler *c, const BopCtx *x, Buf *b) {
   if (tg4 >= 0 && c->scopes[tg4].name) {
     buf_puts(b, "((void)("); emit_expr(c, recv, b);
     buf_puts(b, "), sp_sym_intern(");
-    emit_str_literal(b, comp_prep_user_name(c->scopes[tg4].name));
+    emit_str_literal(b, comp_scope_user_name(&c->scopes[tg4]));
     buf_puts(b, "))");
   }
   else {

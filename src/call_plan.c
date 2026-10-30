@@ -598,8 +598,8 @@ void cplan_served_report(void) {
 }
 
 static int ct_send_shadow(Compiler *c, int id, const char *name) {
-  return id >= 0 && comp_name_is_prep_shadow(name) &&
-         (nt_str(c->nt, id, "send_blind") || nt_str(c->nt, id, "vis_enforce"));
+  return id >= 0 && (nt_str(c->nt, id, "send_blind") || nt_str(c->nt, id, "vis_enforce")) &&
+         comp_name_is_shadow_copy(c, name, SHADOW_PREP);
 }
 
 /* A plan-only reader must not lose a user target. This assertion belongs
@@ -915,7 +915,7 @@ static int guard_chain(Compiler *c, int mi, int *to, DispArm *arm, char sel[][32
 static int ct_guard(Compiler *c, int id, int mi, unsigned flags) {
   int to[VER_MAX_ARMS + 1], n = guard_chain(c, mi, to, NULL, NULL);
   const Scope *m = &c->scopes[mi];
-  const char *name = c->ver_built ? m->name : comp_prep_user_name(m->name);
+  const char *name = c->ver_built ? m->name : comp_scope_user_name(m);
   if (flags & CT_CAPTURE) {
     const LrDef *d = NULL;
     LoadPoint p = elab_point_of(c, id);
@@ -2567,7 +2567,7 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, si
       Scope *s = comp_scope_of(c, id);
       char msg[2400];
       snprintf(msg, sizeof msg, "%s.%s: %s", c->classes[s->class_id].name,
-               comp_prep_user_name(s->name), sp->msg);
+               comp_scope_user_name(s), sp->msg);
       cplan_refuse_set(p, sp->rfrom, sp->rkind, msg, buf, cap);
     }
     return;
@@ -3929,7 +3929,7 @@ static int guard_entry_make(Compiler *c, int mi, int ar) {
   /* Cloned forwarding bodies retain the hidden name even when the clone
      has no pin in the original entry's node index. */
   for (int k = 0; k < n - 1; k++) arm[k].callee = c->scopes[to[k]].name;
-  return ver_entry_emit(c, m->class_id, m->is_cmethod, comp_prep_user_name(m->name), ar, blk, spliced, arm, to, n - 1, to[n - 1]);
+  return ver_entry_emit(c, m->class_id, m->is_cmethod, comp_scope_user_name(m), ar, blk, spliced, arm, to, n - 1, to[n - 1]);
 }
 int ver_entry_targets(const Compiler *c, int e, int *out, int *tests) {
   const NodeTable *nt = c->nt;
@@ -4086,7 +4086,7 @@ void ver_entries_build(Compiler *c) {
   for (int s = 0; s < c->nscopes; s++) {   /* the later prepends' copies */
     if (!c->scopes[s].mixin_guarded) continue;
     const Scope *m = &c->scopes[s];
-    const char *name = comp_prep_user_name(m->name);
+    const char *name = comp_scope_user_name(m);
     if ((m->is_cmethod ? comp_cmethod_in_class(c, m->class_id, name) : comp_method_in_class(c, m->class_id, name)) != s) continue;
     if (!(ngc & (ngc - 1)) && !(gc = realloc(gc, sizeof *gc * (size_t)(ngc ? 2 * ngc : 1)))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
     gc[ngc++] = s;
@@ -4102,8 +4102,8 @@ void ver_entries_build(Compiler *c) {
       for (int j = 0; j < ngc; j++) {
         const Scope *m = &c->scopes[gc[j]];
         int to[VER_MAX_ARMS + 1];
-        if (!sp_streq(comp_prep_user_name(m->name), names[i]) && !is_send_family(names[i])) continue;
-        VerNeed w = { 1, m->class_id, m->is_cmethod, gc[j], ver_arity(c, id, to, guard_chain(c, gc[j], to, NULL, NULL)), comp_prep_user_name(m->name) };
+        if (!sp_streq(comp_scope_user_name(m), names[i]) && !is_send_family(names[i])) continue;
+        VerNeed w = { 1, m->class_id, m->is_cmethod, gc[j], ver_arity(c, id, to, guard_chain(c, gc[j], to, NULL, NULL)), comp_scope_user_name(m) };
         if (!ver_need_has(c, &o, w)) ver_need_add(&o, w);
       }
     }
@@ -4125,7 +4125,7 @@ void ver_entries_build(Compiler *c) {
     int mi = gc[j], to[VER_MAX_ARMS + 1];
     Scope *m = &c->scopes[mi];
     int ar = ver_arity(c, -1, to, guard_chain(c, mi, to, NULL, NULL));
-    int e = ct_entry_of(c, 1, m->class_id, m->is_cmethod, comp_prep_user_name(m->name), ar);
+    int e = ct_entry_of(c, 1, m->class_id, m->is_cmethod, comp_scope_user_name(m), ar);
     if (e < 0) continue;
     c->scopes[e].entry = ENTRY_TABLE;
     c->scopes[e].mixin_guarded = m->mixin_guarded;

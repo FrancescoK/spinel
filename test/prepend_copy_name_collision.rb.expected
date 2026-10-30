@@ -1,0 +1,22 @@
+"M+C"
+[:"__prep 0 foo", :"__prep 1 foo", :foo]
+[true, true, true]
+["own", "own", "own", "own"]
+"C"
+:foo
+false
+NoMethodError
+NoMethodError
+false
+[:"__prep 0 bar"]
+:"__prep 0 bar"
+:"__prep 0 bar"
+"K"
+"own"
+"L+K"
+"own"
+[:"__prep 0 foo", :foo]
+"SM+S"
+true
+["sown", "sown", "sown"]
+false

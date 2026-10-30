@@ -14674,7 +14674,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      (`super { |v| yield v + 1 }` in a class that prepends). Those, and
      under --plan-check as the assertion, take the lookup. */
   const CallPlan *spl = cplan_user(c, id);
-  const char *own = comp_prep_user_name(comp_scope_def_name(c, s));
+  const char *own = comp_scope_def_name(c, s);
   int mi = -1;
   if (spl->via == UC_SUPER && spl->mi >= 0 && spl->owner_ci == (shadow ? s->class_id : p) &&
       (shadow || (c->scopes[spl->mi].name && sp_streq(c->scopes[spl->mi].name, own)))) {
@@ -17180,7 +17180,7 @@ static void rbs_class_methods(Compiler *c, Buf *b, int ci, int cmeth) {
   for (int si = 1; si < c->nscopes; si++) {
     Scope *s = &c->scopes[si];
     if (s->class_id != ci || !!s->is_cmethod != !!cmeth) continue;
-    if (!s->name || !*s->name || comp_name_is_prep_shadow(s->name)) continue;
+    if (!s->name || !*s->name || s->shadow == SHADOW_PREP) continue;
     Buf pre; memset(&pre, 0, sizeof pre);
     buf_printf(&pre, "def %s%s", cmeth ? "self." : "", s->name);
     rbs_method_line(c, b, pre.p ? pre.p : "def ?", s);
