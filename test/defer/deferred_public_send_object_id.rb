@@ -11,6 +11,8 @@ class Proxy < BasicObject
   end
   alias_method :object_id, :__id__
 end
+# (named, so the program keeps it: a class nothing names is left out)
+PROXY = Proxy
 
 class Object
   def with(**attributes)
