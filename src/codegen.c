@@ -13279,10 +13279,15 @@ static int conv_bridge_callee(Compiler *c, int i, const char *mname, TyKind want
    the Marshal rows) have an arm for class i, and so whether the dispatch is
    written at all. An arm answers an object whose run-time class is i, so only
    a class such an object may exist of (compute_instantiated) has one; a
-   builtin reopen and a module have no objects of their own. */
+   builtin reopen and a module have no objects of their own. A class whose
+   objects do not carry their class id (an exception, an Array or Hash
+   subclass: repr_dyn_cls) is asked by the id it is typed as, from the methods
+   its descendants inherit, so it keeps its arm when a descendant has objects. */
 static int class_has_obj_arm(Compiler *c, int i) {
   ClassInfo *ci = &c->classes[i];
-  return ci->instantiated && !class_is_builtin_reopen(c, i) && !comp_class_is_module(c, ci);
+  if (class_is_builtin_reopen(c, i) || comp_class_is_module(c, ci)) return 0;
+  if (ci->instantiated) return 1;
+  return ci->inst_below && !repr_dyn_cls(c, ty_object(i));
 }
 static int program_has_obj_arm(Compiler *c) {
   for (int i = 0; i < c->nclasses; i++)
