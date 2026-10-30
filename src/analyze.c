@@ -572,11 +572,550 @@ static int format_recv_maybe_string(Compiler *c, int id, int typed) {
   return t == TY_STRING || t == TY_STRBUF;
 }
 
+/* Class liveness (#10592). A class the program opens with `class` keeps its
+   methods back until something can run them. Its singleton methods run for
+   a call on the class: on its constant (`Date.civil`, not as the namespace
+   of a longer path like `Date::ITALY`, nor as a class definition's name or
+   superclass), on self in one of its singleton methods or a subclass's, on
+   `self.class` in one of its instance methods, or with a receiver that is
+   none of these (`klass.civil`) once something names the class. Its
+   instance methods and initialize run once one of it can exist: reached
+   code reads its constant as a value (`k = Date`, `x.is_a?(Date)`), calls a
+   class method it does not define on it (`Date.allocate`), or a singleton
+   method of it, or of an ancestor it inherits one from, builds one (`new`,
+   `allocate`) or hands `self` out. A method a reached call names waits for
+   its class to be opened so; reached, it brings its ancestors along.
+
+   A program that finds classes by name or by enumeration -- const_get, eval,
+   Marshal, ObjectSpace, subclasses, a C extension, or an included /
+   extended / prepended / const_missing hook -- keeps every class open, and
+   an inherited hook its class's descendants. Before this, `require "date"`
+   compiled most of the date package into a program that never named Date:
+   `<=>`, `new` and `jd` are called somewhere, and every initialize was a
+   root. */
+enum { CR_VALUE, CR_CONST_CALL, CR_SELF_CALL, CR_DYN_CALL };
+typedef struct { const char *name, *call; int cls; int kind; int persist; } CrRead;
+typedef struct {
+  Compiler *c;
+  int *queue, *qtail;
+  unsigned char *held_c, *held_i; /* per class: its class side, its instance side not open */
+  unsigned char *builds;        /* per class: a reached singleton method of it builds one */
+  int *pend_c, *pend_i;         /* per class: the first scope held on a side */
+  int *pend_next;               /* per scope: the next scope held on the same side */
+  unsigned char *pend_mark;     /* per scope: 1 held, 2 held and bound to its call */
+  ANameHash seg;                /* a gated class's last name segment */
+  int *seg_first, *seg_next;    /* segment -> its classes, class -> the next */
+  ANameHash *dyn;               /* names called on a receiver no constant names */
+  ANameHash *adm;               /* "<class>:<name>": called on that class */
+  CrRead **reads; int *nreads, *creads;  /* per scope: the classes it names, the calls it makes */
+  int *open_next;               /* per class: the next class a side opened with */
+  int *cls_first, *cls_next;    /* class -> its scopes, scope -> the next */
+  unsigned char *weak_done;     /* per scope: its reads counted unreached */
+  int all;
+} CrLive;
+
+static int cr_live_gated(Compiler *c, int k) {
+  const ClassInfo *ci = &c->classes[k];
+  int dn = ci->def_node;
+  return k != c->toplevel_class && dn >= 0 && dn < c->nt->count && nt_kind(c->nt, dn) == NK_ClassNode &&
+         !ci->is_builtin_const && !ci->is_native_class && !ci->is_struct && !ci->is_data &&
+         !ci->is_anon_struct && !ci->cext_layout && !ci->cext_extension;
+}
+
+/* is_descendant without its reading of a class an earlier pass left
+   unreferenced */
+static int cr_live_descends(Compiler *c, int k, int anc) {
+  for (int h = 0; k >= 0 && k < c->nclasses && h <= c->nclasses; k = c->classes[k].parent, h++) if (k == anc) return 1;
+  return 0;
+}
+
+static const char *cr_live_segment(const char *nm) {
+  const char *p = strrchr(nm, ':');
+  return p ? p + 1 : nm;
+}
+
+static void cr_live_add(CrLive *lv, int s, int kind, const char *nm, const char *call, int cls, int persist) {
+  if ((kind == CR_VALUE || kind == CR_CONST_CALL) && !nm) return;
+  if (kind != CR_VALUE && !call) call = "";
+  CrRead *r = lv->reads[s];
+  for (int i = 0; i < lv->nreads[s]; i++)
+    if (r[i].kind == kind && r[i].cls == cls && (r[i].name == nm || (r[i].name && nm && sp_streq(r[i].name, nm))) &&
+        (r[i].call == call || (r[i].call && call && sp_streq(r[i].call, call)))) { r[i].persist |= persist; return; }
+  if (lv->nreads[s] >= lv->creads[s]) {
+    lv->creads[s] = lv->creads[s] ? lv->creads[s] * 2 : 8;
+    lv->reads[s] = realloc(lv->reads[s], sizeof(CrRead) * (size_t)lv->creads[s]);
+  }
+  lv->reads[s][lv->nreads[s]++] = (CrRead){ nm, call, cls, kind, persist };
+}
+
+/* A send's Symbol names the method it calls, and `method(:m)`'s the one it
+   takes */
+static const char *cr_live_call_name(const NodeTable *nt, int id) {
+  const char *call = nt_str(nt, id, "name");
+  if (call && (sp_streq(call, "send") || sp_streq(call, "__send__") || sp_streq(call, "public_send") ||
+               sp_streq(call, "method") || sp_streq(call, "public_method") || sp_streq(call, "singleton_method"))) {
+    int an = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+    return an >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode ? nt_str(nt, av[0], "value") : NULL;
+  }
+  return call;
+}
+
+/* Does a node write a slot that outlives the method: an instance, class or
+   global variable, or a constant? */
+static int cr_live_slot_write(const NodeTable *nt, int id) {
+  const char *ty = nt_type(nt, id);
+  if (!ty) return 0;
+  size_t tl = strlen(ty);
+  if (tl < 9 || strcmp(ty + tl - 9, "WriteNode") != 0) return 0;
+  return strncmp(ty, "InstanceVariable", 16) == 0 || strncmp(ty, "ClassVariable", 13) == 0 ||
+         strncmp(ty, "GlobalVariable", 14) == 0 || strncmp(ty, "Constant", 8) == 0;
+}
+
+/* Is the receiver at `r` a slot that outlives the method: an instance,
+   class or global variable, or a constant that holds a value, not a class
+   (`CACHE << x`)? */
+static int cr_live_slot_read(CrLive *lv, int r) {
+  const NodeTable *nt = lv->c->nt;
+  NodeKind k = nt_kind(nt, r);
+  if (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode || k == NK_GlobalVariableReadNode) return 1;
+  if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) return 0;
+  const char *nm = nt_str(nt, r, "name");
+  return nm && anh_find(&lv->seg, nm) < 0 && comp_class_index(lv->c, nm) < 0;
+}
+
+/* The classes the code at `id` names in scope s, and the calls it makes that
+   can reach a singleton method, not entering a nested def. `cls` is the
+   class whose body the code is in, where self is that class, or -1.
+   `persist`: the code's value goes into a slot that outlives the method (a
+   write of one, or an argument of a call on one: `@list << K.new`). */
+static void cr_live_collect(CrLive *lv, int s, int id, int cls, int persist) {
+  Compiler *c = lv->c;
+  const NodeTable *nt = c->nt;
+  if (id < 0) return;
+  NodeKind k = nt_kind(nt, id);
+  if (k == NK_DefNode) return;
+  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) {
+    cr_live_add(lv, s, CR_VALUE, nt_str(nt, id, "name"), NULL, -1, persist);
+    int p = k == NK_ConstantPathNode ? nt_ref(nt, id, "parent") : -1;
+    if (p >= 0 && nt_kind(nt, p) != NK_ConstantReadNode && nt_kind(nt, p) != NK_ConstantPathNode)
+      cr_live_collect(lv, s, p, cls, persist);
+    return;
+  }
+  if (k == NK_ClassNode) {
+    int cp = nt_ref(nt, id, "constant_path");
+    cr_live_collect(lv, s, nt_ref(nt, id, "body"), cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1, 0);
+    return;
+  }
+  if (k == NK_ModuleNode) {
+    cr_live_collect(lv, s, nt_ref(nt, id, "body"), -1, 0);
+    return;
+  }
+  int skip = -1;
+  if (cr_live_slot_write(nt, id)) persist = 1;
+  if (k == NK_CallNode) {
+    int r = nt_ref(nt, id, "receiver");
+    NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_ProgramNode;
+    const Scope *sc = &c->scopes[s];
+    const char *call = cr_live_call_name(nt, id);
+    if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
+      cr_live_add(lv, s, CR_CONST_CALL, nt_str(nt, r, "name"), call, -1, persist);
+      int p = rk == NK_ConstantPathNode ? nt_ref(nt, r, "parent") : -1;
+      if (p >= 0 && nt_kind(nt, p) != NK_ConstantReadNode && nt_kind(nt, p) != NK_ConstantPathNode)
+        cr_live_collect(lv, s, p, cls, persist);
+      skip = r;
+    }
+    else if ((r < 0 || rk == NK_SelfNode) && cls >= 0)
+      cr_live_add(lv, s, CR_SELF_CALL, NULL, call, cls, 0);
+    else if ((r < 0 || rk == NK_SelfNode) && sc->is_cmethod && sc->class_id >= 0)
+      cr_live_add(lv, s, CR_SELF_CALL, NULL, call, sc->class_id, 0);
+    else if (rk == NK_CallNode && !sc->is_cmethod && sc->class_id >= 0 && sp_streq(nt_str(nt, r, "name"), "class") &&
+             nt_ref(nt, r, "receiver") >= 0 && nt_kind(nt, nt_ref(nt, r, "receiver")) == NK_SelfNode)
+      cr_live_add(lv, s, CR_SELF_CALL, NULL, call, sc->class_id, 0);
+    else if (r >= 0 || s == 0)
+      cr_live_add(lv, s, CR_DYN_CALL, NULL, call, -1, 0);
+  }
+  /* a call on a slot hands its arguments to it: their reads persist, the
+     receiver's as it was */
+  int recv = k == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
+  int arg_persist = persist || (recv >= 0 && cr_live_slot_read(lv, recv));
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch != skip) cr_live_collect(lv, s, ch, cls, ch == recv ? persist : arg_persist); }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int j = 0; j < nn; j++) cr_live_collect(lv, s, ids[j], cls, arg_persist); }
+}
+
+/* Does the code at `id`, run with self a class, build an instance of it or
+   hand `self` out? `new` or `allocate` on self, `super` in a `new` or
+   `allocate` of its own, or self as a value. Not entering a nested def or
+   class. */
+static int cr_live_builds(Compiler *c, int id, const char *mname) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  NodeKind nk = nt_kind(nt, id);
+  if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
+  if (nk == NK_SelfNode) return 1;
+  if ((nk == NK_SuperNode || nk == NK_ForwardingSuperNode) && mname &&
+      (sp_streq(mname, "new") || sp_streq(mname, "allocate"))) return 1;
+  int skip = -1;
+  if (nk == NK_SingletonClassNode) skip = nt_ref(nt, id, "expression");
+  if (nk == NK_CallNode) {
+    int r = nt_ref(nt, id, "receiver");
+    const char *nm = nt_str(nt, id, "name");
+    if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
+      if (nm && (sp_streq(nm, "new") || sp_streq(nm, "allocate"))) return 1;
+      skip = r;
+    }
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch != skip && cr_live_builds(c, ch, mname)) return 1; }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int j = 0; j < nn; j++) if (cr_live_builds(c, ids[j], mname)) return 1; }
+  return 0;
+}
+
+/* Does class k's body, as the program loads, hand `self` out? Not entering
+   a def or a nested class; `class << self` and a call on self keep it. */
+static int cr_live_body_escapes(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
+  NodeKind nk = nt_kind(nt, id);
+  if (nk == NK_DefNode || nk == NK_ClassNode || nk == NK_ModuleNode) return 0;
+  if (nk == NK_SelfNode) return 1;
+  int skip = -1;
+  if (nk == NK_SingletonClassNode) skip = nt_ref(nt, id, "expression");
+  if (nk == NK_CallNode) {
+    int r = nt_ref(nt, id, "receiver");
+    if (r >= 0 && nt_kind(nt, r) == NK_SelfNode) skip = r;
+  }
+  int nr = nt_num_refs(nt, id);
+  for (int i = 0; i < nr; i++) { int ch = nt_ref_at(nt, id, i); if (ch != skip && cr_live_body_escapes(c, ch)) return 1; }
+  int na = nt_num_arrs(nt, id);
+  for (int i = 0; i < na; i++) { int nn = 0; const int *ids = nt_arr_at(nt, id, i, &nn); for (int j = 0; j < nn; j++) if (cr_live_body_escapes(c, ids[j])) return 1; }
+  return 0;
+}
+
+static int cr_live_admitted(CrLive *lv, int k, const char *nm) {
+  char key[512];
+  snprintf(key, sizeof key, "%d:%s", k, nm);
+  return anh_has(lv->adm, key) || (!lv->held_c[k] && anh_has(lv->dyn, nm));
+}
+
+/* Reach scope t, or hold it for its class: a singleton method until a call
+   that can run it (bound: a call resolved to it, once its class is named),
+   an instance method until an instance can exist */
+static void cr_live_reach_as(CrLive *lv, int t, int bound) {
+  Compiler *c = lv->c;
+  Scope *sc = &c->scopes[t];
+  if (sc->reachable) return;
+  int k = sc->class_id;
+  if (k >= 0 && k < c->nclasses && lv->pend_c[k] != -2) {
+    /* a copy the compiler made of a singleton method (an inherited or
+       included copy `__inc 0 m`, a proc form `m#pf`) runs for the calls the
+       compiler routes to it: it waits only for its class to be named */
+    const char *nm = sc->name ? sc->name : "";
+    if (sc->is_cmethod && (strchr(nm, ' ') || strchr(nm, '#'))) bound = 1;
+    int hold = sc->is_cmethod ? (bound ? lv->held_c[k] : !cr_live_admitted(lv, k, nm))
+                              : lv->held_i[k];
+    if (hold) {
+      if (!lv->pend_mark[t]) {
+        int *head = sc->is_cmethod ? &lv->pend_c[k] : &lv->pend_i[k];
+        lv->pend_next[t] = *head; *head = t;
+      }
+      if (lv->pend_mark[t] < 1 + bound) lv->pend_mark[t] = (unsigned char)(1 + bound);
+      return;
+    }
+  }
+  sc->reachable = 1; comp_touch_scope(sc->idx);
+  lv->queue[(*lv->qtail)++] = t;
+}
+static void cr_live_reach(CrLive *lv, int t) { cr_live_reach_as(lv, t, 0); }
+
+/* Retry each scope held on a side; the ones still held stay listed */
+static void cr_live_retry(CrLive *lv, int *head) {
+  int t = *head;
+  *head = -1;
+  for (int nx; t >= 0; t = nx) {
+    nx = lv->pend_next[t];
+    int bound = lv->pend_mark[t] == 2;
+    lv->pend_mark[t] = 0;
+    cr_live_reach_as(lv, t, bound);
+  }
+}
+
+static void cr_live_instance(CrLive *lv, int k);
+
+/* The type fixpoint reads a method whether or not it is reached: a slot an
+   unreached method writes (`@enums ||= Enums.new` in a method nothing calls)
+   carries its class to the code that reads the slot, which then calls the
+   class's methods. So a method of an open owner -- top-level, a module, a
+   class not gated, or a gated one once the side it sits on opens -- opens
+   the instance side of each class it builds or reads as a value into such a
+   slot, reached or not. Class k's methods on one side (cmethod 1, instance 0), or the
+   ungated owners' (k -1). */
+static void cr_live_weak(CrLive *lv, int k, int cmethod) {
+  Compiler *c = lv->c;
+  for (int s = k >= 0 ? lv->cls_first[k] : 0; s >= 0 && s < c->nscopes; s = k >= 0 ? lv->cls_next[s] : s + 1) {
+    const Scope *sc = &c->scopes[s];
+    if (lv->weak_done[s]) continue;
+    if (k >= 0 ? (sc->is_cmethod != cmethod) : (sc->class_id >= 0 && lv->pend_c[sc->class_id] != -2)) continue;
+    lv->weak_done[s] = 1;
+    for (int i = 0; i < lv->nreads[s] && !lv->all; i++) {
+      const CrRead *r = &lv->reads[s][i];
+      if ((r->kind != CR_VALUE && r->kind != CR_CONST_CALL) || !r->persist) continue;
+      int j = anh_find(&lv->seg, r->name);
+      for (int d = j >= 0 ? lv->seg_first[j] : -1; d >= 0; d = lv->seg_next[d])
+        if (r->kind == CR_VALUE || !r->call[0] || comp_cmethod_in_chain(c, d, r->call, NULL) < 0)
+          if (lv->held_i[d]) cr_live_instance(lv, d);
+    }
+  }
+}
+
+/* Class k is named: its class side opens, with its ancestors' */
+static void cr_live_class(CrLive *lv, int k) {
+  Compiler *c = lv->c;
+  int k0 = k, builds = 0;
+  for (int h = 0; k >= 0 && k < c->nclasses && h <= c->nclasses; k = c->classes[k].parent, h++) {
+    builds |= lv->builds[k];
+    if (!lv->held_c[k]) continue;
+    lv->held_c[k] = 0;
+    cr_live_retry(lv, &lv->pend_c[k]);
+    cr_live_weak(lv, k, 1);
+  }
+  /* an ancestor's singleton method a subclass receives builds the subclass */
+  if (builds && lv->held_i[k0]) cr_live_instance(lv, k0);
+}
+
+/* A call of nm on class k: k is named, and k's singleton method nm, or the
+   one it inherits, can run */
+static void cr_live_call(CrLive *lv, int k, const char *nm) {
+  Compiler *c = lv->c;
+  cr_live_class(lv, k);
+  for (int h = 0; k >= 0 && k < c->nclasses && h <= c->nclasses; k = c->classes[k].parent, h++) {
+    char key[512];
+    snprintf(key, sizeof key, "%d:%s", k, nm);
+    if (anh_has(lv->adm, key)) continue;
+    anh_add(lv->adm, strdup(key));   /* the table keeps the pointer */
+    cr_live_retry(lv, &lv->pend_c[k]);
+  }
+}
+
+/* An instance of class k can exist: its instance side opens, with its
+   ancestors' and its class side */
+static void cr_live_instance(CrLive *lv, int k) {
+  Compiler *c = lv->c;
+  int k0 = k, top = -1;
+  for (int h = 0; k >= 0 && k < c->nclasses && h <= c->nclasses; k = c->classes[k].parent, h++)
+    if (lv->held_i[k]) { lv->held_i[k] = 0; lv->open_next[k] = top; top = k; }
+  cr_live_class(lv, k0);
+  for (k = top; k >= 0; k = lv->open_next[k]) { cr_live_retry(lv, &lv->pend_i[k]); cr_live_weak(lv, k, 0); }
+}
+
+static void cr_live_all(CrLive *lv) {
+  if (lv->all) return;
+  lv->all = 1;
+  for (int k = 0; k < lv->c->nclasses; k++) {
+    cr_live_instance(lv, k);
+    lv->pend_c[k] = -2;   /* every singleton method is reached as before */
+  }
+  for (int t = 0; t < lv->c->nscopes; t++)
+    if (lv->pend_mark[t]) { lv->pend_mark[t] = 0; cr_live_reach_as(lv, t, 1); }
+}
+
+static void cr_live_event(CrLive *lv, const CrRead *r) {
+  Compiler *c = lv->c;
+  if (lv->all) return;
+  if (r->kind == CR_SELF_CALL) {
+    /* self is the class or a subclass of it the program names */
+    for (int d = 0; d < c->nclasses; d++)
+      if (d == r->cls || (!lv->held_c[d] && cr_live_descends(c, d, r->cls))) cr_live_call(lv, d, r->call);
+    return;
+  }
+  if (r->kind == CR_DYN_CALL) {
+    if (!r->call[0] || anh_has(lv->dyn, r->call)) return;
+    anh_add(lv->dyn, strdup(r->call));
+    for (int k = 0; k < c->nclasses; k++) if (!lv->held_c[k] && lv->pend_c[k] >= 0) cr_live_retry(lv, &lv->pend_c[k]);
+    return;
+  }
+  if (sp_streq(r->name, "Marshal") || sp_streq(r->name, "ObjectSpace")) { cr_live_all(lv); return; }
+  int i = anh_find(&lv->seg, r->name);
+  if (i < 0) return;
+  for (int k = lv->seg_first[i]; k >= 0; k = lv->seg_next[k]) {
+    /* a singleton method of its own answers the call */
+    if (r->kind == CR_CONST_CALL && r->call[0] && comp_cmethod_in_chain(c, k, r->call, NULL) >= 0) cr_live_call(lv, k, r->call);
+    else cr_live_instance(lv, k);
+  }
+}
+
+/* A reached scope: the classes it names, the calls it makes, whether it
+   builds its class, and its calls that find classes by name */
+static void cr_live_scope(CrLive *lv, int s, char **calls, int ncalls) {
+  Compiler *c = lv->c;
+  if (lv->all) return;
+  for (int i = 0; i < lv->nreads[s]; i++) cr_live_event(lv, &lv->reads[s][i]);
+  /* a send whose name is known only at run time can reach any of them */
+  for (int i = 0; i < ncalls && !lv->all; i++)
+    if (calls[i] && calls[i][0] == '\x02') cr_live_event(lv, &(CrRead){ NULL, calls[i] + 1, -1, CR_DYN_CALL, 0 });
+  const Scope *sc = &c->scopes[s];
+  int k = sc->class_id;
+  if (sc->is_cmethod && k >= 0 && k < c->nclasses && !lv->builds[k] &&
+      (cr_live_builds(c, sc->body, sc->name) ||
+       (sc->def_node >= 0 && cr_live_builds(c, nt_ref(c->nt, sc->def_node, "parameters"), sc->name)))) {
+    lv->builds[k] = 1;
+    /* it runs for k, or for a subclass the program names */
+    for (int d = 0; d < c->nclasses; d++)
+      if ((d == k || !lv->held_c[d]) && cr_live_descends(c, d, k)) cr_live_instance(lv, d);
+  }
+  static const char *const finders[] = {
+    "const_get", "eval", "class_eval", "module_eval", "instance_eval", "constants",
+    "instance_exec", "class_exec", "module_exec",
+    "subclasses", "descendants", "each_object", "const_source_location", NULL };
+  for (int i = 0; i < ncalls && !lv->all; i++) {
+    const char *nm = calls[i];
+    if (!nm || nm[0] == '\x01') continue;
+    if (nm[0] == '\x02' || nm[0] == '\x03') nm++;
+    for (int f = 0; finders[f]; f++) if (sp_streq(nm, finders[f])) { cr_live_all(lv); break; }
+  }
+}
+
+/* What an earlier pass opened stays open (ClassInfo.live_sides, and these
+   two): the passes after the first see the settled types and can name fewer
+   calls, and a class whose initialize the type fixpoint saw must not lose it
+   to a later pass. */
+static Compiler *g_cr_live_owner;
+static ANameHash g_cr_live_dyn, g_cr_live_adm;
+
+static void cr_live_begin(CrLive *lv, Compiler *c, int *queue, int *qtail) {
+  memset(lv, 0, sizeof *lv);
+  lv->c = c; lv->queue = queue; lv->qtail = qtail;
+  if (g_cr_live_owner != c) {
+    for (int i = 0; i < g_cr_live_dyn.n; i++) free((char *)g_cr_live_dyn.key[i]);
+    for (int i = 0; i < g_cr_live_adm.n; i++) free((char *)g_cr_live_adm.key[i]);
+    anh_free(&g_cr_live_dyn); anh_free(&g_cr_live_adm);
+    memset(&g_cr_live_dyn, 0, sizeof g_cr_live_dyn); memset(&g_cr_live_adm, 0, sizeof g_cr_live_adm);
+    g_cr_live_owner = c;
+  }
+  lv->dyn = &g_cr_live_dyn; lv->adm = &g_cr_live_adm;
+  int nc = c->nclasses ? c->nclasses : 1, ns = c->nscopes ? c->nscopes : 1;
+  lv->held_c = calloc((size_t)nc, 1);
+  lv->held_i = calloc((size_t)nc, 1);
+  lv->builds = calloc((size_t)nc, 1);
+  lv->pend_c = malloc(sizeof(int) * (size_t)nc);
+  lv->pend_i = malloc(sizeof(int) * (size_t)nc);
+  lv->seg_next = malloc(sizeof(int) * (size_t)nc);
+  lv->pend_next = malloc(sizeof(int) * (size_t)ns);
+  lv->pend_mark = calloc((size_t)ns, 1);
+  lv->reads = calloc((size_t)ns, sizeof(CrRead *));
+  lv->nreads = calloc((size_t)ns, sizeof(int));
+  lv->creads = calloc((size_t)ns, sizeof(int));
+  lv->open_next = malloc(sizeof(int) * (size_t)nc);
+  lv->cls_first = malloc(sizeof(int) * (size_t)nc);
+  lv->cls_next = malloc(sizeof(int) * (size_t)ns);
+  lv->weak_done = calloc((size_t)ns, 1);
+  for (int k = 0; k < c->nclasses; k++) lv->pend_c[k] = lv->pend_i[k] = lv->seg_next[k] = lv->cls_first[k] = -1;
+  for (int s = c->nscopes - 1; s >= 0; s--) {
+    int k = c->scopes[s].class_id;
+    lv->cls_next[s] = -1;
+    if (k >= 0 && k < c->nclasses) { lv->cls_next[s] = lv->cls_first[k]; lv->cls_first[k] = s; }
+  }
+  int all = 0;
+  /* a C extension makes classes by name (rb_path2class, rb_const_get) */
+  if (c->n_cext_extensions) all = 1;
+  for (int s = 0; s < c->nscopes && !all; s++) {
+    const char *nm = c->scopes[s].name;
+    if (!nm || c->scopes[s].def_node < 0 || nt_int(c->nt, c->scopes[s].def_node, "node_bi", 0)) continue;
+    if (sp_streq(nm, "included") || sp_streq(nm, "extended") || sp_streq(nm, "prepended") ||
+        sp_streq(nm, "const_missing")) all = 1;
+  }
+  for (int k = 0; k < c->nclasses; k++) {
+    /* an ungated class reaches each method by name, as before */
+    if (all || !cr_live_gated(c, k)) { lv->pend_c[k] = -2; continue; }
+    lv->held_c[k] = !(c->classes[k].live_sides & 1);
+    lv->held_i[k] = !(c->classes[k].live_sides & 2);
+    const char *sg = cr_live_segment(c->classes[k].name);
+    int i = anh_find(&lv->seg, sg);
+    if (i < 0) {
+      anh_add(&lv->seg, sg); i = lv->seg.n - 1;
+      lv->seg_first = realloc(lv->seg_first, sizeof(int) * (size_t)lv->seg.cap);
+      lv->seg_first[i] = -1;
+    }
+    lv->seg_next[k] = lv->seg_first[i]; lv->seg_first[i] = k;
+  }
+  if (all) { lv->all = 1; return; }
+  /* an inherited hook is handed each subclass as it is defined, a body that
+     hands self out does so as the program loads, and an --ext-entry is
+     called from C */
+  for (int s = 0; s < c->nscopes; s++) {
+    const Scope *sc = &c->scopes[s];
+    if (sc->name && sc->is_cmethod && sp_streq(sc->name, "inherited") && sc->class_id >= 0)
+      for (int k = 0; k < c->nclasses; k++)
+        if (k != sc->class_id && cr_live_descends(c, k, sc->class_id) && lv->pend_c[k] != -2) {
+          lv->held_c[k] = lv->held_i[k] = 0; lv->pend_c[k] = -2;
+        }
+    if (sc->is_ext_entry && sc->class_id >= 0 && lv->pend_c[sc->class_id] != -2) {
+      lv->held_c[sc->class_id] = lv->held_i[sc->class_id] = 0; lv->pend_c[sc->class_id] = -2;
+    }
+  }
+  for (int id = 0; id < c->nt->count; id++) {
+    if (nt_kind(c->nt, id) != NK_ClassNode) continue;
+    int cp = nt_ref(c->nt, id, "constant_path");
+    const char *cn = cp >= 0 ? nt_str(c->nt, cp, "name") : NULL;
+    int i = cn ? anh_find(&lv->seg, cn) : -1;
+    if (i < 0 || !cr_live_body_escapes(c, nt_ref(c->nt, id, "body"))) continue;
+    for (int k = lv->seg_first[i]; k >= 0; k = lv->seg_next[k]) { lv->held_c[k] = lv->held_i[k] = 0; lv->pend_c[k] = -2; }
+  }
+  /* a class open from the start opens its ancestors */
+  for (int k = 0; k < c->nclasses; k++) {
+    if (lv->pend_c[k] != -2) continue;
+    for (int p = c->classes[k].parent, h = 0; p >= 0 && h <= c->nclasses; p = c->classes[p].parent, h++) {
+      lv->held_c[p] = lv->held_i[p] = 0; lv->pend_c[p] = -2;
+    }
+  }
+}
+
+/* Once every scope's reads are collected: the open owners' unreached
+   methods (cr_live_weak), and the classes an earlier pass or the start
+   left open */
+static void cr_live_start(CrLive *lv) {
+  Compiler *c = lv->c;
+  if (lv->all) return;
+  cr_live_weak(lv, -1, 0);
+  for (int k = 0; k < c->nclasses && !lv->all; k++) {
+    if (lv->pend_c[k] == -2) continue;
+    if (!lv->held_c[k]) cr_live_weak(lv, k, 1);
+    if (!lv->held_i[k]) cr_live_weak(lv, k, 0);
+  }
+}
+
+/* Record what stayed held, and free the state */
+static void cr_live_end(CrLive *lv) {
+  Compiler *c = lv->c;
+  for (int k = 0; k < c->nclasses; k++) {
+    int u = !lv->all && lv->held_c[k] && lv->held_i[k];
+    int ni = !lv->all && lv->held_i[k];
+    int sides = c->classes[k].live_sides | (lv->all || !lv->held_c[k] ? 1 : 0) | (lv->all || !lv->held_i[k] ? 2 : 0);
+    if (c->classes[k].unreferenced != u || c->classes[k].no_instance != ni || c->classes[k].live_sides != sides) {
+      c->classes[k].unreferenced = u; c->classes[k].no_instance = ni; c->classes[k].live_sides = sides;
+      comp_touch_class(c->classes[k].idx);
+    }
+  }
+  for (int s = 0; s < c->nscopes; s++) free(lv->reads[s]);
+  free(lv->reads); free(lv->nreads); free(lv->creads);
+  free(lv->held_c); free(lv->held_i); free(lv->builds);
+  free(lv->pend_c); free(lv->pend_i); free(lv->pend_next); free(lv->pend_mark);
+  free(lv->open_next); free(lv->cls_first); free(lv->cls_next); free(lv->weak_done);
+  free(lv->seg_first); free(lv->seg_next); anh_free(&lv->seg);
+}
+
 void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
   int   *sc_n        = calloc((size_t)c->nscopes, sizeof(int));
   int   *sc_cap      = calloc((size_t)c->nscopes, sizeof(int));
+  /* BFS queue (scope indices). */
+  int *queue = malloc((size_t)(c->nscopes ? c->nscopes : 1) * sizeof(int));
+  int qhead = 0, qtail = 0;
+  CrLive lv;
+  cr_live_begin(&lv, c, queue, &qtail);
   ic_begin(c, typed);
   if (typed == 2) g_cr_typed = &c->ic->class_only;
   else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }
@@ -587,23 +1126,24 @@ void compute_reachable(Compiler *c, int typed) {
     ic_scope(c, s);
     if (c->scopes[s].body >= 0)
       cr_collect_calls(c, c->nt, c->scopes[s].body, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
+    if (c->scopes[s].body >= 0)
+      cr_live_collect(&lv, s, c->scopes[s].body, -1, 0);
     /* Also scan parameter defaults (e.g. def foo(opt = bar)) -- these emit calls
        within the method scope but live in the DefNode parameters subtree. */
     if (c->scopes[s].def_node >= 0) {
       int pn = nt_ref(c->nt, c->scopes[s].def_node, "parameters");
       if (pn >= 0)
         cr_collect_calls(c, c->nt, pn, &scope_calls[s], &sc_n[s], &sc_cap[s], instance_self);
+      if (pn >= 0)
+        cr_live_collect(&lv, s, pn, -1, 0);
     }
   }
   ic_scope(c, 0);
   cr_collect_program_end(c, &scope_calls[0], &sc_n[0], &sc_cap[0]);
   ic_scope(c, -1);
+  cr_live_start(&lv);
   g_cr_typed = NULL; g_cr_untyped = NULL;
 
-
-  /* BFS queue (scope indices). */
-  int *queue = malloc((size_t)c->nscopes * sizeof(int));
-  int qhead = 0, qtail = 0;
 
   /* --ext-entry designations join the graph as roots: an entry has no
      compiled call site, so without this it would be unreachable and DCE'd
@@ -630,9 +1170,9 @@ void compute_reachable(Compiler *c, int typed) {
       c->scopes[mi2].is_ext_entry = 1;
     }
   }
+  for (int s = 0; s < c->nscopes; s++) { c->scopes[s].reachable = 0; comp_touch_scope(c->scopes[s].idx); }
   for (int s = 0; s < c->nscopes; s++) {
     Scope *sc = &c->scopes[s];
-    { sc->reachable = 0; comp_touch_scope(sc->idx); }
     /* The roots: the top level, a def with no name, initialize, and an
        --ext-entry. A method CRuby calls back is no root of its own: a node
        that makes the call keeps it (ic_node_calls, cr_collect_calls), the end
@@ -640,7 +1180,7 @@ void compute_reachable(Compiler *c, int typed) {
        or a version entry, is reached only by the calls bound to it.) */
     int bound = sc->replaced || sc->entry != ENTRY_NONE;
     int is_root = (s == 0 || !sc->name || (!bound && is_initialize_name(sc->name)) || sc->is_ext_entry);
-    if (is_root) { { sc->reachable = 1; comp_touch_scope(sc->idx); } queue[qtail++] = s; }
+    if (is_root) cr_live_reach(&lv, s);
   }
 
   /* "called_names" tracks every method name reached from any reachable scope.
@@ -690,30 +1230,31 @@ void compute_reachable(Compiler *c, int typed) {
      reaches a replaced method version, which only the calls bound to it
      reach ("\x01<scope>", cr_collect_versions). */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
-      if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; \
+      if(_t>=0 && _t<c->nscopes && !c->scopes[_t].reachable){ cr_live_reach_as(&lv, _t, 1); \
         if(cr_scope_has_super(c, _t)) for(int _u=SN_FIRST(c->scopes[_t].name);_u>=0;_u=sn_link[_u]) \
           if(!c->scopes[_u].reachable && c->scopes[_u].is_cmethod && cr_class_is_ancestor(c, c->scopes[_u].class_id, c->scopes[_t].class_id)) \
-            { { c->scopes[_u].reachable = 1; comp_touch_scope(c->scopes[_u].idx); } queue[qtail++]=_u; } } } \
+            cr_live_reach_as(&lv, _u, 1); } } \
     else if(_mn && _mn[0]=='\x02'){ if(!anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
       for(int _k=0;_k<c->nclasses;_k++){ if(comp_class_is_module(c,&c->classes[_k])) continue; \
         for(int _p=_k,_h=0;_p>=0&&_p<c->nclasses&&_h<64;_p=c->classes[_p].parent,_h++){ \
           int _t=comp_method_in_chain(c,_p,_mn+1,NULL); \
-          if(_t>=0 && !c->scopes[_t].reachable){ { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          if(_t>=0 && !c->scopes[_t].reachable)cr_live_reach(&lv, _t); } } \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if(c->scopes[_t].class_id<0 && !c->scopes[_t].is_cmethod && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
-          { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          cr_live_reach(&lv, _t); } } \
     else if(_mn && _mn[0]=='\x03'){ if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_mn+1)){ CN_ADD(_mn); \
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
-          { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } \
+          cr_live_reach(&lv, _t); } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
       if(!c->scopes[_t].replaced && !c->scopes[_t].reachable) \
-        { { c->scopes[_t].reachable = 1; comp_touch_scope(c->scopes[_t].idx); } queue[qtail++]=_t; } } } while(0)
+        cr_live_reach(&lv, _t); } } while(0)
 
   while (qhead < qtail) {
     int s = queue[qhead++];
     for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+    cr_live_scope(&lv, s, scope_calls[s], sc_n[s]);
   }
 
   /* The synthesized compiler_state dump method calls ir_emit_int/str/sa/ia,
@@ -725,7 +1266,7 @@ void compute_reachable(Compiler *c, int typed) {
     if (any_cs) {
       MARK_NAME("ir_emit_int"); MARK_NAME("ir_emit_str");
       MARK_NAME("ir_emit_sa");  MARK_NAME("ir_emit_ia");
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
     }
   }
 
@@ -745,7 +1286,7 @@ void compute_reachable(Compiler *c, int typed) {
       any_cw = 1;
     }
     if (any_cw)
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
   }
 
   /* A `case obj when other` arm calls the pattern's #=== (or #==, which Ruby's
@@ -759,7 +1300,7 @@ void compute_reachable(Compiler *c, int typed) {
     }
     if (has_when) {
       MARK_NAME("==="); MARK_NAME("==");
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
     }
   }
 
@@ -821,7 +1362,7 @@ void compute_reachable(Compiler *c, int typed) {
         MARK_NAME("+");
         break; }
     }
-    while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+    while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
   }
 
   /* case/in array and hash patterns may call a user object's #deconstruct /
@@ -839,7 +1380,7 @@ void compute_reachable(Compiler *c, int typed) {
     if (has_arr_pat) MARK_NAME("deconstruct");
     if (has_hash_pat) MARK_NAME("deconstruct_keys");
     if (has_arr_pat || has_hash_pat)
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
   }
 
   /* Kernel#Integer converts its argument through its #to_int, then #to_str,
@@ -892,14 +1433,14 @@ void compute_reachable(Compiler *c, int typed) {
     if (has_kflt || has_unum) MARK_NAME("to_f");
     if (c->uses_kw_to_hash) MARK_NAME("to_hash");
     if (has_kint || has_kflt || has_unum || c->uses_kw_to_hash)
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
   }
 
   /* JSON.generate serializes a nested user object through its own #to_json,
      which likewise has no call site of its own in the AST. */
   if (sp_feature_required("json")) {
     MARK_NAME("to_json");
-    while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+    while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
   }
 
   /* Alias/prep_to propagation: when alias_new (or alias_old) is in called_names,
@@ -917,9 +1458,12 @@ void compute_reachable(Compiler *c, int typed) {
       if (st->reachable || st->entry || !st->name || st->replaced) continue;
       for (int i = 0; !live && synth_stands_for(st->name, i, &proto); i++) live = cn_live(&cn_set, proto);
       if (!live) continue;
+      /* a change only when it reached something: a method held for its
+         class (cr_live_reach) stays unreached */
+      int prev_qtail = qtail;
       MARK_NAME(st->name);
-      changed = 1;
-      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); }
+      if (qtail > prev_qtail) changed = 1;
+      while (qhead < qtail) { int s = queue[qhead++]; for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
     }
     for (int ci = 0; ci < c->nclasses; ci++) {
       ClassInfo *cls = &c->classes[ci];
@@ -946,6 +1490,7 @@ void compute_reachable(Compiler *c, int typed) {
           while (qhead < qtail) {
             int s = queue[qhead++];
             for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+            cr_live_scope(&lv, s, scope_calls[s], sc_n[s]);
           }
         }
         if (ao_live) {
@@ -955,6 +1500,7 @@ void compute_reachable(Compiler *c, int typed) {
           while (qhead < qtail) {
             int s = queue[qhead++];
             for (int ni = 0; ni < sc_n[s]; ni++) MARK_NAME(scope_calls[s][ni]);
+            cr_live_scope(&lv, s, scope_calls[s], sc_n[s]);
           }
         }
       }
@@ -977,7 +1523,7 @@ void compute_reachable(Compiler *c, int typed) {
           int prev_qtail = qtail;
           MARK_NAME(pt);
           if (qtail > prev_qtail) { changed = 1;
-            while (qhead < qtail) { int s=queue[qhead++]; for(int ni=0;ni<sc_n[s];ni++) MARK_NAME(scope_calls[s][ni]); }
+            while (qhead < qtail) { int s=queue[qhead++]; for(int ni=0;ni<sc_n[s];ni++) MARK_NAME(scope_calls[s][ni]); cr_live_scope(&lv, s, scope_calls[s], sc_n[s]); }
           }
         }
       }
@@ -992,6 +1538,7 @@ void compute_reachable(Compiler *c, int typed) {
   #undef SN_FIRST
 
   ic_end(c);
+  cr_live_end(&lv);
 
   /* Cleanup. */
   for (int s = 0; s < c->nscopes; s++) {
@@ -1161,6 +1708,8 @@ void compute_instantiated(Compiler *c, int early) {
       c->classes[k].instantiated = 1;
     }
   for (int k = 0; k < c->nclasses; k++) {
+    /* no reached code can make one (compute_reachable) */
+    if (c->classes[k].no_instance) c->classes[k].instantiated = 0;
     c->classes[k].ctor_site = c->classes[k].instantiated;
     if (c->classes[k].is_struct || c->classes[k].is_native_class) c->classes[k].instantiated = 1;
     /* a C extension makes any exception class of the program's by name

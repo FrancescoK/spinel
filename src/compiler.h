@@ -987,6 +987,14 @@ typedef struct {
                           switch can drop its `case` arm (the referenced method
                           then becomes an unreferenced static the C compiler
                           DCEs). Set by compute_instantiated. */
+  int unreferenced;    /* a class the program opens with `class` that no reached
+                          code names (compute_reachable, #10592): none of its
+                          methods is reached and it has no instance */
+  int no_instance;     /* such a class whose instance side no reached code
+                          opens: its singleton methods may run, but nothing
+                          builds one, and its instance methods stay unreached */
+  int live_sides;      /* the sides an earlier compute_reachable opened: 1 its
+                          singleton methods, 2 its instances; kept open */
   /* Prepend shadow chain: when `prepend M` is called on this class,
      M's methods overwrite the active slot; the previous slot is
      renamed to a shadow `__prep N <m>`.  The chain maps each name

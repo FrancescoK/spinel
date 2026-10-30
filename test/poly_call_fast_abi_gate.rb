@@ -86,6 +86,8 @@ end
 # A descendant makes the class method's C signature lead with its receiving
 # class (cmethod_takes_self_cls), which the legacy cast cannot supply.
 class Derived < Base; end
+# (named, so the program keeps it: a class nothing names is left out)
+DERIVED = Derived
 
 # Seed the pointer parameter so the emitted signature is sp_String *; without
 # a call site the analyzer leaves `s` untyped (sp_int), which is a different,

@@ -1,3 +1,6 @@
+# spinel: not-cruby -- a target the legacy cast cannot reach declines with
+# NoMethodError, and an argument of the wrong pointer kind raises TypeError,
+# where CRuby makes the call.
 # Regression: a boxed bound Method read out of a poly slot may only be invoked
 # through the legacy `sp_int (*)(void *, sp_int...)` cast when the call-site
 # argument class matches the target's stamped per-position C ABI type. The bind
@@ -88,6 +91,8 @@ class Base
 end
 
 class Derived < Base; end
+# (named, so the program keeps it: a class nothing names is left out)
+DERIVED = Derived
 
 # A bool or Symbol return rides the cast: the bind site stamps the kind and
 # the box reads the low byte / the Symbol id (poly_method_call_return_kinds.rb

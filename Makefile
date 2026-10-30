@@ -58,7 +58,7 @@ RBS_SRC      = $(wildcard $(RBS_DIR)/src/*.c) $(wildcard $(RBS_DIR)/src/util/*.c
 RBS_OBJ      = $(patsubst $(RBS_DIR)/src/%.c,build/rbs/%.o,$(RBS_SRC))
 RBS_LIB      = build/librbs.a
 
-.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-callbacks-test bop-share-check-test share-spec-check bop-callbacks-check arity-spec-check value-edges-check value-edges-regen implied-calls-check implied-calls-regen implied-calls-test lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
+.PHONY: ty-setter-check imemo-shadow-test imemo-shadow-corpus int-min-test all hooks share-strings-test line-map-check unit-stability-test incremental-test incremental-bench gate-tool-test regexp wasm-rt wasm-test rbs_extract rbs-test rbs-seed-test inline-rbs-test rbs-seed-extractor cident plan-check-test timing-test shadow-check signal-default-test source-marker-test magic-comment-test repr-check-test run-scale-test gate-costs arm-check-test traits-check-test poly-cold-test bop-arity-check-test bop-callbacks-test bop-share-check-test share-spec-check bop-callbacks-check arity-spec-check value-edges-check value-edges-regen implied-calls-check implied-calls-regen implied-calls-test lower-rows-check node-kinds-check node-kinds-regen package-facts-check package-facts-regen value-pos-test re-lit-test reject-test cli-opts-test link-names-test reach-test defer-refusals-test check-stores-test backtrace-test gc-minor-test thread-puts-test ext-test ext-cruby-test alloc-report-test rubyspec rubyspec-gate spin-check \ repr-diff c-costs alloc-diff \
         test test-run clean-test-results regen-rbs-expected \
         regen-expected regen-expected-err bench optcarrot gate gate-full check gate-legs gate-test gate-bench gc-phases-test gc-stress-test gc-str-major-test gc-str-budget-test threaded-render-test gc-locality-test test-corpus test-corpus-summary \
         gate-optcarrot rubyboy gate-rubyboy scale-test clean install uninstall deps tools
@@ -1541,7 +1541,7 @@ test: lib/spinel_rt_responds_generated.h $(SPINEL_TIMEOUT) cext-header-test cext
 # The actual run. rbs-test golden-checks the RBS extractor (cheap, C-only).
 # rbs-seed-test checks the seeds actually reach the analyzer (incl. nested
 # classes, #1417).
-test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check implied-calls-check implied-calls-test node-kinds-check package-facts-check reject-test cli-opts-test link-names-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
+test-run: int-min-test timing-test signal-default-test source-marker-test magic-comment-test rbs-test rbs-seed-test inline-rbs-test re-lit-test value-pos-test value-edges-check implied-calls-check implied-calls-test node-kinds-check package-facts-check reject-test cli-opts-test link-names-test reach-test defer-refusals-test check-stores-test backtrace-test gc-minor-test gc-phases-test gc-stress-test gc-threshold-test gc-none-test gc-obj-budget-test gc-str-budget-test gc-str-major-test threaded-render-test gc-locality-test byref-capture-test thread-puts-test ext-test ext-cruby-test test-corpus-summary
 
 # The test/*.rb corpus (and the bundled packages') on its own, without the
 # C-side legs: what a 32-bit target runs (`make test-corpus CC='cc -m32'`),
@@ -1884,6 +1884,24 @@ cli-opts-test: $(SPINEL) $(SPINEL_TIMEOUT)
 # mrb_str_new, ... The regexp engine must not define those names. If it does,
 # the link fails (GNU ld), or the engine calls mruby's copy and crashes (ld64).
 # test/link-names/foreign_mrb.c defines the names and aborts if one is called.
+# A class nothing names keeps none of its methods (#10592): each program in
+# test/reach lists the functions its C must not mention (`# absent:`) and
+# the ones it must (`# present:`), and runs to its .expected.
+reach-test: $(SPINEL) $(SP_RT_LIB)
+	@ok=1; tmp=$$(mktemp -d /tmp/spinel-reach.XXXXXX); \
+	for t in test/reach/*.rb; do \
+	  if ! $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/p.c" >"$$tmp/b.out" 2>&1; then \
+	    echo "reach-test: FAIL ($$t: no C)"; sed -n 1,5p "$$tmp/b.out"; ok=0; continue; fi; \
+	  for f in $$(sed -n 's/^# absent: //p' "$$t"); do \
+	    ! grep -qw "$$f" "$$tmp/p.c" || { echo "reach-test: FAIL ($$t: the C has $$f)"; ok=0; }; done; \
+	  for f in $$(sed -n 's/^# present: //p' "$$t"); do \
+	    grep -qw "$$f" "$$tmp/p.c" || { echo "reach-test: FAIL ($$t: the C lacks $$f)"; ok=0; }; done; \
+	  if $(SPINEL) "$$t" -o "$$tmp/p" >"$$tmp/b.out" 2>&1 && "$$tmp/p" >"$$tmp/r.out" 2>&1 && cmp -s "$$tmp/r.out" "$$t.expected"; then :; \
+	  else echo "reach-test: FAIL ($$t did not build or printed other output)"; sed -n 1,5p "$$tmp/b.out" "$$tmp/r.out"; ok=0; fi; \
+	done; \
+	rm -rf "$$tmp"; \
+	[ $$ok = 1 ] && echo "reach-test: pass" || exit 1
+
 link-names-test: $(SPINEL) $(SP_RT_LIB) $(SP_RT_MT_LIB)
 	@ok=1; tmp=$$(mktemp -d /tmp/spinel-linknames.XXXXXX); t=test/link-names/regexp_program.rb; \
 	for a in $(SP_RT_LIB) $(SP_RT_MT_LIB); do \

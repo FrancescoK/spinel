@@ -12546,6 +12546,9 @@ else {
 }
 
 int is_descendant(Compiler *c, int k, int anc) {
+  /* a subclass no reached code names has no instance, and none of its
+     methods is compiled (compute_reachable, #10592) */
+  if (k != anc && k >= 0 && c->classes[k].unreferenced) return 0;
   for (int x = k; x >= 0; x = c->classes[x].parent) if (x == anc) return 1;
   return 0;
 }
