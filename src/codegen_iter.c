@@ -1174,10 +1174,22 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (reopen_self_defaults(c, mi) && !repr_self_handle(c, mi)) return 0;
   /* A subclass overriding the method takes its own arm of the cls_id switch;
      splicing this body answered for every class with the base's method. The
-     switch reaches this one through its proc-form clone. */
-  if (takes_class_dispatch(c, id, mi, implicit_self ? comp_scope_of(c, id)->class_id : recv_class,
-                           name))
-    return 0;
+     switch reaches this one through its proc-form clone. A bare call counts
+     the overrides from the class whose method is being emitted, as the plain
+     call does (emit_call_class's dispatch_cid): a base method spliced into a
+     subclass's method runs with that subclass's self, whose descendants may
+     share one implementation where the base's do not. Counted from the base,
+     label_tag's `content_tag ..., &block` spliced into Label#render was left
+     to the plain call, which named the yielding content_tag's function --
+     one that is never emitted -- because another Base subclass takes
+     content_tag from a module included after it. */
+  int disp_cls = recv_class;
+  if (implicit_self) {
+    disp_cls = comp_scope_of(c, id)->class_id;
+    if (g_emitting_class_id >= 0 && disp_cls >= 0 && is_descendant(c, g_emitting_class_id, disp_cls))
+      disp_cls = g_emitting_class_id;
+  }
+  if (takes_class_dispatch(c, id, mi, disp_cls, name)) return 0;
   /* a private or protected method refuses an outside receiver before its body
      is spliced in, as the plain call does */
   {
