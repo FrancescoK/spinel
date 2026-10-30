@@ -6726,7 +6726,17 @@ int emit_enum_with_index_expr(Compiler *c, int id, Buf *b) {
     buf_printf(g_pre, "sp_PolyArray_push(_t%d, _t%d);\n", tres, tv);
   }
   emit_indent(g_pre, g_indent); buf_puts(g_pre, "}\n");
-  buf_printf(b, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
+  /* The kept answer is boxed, whatever the enumerator's method. The
+     consumer takes the node's own type: a dispatch arm declares its slot
+     by it (an sp_StrArray * for a map over Strings, through a boxed
+     receiver whose other arms are user methods) and the box could not be
+     assigned to it, so a concrete type is unboxed here. */
+  char kept[96];
+  snprintf(kept, sizeof kept, "sp_enum_with_index_kept(_t%d, _t%d, _t%d)", te, ta, tres);
+  Repr kr = repr_of(c, id);
+  TyKind kt = kr.as_ty;
+  if (kr.kind == RK_BOXED || kt == TY_POLY || kt == TY_UNKNOWN || kt == TY_NIL || kt == TY_VOID) buf_puts(b, kept);
+  else emit_unbox_text(c, kt, kept, b);
   (void)body;
   return 1;
 }
