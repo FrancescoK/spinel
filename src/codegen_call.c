@@ -8450,7 +8450,13 @@ static int pd_region_temps(const char *r, size_t rn, int line_ok, int **tnum_out
 #define PD_IS(lit) (len == sizeof(lit) - 1 && memcmp(w, lit, len) == 0)
     /* a member name (`->self`, `.v`) is not a variable of the enclosing scope */
     if ((st >= 2 && r[st - 2] == '-' && r[st - 1] == '>') || (st >= 1 && r[st - 1] == '.')) continue;
-    if (PD_IS("self") || PD_IS("goto") || PD_IS("return") || PD_IS("continue") ||
+    /* (a class method's self is its `_sp_cls` parameter, and an inline
+       eval's receiver its `_sp_rself` local: frame names, not the
+       runtime's, that the `_sp_` test below would let through -- a
+       boxed `x.prepend(self)` in a class method hoisted an arm reading
+       `_sp_cls` into a function that has no such parameter) */
+    if (PD_IS("self") || PD_IS("_sp_cls") || PD_IS("_sp_rself") ||
+        PD_IS("goto") || PD_IS("return") || PD_IS("continue") ||
         PD_IS("setjmp") || PD_IS("__label__") || (len > 3 && memcmp(w, "lv_", 3) == 0)) { ok = 0; break; }
     if (w[0] != '_') continue;
     int is_t = len > 2 && w[1] == 't';
