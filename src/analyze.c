@@ -50146,6 +50146,14 @@ static void an_phase_method_backstops(Compiler *c) {
   AN_STEP_V("propagate_bigint_cascade", propagate_bigint_cascade(c));
 }
 
+/* The ivar slots of every class, counted: a class that gained a slot since
+   the count was taken has a layout the subclasses' must be re-merged with. */
+static int an_total_ivars(Compiler *c) {
+  int n = 0;
+  for (int k = 0; k < c->nclasses; k++) n += c->classes[k].nivars;
+  return n;
+}
+
 /* The late widening and narrowing: unresolved locals and returns to poly, ivars fed by nil-only params, the arithmetic widen, the object-array and poly-int narrowing, then the gc-root marks and the full node type cache (analyze_program's steps, in their order) */
 static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
   /* A non-parameter local that inference never resolved holds a value of unknown
@@ -50219,6 +50227,7 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
      its write must widen too, or storing nil loses the tag. Limit this late
      cvar widening to Bool and Symbol slots, which have no nil representation. */
   for (int it = 0; it < 8; it++) {
+    int ivars_before = an_total_ivars(c);
     int ch = infer_ivar_types(c);
     ch |= infer_cvar_types(c, 1);
     ch |= infer_inherited_ivars(c);
@@ -50244,6 +50253,16 @@ static void an_phase_late_widen(Compiler *c, NodeTypes *promote_before) {
     g_ret_no_new_poly = 2;
     ch |= infer_return_types(c);
     g_ret_no_new_poly = 0;
+    /* A slot a class first gained in this round sits after every slot it
+       had, in that class alone: an ancestor's new slot then shares its
+       index with a subclass's own, and the subclass never took the name.
+       `k.instance_variable_set(:@warned, true)` on a receiver the widening
+       above just turned poly (a local of an `inherited` hook no subclass
+       reaches) did that to a base class with no ivars of its own, and
+       check_class_layout_prefix refused the program. Re-merge the layouts
+       parent-first, as the pass above did for the fixpoint's slots, and go
+       round once more so the moved slots' types settle. */
+    if (an_total_ivars(c) != ivars_before) { inherit_members(c); ch = 1; }
     if (!ch) break;
   }
 

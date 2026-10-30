@@ -10209,7 +10209,19 @@ int poly_ivar_set_reaches(Compiler *c, int call, int k) {
   if (call < 0 || call >= c->nt->count) return 0;   /* no receiver: no class */
   const char *set = pivs_call_set(c, call, NULL, NULL, 0);
   if (k < 0 || k >= c->nclasses) return 0;
-  return set ? set[k] : 1;
+  if (set) return set[k];
+  /* A walk that met a Class value among the receiver's values offers the
+     dispatch no instance set (pivs_call_set: a Class value is no instance),
+     but it did bound the instances. An ivar set on a Class object is that
+     object's own, in CRuby as here (the runtime keeps it on the class), and
+     touches no instance layout: only the instance classes the walk recorded
+     lay the slot out. Without this `k.instance_variable_set(:@warned, true)`
+     in `[Kid, Base].each { |k| ... }` gave every class of the program an
+     instance slot it never holds. */
+  PivsFacts *f = c->pivs;
+  int m = f->memo_at[(size_t)call * 3] - 1;
+  if (m >= 0 && f->memo[m].walked) return f->memo[m].set[k];
+  return 1;
 }
 /* See analyze_internal.h. */
 /* See analyze.h. */
