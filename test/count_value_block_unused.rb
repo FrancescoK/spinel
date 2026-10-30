@@ -46,3 +46,8 @@ def cnt(a, v) = a.count(v) { |x| x > 0 }
 p cnt([0, 1, 0], 0)
 [[1, 2], [2, 2]].each { |a| p a.count(2) { false } }
 p [3, 2].public_send(:count, 2) { false }
+
+# an Enumerator's quantifiers
+p [1, 2].each.any?(1) { false }
+p({a: 1}.each.all?([:a, 1]) { false })
+p (1..3).each_slice(2).none?([1, 2]) { true }

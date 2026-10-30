@@ -14275,6 +14275,12 @@ int desugar_value_form_drop_block(Compiler *c) {
     if (!names[w]) continue;
     if (nok[w] < 0) nok[w] = value_block_name_free(c, nm);
     if (!nok[w]) continue;
+    /* an Enumerator's any?(v) and its siblings have no value-form emitter:
+       the call keeps its block, and the path it took before */
+    if (w > 0) {
+      TyKind rt = infer_type(c, nt_ref(nt, id, "receiver"));
+      if (rt == TY_ENUMERATOR || rt == TY_UNKNOWN) continue;
+    }
     nt_node_set_ref(nt, id, "block", -1);
     changed = 1;
   }
