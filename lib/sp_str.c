@@ -1006,15 +1006,29 @@ sp_oint sp_str_byteindex_from(const char*s,const char*sub,sp_int start){if(!s)sp
 sp_oint sp_str_byterindex(const char*s,const char*sub){if(!s)sp_nil_recv("byterindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");size_t sl=sp_str_byte_len(sub);size_t hn=sp_str_byte_len(s);if(sl==0)return sp_oint_of((sp_int)hn);const char*end=s+hn;const char*last=NULL;const char*p=s;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;last=f;p=f+1;}return last?sp_oint_of((sp_int)(last-s)):sp_oint_nil();}
 sp_oint sp_str_byterindex_from(const char*s,const char*sub,sp_int pos){if(!s)sp_nil_recv("byterindex");if(!sub)sp_raise_cls("TypeError","no implicit conversion of nil into String");sp_int bl=(sp_int)sp_str_byte_len(s);if(pos<0)pos+=bl;if(pos<0)return sp_oint_nil();if(pos>bl)pos=bl;size_t sl=sp_str_byte_len(sub);if(sl==0)return sp_oint_of(pos);const char*end=s+bl;const char*p=s;sp_int best=-1;while(p<end){const char*f=sp_bytestr(p,(size_t)(end-p),sub,sl);if(!f)break;sp_int off=(sp_int)(f-s);if(off>pos)break;best=off;p=f+1;}return best<0?sp_oint_nil():sp_oint_of(best);}
 /* start/len are codepoint indices/counts. */
+/* The String a one-byte character c reads as: a BINARY string's own, or the
+   shared one-character String, which costs no allocation; NULL for NUL,
+   which the caller allocates. */
+static const char *sp_char_one(unsigned char c, int bin) {
+  if (bin) return sp_bin_char(c);
+  if (c == 0) return NULL;
+  if (!sp_char_cache_init) {
+    for (int i = 0; i < 256; i++) { sp_char_cache[i][0] = (char)0xff; sp_char_cache[i][1] = (char)i; sp_char_cache[i][2] = 0; }
+    sp_char_cache_init = 1;
+  }
+  return &sp_char_cache[c][1];
+}
 /* `s[start, len]` char-indexed slice (UTF-8 aware). Negative start counts
    back from the char length. CRuby's nil contract: start past the length
    (or before -length) and a negative len return NULL; start == length and
    len == 0 return "". A single-char ASCII result aliases the per-process
    sp_char_cache so common indexing avoids an allocation. */
-const char*sp_str_sub_range(const char*s,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");size_t _fb;int fixed=sp_str_fixed_width(s,&_fb);sp_int cl=fixed?(sp_int)_fb:sp_str_length(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return sp_str_is_binary(s)?sp_str_empty_binary():&("\xff" "")[1];}if(len>cl-start)len=cl-start;int bin=fixed?sp_str_is_binary(s):0;size_t boff=fixed?(size_t)start:sp_utf8_byte_offset(s,start);size_t blen_total=fixed?_fb:sp_str_byte_len(s);size_t bp=boff;sp_int rem=len;while(rem>0&&bp<blen_total){bp+=fixed?1:sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(bin&&len==1&&blen==1)return sp_bin_char((unsigned char)s[boff]);if(!bin&&len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);if(bin)sp_str_mark_binary(r);return r;}
+const char*sp_str_sub_range(const char*s,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");size_t _fb;int fixed=sp_str_fixed_width(s,&_fb);sp_int cl=fixed?(sp_int)_fb:sp_str_length(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return sp_str_is_binary(s)?sp_str_empty_binary():&("\xff" "")[1];}if(len>cl-start)len=cl-start;int bin=fixed?sp_str_is_binary(s):0;size_t boff=fixed?(size_t)start:sp_utf8_byte_offset(s,start);size_t blen_total=fixed?_fb:sp_str_byte_len(s);size_t bp=boff;sp_int rem=len;while(rem>0&&bp<blen_total){bp+=fixed?1:sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){const char*one=sp_char_one((unsigned char)s[boff],bin);if(one)return one;}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);if(bin)sp_str_mark_binary(r);return r;}
 /* Single-character `s[i]`. Returns NULL on out-of-bounds so the caller can
-   yield CRuby's `"hello"[20] -> nil`. */
-const char*sp_str_char_at_or_nil(const char*s,sp_int i){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");sp_int cl=sp_str_length(s);if(i<0)i+=cl;if(i<0||i>=cl)return NULL;return sp_str_sub_range(s,i,1);}
+   yield CRuby's `"hello"[20] -> nil`. Byte-indexed text (BINARY, or proved
+   7-bit) reads the byte at i: counting its characters and slicing one out
+   (sp_str_sub_range) was most of a scanning loop's `s[i]`. */
+const char*sp_str_char_at_or_nil(const char*s,sp_int i){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");size_t fb;if(sp_str_fixed_width(s,&fb)){sp_int n=(sp_int)fb;if(i<0)i+=n;if(i<0||i>=n)return NULL;const char*one=sp_char_one((unsigned char)s[i],sp_str_is_binary(s));if(one)return one;}sp_int cl=sp_str_length(s);if(i<0)i+=cl;if(i<0||i>=cl)return NULL;return sp_str_sub_range(s,i,1);}
 /* The width in bytes of the character at byte `at` of s, which ends at
    byte blen: one on a BINARY string, as #chars counts. */
 size_t sp_str_char_width(const char*s,size_t blen,size_t at){
@@ -1031,21 +1045,14 @@ const char*sp_str_char_step(const char*s,size_t blen,size_t*at){
   *at = off + n;
   int bin = sp_str_is_binary(s);
   unsigned char c = (unsigned char)s[off];
-  if (n == 1 && bin) return sp_bin_char(c);
-  if (n == 1 && c != 0) {
-    if (!sp_char_cache_init) {
-      for (int i = 0; i < 256; i++) { sp_char_cache[i][0] = (char)0xff; sp_char_cache[i][1] = (char)i; sp_char_cache[i][2] = 0; }
-      sp_char_cache_init = 1;
-    }
-    return &sp_char_cache[c][1];
-  }
+  if (n == 1) { const char *one = sp_char_one(c, bin); if (one) return one; }
   char *r = sp_str_alloc_raw(n + 1);
   memcpy(r, s + off, n); r[n] = 0;
   sp_str_set_len(r, n);
   if (bin) sp_str_mark_binary(r);
   return r;
 }
-const char*sp_str_sub_range_len(const char*s,sp_int cl,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return sp_str_is_binary(s)?sp_str_empty_binary():&("\xff" "")[1];}if(len>cl-start)len=cl-start;size_t _fb;int fixed=sp_str_fixed_width(s,&_fb);int bin=fixed?sp_str_is_binary(s):0;size_t boff=fixed?(size_t)start:sp_utf8_byte_offset(s,start);size_t blen_total=fixed?_fb:sp_str_byte_len(s);size_t bp=boff;sp_int rem=len;while(rem>0&&bp<blen_total){bp+=fixed?1:sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(bin&&len==1&&blen==1)return sp_bin_char((unsigned char)s[boff]);if(!bin&&len==1&&blen==1){unsigned char c=(unsigned char)s[boff];if(c!=0){if(!sp_char_cache_init){for(int i=0;i<256;i++){sp_char_cache[i][0]=(char)0xff;sp_char_cache[i][1]=(char)i;sp_char_cache[i][2]=0;}sp_char_cache_init=1;}return &sp_char_cache[c][1];}}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);if(bin)sp_str_mark_binary(r);return r;}
+const char*sp_str_sub_range_len(const char*s,sp_int cl,sp_int start,sp_int len){SP_GC_ROOT_STR(s);if(start<0)start+=cl;if(start<0||start>cl||len<0)return NULL;if(start==cl||len==0){return sp_str_is_binary(s)?sp_str_empty_binary():&("\xff" "")[1];}if(len>cl-start)len=cl-start;size_t _fb;int fixed=sp_str_fixed_width(s,&_fb);int bin=fixed?sp_str_is_binary(s):0;size_t boff=fixed?(size_t)start:sp_utf8_byte_offset(s,start);size_t blen_total=fixed?_fb:sp_str_byte_len(s);size_t bp=boff;sp_int rem=len;while(rem>0&&bp<blen_total){bp+=fixed?1:sp_utf8_advance(s+bp);rem--;}if(bp>blen_total)bp=blen_total;size_t bend=bp;size_t blen=bend-boff;if(len==1&&blen==1){const char*one=sp_char_one((unsigned char)s[boff],bin);if(one)return one;}char*r=sp_str_alloc_raw(blen+1);memcpy(r,s+boff,blen);r[blen]=0;sp_str_set_len(r,blen);if(bin)sp_str_mark_binary(r);return r;}
 const char*sp_str_sub_range_r(const char*s,sp_int start,sp_int end_,sp_int excl){SP_GC_ROOT_STR(s);if(!s)sp_nil_recv("[]");sp_int cl=sp_str_length(s);if(end_<0)end_+=cl;if(start<0)start+=cl;if(start<0)return NULL;if(end_>=cl){end_=cl;excl=1;}sp_int n=end_-start+(excl?0:1);if(n<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 const char*sp_str_sub_range_len_r(const char*s,sp_int cl,sp_int start,sp_int end_,sp_int excl){SP_GC_ROOT_STR(s);if(end_<0)end_+=cl;if(start<0)start+=cl;if(start<0)return NULL;if(end_>=cl){end_=cl;excl=1;}sp_int n=end_-start+(excl?0:1);if(n<0)n=0;return sp_str_sub_range_len(s,cl,start,n);}
 /* walks by INDEX to the header length: `while(*p)` stopped at an embedded NUL
