@@ -2257,6 +2257,9 @@ static int class_body_constants(Compiler *c, int ci, const char **out, const cha
       else if (sk == NK_ClassNode || sk == NK_ModuleNode) {
         int ncp = nt_ref(nt, stmts[k], "constant_path");
         if (ncp >= 0 && nt_kind(nt, ncp) == NK_ConstantPathNode) continue;
+        /* the twin a class that extends Enumerable answers it through
+           (desugar_extend_enumerable) is the compiler's, not the program's */
+        if (nt_int(nt, stmts[k], "enum_twin", 0)) continue;
         class_stmt_const_names(nt, stmts[k], &nm, &sh);
       }
       if (nm) n = add_listed_const(out, shown, n, nm, sh);

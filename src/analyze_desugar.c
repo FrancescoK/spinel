@@ -10843,6 +10843,403 @@ static int fwd_resolve_class(const NodeTable *nt, const char *ctx, int ref, cons
                              char *out, size_t cap) {
   return fwd_resolve_const(nt, ctx, ref, refname, 0, out, cap, NULL);
 }
+/* ---- `extend Enumerable` on a class or module ----
+   Enumerable's methods reach an instance of a class that includes it, and
+   no route gives them to the class itself: `C.map { }` on a class that
+   extends Enumerable (or `class << self; include Enumerable`, which
+   desugar_singleton_class_mixin makes that) found no class method. Each
+   such class or module, and each subclass of one, gets an instance-side
+   twin whose #each is the class's, and a class method answering one:
+
+     class C                              class C
+       extend Enumerable                    class SpinelEnumerableSelf
+       def self.each                          include Enumerable
+         yield 1                    ->        def each
+       end                                      C.each { |*x| yield(*x) }
+     end                                      end
+     C.map { |x| x * 2 }                    end
+                                            def self.__spinel_enum_self
+                                              SpinelEnumerableSelf.new
+                                            end
+                                            extend Enumerable
+                                            def self.each ...
+                                          end
+                                          C.__spinel_enum_self.map { |x| x * 2 }
+
+   An Enumerable method called on the class -- through its constant, as
+   self or receiverless in its class methods and its body, or on
+   `self.class` in its instance methods -- goes to the
+   twin, unless the class or the classes between it and the extend define a
+   class method of that name, which comes ahead of Enumerable. The twin is
+   asked for on self, so a subclass's call reaches its own #each. */
+static const char *const ee_enum_names[] = {
+  "all?", "any?", "chain", "chunk", "chunk_while", "collect", "collect_concat", "compact", "count",
+  "cycle", "detect", "drop", "drop_while", "each_cons", "each_entry", "each_slice", "each_with_index",
+  "each_with_object", "entries", "filter", "filter_map", "find", "find_all", "find_index", "first",
+  "flat_map", "grep", "grep_v", "group_by", "include?", "inject", "lazy", "map", "max", "max_by",
+  "member?", "min", "min_by", "minmax", "minmax_by", "none?", "one?", "partition", "reduce", "reject",
+  "reverse_each", "select", "slice_after", "slice_before", "slice_when", "sort", "sort_by", "sum",
+  "take", "take_while", "tally", "to_a", "to_h", "to_set", "uniq", "zip", NULL };
+static int ee_is_enumerable_ref(const NodeTable *nt, int n) {
+  NodeKind k = nt_kind(nt, n);
+  return (k == NK_ConstantReadNode || (k == NK_ConstantPathNode && nt_ref(nt, n, "parent") < 0)) &&
+         nt_str(nt, n, "name") && sp_streq(nt_str(nt, n, "name"), "Enumerable");
+}
+/* a body statement `extend Enumerable` (beside other modules or not) */
+static int ee_extends_enumerable(const NodeTable *nt, int st) {
+  if (nt_kind(nt, st) != NK_CallNode || nt_ref(nt, st, "receiver") >= 0 || nt_ref(nt, st, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, st, "name");
+  if (!nm || !sp_streq(nm, "extend")) return 0;
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
+  for (int j = 0; j < an; j++) if (ee_is_enumerable_ref(nt, av[j])) return 1;
+  return 0;
+}
+#define EE_NNAMES ((int)(sizeof ee_enum_names / sizeof ee_enum_names[0]) - 1)
+typedef struct {
+  char key[512], sup[512];
+  int node;      /* its first class or module node */
+  int in_set;    /* extends Enumerable, or a subclass of one that does */
+  int extends;
+  int used;      /* a call went to its twin, or to a superclass's */
+  unsigned char shadow[EE_NNAMES];   /* a class method of that name, which comes ahead of Enumerable */
+} EeClass;
+static int ee_find(const EeClass *v, int n, const char *key) {
+  for (int i = 0; i < n; i++) if (sp_streq(v[i].key, key)) return i;
+  return -1;
+}
+static int ee_name_index(const char *nm) {
+  for (int i = 0; nm && i < EE_NNAMES; i++) if (sp_streq(ee_enum_names[i], nm)) return i;
+  return -1;
+}
+/* a class or module's own key, "A::B::" (fwd_ns_key's is the namespace it
+   is opened in) */
+static void ee_own_key(const NodeTable *nt, int ct, char *out, size_t cap) {
+  out[0] = 0;
+  fwd_ns_key(nt, ct, out, cap);
+  fwd_key_add(out, cap, nt_str(nt, nt_ref(nt, ct, "constant_path"), "name"));
+}
+/* the own key of the class or module nearest around `id`, "" at the top
+   level: where a constant read there is looked up first */
+static void ee_ctx_of(const NodeTable *nt, const int *parent, int id, char *out, size_t cap) {
+  out[0] = 0;
+  for (int p = parent[id]; p >= 0; p = parent[p])
+    if (nt_kind(nt, p) == NK_ClassNode || nt_kind(nt, p) == NK_ModuleNode) { ee_own_key(nt, p, out, cap); return; }
+}
+/* the own key of the class or module the constant `ref` names in ctx */
+static int ee_ref_key(const NodeTable *nt, const char *ctx, int ref, char *out, size_t cap) {
+  out[0] = 0;
+  if (!fwd_resolve_const(nt, ctx, ref, NULL, FWD_MODULES, out, cap, NULL)) return 0;
+  fwd_key_add(out, cap, nt_str(nt, ref, "name"));
+  return 1;
+}
+/* the nearest class, module or singleton class body around `id` */
+static int ee_body_around(const NodeTable *nt, const int *parent, int id) {
+  for (int p = parent[id]; p >= 0; p = parent[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode) return p;
+  }
+  return -1;
+}
+/* the statements a class or module body runs, through the BeginNode of
+   a body with rescue or ensure */
+static const int *ee_body_list(const NodeTable *nt, int ct, int *n) {
+  int body = nt_ref(nt, ct, "body");
+  if (body >= 0 && nt_kind(nt, body) == NK_BeginNode) body = nt_ref(nt, body, "statements");
+  *n = 0;
+  return body >= 0 && nt_kind(nt, body) == NK_StatementsNode ? nt_arr(nt, body, "body", n) : NULL;
+}
+/* the class or module a `class << self` node is a statement of, else -1 */
+static int ee_sclass_owner(const NodeTable *nt, const int *parent, int sc) {
+  if (sc < 0 || nt_kind(nt, sc) != NK_SingletonClassNode || nt_kind(nt, nt_ref(nt, sc, "expression")) != NK_SelfNode)
+    return -1;
+  int own = ee_body_around(nt, parent, sc);
+  return own >= 0 && nt_kind(nt, own) != NK_SingletonClassNode ? own : -1;
+}
+/* the class or module whose class method, or body, `id` runs in as self:
+   a def of self (or in `class << self`), up through the blocks around it
+   that keep self; -1 for an instance method, the top level, or a block
+   that may run with another self. With inst, the class whose instance
+   method `id` runs in instead. */
+static int ee_self_holder(const NodeTable *nt, const int *parent, int id, int inst) {
+  for (int p = parent[id]; p >= 0; p = parent[p]) {
+    NodeKind k = nt_kind(nt, p);
+    if (k == NK_ClassNode || k == NK_ModuleNode) return inst ? -1 : p;
+    if (k == NK_SingletonClassNode || k == NK_LambdaNode || k == NK_ProgramNode) return -1;
+    if (k == NK_BlockNode) {
+      int call = parent[p];
+      const char *cn = call >= 0 && nt_kind(nt, call) == NK_CallNode ? nt_str(nt, call, "name") : NULL;
+      if (!cn || sp_streq(cn, "instance_eval") || sp_streq(cn, "instance_exec") || sp_streq(cn, "class_eval") ||
+          sp_streq(cn, "class_exec") || sp_streq(cn, "module_eval") || sp_streq(cn, "module_exec") ||
+          sp_streq(cn, "define_method") || sp_streq(cn, "define_singleton_method") || sp_streq(cn, "new"))
+        return -1;
+      continue;
+    }
+    if (k != NK_DefNode) continue;
+    int r = nt_ref(nt, p, "receiver");
+    int around = ee_body_around(nt, parent, p);
+    if (inst) return r < 0 && around >= 0 && nt_kind(nt, around) == NK_ClassNode ? around : -1;
+    if (r >= 0) return nt_kind(nt, r) == NK_SelfNode && around >= 0 && nt_kind(nt, around) != NK_SingletonClassNode
+                       ? around : -1;
+    return ee_sclass_owner(nt, parent, around);   /* a def in `class << self` */
+  }
+  return -1;
+}
+/* the class or module a class method def `d` is defined on: `def self.m`
+   or `def K.m`, or a def in its `class << self`; its key in out */
+static int ee_cmethod_owner(const NodeTable *nt, const int *parent, int d, char *out, size_t cap) {
+  int r = nt_ref(nt, d, "receiver"), around = ee_body_around(nt, parent, d), ct = -1;
+  out[0] = 0;
+  if (r >= 0 && nt_kind(nt, r) == NK_SelfNode)
+    ct = around >= 0 && nt_kind(nt, around) != NK_SingletonClassNode ? around : -1;
+  else if (r >= 0) {
+    char ctx[512];
+    ee_ctx_of(nt, parent, d, ctx, sizeof ctx);
+    return ee_ref_key(nt, ctx, r, out, cap);
+  }
+  else ct = ee_sclass_owner(nt, parent, around);
+  if (ct < 0) return 0;
+  ee_own_key(nt, ct, out, cap);
+  return 1;
+}
+/* mark in v[i].shadow each Enumerable name a statement `st` of the class's
+   body (in a `class << self` of it with sclass) may define as a class
+   method: a Symbol or String argument of a call (`attr_accessor :count`,
+   `define_singleton_method(:first)`, `def_delegators :@a, :first`), an
+   alias's new name, and, in the body itself, each method of a program's
+   module it extends */
+static void ee_mark_stmt(const NodeTable *nt, const int *parent, EeClass *v, int i, int ct, int st, int sclass) {
+  NodeKind k = nt_kind(nt, st);
+  if (k == NK_AliasMethodNode) {
+    int nn = nt_ref(nt, st, "new_name");
+    int ni = ee_name_index(nn >= 0 ? nt_str(nt, nn, "value") : NULL);
+    if (ni >= 0 && sclass) v[i].shadow[ni] = 1;
+    return;
+  }
+  if (k != NK_CallNode) return;
+  int r = nt_ref(nt, st, "receiver");
+  if (r >= 0 && nt_kind(nt, r) != NK_SelfNode) return;
+  const char *nm = nt_str(nt, st, "name");
+  int an = 0; const int *av = nt_arr(nt, nt_ref(nt, st, "arguments"), "arguments", &an);
+  if (nm && sp_streq(nm, "extend") && !sclass) {
+    char ctx[512];
+    ee_own_key(nt, ct, ctx, sizeof ctx);
+    for (int j = 0; j < an; j++) {
+      char mk[512];
+      if (ee_is_enumerable_ref(nt, av[j]) || !ee_ref_key(nt, ctx, av[j], mk, sizeof mk)) continue;
+      NT_FOREACH_KIND(nt, NK_DefNode, d) {
+        int ni = ee_name_index(nt_str(nt, d, "name"));
+        int m = ni >= 0 && nt_ref(nt, d, "receiver") < 0 ? ee_body_around(nt, parent, d) : -1;
+        char dk[512];
+        if (m < 0 || nt_kind(nt, m) != NK_ModuleNode) continue;
+        ee_own_key(nt, m, dk, sizeof dk);
+        if (sp_streq(dk, mk)) v[i].shadow[ni] = 1;
+      }
+    }
+    return;
+  }
+  if (nm && (sp_streq(nm, "extend") || sp_streq(nm, "include") || sp_streq(nm, "prepend"))) return;
+  for (int j = 0; j < an; j++) {
+    NodeKind ak = nt_kind(nt, av[j]);
+    const char *s = ak == NK_SymbolNode ? nt_str(nt, av[j], "value")
+                  : ak == NK_StringNode ? nt_str(nt, av[j], "content") : NULL;
+    int ni = ee_name_index(s);
+    if (ni >= 0) v[i].shadow[ni] = 1;
+  }
+}
+/* does the class method nm come ahead of Enumerable for a call on class
+   ci: one ci or a class between it and the extend defines, or -- for a
+   call on self, which may be a subclass -- one a subclass of ci does? */
+static int ee_shadowed(const EeClass *v, int nv, int ci, int ni, int on_self) {
+  for (int s = ci, depth = 0; s >= 0 && v[s].in_set && depth < 64; depth++) {
+    if (v[s].shadow[ni]) return 1;
+    if (v[s].extends) break;
+    s = v[s].sup[0] ? ee_find(v, nv, v[s].sup) : -1;
+  }
+  if (!on_self) return 0;
+  for (int j = 0; j < nv; j++) {
+    if (j == ci || !v[j].in_set || !v[j].shadow[ni]) continue;
+    for (int s = j, depth = 0; s >= 0 && v[s].in_set && depth < 64; depth++) {
+      if (s == ci) return 1;
+      s = v[s].sup[0] ? ee_find(v, nv, v[s].sup) : -1;
+    }
+  }
+  return 0;
+}
+/* the statements a class body runs: its StatementsNode, made when it has
+   none, or a BeginNode's (a body with rescue or ensure) */
+static int ee_body_stmts(NodeTable *nt, int cls) {
+  int body = nt_ref(nt, cls, "body");
+  int holder = cls, slot = 0;   /* slot 0: the class's "body", 1: the begin's "statements" */
+  if (body >= 0 && nt_kind(nt, body) == NK_StatementsNode) return body;
+  if (body >= 0 && nt_kind(nt, body) == NK_BeginNode) {
+    int st = nt_ref(nt, body, "statements");
+    if (st >= 0 && nt_kind(nt, st) == NK_StatementsNode) return st;
+    if (st >= 0) return -1;
+    holder = body; slot = 1;
+  }
+  else if (body >= 0) return -1;
+  int ns = fwd_new_node_like(nt, cls, "StatementsNode");
+  if (ns >= 0) nt_node_set_ref(nt, holder, slot ? "statements" : "body", ns);
+  return ns;
+}
+int desugar_extend_enumerable(Compiler *c, HostStep *h) {
+  NodeTable *nt = (NodeTable *)c->nt;
+  int any = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id) if (ee_extends_enumerable(nt, id)) { any = 1; break; }
+  if (!any) return 0;
+  int n0 = nt->count, nv = 0, ncls = 0, nmod = 0;
+  nt_nodes_of_kind(nt, NK_ClassNode, &ncls);
+  nt_nodes_of_kind(nt, NK_ModuleNode, &nmod);
+  EeClass *v = calloc((size_t)(ncls + nmod) + 1, sizeof(EeClass));
+  int *parent = an_parent_map(nt);
+  if (!v || !parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    char key[512];
+    ee_own_key(nt, id, key, sizeof key);
+    int i = ee_find(v, nv, key);
+    if (i < 0) { i = nv++; snprintf(v[i].key, sizeof v[i].key, "%s", key); v[i].node = id; }
+    int sup = k == NK_ClassNode ? nt_ref(nt, id, "superclass") : -1;
+    if (sup >= 0 && !v[i].sup[0]) {
+      char ctx[512];
+      ee_ctx_of(nt, parent, id, ctx, sizeof ctx);
+      ee_ref_key(nt, ctx, sup, v[i].sup, sizeof v[i].sup);
+    }
+    int bn = 0; const int *bb = ee_body_list(nt, id, &bn);
+    for (int j = 0; j < bn; j++) if (ee_extends_enumerable(nt, bb[j])) v[i].extends = v[i].in_set = 1;
+  }
+  for (int grew = 1; grew;) {
+    grew = 0;
+    for (int i = 0; i < nv; i++) {
+      if (v[i].in_set || !v[i].sup[0]) continue;
+      int s = ee_find(v, nv, v[i].sup);
+      if (s >= 0 && v[s].in_set) { v[i].in_set = 1; grew = 1; }
+    }
+  }
+  /* the class methods of an Enumerable name each class defines */
+  NT_FOREACH_KIND(nt, NK_DefNode, d) {
+    int ni = ee_name_index(nt_str(nt, d, "name"));
+    char own[512];
+    if (ni < 0 || !ee_cmethod_owner(nt, parent, d, own, sizeof own)) continue;
+    int i = ee_find(v, nv, own);
+    if (i >= 0) v[i].shadow[ni] = 1;
+  }
+  for (int id = 0; id < n0; id++) {
+    NodeKind k = nt_kind(nt, id);
+    if (k != NK_ClassNode && k != NK_ModuleNode) continue;
+    char key[512];
+    ee_own_key(nt, id, key, sizeof key);
+    int i = ee_find(v, nv, key);
+    if (i < 0 || !v[i].in_set) continue;
+    int bn = 0; const int *bb = ee_body_list(nt, id, &bn);
+    for (int j = 0; j < bn; j++) {
+      ee_mark_stmt(nt, parent, v, i, id, bb[j], 0);
+      if (ee_sclass_owner(nt, parent, bb[j]) < 0) continue;
+      int sn = 0; const int *ss = nt_arr(nt, nt_ref(nt, bb[j], "body"), "body", &sn);
+      for (int q = 0; q < sn; q++) ee_mark_stmt(nt, parent, v, i, id, ss[q], 1);
+    }
+  }
+  /* the calls that go to a twin, all chosen before any is rewritten */
+  int *site = malloc(sizeof(int) * (size_t)(2 * n0 + 2)), nsite = 0;
+  if (!site) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int id = 0; id < n0; id++) {
+    if (nt_kind(nt, id) != NK_CallNode) continue;
+    const char *nm = nt_str(nt, id, "name");
+    if (!nm) continue;
+    int is_test = sp_streq(nm, "is_a?") || sp_streq(nm, "kind_of?");
+    int ni = ee_name_index(nm);
+    if (is_test) {
+      int an = 0; const int *av = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &an);
+      if (an != 1 || !ee_is_enumerable_ref(nt, av[0])) continue;
+    }
+    else if (ni < 0) continue;
+    int recv = nt_ref(nt, id, "receiver"), ci = -1, on_self = 0;
+    /* `self.class.count` in an instance method */
+    int of_class = recv >= 0 && nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
+                   sp_streq(nt_str(nt, recv, "name"), "class") && nt_ref(nt, recv, "arguments") < 0 &&
+                   nt_ref(nt, recv, "block") < 0 &&
+                   (nt_ref(nt, recv, "receiver") < 0 || nt_kind(nt, nt_ref(nt, recv, "receiver")) == NK_SelfNode);
+    if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode || of_class) {
+      int holder = ee_self_holder(nt, parent, id, of_class);
+      if (holder < 0) continue;
+      char key[512];
+      ee_own_key(nt, holder, key, sizeof key);
+      ci = ee_find(v, nv, key);
+      on_self = 1;
+    }
+    else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
+      char ctx[512], key[512];
+      ee_ctx_of(nt, parent, id, ctx, sizeof ctx);
+      if (!ee_ref_key(nt, ctx, recv, key, sizeof key)) continue;
+      ci = ee_find(v, nv, key);
+    }
+    if (ci < 0 || !v[ci].in_set || (!is_test && ee_shadowed(v, nv, ci, ni, on_self))) continue;
+    site[nsite++] = id;
+    site[nsite++] = ci;
+  }
+  free(parent);
+  int changed = 0;
+  for (int k = 0; k < nsite; k += 2) {
+    int id = site[k], ci = site[k + 1];
+    int tw = fwd_new_node_like(nt, id, "CallNode");
+    if (tw < 0) break;
+    nt_node_set_str(nt, tw, "name", "__spinel_enum_self");
+    nt_node_set_ref(nt, tw, "receiver", nt_ref(nt, id, "receiver"));
+    nt_node_set_ref(nt, id, "receiver", tw);
+    nt_set_vcall(nt, id, 0);
+    v[ci].used = 1;
+    changed = 1;
+  }
+  free(site);
+  /* a superclass's class method runs with a subclass for self too */
+  for (int i = 0; i < nv; i++)
+    for (int s = i, depth = 0; !v[i].used && s >= 0 && v[s].in_set && depth < 64; depth++) {
+      if (v[s].used) v[i].used = 1;
+      s = !v[s].sup[0] ? -1 : ee_find(v, nv, v[s].sup);
+    }
+  /* then the twins, each the first statements of its class's first body:
+     only where a call asks for one, as a class that never calls them need
+     not define #each */
+  for (int i = 0; i < nv; i++) {
+    if (!v[i].in_set || !v[i].used) continue;
+    char path[512];
+    snprintf(path, sizeof path, "%s", v[i].key);
+    size_t pl = strlen(path);
+    if (pl >= 2) path[pl - 2] = 0;   /* the key's trailing "::" */
+    char text[1536];
+    snprintf(text, sizeof text,
+             "class SpinelEnumerableSelf\n  include Enumerable\n  def each\n    %s.each { |*x| yield(*x) }\n  end\nend\n"
+             "def self.__spinel_enum_self\n  SpinelEnumerableSelf.new\nend\n", path);
+    NodeTable *tmp = sp_parse_snippet(text);
+    if (!tmp) continue;
+    int st = nt_ref(tmp, tmp->root_id, "statements"), tn = 0;
+    const int *ts = st >= 0 ? nt_arr(tmp, st, "body", &tn) : NULL;
+    int add[2], na = 0;
+    for (int j = 0; j < tn && na < 2; j++) {
+      int imp = nt_import_subtree(nt, tmp, ts[j]);
+      if (imp >= 0) add[na++] = imp;
+    }
+    nt_free(tmp);
+    if (na != 2) continue;
+    nt_node_set_int(nt, add[0], "enum_twin", 1);   /* no constant of the class's (class_body_constants) */
+    int cls = v[i].node, body = ee_body_stmts(nt, cls);
+    if (body < 0) continue;
+    int bn = 0; const int *bb = nt_arr(nt, body, "body", &bn);
+    int *nb = malloc(sizeof(int) * (size_t)(bn + 2));
+    if (!nb) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    nb[0] = add[0]; nb[1] = add[1];
+    if (bn) memcpy(nb + 2, bb, sizeof(int) * (size_t)bn);
+    nt_node_set_arr(nt, body, "body", nb, bn + 2);
+    free(nb);
+    host_splice(c, h, cls, body, 0, 2, NULL, NULL);
+    changed = 1;
+  }
+  free(v);
+  if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
 /* The shape of instance method `name` as the class `ref` names from
    namespace `ctx` (or its nearest superclass defining it) has it. Classes
    are matched by namespace and name, before any scope exists. */

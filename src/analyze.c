@@ -47293,6 +47293,10 @@ static void an_phase_desugar_register(Compiler *c) {
   AN_STEP_V("desugar_native_func_defs", desugar_native_func_defs(c));          /* native_func :f -> def self.f = Mod.f (a module value finds it) */
   AN_STEP_V("desugar_explicit_receiver_mixin", desugar_explicit_receiver_mixin(c));    /* K.prepend(M) as a statement -> class K; prepend M; end */
   desugar_singleton_class_mixin(c);      /* singleton_class.prepend(M), class << self; include M -> extend M */
+  /* extend Enumerable -> an instance-side twin each Enumerable call on the class goes to */
+  host_begin(&hs, &lc);
+  AN_STEP_V("desugar_extend_enumerable", desugar_extend_enumerable(c, &hs));
+  host_end(c, &hs);
   AN_STEP_V("desugar_attr_const_splat", desugar_attr_const_splat(c));           /* attr_accessor(*FLAGS), FLAGS = %i[a b] -> attr_accessor(:a, :b) */
   AN_STEP_V("desugar_singleton_attr", desugar_singleton_attr(c));             /* singleton_class.attr_accessor :x -> def self.x / def self.x= */
   AN_STEP_V("desugar_sclass_readers_through_class", desugar_sclass_readers_through_class(c)); /* class << self; attr_reader :x read as obj.class.x -> def x = @x */
