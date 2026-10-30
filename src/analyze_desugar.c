@@ -14213,7 +14213,8 @@ int desugar_index_value_block_pass(Compiler *c) {
    attr_* or Struct / Data member that names it (or names a method only the
    run time knows). A `&expr` that is not a
    plain read was bound to a local by desugar_index_value_block_pass, so
-   what is dropped is a literal block or a read. */
+   what is dropped is a literal block, a Symbol, nil, a lambda literal,
+   or a read of a local or an instance variable that holds a Proc or nil. */
 static int value_block_lit_is(const NodeTable *nt, int n, const char *name) {
   NodeKind k = nt_kind(nt, n);
   const char *v = k == NK_SymbolNode ? nt_str(nt, n, "value") : k == NK_StringNode ? nt_str(nt, n, "content") : NULL;
@@ -14265,6 +14266,13 @@ int desugar_value_form_drop_block(Compiler *c) {
     if (nt_kind(nt, blk) == NK_BlockArgumentNode) {
       int ex = nt_ref(nt, blk, "expression");
       if (ex < 0 || !value_block_pass_pure(nt, ex)) continue;
+      /* a read of anything but a Proc or nil keeps the block-pass: CRuby
+         calls its to_proc, or raises TypeError, before the call */
+      NodeKind ek = nt_kind(nt, ex);
+      if (ek == NK_LocalVariableReadNode || ek == NK_InstanceVariableReadNode) {
+        TyKind et = infer_type(c, ex);
+        if (et != TY_PROC && et != TY_NIL) continue;
+      }
     } else if (nt_kind(nt, blk) != NK_BlockNode) continue;
     int argc = 0; const int *av = call_args(nt, id, &argc);
     if (argc != 1 || nt_kind(nt, av[0]) == NK_SplatNode || nt_kind(nt, av[0]) == NK_KeywordHashNode ||

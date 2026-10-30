@@ -50,4 +50,10 @@ p [3, 2].public_send(:count, 2) { false }
 # an Enumerator's quantifiers
 p [1, 2].each.any?(1) { false }
 p({a: 1}.each.all?([:a, 1]) { false })
-p (1..3).each_slice(2).none?([1, 2]) { true }
+p (1..3).each_slice(2).none?([1, 2]) { raise "not called" }
+
+# a block-pass of something that is not a Proc keeps CRuby's to_proc
+class Convertible
+  def to_proc = (puts "converted"; proc { true })
+end
+p [1].count(1, &Convertible.new)
