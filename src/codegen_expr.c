@@ -2997,6 +2997,21 @@ static int emit_ivar_cvar_gvar_expr(Compiler *c, int id, Buf *b, const NodeTable
       if (!has) is_nil = 1;
       else { snprintf(pfx, sizeof pfx, "%s%s", g_self, g_self_deref); buf_printf(&ref, "%siv_%s", pfx, iv_c(nm + 1)); }
     }
+    else if (cs && cs->class_id < 0 && holder_cbody(c, id) >= 0 && ie_class_of(c, id) < 0) {
+      /* A block or a proc written in a class or module body (`%w(a b).each
+         do |m| ... lambda { @x } ... end`): its scope is no class's, but
+         the ivar is the body class's own, as the write emitters take it
+         (civ_class_of) and as a lambda written straight in the body reads
+         it. Taken for the top level's, the read named `self` where no
+         self exists, or an undeclared Toplevel slot. One the class never
+         names is nil, as on the class object. */
+      int cb = holder_cbody(c, id);
+      if (comp_ivar_index(&c->classes[cb], nm) >= 0) {
+        buf_printf(&ref, "civ_%s_%s", c->classes[cb].name, iv_c(nm + 1));
+        is_static = 1;
+      }
+      else is_nil = 1;
+    }
     else if (cs && cs->class_id < 0) {
       /* top-level method: ivar stored as file-scope global in Toplevel pseudo-class */
       int tl = c->toplevel_class;

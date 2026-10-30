@@ -2361,6 +2361,9 @@ int strbuf_ivar_owner(Compiler *c, int node) {
   if (cs->is_cmethod) return cs->class_id;
   if (cs->class_id >= 0) return cs->class_id;
   if (g_ie_class_id >= 0) return g_ie_class_id;
+  /* a block or a proc written in a class or module body reads the body
+     class's own slot, as the read emitter resolves it */
+  if (holder_cbody(c, node) >= 0) return holder_cbody(c, node);
   return c->toplevel_class;
 }
 /* ---- Is an object's ivar set? ----

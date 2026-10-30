@@ -11299,6 +11299,12 @@ TyKind infer_uncached(Compiler *c, int id) {
       }
       if (npk > 0) return pr;
     }
+    /* a block or a proc written in a class or module body reads the body
+       class's own slot (the civ_ static), as the write rule above and the
+       read emitter take it; left to the Toplevel's, a lambda kept in a
+       class body for a define_method read its `@datetime` untyped */
+    if (cls_id < 0 && !s->is_cmethod && id < c->node_cap && c->node_cbody && c->node_cbody[id] >= 0)
+      cls_id = c->node_cbody[id];
     if (cls_id < 0) cls_id = c->toplevel_class;
     if (cls_id < 0) return TY_UNKNOWN;
     ClassInfo *ci = &c->classes[cls_id];
