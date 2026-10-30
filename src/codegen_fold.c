@@ -12052,6 +12052,27 @@ static void emit_strict_args(Compiler *c, int mi, const int *argv, int pos_argc,
   }
 }
 
+/* The first parameter of the enclosing method a `callee(...)` forwards: a
+   leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded,
+   the forward carries only the __fwd_ slots (and synthesized keyword
+   params), so the forward starts at the first __fwd_ slot. A `def f(a, ...)`
+   whose `...` is empty at every call site has no such slot, and forwards
+   NOTHING: starting at 0 there handed `a` on -- `method_missing(symbol, ...)`
+   calling `public_send(symbol, ...)` bound the name symbol to the arm's rest
+   parameter. A scope that is no `(...)` def (a block's, a clone's) keeps
+   forwarding all of its parameters. */
+static int fwd_slot_base(Compiler *c, Scope *encl) {
+  int fwd_base = 0;
+  while (fwd_base < encl->nparams &&
+         (!encl->pnames[fwd_base] ||
+          strncmp(encl->pnames[fwd_base], "__fwd_", 6) != 0)) fwd_base++;
+  if (fwd_base < encl->nparams) return fwd_base;
+  int pn = encl->def_node >= 0 ? nt_ref(c->nt, encl->def_node, "parameters") : -1;
+  int kwr = pn >= 0 ? nt_ref(c->nt, pn, "keyword_rest") : -1;
+  if (kwr >= 0 && nt_kind(c->nt, kwr) == NK_ForwardingParameterNode) return encl->nparams;
+  return 0;   /* no __fwd_ slot and no `...` of its own: forward all */
+}
+
 /* See codegen_internal.h. */
 void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int argc, int argsNode,
                            const char *lead, Buf *out) {
@@ -12063,17 +12084,9 @@ void emit_args_filled_argv(Compiler *c, int callee_idx, const int *argv, int arg
      foo's args; no rest array / splat is materialized. */
   if (nt_argv_only_forwarding(nt, argv, argc)) {
     Scope *encl = comp_scope_of(c, argv[0]);
-    /* A leading concrete param before `...` (`def f(a, ...)`) is NOT forwarded:
-       the forward carries only the __fwd_ slots (and synthesized keyword
-       params). Skip the enclosing method's leading concrete params by starting
-       at its first __fwd_ slot. */
-    int fwd_base = 0;
-    if (encl) {
-      while (fwd_base < encl->nparams &&
-             (!encl->pnames[fwd_base] ||
-              strncmp(encl->pnames[fwd_base], "__fwd_", 6) != 0)) fwd_base++;
-      if (fwd_base >= encl->nparams) fwd_base = 0;  /* no __fwd_ slot: forward all */
-    }
+    /* the enclosing method's leading concrete params are not forwarded
+       (fwd_slot_base) */
+    int fwd_base = encl ? fwd_slot_base(c, encl) : 0;
     for (int i = 0; i < m->nparams; i++) {
       buf_puts(out, i == 0 ? lead : ", ");
       int ei = fwd_base + i;
@@ -13303,14 +13316,9 @@ static void emit_dispatch_in(Compiler *c, int cid, const char *name,
   int fwd_base_d = 0;
   if (nt_argv_only_forwarding(nt, argv, argc)) {
     fwd_encl = comp_scope_of(c, argv[0]);
-    /* skip the enclosing method's leading concrete params (`def f(a, ...)`) --
-       only the __fwd_ slots are forwarded. */
-    if (fwd_encl) {
-      while (fwd_base_d < fwd_encl->nparams &&
-             (!fwd_encl->pnames[fwd_base_d] ||
-              strncmp(fwd_encl->pnames[fwd_base_d], "__fwd_", 6) != 0)) fwd_base_d++;
-      if (fwd_base_d >= fwd_encl->nparams) fwd_base_d = 0;
-    }
+    /* the enclosing method's leading concrete params are not forwarded
+       (fwd_slot_base) */
+    if (fwd_encl) fwd_base_d = fwd_slot_base(c, fwd_encl);
   }
   /* separate keyword-hash arg */
   int kwh_d = -1, pos_argc_d = argc;
