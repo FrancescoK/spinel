@@ -5741,6 +5741,21 @@ ALIAS_RAISE_LIMIT ?= 2.2
 # the program, and read 2.09x; asked of an index kept for the step
 # (SceConsts), 2.03x. A whole-program rebuild per splice reads as K^2 here.
 SPLICES_LIMIT ?= 2.2
+# Class-body macros (test/scale/class_macros.sh), compiled to C under
+# --load-model=graph at N=100 and N=200 classes of ten calls each to a
+# superclass's define_method macro: the walk runs each call at its point and
+# splices the method it makes (ct_macro_form, host_splice). The pair reads
+# 2.00x; a per-splice rebuild of a parent map, the kind lists or the load
+# record reads as N^2.
+CLASS_MACROS_LIMIT ?= 2.2
+# One class of 2,000 such calls (test/scale/class_macros_one.sh) against the
+# same 4,000 define_methods written out, both under graph at one size: the
+# walk splices each call into the one body, and a row that visited the whole
+# body per splice cost the macro program 1.46x the written one; visited once
+# per body (lower_later), 1.03x. (K methods in one class cost more than
+# linearly in the analysis whichever way they are written, so the pair is
+# not K against 2K.)
+CLASS_MACROS_ONE_LIMIT ?= 1.2
 # A chain of forty bangs over a String a method answers, compiled to C with
 # --share-strings under a CPU-time limit, as the hash-literal fan-out is:
 # strbuf_bang_self_local asked each link once per path that reaches it,
@@ -5808,11 +5823,17 @@ scale-test: $(SPINEL_WORK)
 	gen splices 200 x2.rb; gen splices 400 x4.rb; \
 	xa=$$(sw -c -o "$$tmp/x2.c" "$$tmp/x2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	xb=$$(sw -c -o "$$tmp/x4.c" "$$tmp/x4.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	gen class_macros 100 m1.rb; gen class_macros 200 m2.rb; \
+	ma=$$(sw --load-model=graph -c -o "$$tmp/m1.c" "$$tmp/m1.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	mb=$$(sw --load-model=graph -c -o "$$tmp/m2.c" "$$tmp/m2.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	gen class_macros_one "2000 written" o1.rb; gen class_macros_one 2000 o2.rb; \
+	oa=$$(sw --load-model=graph -c -o "$$tmp/o1.c" "$$tmp/o1.rb") || { rm -rf "$$tmp"; exit 1; }; \
+	ob=$$(sw --load-model=graph -c -o "$$tmp/o2.c" "$$tmp/o2.rb") || { rm -rf "$$tmp"; exit 1; }; \
 	rm -rf "$$tmp"; \
 	if [ -z "$$wa" ] || [ -z "$$wb" ] || [ -z "$$fa" ] || [ -z "$$fb" ] || [ -z "$$pa" ] || [ -z "$$pb" ] || \
 	   [ -z "$$ha" ] || [ -z "$$hb" ] || [ -z "$$ca" ] || [ -z "$$cb" ] || [ -z "$$sa" ] || [ -z "$$sb" ] || \
 	   [ -z "$$ka" ] || [ -z "$$kb" ] || [ -z "$$ea" ] || [ -z "$$eb" ] || [ -z "$$ra" ] || [ -z "$$rb" ] || [ -z "$$ta" ] || [ -z "$$tb" ] || \
-	   [ -z "$$xa" ] || [ -z "$$xb" ]; then \
+	   [ -z "$$xa" ] || [ -z "$$xb" ] || [ -z "$$ma" ] || [ -z "$$mb" ] || [ -z "$$oa" ] || [ -z "$$ob" ]; then \
 	  echo "scale-test: FAIL (the counting compiler reported no work count)"; exit 1; fi; \
 	awk -v a="$$ha" -v b="$$hb" 'BEGIN { r = b / a; \
 	  printf "scale-test: boxed Hash store work at 2x the methods is %.2fx (limit 2.20)\n", r; exit (r > 2.20) }' || \
@@ -5846,7 +5867,13 @@ scale-test: $(SPINEL_WORK)
 	  { echo "scale-test: FAIL (retyping nodes grew superlinearly: the kind index moved ids per retyped node, see nki_apply_moves)"; exit 1; }; \
 	awk -v a="$$xa" -v b="$$xb" -v lim="$(SPLICES_LIMIT)" 'BEGIN { r = b / a; \
 	  printf "scale-test: splice work at 2x the splices is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
-	  { echo "scale-test: FAIL (a splice or a class_eval graft rescanned the program: see host_splice, lower_span and SceConsts)"; exit 1; }
+	  { echo "scale-test: FAIL (a splice or a class_eval graft rescanned the program: see host_splice, lower_span and SceConsts)"; exit 1; }; \
+	awk -v a="$$ma" -v b="$$mb" -v lim="$(CLASS_MACROS_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: class-body macro work at 2x the calls is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (a class-body macro's splice rebuilt a whole-program fact: see ct_macro_form and host_splice)"; exit 1; }; \
+	awk -v a="$$oa" -v b="$$ob" -v lim="$(CLASS_MACROS_ONE_LIMIT)" 'BEGIN { r = b / a; \
+	  printf "scale-test: one class of macro calls against its methods written out is %.2fx (limit %.2f)\n", r, lim; exit (r > lim) }' || \
+	  { echo "scale-test: FAIL (a row visited the whole class body per macro call: see lower_later and lower_span)"; exit 1; }
 
 .PHONY: bisect-test
 # `spinel bisect`, end to end. The search has its own corpus test

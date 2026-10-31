@@ -44,6 +44,8 @@ static CtVal *ct_lookup(CtEnv *e, const char *name) {
   return NULL;
 }
 
+const CtVal *ct_env_get(CtEnv *e, const char *name) { return name ? ct_lookup(e, name) : NULL; }
+
 int ct_env_set(CtEnv *e, const char *name, CtVal v) {
   CtVal *o = ct_lookup(e, name);
   if (o) { *o = v; return 1; }
@@ -180,10 +182,24 @@ static int ct_class_new(const NodeTable *nt, CtEnv *e, int call, CtVal *out) {
   return 1;
 }
 
+/* is call `call` on self (no receiver, or `self`), a core method of it the
+   frame lets run: macro mode only */
+static int ct_self_core(const NodeTable *nt, const CtEnv *e, int call, const char *name) {
+  int rv = nt_ref(nt, call, "receiver");
+  return e->self_name && name && (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) && e->self_core(e->host, name);
+}
+
 static int ct_eval_call(const NodeTable *nt, CtEnv *e, int call, CtVal *out) {
   const char *name = nt_str(nt, call, "name");
   int rv = nt_ref(nt, call, "receiver"), argc = 0;
   const int *av = ct_args(nt, call, &argc);
+  /* the frame's class's name, which Module#name answers frozen */
+  if (name && argc == 0 && nt_ref(nt, call, "block") < 0 && is_name_reader(name) && ct_self_core(nt, e, call, name)) {
+    memset(out, 0, sizeof *out);
+    out->mv = mv_str(e->self_name, strlen(e->self_name), MV_STR);
+    out->mv.frozen = is_class_name_name(name);
+    return 1;
+  }
   if (!name || rv < 0 || nt_kind(nt, rv) == NK_SelfNode || argc < 0 || nt_ref(nt, call, "block") >= 0) return 0;
   if (is_new_name(name)) return ct_class_new(nt, e, call, out);
   Mv r, a0;
@@ -313,7 +329,27 @@ static int ct_exec_call(const NodeTable *nt, CtEnv *e, int call) {
   const char *name = nt_str(nt, call, "name");
   int rv = nt_ref(nt, call, "receiver"), argc = 0;
   const int *av = ct_args(nt, call, &argc);
-  if (!name || argc < 0 || nt_ref(nt, call, "block") >= 0) return 0;
+  int blk = nt_ref(nt, call, "block");
+  /* the method define_method makes on self, by a name the frame computes;
+     its block is the caller's to take. In a method body the scope walk
+     makes such a call a refusal (define_method_name 1), which keeps what
+     the call was (dm_name, dm_args, dm_block) */
+  if (e->self_name && nt_int(nt, call, "define_method_name", 0) == 1) {
+    int da = (int)nt_int(nt, call, "dm_args", -1);
+    name = nt_str(nt, call, "dm_name");
+    av = da >= 0 ? nt_arr(nt, da, "arguments", &argc) : NULL;
+    blk = (int)nt_int(nt, call, "dm_block", -1);
+  }
+  if (name && argc == 1 && blk >= 0 && nt_kind(nt, blk) == NK_BlockNode && is_define_method_name(name) &&
+      ct_self_core(nt, e, call, name)) {
+    Mv mn;
+    if (!ct_value(nt, e, av[0], &mn) || (mn.k != MV_SYM && mn.k != MV_STR) || !mn.s[0]) return 0;
+    CtFx *f = ct_fx(e, CT_FX_DEFINE_METHOD, call);
+    f->name = ct_strdup(mn.s);
+    f->block = blk;
+    return 1;
+  }
+  if (!name || argc < 0 || blk >= 0) return 0;
   int self_recv = rv < 0 || nt_kind(nt, rv) == NK_SelfNode;
   if (self_recv && argc == 2 && is_const_set_name(name)) {
     Mv cn; CtVal v;

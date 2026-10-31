@@ -1,0 +1,11 @@
+[3, [], true, nil]
+[5, [6], 7, 8]
+[nil, [], :yes, nil]
+Post: title 3 true
+Post: body nil yes
+23
+:small
+"writer"
+true
+true
+[[:opt, :x], [:rest, :rest], [:key, :k], [:block, :blk]]

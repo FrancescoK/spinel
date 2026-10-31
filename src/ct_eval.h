@@ -26,8 +26,11 @@
  * ct_value.c runs (mv_call, mv_sub), constants (as references), and
  * `Class.new(Constant)`. As statements: a write of a block local, those
  * conditionals, `const_set(name, value)`, `klass.instance_variable_set(:@x,
- * value)`, `Const[key] = value` and `value.freeze`. Anything else answers
- * 0. */
+ * value)`, `Const[key] = value` and `value.freeze`. In macro mode (a class
+ * method a class body calls, run with that class as self) also self's
+ * `name`, `to_s` and `inspect`, and `define_method(name) { ... }` as a
+ * statement, an effect whose block the caller takes as written. Anything
+ * else answers 0. */
 #ifndef SPINEL_CT_EVAL_H
 #define SPINEL_CT_EVAL_H
 
@@ -52,9 +55,10 @@ typedef enum {
   CT_FX_CLASS_NEW,   /* cls: a class made, with its parent */
   CT_FX_CONST_SET,   /* name = val in the module whose body runs; names: val is the class it names */
   CT_FX_IVAR_SET,    /* class cls's instance variable name = val */
-  CT_FX_INDEX_SET    /* recv[key] = val, recv a constant */
+  CT_FX_INDEX_SET,   /* recv[key] = val, recv a constant */
+  CT_FX_DEFINE_METHOD   /* (macro mode) self's method name, its body block (the define_method at site's) */
 } CtFxKind;
-typedef struct { CtFxKind k; int site; char *name; int cls, names; CtVal recv, key, val; } CtFx;
+typedef struct { CtFxKind k; int site; char *name; int cls, names, block; CtVal recv, key, val; } CtFx;
 
 /* a core method the evaluation ran: on an instance of `cls`, or (a class
    method) on the class itself */
@@ -65,6 +69,14 @@ typedef struct {
   CtClass *cls; int ncls, ccls;
   CtFx *fx; int nfx, cfx;
   CtRan *ran; int nran, cran;
+  /* macro mode: a class-body macro's frame, whose self is the class named
+     self_name. self_core(host, m) answers whether a call of m on self
+     reaches the core method (Module's), not one of the program's: only
+     then does the evaluator run it (self's name, to_s, inspect) or follow
+     it (define_method with a block) */
+  const char *self_name;
+  int (*self_core)(void *host, const char *meth);
+  void *host;
 } CtEnv;
 
 /* the value of expression `node`, 1 when it is known */
@@ -74,6 +86,8 @@ int ct_eval(const NodeTable *nt, CtEnv *e, int node, CtVal *out);
 int ct_exec(const NodeTable *nt, CtEnv *e, int stmts);
 /* bind local `name` (the block's parameters); 0 when the table is full */
 int ct_env_set(CtEnv *e, const char *name, CtVal v);
+/* local `name`'s value, NULL when it has none */
+const CtVal *ct_env_get(CtEnv *e, const char *name);
 /* forget the locals (a new block call), keeping the classes and effects */
 void ct_env_new_call(CtEnv *e);
 /* note that core method cls#meth ran */

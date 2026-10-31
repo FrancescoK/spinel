@@ -553,11 +553,14 @@ void expand_struct_forwarding_super(Compiler *c) {
    elab_record_builders); and whether it is a
    define_method of a `class << X` body, which defines a class method. pos:
    where the load phase stands there (analyze_elab.c), as the load record's
-   walk, which this walk is, enters it; e -1 in a walk after it. */
+   walk, which this walk is, enters it; e -1 in a walk after it. slot: the
+   node's index in its statement list, plus one (0 for none), where a form
+   of the walk splices. */
 typedef struct {
   int scope, cls, proc, dead;
   int cbody, direct, struct_direct, dm_sclass;
   ElabPos pos;
+  int slot;
 } WalkCtx;
 
 static void walk_scope_in(Compiler *c, int id, WalkCtx w);
@@ -1692,6 +1695,12 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
     child = new_idx;
   }
   else if (ty_k == NK_CallNode) {
+    /* a class-body macro the walk runs: what it defines stands in its
+       place, walked from the first statement on */
+    if (w.slot && class_id >= 0 && !dead) {
+      int first = ct_macro_form(c, id, w.pos.list, w.slot - 1);
+      if (first >= 0) { walk_scope_in(c, first, w); return; }
+    }
     /* `Klass.class_eval/module_eval { defs }` (and the bare/`self.` forms in a
        class body) reopens the class: its block body's `def` and `define_method`
        become instance methods on it, exactly like a `class Klass ... end` reopen.
@@ -1746,6 +1755,11 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
         file_detached(c, nt_ref(nt, id, "block"), ds, 0);
         file_detached(c, an, ds, 0);
         nt_node_set_int(nt, id, "define_method_name", proc_ref ? 2 : 1);
+        /* what the call was, for a class-body macro whose body it is
+           (ct_macro_form): its name, arguments and block */
+        nt_node_set_str(nt, id, "dm_name", dm_cn);
+        nt_node_set_int(nt, id, "dm_args", an);
+        nt_node_set_int(nt, id, "dm_block", bk);
         nt_node_set_str(nt, id, "name", "raise");
         nt_node_set_ref(nt, id, "receiver", -1);
         nt_node_set_ref(nt, id, "block", -1);
@@ -1898,6 +1912,7 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
         if (ch < 0) continue;
         WalkCtx aw = cw;
         aw.pos = elab_child(c->nt, id, ch, &w.pos);
+        aw.slot = kind == NK_StatementsNode ? j + 1 : 0;
         walk_child(c, ch, aw);
       }
     }

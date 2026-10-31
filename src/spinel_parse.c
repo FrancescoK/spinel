@@ -8290,7 +8290,8 @@ static NodeTable *sp_parse_emit(const char *source_file, const char *argv0) {
 
   /* class-body macro calls (module_eval'd templates, computed
      attach_function / const_set names) expanded in place; line count kept */
-  { char *mx = sp_expand_class_macros(source);
+  { const char *sw = getenv("SPINEL_CLASS_MACROS");   /* test-only: analyze_ct.c's switch */
+    char *mx = sw && strcmp(sw, "analysis") == 0 ? NULL : sp_expand_class_macros(source);
     if (mx) {
       /* what a macro wrote was in no file's text. A require it wrote is a
          call in the node table, where the analyzer finds it; a load-path

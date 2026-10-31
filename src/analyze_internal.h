@@ -834,12 +834,16 @@ typedef struct HostStep {
   int *spans;              /* (owner, body, statement, its splice's first statement) of each statement the step spliced */
   int nspans, cspans;
   int now;                 /* the registration's walk reaches each splice next: it is lowered as it is made */
+  struct CtMacroFacts *ct; /* the class-body macros' answers about the whole program, made at their first ask in the walk */
 } HostStep;
 void host_begin(HostStep *h, LowerCtx *lc);
 int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* the n statements at body[at], in a frame of locals but gone (NULL: not known): the count they become */
 void host_end(Compiler *c, HostStep *h);
+int ct_macro_form(Compiler *c, int call, int list, int j);   /* analyze_ct.c: class-body macro call `call`, statement j of `list`, run under the walk: the statement now first in its place, or -1 */
+void ct_macro_facts_free(struct CtMacroFacts *f);
 struct HostStep *elab_walk_host(Compiler *c);   /* analyze_elab.c: the host a walk-time form splices through, while the walk runs */
 int elab_walk_replace(Compiler *c, int old, int with);   /* ...and node with, spliced in place of entered statement old, takes its point */
+int elab_stmt_list(Compiler *c, int node, int *frame);   /* the statement list statement node is an element of, *frame the class or module header around it (-1: main's); -1 for no statement */
 int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);

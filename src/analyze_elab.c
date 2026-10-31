@@ -460,6 +460,17 @@ int elab_walk_replace(Compiler *c, int old, int with) {
   return 1;
 }
 
+/* The statement list statement node is an element of (LrStmt.list), and
+   in *frame the header of the class or module body around it (-1: main's
+   top level); -1 when node is no statement of the record */
+int elab_stmt_list(Compiler *c, int node, int *frame) {
+  LoadRecord *r = c->lrec;
+  int k = r && node >= 0 && node < r->n ? r->at[node] : -1;
+  if (k < 0 || k >= r->nst || r->st[k].node != node) return -1;
+  if (frame) *frame = r->st[k].frame >= 0 ? r->st[r->st[k].frame].node : -1;
+  return r->st[k].list;
+}
+
 /* The statements under node id, which stands at pos, that the scope walk
    does not enter (a part it handles wholesale), joined as elab_walk joins
    them */
@@ -5114,5 +5125,6 @@ void host_end(Compiler *c, HostStep *h) {
   lower_settle(c, h->lc);
   free(h->spans);
   sce_facts_free(h->sce);
+  ct_macro_facts_free(h->ct);
   memset(h, 0, sizeof *h);
 }

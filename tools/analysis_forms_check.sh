@@ -10,13 +10,29 @@
 # tables or under the test-only switch SPINEL_TABLE_LOOPS=analysis. The
 # corpus runs the inline model, so this checks the analysis' side:
 #
-# - test/analysis-forms/*.rb, the programs the analysis answers (some the
-#   text pass refuses), and test/class_table_loop_*.rb, compiled under the
-#   switch and run plain, under --int-overflow=promote and under
-#   SPINEL_GC_STRESS=1, each against its .expected;
+# - test/analysis-forms/*.rb but the class macros (below), the programs the
+#   analysis answers (some the text pass refuses), and
+#   test/class_table_loop_*.rb, compiled under the switch and run plain,
+#   under --int-overflow=promote and under SPINEL_GC_STRESS=1, each against
+#   its .expected;
 # - test/reject/table_loop_*.rb, which must be refused under the switch
 #   too, unless test/analysis-forms/ holds a program of the same name: one
 #   the text pass refuses and the analysis answers.
+#
+# A class body's call to a macro its class defines is expanded by the text
+# pass too (sp_macro.c); the analysis runs the macro at the call's point
+# (ct_macro_form), on the graph model or under SPINEL_CLASS_MACROS=analysis,
+# which turns the text pass off. Under that switch:
+#
+# - test/analysis-forms/class_macro_*.rb and the corpus programs the form
+#   answers (MACRO_FORMS) are run as above;
+# - every other test/class_macro_*.rb and test/define_method_*.rb is refused
+#   or answers its .expected;
+# - test/reject/*macro*.rb stays refused;
+# - test/analysis-forms/declines/*.rb, one program per reason the form
+#   leaves a call as written, is refused, under the switch and under
+#   --load-model=graph (each .expected is CRuby's answer, for the day the
+#   form takes it).
 #
 # Exit status: 0 all pass, 1 a failure.
 set -u
@@ -30,9 +46,12 @@ tmp=$(mktemp -d /tmp/spinel-aforms.XXXXXX) || exit 1
 trap 'rm -rf "$tmp"' EXIT
 ok=1; n=0
 
-for t in test/analysis-forms/*.rb test/class_table_loop_*.rb; do
-  [ -f "$t" ] || continue
-  b=$(basename "$t" .rb); n=$((n + 1))
+MACRO_FORMS="test/class_macro_through_superclass.rb test/define_method_computed_name_implicit_rescue.rb"
+
+# Compile $1 plain and under promote, run each, and run the plain build under
+# GC stress, against its .expected
+run_form() {
+  t=$1; b=$(basename "$t" .rb); n=$((n + 1))
   for mode in plain promote; do
     fl=; [ $mode = promote ] && fl=--int-overflow=promote
     if ! "$SP" $fl "$t" -o "$tmp/$b.$mode" >"$tmp/$b.cc" 2>&1; then
@@ -50,6 +69,11 @@ for t in test/analysis-forms/*.rb test/class_table_loop_*.rb; do
     fi
     rm -f "$tmp/$b.$mode"
   done
+}
+
+for t in test/analysis-forms/*.rb test/class_table_loop_*.rb; do
+  case $t in */class_macro_*) continue ;; esac   # the text pass leaves some to the form: below
+  [ -f "$t" ] && run_form "$t"
 done
 
 for t in test/reject/table_loop_*.rb; do
@@ -59,6 +83,40 @@ for t in test/reject/table_loop_*.rb; do
   if "$SP" "$t" -c --no-line-map -o "$tmp/r.c" >"$tmp/r.out" 2>&1; then
     echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_TABLE_LOOPS=analysis)"; ok=0
   fi
+done
+
+export SPINEL_CLASS_MACROS=analysis
+for t in test/analysis-forms/class_macro_*.rb $MACRO_FORMS; do
+  [ -f "$t" ] && run_form "$t"
+done
+
+for t in test/class_macro_*.rb test/define_method_*.rb; do
+  [ -f "$t" ] || continue
+  case " $(echo $MACRO_FORMS) " in *" $t "*) continue ;; esac
+  n=$((n + 1))
+  "$SP" "$t" -o "$tmp/m.bin" >"$tmp/m.cc" 2>&1 || continue
+  $TO "$tmp/m.bin" >"$tmp/m.out" 2>&1
+  cmp -s "$tmp/m.out" "$t.expected" ||
+    { echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_CLASS_MACROS=analysis, wrong output)"; diff -u "$t.expected" "$tmp/m.out" | head -10; ok=0; }
+  rm -f "$tmp/m.bin"
+done
+
+for t in test/reject/*macro*.rb; do
+  [ -f "$t" ] || continue
+  n=$((n + 1))
+  if "$SP" "$t" -c --no-line-map -o "$tmp/r.c" >"$tmp/r.out" 2>&1; then
+    echo "analysis-forms-test: FAIL ($t: compiled under SPINEL_CLASS_MACROS=analysis)"; ok=0
+  fi
+done
+
+for t in test/analysis-forms/declines/*.rb; do
+  [ -f "$t" ] || continue
+  n=$((n + 1))
+  for fl in "" --load-model=graph; do
+    if "$SP" $fl "$t" -c --no-line-map -o "$tmp/r.c" >"$tmp/r.out" 2>&1; then
+      echo "analysis-forms-test: FAIL ($t: the form took it, ${fl:-under SPINEL_CLASS_MACROS=analysis})"; ok=0
+    fi
+  done
 done
 
 if [ $ok = 1 ]; then echo "analysis-forms-test: pass ($n programs)"; exit 0; fi

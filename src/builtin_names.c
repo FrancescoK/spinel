@@ -480,6 +480,11 @@ int is_local_reflection(const char *n) {
          sp_streq(n, "local_variable_set") || sp_streq(n, "local_variables");
 }
 
+/* Kernel#block_given?, which asks of the method it is written in */
+int is_block_given_name(const char *n) {
+  return sp_streq(n, "block_given?");
+}
+
 int is_find_alias(const char *n) {
   return sp_streq(n, "find") || sp_streq(n, "detect");
 }

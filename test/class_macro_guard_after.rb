@@ -1,0 +1,15 @@
+# A class-body macro defines a name a `def ... unless method_defined?` guard
+# asks of later in the class: the guard sees the macro's method, so that def
+# is skipped, while a guard before the macro's call finds no method.
+class Base
+  def self.flag(n) = define_method(n) { 1 }
+end
+
+class Foo < Base
+  flag :a
+  def a = 2 unless method_defined?(:a)
+  def b = 3 unless method_defined?(:b)
+  flag :b
+end
+
+p Foo.new.a, Foo.new.b
