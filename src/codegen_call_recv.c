@@ -6884,6 +6884,49 @@ static int emit_merge_block_same_variant(Compiler *c, int id, int recv, int arg,
   return 1;
 }
 
+/* merge!(other) { |k, v1, v2| } into a PolyPoly Hash, `other` boxed: its pairs
+   reach the block as they are (an emit_hash_call arm, kept out of that
+   function's length). 0 for any other call. Its pairs bind required parameters
+   and a rest: any other parameter would read nil, so it is refused. */
+static int emit_merge_bang_boxed_block(Compiler *c, int id, int recv, const int *argv, int argc, int blk, TyKind rt, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (!is_hash_merge_bang(nt_str(nt, id, "name")) || argc != 1 || rt != TY_POLY_POLY_HASH || blk < 0 ||
+      nt_kind(nt, blk) != NK_BlockNode || repr_of(c, argv[0]).kind != RK_BOXED || call_breaks(c, id)) return 0;
+  int bp = nt_ref(nt, blk, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, on = 0, kn = 0, ln = 0;
+  if (pn >= 0) { nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "keywords", &kn); nt_arr(nt, pn, "posts", &ln); }
+  if (on || kn || ln || (pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0)) {
+    unsupported_feature(c, id, "a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash");
+    return 0;
+  }
+  int arg = argv[0];
+  int tr = ++g_tmp, to = ++g_tmp, tn = ++g_tmp, ti = ++g_tmp, tp = ++g_tmp, tk = ++g_tmp, tv = ++g_tmp;
+  char ks[24], vs[24], gs[96];
+  snprintf(ks, sizeof ks, "_t%d", tk);
+  snprintf(vs, sizeof vs, "_t%d", tv);
+  snprintf(gs, sizeof gs, "sp_PolyPolyHash_get(_t%d, _t%d)", tr, tk);
+  buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
+  buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, arg, b); buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", to);
+  buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
+  buf_printf(b, " if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
+                " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d)));",
+             to, to, to);
+  buf_printf(b, " sp_int _t%d = sp_poly_arr_len_ex(_t%d);"
+                " for (sp_int _t%d = 0; _t%d < _t%d; _t%d++) {"
+                " sp_RbVal _t%d = sp_poly_each_elem(_t%d, _t%d); SP_GC_ROOT_RBVAL(_t%d);"
+                " sp_RbVal _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 0);"
+                " sp_RbVal _t%d = sp_PolyArray_get((sp_PolyArray *)_t%d.v.p, 1);"
+                " if (sp_PolyPolyHash_has_key(_t%d, _t%d)) {",
+             tn, to, ti, ti, tn, ti, tp, to, ti, tp, tk, tp, tv, tp, tr, tk);
+  emit_merge_blk_param(c, blk, block_param_name(c, blk, 0), TY_POLY, ks, NULL, b);
+  emit_merge_blk_param(c, blk, block_param_name(c, blk, 1), TY_POLY, gs, NULL, b);
+  emit_merge_blk_param(c, blk, block_param_name(c, blk, 2), TY_POLY, vs, NULL, b);
+  emit_merge_rest_param_typed(c, blk, TY_POLY, ks, TY_POLY, gs, vs, 0, b);
+  buf_printf(b, " sp_PolyPolyHash_set(_t%d, _t%d, ", tr, tk);
+  emit_blk_value_as(c, blk, TY_POLY, b);
+  buf_printf(b, "); }\nelse { sp_PolyPolyHash_set(_t%d, _t%d, _t%d); } } _t%d; })", tr, tk, tv, tr);
+  return 1;
+}
+
 /* `h.fetch(k, default)` past the key: the hit or the default, as the value
    kind wants it -- boxed for a poly slot, through one fetch_or probe for an
    inert Integer default, with its nil where the hash's values may be nil
@@ -7620,6 +7663,7 @@ else {
         buf_printf(b, " _t%d; })", tr);
         return 1;
       }
+      if (emit_merge_bang_boxed_block(c, id, recv, argv, argc, mb_blk, rt, b)) return 1;   /* ... and with a block written here */
       if ((is_hash_merge_bang(name)) && argc == 1) {
         /* In-place merge: insert each key of `other` into the receiver (a
            conflict-resolution block, if present, picks the kept value), then

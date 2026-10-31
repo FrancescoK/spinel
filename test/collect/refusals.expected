@@ -1138,6 +1138,18 @@ spinel: 1 refusal, nothing written
 == test/reject/map_bang_with_index_untyped_proc.rb [promote] rc=1
 spinel: test/reject/map_bang_with_index_untyped_proc.rb:5: map!.with_index with a block whose value is untyped, on a typed Array
 spinel: 1 refusal, nothing written
+== test/reject/merge_boxed_block_param_shapes.rb [default] rc=1
+spinel: test/reject/merge_boxed_block_param_shapes.rb:5: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:9: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:13: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:17: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: 4 refusals, nothing written
+== test/reject/merge_boxed_block_param_shapes.rb [promote] rc=1
+spinel: test/reject/merge_boxed_block_param_shapes.rb:5: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:9: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:13: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: test/reject/merge_boxed_block_param_shapes.rb:17: a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash
+spinel: 4 refusals, nothing written
 == test/reject/method_called_reaches_its_target.rb [default] rc=1
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)

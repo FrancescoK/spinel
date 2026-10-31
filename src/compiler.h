@@ -307,6 +307,11 @@ typedef struct {
                        own parameter j, positional or keyword, boxed when its callers
                        disagree: the binding checks each call's hash for it,
                        its keys and values, the same way. */
+  int store_merge_blocks[4], store_merge_nblocks; /* (params, hashes) the merge!
+                       or update calls through this parameter with a conflict
+                       block and a boxed source: the binding checks each
+                       block's value against each call's hash as well. A fifth
+                       is left to the store. */
   int store_rest_src; /* (params, containers) one past the first element of the
                        method's rest parameter that a push, unshift or insert
                        through this parameter stores, or 0: the rest
