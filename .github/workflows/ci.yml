@@ -137,6 +137,19 @@ jobs:
       - name: Build (parse + regexp + spinelc)
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
+      # The result cache (tools/result_cache.sh), kept across runs as the
+      # overflow lanes keep it: a program whose C, runtime headers and flags
+      # match a run that passed is not compiled or run again. One entry per
+      # lane; the slices a lane rotates through share it. A push that edits
+      # a header under lib/ or packages/ misses every entry and runs its
+      # slice, as before.
+      - name: Restore the result cache
+        uses: actions/cache@v6
+        with:
+          path: build/result-cache
+          key: result-cache-${{ matrix.os }}-${{ matrix.cc }}-${{ github.run_id }}
+          restore-keys: result-cache-${{ matrix.os }}-${{ matrix.cc }}-
+
       - name: Run tests
         # Opt level is compiler-specific -- they behave oppositely on the
         # spinel_rt.h-heavy per-test TUs (800+ static fns):
