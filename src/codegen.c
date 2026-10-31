@@ -18946,16 +18946,36 @@ static void reject_range_reopen_nonint(Compiler *c) {
 static const char *const range_rat_walk_names[] = {
   "each", "to_a", "entries", "sum", "map", "collect", "select", "filter",
   "reject", "inject", "reduce", NULL };
-/* A walk the program can see itself: its own `each` or walk method (on
-   Range, Enumerable, Object, method_missing, define_method, alias ...),
-   which may read the end the Range holds floored. An Enumerable reopen's
-   def is renamed __enum_<name>__N. */
+/* A walk the program can see itself: its own each or walk method on Range
+   (or a module Range includes or prepends), an Enumerable reopen's def
+   (renamed __enum_<name>__N), a define_method or alias_method whose name
+   only the run time knows, or its own Integer#succ / <=>, which the walk
+   from an Integer begin calls. Any of these may read the end the Range
+   holds floored. */
+static int range_rat_walk_own_def(Compiler *c, const char *cls, const char *name) {
+  int ci = comp_class_index(c, cls);
+  int mi = ci >= 0 ? comp_method_in_chain(c, ci, name, NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
 static int range_rat_walk_own(Compiler *c, const char *name) {
-  if (!an_name_binder_free(c, name)) return 1;
+  if (range_rat_walk_own_def(c, "Range", name)) return 1;
   char pre[64]; snprintf(pre, sizeof pre, "__enum_%s__", name);
   NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
     const char *dn = nt_str(c->nt, d, "name");
     if (dn && strncmp(dn, pre, strlen(pre)) == 0) return 1;
+  }
+  return 0;
+}
+static int range_rat_walk_dyn_def(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_CallNode, k) {
+    const char *cn = nt_str(nt, k, "name");
+    if (!cn || nt_int(nt, k, "node_bi", 0) || !(sp_streq(cn, "define_method") || sp_streq(cn, "alias_method"))) continue;
+    int args = nt_ref(nt, k, "arguments");
+    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+    NodeKind ak = an > 0 ? nt_kind(nt, av[0]) : NK_NONE;
+    if (ak != NK_SymbolNode && ak != NK_StringNode) return 1;
   }
   return 0;
 }
@@ -18965,7 +18985,8 @@ int range_rat_walk(Compiler *c, int rn) {
   if (for_c != c) {
     for_c = c; free(mark); cap = nt->count; mark = calloc((size_t)cap + 1, 1);
     signed char own[sizeof range_rat_walk_names / sizeof *range_rat_walk_names];
-    int each_own = range_rat_walk_own(c, "each");
+    int each_own = range_rat_walk_own(c, "each") || range_rat_walk_dyn_def(c) ||
+                   range_rat_walk_own_def(c, "Integer", "succ") || range_rat_walk_own_def(c, "Integer", "<=>");
     for (int k = 0; range_rat_walk_names[k]; k++) own[k] = (signed char)(each_own || range_rat_walk_own(c, range_rat_walk_names[k]));
     /* each answers the Range itself, which holds the end
        truncated: only one whose answer is dropped (a statement before
