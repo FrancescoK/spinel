@@ -18941,15 +18941,32 @@ static void reject_range_reopen_nonint(Compiler *c) {
 /* Is Range literal rn only walked from an Integer begin up to its end,
    `(1..x).each` / to_a / sum / map ...? Then a Rational end floored is the
    same walk: (1..5r/2) yields 1, 2 in CRuby too. Not an exclusive end:
-   (1...5r/2) walks 1, 2 where (1...2) walks 1. */
+   (1...5r/2) walks 1, 2 where (1...2) walks 1. A boxed begin is checked
+   by sp_range_lo_bound, which takes only an Integer or nil. */
 static const char *const range_rat_walk_names[] = {
   "each", "to_a", "entries", "sum", "map", "collect", "select", "filter",
   "reject", "inject", "reduce", NULL };
+/* A walk the program can see itself: its own `each` or walk method (on
+   Range, Enumerable, Object, method_missing, define_method, alias ...),
+   which may read the end the Range holds floored. An Enumerable reopen's
+   def is renamed __enum_<name>__N. */
+static int range_rat_walk_own(Compiler *c, const char *name) {
+  if (!an_name_binder_free(c, name)) return 1;
+  char pre[64]; snprintf(pre, sizeof pre, "__enum_%s__", name);
+  NT_FOREACH_KIND(c->nt, NK_DefNode, d) {
+    const char *dn = nt_str(c->nt, d, "name");
+    if (dn && strncmp(dn, pre, strlen(pre)) == 0) return 1;
+  }
+  return 0;
+}
 int range_rat_walk(Compiler *c, int rn) {
   static Compiler *for_c; static unsigned char *mark; static int cap;
   const NodeTable *nt = c->nt;
   if (for_c != c) {
     for_c = c; free(mark); cap = nt->count; mark = calloc((size_t)cap + 1, 1);
+    signed char own[sizeof range_rat_walk_names / sizeof *range_rat_walk_names];
+    int each_own = range_rat_walk_own(c, "each");
+    for (int k = 0; range_rat_walk_names[k]; k++) own[k] = (signed char)(each_own || range_rat_walk_own(c, range_rat_walk_names[k]));
     /* each answers the Range itself, which holds the end
        truncated: only one whose answer is dropped (a statement before
        another one, or anywhere in the top-level statements) */
@@ -18967,12 +18984,12 @@ int range_rat_walk(Compiler *c, int rn) {
       const char *nm = nt_str(nt, id, "name");
       int k = 0;
       while (nm && range_rat_walk_names[k] && !sp_streq(nm, range_rat_walk_names[k])) k++;
-      if (!nm || !range_rat_walk_names[k]) continue;
+      if (!nm || !range_rat_walk_names[k] || own[k]) continue;
       if (k == 0 && !dropped[id]) continue;
       int r = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
       if (r < 0 || r >= cap || nt_kind(nt, r) != NK_RangeNode || nt_range_excl(nt, r)) continue;
       int lo = nt_ref(nt, r, "left");
-      if (lo >= 0 && comp_ntype(c, lo) == TY_INT) mark[r] = 1;
+      if (lo >= 0 && (comp_ntype(c, lo) == TY_INT || repr_of(c, lo).kind == RK_BOXED)) mark[r] = 1;
     }
     free(dropped);
   }
