@@ -12146,11 +12146,12 @@ static int an_rat_arith(Compiler *c, int n, int depth) {
    VS_WRITE chain does not hold: `x += v`, `x ||= v`, `x, y = ...`? Such a
    slot may hold anything, so it is no Rational. By name, in any scope. */
 static int an_rat_slot_rewritten(Compiler *c, const char *name) {
-  static Compiler *for_c; static int for_count = -1;
+  static Compiler *for_c; static int for_count = -1; static unsigned for_ver;
   static const char **names; static int nn, cap;
   const NodeTable *nt = c->nt;
-  if (for_c != c || for_count != nt->count) {
-    for_c = c; for_count = nt->count; nn = 0;
+  /* version as well as count: a rename pass rewrites a name in place */
+  if (for_c != c || for_count != nt->count || for_ver != nt->version) {
+    for_c = c; for_count = nt->count; for_ver = nt->version; nn = 0;
     static const NodeKind ks[] = {
       NK_LocalVariableOperatorWriteNode, NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
       NK_LocalVariableTargetNode, NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableOrWriteNode,
