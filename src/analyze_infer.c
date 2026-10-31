@@ -12109,18 +12109,95 @@ int an_range_step_rat(Compiler *c, int id, int infer) {
    boxed (an_rat_boxed), or the read of a local or an instance variable
    whose every write is one. A parameter, or a slot written any other way,
    is not known to be. */
-int an_rat_value(Compiler *c, int n) {
-  if (!g_promote_mode || n < 0) return 0;
+static int an_rat_value_d(Compiler *c, int n, int depth);
+static int an_rat_op_own(Compiler *c, const char *cls, const char *op);
+static int an_int_literal(const NodeTable *nt, int n) {
+  return vp_one(nt, n, VPS_NONE | VP_PARENS_ONLY, &n) == VP1_NODE && nt_kind(nt, n) == NK_IntegerNode;
+}
+/* Arithmetic on a boxed Rational is one too: `1r / 2`, `x * 5` with x a
+   Rational, `-x`. Infer typed the call TY_POLY (the boxed op), so it had
+   no an_rat_boxed mark, and `1.step(3, 1r / 2)` walked a step of 0. The
+   other operand is an Integer literal or a Rational as well: a Float would
+   make a Float, an unknown value maybe one. */
+static int an_rat_arith(Compiler *c, int n, int depth) {
+  const NodeTable *nt = c->nt;
+  if (nt_kind(nt, n) != NK_CallNode) return 0;
+  const char *nm = nt_str(nt, n, "name");
+  int recv = nt_ref(nt, n, "receiver");
+  if (!nm || recv < 0 || nt_ref(nt, n, "block") >= 0) return 0;
+  int args = nt_ref(nt, n, "arguments");
+  int ac = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &ac) : NULL;
+  if (sp_streq(nm, "-@") || sp_streq(nm, "+@"))
+    return ac == 0 && !an_rat_op_own(c, "Rational", nm) && an_rat_value_d(c, recv, depth + 1);
+  if (ac != 1) return 0;
+  int bin = sp_streq(nm, "+") || sp_streq(nm, "-") || sp_streq(nm, "*") || sp_streq(nm, "/") || sp_streq(nm, "quo");
+  int pw = sp_streq(nm, "**");
+  if (!bin && !pw) return 0;
+  if (an_rat_op_own(c, "Rational", nm) || an_rat_op_own(c, "Integer", nm)) return 0;
+  int rr = an_rat_value_d(c, recv, depth + 1);
+  int ai = an_int_literal(nt, av[0]);
+  /* Rational ** Integer is a Rational; ** a Rational may be a Float */
+  if (pw) return rr && ai;
+  int ar = !ai && an_rat_value_d(c, av[0], depth + 1);
+  int ri = !rr && an_int_literal(nt, recv);
+  return (rr && (ai || ar)) || (ar && ri);
+}
+/* Is a local or an instance variable named name written some way the
+   VS_WRITE chain does not hold: `x += v`, `x ||= v`, `x, y = ...`? Such a
+   slot may hold anything, so it is no Rational. By name, in any scope. */
+static int an_rat_slot_rewritten(Compiler *c, const char *name) {
+  static Compiler *for_c; static int for_count = -1; static unsigned for_ver;
+  static const char **names; static int nn, cap;
+  const NodeTable *nt = c->nt;
+  /* version as well as count: a rename pass rewrites a name in place */
+  if (for_c != c || for_count != nt->count || for_ver != nt->version) {
+    for_c = c; for_count = nt->count; for_ver = nt->version; nn = 0;
+    static const NodeKind ks[] = {
+      NK_LocalVariableOperatorWriteNode, NK_LocalVariableOrWriteNode, NK_LocalVariableAndWriteNode,
+      NK_LocalVariableTargetNode, NK_InstanceVariableOperatorWriteNode, NK_InstanceVariableOrWriteNode,
+      NK_InstanceVariableAndWriteNode, NK_InstanceVariableTargetNode };
+    for (size_t i = 0; i < sizeof ks / sizeof *ks; i++)
+      NT_FOREACH_KIND(nt, ks[i], w) {
+        const char *wn = nt_str(nt, w, "name");
+        if (!wn) continue;
+        if (nn == cap) {
+          cap = cap ? cap * 2 : 16;
+          const char **p = realloc(names, (size_t)cap * sizeof *names);
+          if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+          names = p;
+        }
+        names[nn++] = wn;
+      }
+  }
+  for (int i = 0; i < nn; i++) if (sp_streq(names[i], name)) return 1;
+  return 0;
+}
+/* A program's own Rational (or Integer) operator answers what it likes. (A
+   `class Rational` reopen lands on Object.) */
+static int an_rat_op_own1(Compiler *c, const char *cls, const char *op) {
+  int ci = comp_class_index(c, cls);
+  int mi = ci >= 0 ? comp_method_in_chain(c, ci, op, NULL) : -1;
+  return mi >= 0 && mi < c->nscopes && c->scopes[mi].def_node >= 0 &&
+         !nt_int(c->nt, c->scopes[mi].def_node, "node_bi", 0);
+}
+static int an_rat_op_own(Compiler *c, const char *cls, const char *op) {
+  return an_rat_op_own1(c, cls, op) || an_rat_op_own1(c, "Object", op);
+}
+int an_rat_value(Compiler *c, int n) { return an_rat_value_d(c, n, 0); }
+static int an_rat_value_d(Compiler *c, int n, int depth) {
+  if (!g_promote_mode || n < 0 || depth > 8) return 0;
   switch (vp_one(c->nt, n, VPS_NONE | VP_PARENS_ONLY, &n)) {
   case VP1_NODE: break;
   case VP1_NIL: return 0;
   case VP1_MANY: return 0;
   }
   if (an_rat_boxed(n)) return 1;
+  if (an_rat_arith(c, n, depth)) return 1;
   NodeKind k = nt_kind(c->nt, n);
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
   HolderRef h;
   if (!holder_of_node(c, n, &h) || !h.name) return 0;
+  if (an_rat_slot_rewritten(c, h.name)) return 0;
   int key = -1;
   if (k == NK_LocalVariableReadNode) {
     if (!h.lv || h.lv->is_param) return 0;
@@ -12144,7 +12221,7 @@ int an_rat_value(Compiler *c, int n) {
     if (!an_rat_boxed(w)) {
       int value;
       switch (vp_one(c->nt, nt_ref(c->nt, w, "value"), VPS_NONE | VP_PARENS_ONLY, &value)) {
-      case VP1_NODE: if (!an_rat_boxed(value)) return 0; break;
+      case VP1_NODE: if (!an_rat_boxed(value) && !an_rat_arith(c, value, depth + 1)) return 0; break;
       case VP1_NIL: return 0;
       case VP1_MANY: return 0;
       }
