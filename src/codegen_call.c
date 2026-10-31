@@ -16845,6 +16845,15 @@ int splice_to_ary_mi(Compiler *c, TyKind rhs_ty) {
   return ty_is_array((TyKind)c->scopes[mi].ret) ? mi : -1;
 }
 
+/* The to_ary call text on a class cid object the caller holds (rooted) in
+   selfptr, into out: the class's own conversion, as call id makes it */
+void emit_to_ary_dispatch(Compiler *c, int id, int cid, const char *selfptr, Buf *out) {
+  CallPlan conversion = cplan_conversion(c, cid, "to_ary");
+  int cv = view_push_conversion(c, id, &conversion);
+  emit_dispatch(c, cid, "to_ary", selfptr, -1, -1, out);
+  view_pop(c, cv);
+}
+
 /* Bind the splice RHS object to `_tq<ta>` (rooted -- the to_ary dispatch and
    the splice pushes can allocate) and write its to_ary call text into out. */
 TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty,
@@ -16855,10 +16864,7 @@ TyKind emit_splice_to_ary_src(Compiler *c, int id, int rhs_node, TyKind rhs_ty,
   buf_printf(b, "sp_%s *_tq%d = ", c->classes[cid].c_name, ta);
   emit_expr(c, rhs_node, b);
   buf_printf(b, "; SP_GC_ROOT(_tq%d); ", ta);
-  CallPlan conversion = cplan_conversion(c, cid, "to_ary");
-  int cv = view_push_conversion(c, id, &conversion);
-  emit_dispatch(c, cid, "to_ary", selfptr, -1, -1, out);
-  view_pop(c, cv);
+  emit_to_ary_dispatch(c, id, cid, selfptr, out);
   return (TyKind)c->scopes[mi].ret;
 }
 

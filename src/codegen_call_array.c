@@ -1808,7 +1808,23 @@ int emit_op_array_sum1(Compiler *c, const BopCtx *x, Buf *b) {
 typedef struct {
   Repr repr;
   int boxed, snapshot;
+  int conv_mi;     /* the operand's own to_ary, run at its turn; -1 for none */
+  TyKind obj_ty;   /* ... and the object's type, which the hold keeps */
+  int arr;         /* the temp holding the operand's Array */
 } ConcatOperand;
+
+/* A program object's to_ary that concat calls at the operand's turn: the
+   one implementation (no descendant has its own), taking no argument and
+   answering an Array that is never nil. -1 for another converter (one
+   method_missing serves, one a subclass overrides, one that may answer
+   nil), which stays on the ordinary call path. */
+static int concat_converter_mi(Compiler *c, TyKind t) {
+  int mi = splice_to_ary_mi(c, t);
+  if (mi < 0 || c->scopes[mi].nparams != 0 || comp_method_overridden(c, ty_object_class(t), "to_ary", 0))
+    return -1;
+  Repr rr = repr_of_ret(c, &c->scopes[mi]);
+  return rr.kind == RK_BOXED || rr.may_nil || !arr_kind(rr.as_ty) ? -1 : mi;
+}
 
 /* Capture before any later conversion this lowering may perform. Direct
    synthetic to_ary calls have already run as argument expressions. */
@@ -1816,10 +1832,22 @@ static int prepare_concat_operands(Compiler *c, const int *argv, int argc, Conca
   int later_conversion = 0;
   for (int i = argc - 1; i >= 0; i--) {
     Repr r = repr_array_operand(c, argv[i]);
-    /* Several concrete converters have no per-occurrence planned calls:
-       the global hook would select a later definition at an earlier call.
-       Leave that unsupported surface to the ordinary call path. */
-    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED && !conv_to_ary_misfit(c, r.as_ty)) return 0;
+    out[i].conv_mi = -1;
+    /* An object operand converts through its own to_ary after the frozen
+       entry, in turn with the others, as CRuby's to_ary: beside another
+       operand the AST rewrite (desugar_array_op_to_ary) does not take it,
+       and the call raised NoMethodError. */
+    if (ty_is_object(r.as_ty) && r.kind != RK_BOXED && !conv_to_ary_misfit(c, r.as_ty)) {
+      int mi = concat_converter_mi(c, r.as_ty);
+      if (mi < 0) return 0;
+      out[i].conv_mi = mi;
+      out[i].obj_ty = r.as_ty;
+      out[i].repr = repr_of_ret(c, &c->scopes[mi]);
+      out[i].boxed = 0;
+      out[i].snapshot = later_conversion;
+      later_conversion = 1;
+      continue;
+    }
     out[i].repr = r;
     out[i].boxed = r.kind == RK_BOXED || !ty_is_array(r.as_ty);
     out[i].snapshot = later_conversion;
@@ -1865,15 +1893,18 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   ConcatOperand *op = (ConcatOperand *)calloc(argc ? argc : 1, sizeof *op);
   if (!op) { perror("calloc"); exit(1); }
   if (!prepare_concat_operands(c, argv, argc, op)) { free(op); return 0; }
-  int int_bulk = bulk && argc == 1 && rt == TY_INT_ARRAY && !op[0].boxed && op[0].repr.as_ty == rt;
-  int single_length = argc == 1 && !op[0].boxed && !op[0].repr.may_nil && !int_bulk;
+  int int_bulk = bulk && argc == 1 && rt == TY_INT_ARRAY && !op[0].boxed && op[0].conv_mi < 0 &&
+                 op[0].repr.as_ty == rt;
+  int single_length = argc == 1 && !op[0].boxed && op[0].conv_mi < 0 && !op[0].repr.may_nil && !int_bulk;
   int tr = ++g_tmp, base = g_tmp + 1;
   g_tmp += argc;
   int lengths = g_tmp + 1; g_tmp += argc;
   buf_puts(b, "({ ");
   emit_concat_hold(c, recv, rt, 0, fresh, tr, b);
-  for (int i = 0; i < argc; i++)
-    emit_concat_hold(c, argv[i], op[i].repr.as_ty, op[i].boxed, 0, base + i, b);
+  for (int i = 0; i < argc; i++) {
+    op[i].arr = base + i;
+    emit_concat_hold(c, argv[i], op[i].conv_mi >= 0 ? op[i].obj_ty : op[i].repr.as_ty, op[i].boxed, 0, base + i, b);
+  }
   /* A sole nonnil typed operand has no later conversion. Keep its pure
      length read beside its hold, as on the typed route. A nullable operand
      keeps its length behind the entry-frozen and TypeError checks. */
@@ -1887,6 +1918,16 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
   for (int i = 0; i < argc; i++) {
     int tv = base + i;
     const char *ak = arr_kind(op[i].repr.as_ty);
+    if (op[i].conv_mi >= 0) {
+      char self[24];
+      Buf call = {0};
+      snprintf(self, sizeof self, "_t%d", tv);
+      emit_to_ary_dispatch(c, id, ty_object_class(op[i].obj_ty), self, &call);
+      tv = op[i].arr = ++g_tmp;
+      buf_puts(b, " "); emit_ctype(c, op[i].repr.as_ty, b);
+      buf_printf(b, " _t%d = %s; SP_GC_ROOT(_t%d);", tv, call.p ? call.p : "NULL", tv);
+      free(call.p);
+    }
     if (op[i].boxed) {
       buf_printf(b, " _t%d = sp_poly_ary_arg_ck(_t%d);", tv, tv);
       if (op[i].snapshot) {
@@ -1906,7 +1947,7 @@ int emit_builtin_array_concat(Compiler *c, int id, int recv, TyKind rt, const in
     }
   }
   for (int i = 0; i < argc; i++) {
-    int tv = base + i;
+    int tv = op[i].arr;
     TyKind at = op[i].repr.as_ty;
     const char *ak = arr_kind(at);
     if (int_bulk) {
