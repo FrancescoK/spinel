@@ -15138,6 +15138,12 @@ static sp_RbVal sp_poly_sum_seed(sp_RbVal v, sp_RbVal seed) {
      express -- and with no arm at all it simply handed the seed back. */
   if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_RANGE && v.v.p)
     return sp_range_sum_seed(*(sp_Range *)v.v.p, seed);
+  /* A Float Range has no walk: the TypeError its walk raises (from Float, or
+     from NilClass when beginless), where it answered the seed */
+  if (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_FLOAT_RANGE && v.v.p) {
+    sp_frange_iter_raise(*(sp_FloatRange *)v.v.p, 0);
+    return seed;
+  }
   /* nil, a number, a boolean or a Symbol has no sum: it answered the seed */
   if (sp_poly_no_enum(v)) sp_raise_nomethod(sp_nomethod_msg_args("sum", v, 1, &seed));
   SP_GC_ROOT_RBVAL(v);
@@ -20949,13 +20955,14 @@ static sp_RbVal sp_poly_hash_merge_blk(sp_RbVal recv, sp_RbVal other, sp_Proc *b
   }
   return recv;
 }
-/* sum(init) { } on a boxed Array, Hash or Range: init plus each answer */
+/* sum(init) { } on a boxed Array, Hash or Range: init plus each answer.
+   A String Range walks its members; a Float Range raises the TypeError of
+   its walk in sp_poly_enum_proc, as sum { } without init does. */
 static sp_RbVal sp_poly_sum_init_proc(sp_RbVal recv, sp_RbVal init, sp_Proc *blk) {
   SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(init);
-  /* a Float Range goes on to sp_poly_enum_proc, which raises its TypeError */
   if (!(recv.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(recv.cls_id) || sp_poly_is_hash_kind(recv.cls_id) ||
-        recv.cls_id == SP_BUILTIN_RANGE || recv.cls_id == SP_BUILTIN_FLOAT_RANGE ||
-        recv.cls_id == SP_BUILTIN_ENUMERATOR))) {
+        recv.cls_id == SP_BUILTIN_RANGE || recv.cls_id == SP_BUILTIN_STR_RANGE ||
+        recv.cls_id == SP_BUILTIN_FLOAT_RANGE || recv.cls_id == SP_BUILTIN_ENUMERATOR))) {
     sp_raise_nomethod(sp_nomethod_msg("sum", recv));
     return sp_box_nil();
   }

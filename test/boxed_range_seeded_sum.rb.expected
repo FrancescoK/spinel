@@ -1,0 +1,11 @@
+float sum init: TypeError can't iterate from Float
+beginless sum init: TypeError can't iterate from NilClass
+endless sum init: TypeError can't iterate from Float
+str sum init: "abc"
+int sum init: 22
+bag sum init: 17
+float sum seed: TypeError can't iterate from Float
+str sum seed: "abc"
+int sum seed: 16
+beginless sum seed: TypeError can't iterate from NilClass
+endless sum seed: TypeError can't iterate from Float
