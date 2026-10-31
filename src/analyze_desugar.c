@@ -6327,7 +6327,7 @@ char **dsend_candidates(Compiler *c, int *out_n) {
       Scope *ls = comp_scope_of(c, id);
       if ((!ls || !ls->name) && c->node_cbody && id < c->node_cap) rci = c->node_cbody[id];
     }
-    else if (nt_kind(nt, rr) == NK_ConstantReadNode) rci = comp_class_index(c, nt_str(nt, rr, "name"));
+    else if (nt_kind(nt, rr) == NK_ConstantReadNode) rci = const_node_class_index(c, rr);
     if (rci < 0) continue;
     for (int s = 0; s < c->nscopes; s++) {
       const char *sn = c->scopes[s].name;
@@ -25205,7 +25205,7 @@ int rewrite_ffi_dynamic_calls(Compiler *c) {
       NodeKind rk = nt_kind(nt, recv);
       int ci;
       if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
-        ci = comp_class_index(c, nt_str(nt, recv, "name"));
+        ci = const_node_class_index(c, recv);
       else if (rk == NK_SelfNode)
         ci = self_ci;
       else continue;

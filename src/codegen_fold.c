@@ -8960,7 +8960,7 @@ static int kw_splat_operand_nilable(Compiler *c, int node, TyKind t) {
       int rcv = nt_ref(c->nt, node, "receiver");
       if (cn && sp_streq(cn, "new") && rcv >= 0 &&
           (nt_kind(c->nt, rcv) == NK_ConstantReadNode || nt_kind(c->nt, rcv) == NK_ConstantPathNode)) {
-        int ci = comp_class_index(c, nt_str(c->nt, rcv, "name"));
+        int ci = const_node_class_index(c, rcv);
         if (ci >= 0 && comp_cmethod_in_chain(c, ci, "new", NULL) < 0) return 0;
       }
       break;

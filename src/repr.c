@@ -289,7 +289,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
         return reader_ivar_has_nilbit(c, cid, nm) || dispatch_answers_nil(c, node, cid, nm, -1);
     }
     else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
-      int rci = comp_class_index(c, nt_str(nt, r, "name"));
+      int rci = const_node_class_index(c, r);
       if (rci >= 0) mi = call_target(c, node, rci, nm, CT_CMETHOD, NULL);
     }
     /* `obj.class.m`: the switch over obj's class and the classes below it
@@ -433,7 +433,7 @@ static int node_is_oint_asked(Compiler *c, int node) {
     {
       int sgc = -1;
       if (r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode))
-        sgc = comp_class_index(c, nt_str(nt, r, "name"));
+        sgc = const_node_class_index(c, r);
       else if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
         Scope *ss = comp_scope_of(c, node);
         if (ss && ss->is_cmethod) sgc = ss->class_id;

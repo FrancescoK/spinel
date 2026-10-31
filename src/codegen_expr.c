@@ -1356,7 +1356,7 @@ static int const_ref_is_guarded(Compiler *c, int id) {
    class) stops the walk: what is left is the written tail, which is still more
    of the path than the leaf pair was. `Object::X` keeps dropping the Object,
    as CRuby does -- Object's constants are the top-level ones (#3976). */
-static void const_path_written(const NodeTable *nt, int id, char *out, size_t cap) {
+void const_path_written(const NodeTable *nt, int id, char *out, size_t cap) {
   const char *parts[16];
   int n = 0, cur = id;
   while (cur >= 0 && n < 16) {
@@ -3778,9 +3778,10 @@ static int emit_constant_value(Compiler *c, int id, Buf *b, Buf *checks, const N
                     " \"uninitialized constant Socket::%s\"); _sc; })", nm, nm);
       return 1;
     }
-    /* class/module constant as value */
+    /* class/module constant as value: one its parent holds (a top-level
+       class is no member of another class or module, #10577) */
     if (nm) {
-      int _cpidx = comp_class_index(c, nm);
+      int _cpidx = const_node_class_index(c, id);
       if (_cpidx >= 0) {
         buf_printf(b, "((sp_Class){%d})", _cpidx);
         return 1;

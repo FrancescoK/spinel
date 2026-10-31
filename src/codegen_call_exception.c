@@ -170,7 +170,7 @@ const char *isa_exc_class_name(Compiler *c, int arg, char *buf, size_t bufsz) {
   const char *qn = isa_const_qualname(c->nt, arg, buf, bufsz);
   if (!qn) return NULL;
   int qi = comp_class_index(c, qn);
-  if (qi < 0) qi = comp_class_index(c, nt_str(c->nt, arg, "name"));
+  if (qi < 0) qi = const_node_class_index(c, arg);
   const char *rn = qi >= 0 ? class_ruby_name(c, qi) : NULL;
   if (!rn) return qn;
   snprintf(buf, bufsz, "%s", rn);
@@ -938,7 +938,7 @@ int emit_call_raise_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const
              /* a constant holding an exception INSTANCE (`ERR = RuntimeError.new(..)`;
                 `raise ERR`) is a value, not a class name: it takes the object
                 path below, or it raised a class called "ERR" */
-             !(comp_class_index(c, nt_str(nt, av[0], "name")) < 0 &&
+             !(const_node_class_index(c, av[0]) < 0 &&
                repr_of(c, av[0]).exc)) {
       /* `raise E` with a user-defined E#initialize is `raise E.new`: construct
          the object (filling initialize's defaults) so its custom initialize and

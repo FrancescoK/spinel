@@ -310,7 +310,7 @@ int share_exact_new_class(Compiler *c, int n) {
   if (n < 0 || nt_kind(nt, n) != NK_CallNode || !sp_streq(nt_str(nt, n, "name"), "new")) return -1;
   int r = nt_ref(nt, n, "receiver");
   if (r < 0 || (nt_kind(nt, r) != NK_ConstantReadNode && nt_kind(nt, r) != NK_ConstantPathNode)) return -1;
-  int k = comp_class_index(c, nt_str(nt, r, "name"));
+  int k = const_node_class_index(c, r);
   return k >= 0 && comp_cmethod_in_chain(c, k, "new", NULL) < 0 ? k : -1;
 }
 /* Kernel#String(x) answers x for a String, and for any other value what its

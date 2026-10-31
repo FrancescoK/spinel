@@ -4668,7 +4668,7 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
        answers its argument */
     if (rk == NK_ConstantReadNode && sp_feature_required("socket") &&
         io_family_name(nt_str(nt, recv, "name")) && !is_io_class_name(nt_str(nt, recv, "name"))) {
-      int skc = comp_class_index(c, nt_str(nt, recv, "name"));
+      int skc = const_node_class_index(c, recv);
       if (skc < 0 || call_target(c, id, skc, name, CT_CMETHOD, NULL) < 0) {
         if (sp_streq(name, "do_not_reverse_lookup") && argc == 0) { *out = TY_BOOL; return 1; }
         if (sp_streq(name, "do_not_reverse_lookup=") && argc == 1) { *out = infer_type(c, argv[0]); return 1; }
@@ -6206,13 +6206,13 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   /* SomeClass.superclass -> sp_Class value for the parent class */
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
       nt_kind(nt, recv) == NK_ConstantReadNode &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
+      nt_str(nt, recv, "name") && const_node_class_index(c, recv) >= 0)
     { *out = TY_CLASS; return 1; }
 
   /* SomeClass.ancestors -> PolyArray of class objects */
   if (recv >= 0 && argc == 0 && sp_streq(name, "ancestors") &&
       nt_kind(nt, recv) == NK_ConstantReadNode &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0)
+      nt_str(nt, recv, "name") && const_node_class_index(c, recv) >= 0)
     { *out = TY_POLY_ARRAY; return 1; }
 
   /* SomeClass.instance_methods / .public_instance_methods -> PolyArray of symbols */
@@ -6236,7 +6236,7 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0) {
     NodeKind rk = nt_kind(nt, recv);
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int ci = const_node_class_index(c, recv);
       /* Exception subclasses have a dedicated storage layout in the common
          allocator. A user class method of their own still takes precedence. */
       if (ci >= 0 && (!class_is_exc_subclass(c, ci) ||
@@ -6551,7 +6551,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
     NodeKind rk = nt_kind(nt, recv);
     int sci = self_class_static_ci(c, recv);
     if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
-      int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
+      int ci = sci >= 0 ? sci : const_node_class_index(c, recv);
       if (ci >= 0) {
         int mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
         if (mi >= 0) { *out = an_user_call(c, id, mi, UC_CMETH, ci); return 1; }
@@ -7360,7 +7360,7 @@ static int infer_exception_call(Compiler *c, int id, const NodeTable *nt, const 
      Exception.to_tty? answers whether stderr is a terminal (#2757). */
   if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                      (nt_kind(nt, recv) == NK_ConstantPathNode &&
-                      comp_class_index(c, nt_str(nt, recv, "name")) < 0))) {
+                      const_node_class_index(c, recv) < 0))) {
     /* by its whole path: Errno::ENOENT.exception */
     const char *ecn = superclass_builtin_exc_name(nt, recv);
     if (ecn && is_builtin_exception_name(ecn)) {
@@ -10263,7 +10263,7 @@ static int infer_constant_path(Compiler *c, int id, const NodeTable *nt, NodeKin
      an unknown name raises NameError there rather than typing here. */
   if (par_nm && sp_streq(par_nm, "Socket") && sp_feature_required("socket") && nm)
     { *out = TY_INT; return 1; }
-  if (nm && comp_class_index(c, nm) >= 0) { *out = TY_CLASS; return 1; }
+  if (nm && const_node_class_index(c, id) >= 0) { *out = TY_CLASS; return 1; }
   if (nm && is_builtin_class_name(nm)) { *out = TY_CLASS; return 1; }
   /* a builtin class named by its path (Enumerator::Chain), a Class value
      carried by that name */

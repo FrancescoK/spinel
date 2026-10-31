@@ -242,7 +242,7 @@ static int new_site_reaches(Compiler *c, int id, int init) {
   NodeKind rk = nt_kind(nt, recv);
   if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode)
     return 0;
-  int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+  int cid = const_node_class_index(c, recv);
   return cid >= 0 && comp_method_in_chain(c, cid, "initialize", NULL) == init;
 }
 
@@ -1435,7 +1435,7 @@ static void header_parent_encloses(Compiler *c, int par, int child, const char *
   char path[256];
   int has_path = header_parent_path(c->nt, par, path, sizeof path);
   int pc = has_path ? class_by_ruby_path(c, path) : -1;
-  if (pc < 0) pc = comp_class_index(c, nt_str(c->nt, par, "name"));
+  if (pc < 0) pc = const_node_class_index(c, par);
   /* a leaf match that carries another path is another module of that leaf
      (`Integer::Box` for `Right::Box` whose leaf collided) */
   const char *pn = pc >= 0 ? c->classes[pc].ruby_name_cache : NULL;
@@ -3158,7 +3158,7 @@ void register_singleton_defs(Compiler *c) {
       if (uk == NK_LocalVariableReadNode || uk == NK_InstanceVariableReadNode ||
           uk == NK_ClassVariableReadNode || uk == NK_GlobalVariableReadNode ||
           (uk == NK_ConstantReadNode && nt_str(nt, ur, "name") &&
-           comp_class_index(c, nt_str(nt, ur, "name")) < 0 &&
+           const_node_class_index(c, ur) < 0 &&
            !sg_const_holds_class(c, nt_str(nt, ur, "name")))) {
         nt_node_set_ref(nt, id, "receiver", ur);
         recv = ur;
@@ -3313,10 +3313,10 @@ void register_singleton_defs(Compiler *c) {
       for (int j = 0; j < an; j++) {
         NodeKind ak = nt_kind(nt, args[j]);
         if ((ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) ||
-            comp_class_index(c, nt_str(nt, args[j], "name")) < 0) { all_mods = 0; break; }
+            const_node_class_index(c, args[j]) < 0) { all_mods = 0; break; }
         /* the module's `self.extended` hook runs at the call, which a
            compile-time transplant has no place for */
-        if (comp_cmethod_in_chain(c, comp_class_index(c, nt_str(nt, args[j], "name")), "extended", NULL) >= 0) {
+        if (comp_cmethod_in_chain(c, const_node_class_index(c, args[j]), "extended", NULL) >= 0) {
           all_mods = 0; break;
         }
       }
@@ -3330,7 +3330,7 @@ void register_singleton_defs(Compiler *c) {
       int newci = -1;
       for (int j = an - 1; j >= 0; j--) {
         newci = sg_chain_link(c, &m, wnode, parent_ci);
-        sg_transplant_module(c, comp_class_index(c, nt_str(nt, args[j], "name")), newci);
+        sg_transplant_module(c, const_node_class_index(c, args[j]), newci);
       }
       sg_mark_activation(nt, id, newci);
       continue;
@@ -4412,7 +4412,7 @@ void register_globals_consts(Compiler *c) {
             sp_streq(nt_str(nt, v, "name"), "new")) {
           int vr = nt_ref(nt, v, "receiver");
           if (vr >= 0 && nt_kind(nt, vr) == NK_ConstantReadNode &&
-              nt_str(nt, vr, "name") && comp_class_index(c, nt_str(nt, vr, "name")) >= 0)
+              nt_str(nt, vr, "name") && const_node_class_index(c, vr) >= 0)
             cv->init_guarded = 1;
         }
       }
@@ -6170,7 +6170,7 @@ static void check_builtin_subclasses(Compiler *c) {
     if (!par) {
       NodeKind sk = nt_kind(nt, sc);
       if (sk != NK_ConstantReadNode && sk != NK_ConstantPathNode) continue;
-      int p = comp_class_index(c, nt_str(nt, sc, "name"));
+      int p = const_node_class_index(c, sc);
       if (p < 0 || !c->classes[p].is_native_class) continue;
       /* a native class whose package declares native_subclass (#9269) */
       if (c->classes[p].native_sub_header) continue;
@@ -6252,7 +6252,7 @@ static void mark_anon_superclass_reflection(Compiler *c) {
     if (!what) continue;
     int k = -1, known = 0;
     if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
-      k = comp_class_index(c, nt_str(nt, recv, "name"));
+      k = const_node_class_index(c, recv);
       known = 1;   /* a module or a builtin class: not one of these */
     }
     else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
@@ -6346,7 +6346,7 @@ void resolve_parents(Compiler *c) {
        are registered under their bare last name. */
     if (sk == NK_ConstantReadNode || sk == NK_ConstantPathNode) {
       int p = elab_class_super(c, i);
-      if (p < 0) p = comp_class_index(c, nt_str(nt, sc, "name"));
+      if (p < 0) p = const_node_class_index(c, sc);
       /* a constant holding a class (`class Sub < Impl` after `Impl = Base`)
          is that class: the record follows the alias where the header stands
          (elab_class_super); where it does not know, superclass_alias_target
@@ -8589,7 +8589,7 @@ void specialize_inherited_cls_new(Compiler *c) {
       if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
         ccall[nccall] = id;
         ccnm[nccall] = cls_call_name(c, id);
-        ccrc[nccall] = comp_class_index(c, nt_str(nt, r, "name"));
+        ccrc[nccall] = const_node_class_index(c, r);
         ccres[nccall++] = -2;
       }
     }
@@ -9312,7 +9312,7 @@ int infer_cvar_types(Compiler *c, int nil_only) {
     if (!nm || !sp_streq(nm, "class_variable_set") || store_unchanged(c, id)) continue;
     int recv = nt_ref(nt, id, "receiver");
     if (recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
-    int cci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int cci = const_node_class_index(c, recv);
     if (cci < 0) continue;
     int args = nt_ref(nt, id, "arguments");
     int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
@@ -9750,7 +9750,7 @@ static int pivs_param(Compiler *c, Scope *s, const char *pn, char *set, int dept
       Scope *us = comp_scope_of(c, u);
       if (r < 0 && us && us->class_id >= 0) return 0;
       if ((nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
-          comp_class_index(c, nt_str(nt, r, "name")) >= 0) continue;
+          const_node_class_index(c, r) >= 0) continue;
       if (!pivs_value(c, r, set, depth + 1)) return 0;
       continue;
     }
@@ -10228,7 +10228,7 @@ static int pivs_value_uncached(Compiler *c, int v, char *set, int depth) {
       if (!un || r < 0) return 0;
       if (sp_streq(un, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
         if (c->pivs->hash_mode && sp_streq(nt_str(nt, r, "name"), "Hash")) return 0;
-        int ci = comp_class_index(c, nt_str(nt, r, "name"));
+        int ci = const_node_class_index(c, r);
         if (ci < 0) {
           pivs_note_builtin(c);
           return builtin_class_id(nt_str(nt, r, "name")) != 0;

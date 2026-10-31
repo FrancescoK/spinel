@@ -979,7 +979,7 @@ static const NodeKind *lr_const_write_kinds(int *n);
 static int lr_builder_class(Compiler *c, int node) {
   if (!c->lrec->structs) return LR_UNKNOWN_CLASS;
   if (nt_kind(c->nt, node) == NK_ConstantWriteNode) {
-    int ci = comp_class_index(c, nt_str(c->nt, node, "name"));
+    int ci = const_node_class_index(c, node);
     return ci >= 0 ? ci : LR_UNKNOWN_CLASS;
   }
   for (int ci = 0; ci < c->nclasses; ci++) if (c->classes[ci].def_node == node) return ci;

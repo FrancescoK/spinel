@@ -600,7 +600,7 @@ int emit_call_reflection_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     const char *qm = NULL;
     if (ak == NK_SymbolNode) qm = nt_str(nt, argv[0], "value");
     else if (ak == NK_StringNode) qm = nt_str(nt, argv[0], "content");
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = const_node_class_index(c, recv);
     int inherit = 1;
     if (argc >= 2) {
       NodeKind ik = nt_kind(nt, argv[1]);
@@ -2410,7 +2410,7 @@ int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *n
   if (recv >= 0) {
     NodeKind rk = nt_kind(nt, recv);
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int ci = const_node_class_index(c, recv);
       int defcls = -1, mi = -1;
       /* the target is the call's plan (call_plan.c): the constant's class
          method, or a method the program adds to Class (its owner, not the
@@ -2425,7 +2425,7 @@ int emit_call_const_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable *n
       /* --plan-check keeps the arm's own lookup as the assertion; without a
          plan it is the arm's answer */
       if (g_plan_check || mi < 0) {
-        int oci = comp_class_index(c, nt_str(nt, recv, "name"));
+        int oci = const_node_class_index(c, recv);
         int odef = -1;
         int omi = oci >= 0 ? call_target(c, id, oci, name, CT_CMETHOD, &odef) : -1;
         if (omi < 0 && (omi = class_reopen_cmethod(c, id, recv, name)) >= 0) {
@@ -3049,7 +3049,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
   if (recv >= 0 && sp_streq(name, "allocate") && argc == 0 && comp_ntype(c, recv) == TY_CLASS &&
       nt_type(nt, recv) &&
       (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
-    int acid = comp_class_index(c, nt_str(nt, recv, "name"));
+    int acid = const_node_class_index(c, recv);
     if (acid >= 0 && (!class_is_exc_subclass(c, acid) ||
         comp_cmethod_in_chain(c, acid, "allocate", NULL) < 0)) {
       emit_obj_alloc_expr(c, acid, b);
@@ -3182,7 +3182,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
      path, too (Errno::ENOENT.exception) */
   if (recv >= 0 && sp_streq(name, "exception") &&
       nt_kind(nt, recv) == NK_ConstantPathNode &&
-      comp_class_index(c, nt_str(nt, recv, "name")) < 0) {
+      const_node_class_index(c, recv) < 0) {
     const char *qn = superclass_builtin_exc_name(nt, recv);
     if (qn) {
       if (emit_syserr_family_new(c, id, qn, argc, argv, b)) return 1;
@@ -3208,7 +3208,7 @@ static int emit_class_instance_methods_all(Compiler *c, int id, Buf *b, const No
   /* a constant path (`Outer::Mod`) names its class by the leaf, as constant
      paths resolve here */
   if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
-    ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    ci = const_node_class_index(c, recv);
   else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     if (s && s->is_cmethod && s->class_id >= 0 && call_target(c, id, s->class_id, name, CT_CMETHOD, NULL) < 0) {
@@ -3521,7 +3521,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
   if (recv >= 0 && argc == 0 && sp_streq(name, "superclass") &&
       nt_kind(nt, recv) == NK_ConstantReadNode &&
       nt_str(nt, recv, "name")) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = const_node_class_index(c, recv);
     if (ci >= 0) {
       int par = c->classes[ci].parent;
       if (par >= 0) { buf_printf(b, "((sp_Class){%d})", par); return 1; }
@@ -3803,7 +3803,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
         (nt_kind(nt, recv) == NK_ConstantReadNode ||
          nt_kind(nt, recv) == NK_ConstantPathNode) &&   /* `Outer::Nested.name(x)`: the leaf keys the class (#4526) */
         nt_str(nt, recv, "name")) {
-      int sci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int sci = const_node_class_index(c, recv);
       if (sci >= 0 && call_target(c, id, sci, name, CT_CMETHOD, NULL) >= 0) cls_shadowed = 1;
     }
     /* a local naming one class that has its own, or a class known only at
@@ -4112,7 +4112,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
        compile-time class graph. Constant class receiver only. (#2656) */
     if (sp_streq(name, "subclasses") && argc == 0) {
       NodeKind sck = nt_kind(nt, recv);
-      int scid = (sck == NK_ConstantReadNode) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+      int scid = (sck == NK_ConstantReadNode) ? const_node_class_index(c, recv) : -1;
       if (scid >= 0) {
         int ta = ++g_tmp;
         buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d);", ta, ta);
@@ -4170,7 +4170,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
       const char *cvn = (aty2_k == NK_SymbolNode) ? nt_str(nt, argv[0], "value")
                       : (aty2_k == NK_StringNode) ? nt_str(nt, argv[0], "content") : NULL;
       NodeKind rty2_k = nt_kind(nt, recv);
-      int ccid = (rty2_k == NK_ConstantReadNode) ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+      int ccid = (rty2_k == NK_ConstantReadNode) ? const_node_class_index(c, recv) : -1;
       if (cvn && cvn[0] == '@' && cvn[1] == '@' && ccid >= 0) {
         ccid = comp_cvar_owner(c, ccid, cvn);
         int cvi = comp_cvar_index(&c->classes[ccid], cvn);
@@ -5029,9 +5029,9 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
   if (recv >= 0 && argc == 0 &&
       is_name_reader(name) &&
       nt_kind(nt, recv) == NK_ConstantReadNode &&
-      nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) >= 0 &&
-      call_target(c, id, comp_class_index(c, nt_str(nt, recv, "name")), name, CT_CMETHOD, NULL) < 0) {
-    { int qci = comp_class_index(c, nt_str(nt, recv, "name"));
+      nt_str(nt, recv, "name") && const_node_class_index(c, recv) >= 0 &&
+      call_target(c, id, const_node_class_index(c, recv), name, CT_CMETHOD, NULL) < 0) {
+    { int qci = const_node_class_index(c, recv);
       if (comp_class_anonymous(c, qci)) {
         buf_printf(b, "%s((sp_Class){%d})", is_class_name_name(name) ? "sp_class_name_or_nil" : comp_class_display_fn(c), qci);
         return 1;

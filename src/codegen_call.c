@@ -5121,7 +5121,7 @@ void emit_concurrency_raise(Compiler *c, const char *rtext, int argc, const int 
   if (arg0_const) {
     /* a builtin exception by its whole path (Errno::ENOENT), a class of the
        program by its Ruby name */
-    int xc = comp_class_index(c, nt_str(nt, argv[0], "name"));
+    int xc = const_node_class_index(c, argv[0]);
     const char *cn = xc >= 0 ? class_ruby_name(c, xc) : superclass_builtin_exc_name(nt, argv[0]);
     if (!cn) cn = nt_str(nt, argv[0], "name");
     buf_printf(b, "\"%s\", ", cn);
@@ -14604,7 +14604,7 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       (rk == NK_CallNode && is_struct_call(c, recv))) {
     int ci = rk == NK_LocalVariableReadNode ? class_var_static_ci(c, recv)
            : rk == NK_CallNode ? anon_struct_ci_for_value(c, recv)
-                                                    : comp_class_index(c, nt_str(nt, recv, "name"));
+                                                    : const_node_class_index(c, recv);
     /* a reopened builtin (`class String; def ...`) with no user-defined
        self.new keeps its builtin constructor: fall past the user-ctor logic
        to the builtin cn handler below (#3109) */
@@ -15531,9 +15531,14 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       if (builtin_class_id(cn) != 0 || is_builtin_module_name(cn))
         buf_printf(b, "(sp_raise_cls(\"NoMethodError\", \"undefined method 'new' for %s %s\"), %s)",
                    is_builtin_module_name(cn) ? "module" : "class", cn, ndflt);
-      else
+      else {
+        /* a path whose parent holds no such member is named as written
+           (Holder::Target, though a top-level Target exists, #10577) */
+        char wn[512] = "";
+        if (comp_class_index(c, cn) >= 0 && const_node_class_index(c, recv) < 0) const_path_written(nt, recv, wn, sizeof wn);
         buf_printf(b, "(sp_raise_cls(\"NameError\", \"uninitialized constant %s\"), %s)",
-                   cn, ndflt);
+                   wn[0] ? wn : cn, ndflt);
+      }
       { *out = 1; return 1; }
     }
   }
@@ -15588,7 +15593,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
     NodeKind mrk = nt_kind(nt, recv);
     int mci = -1;
     if (mrk == NK_ConstantReadNode || mrk == NK_ConstantPathNode)
-      mci = comp_class_index(c, nt_str(nt, recv, "name"));
+      mci = const_node_class_index(c, recv);
     else if (mrk == NK_LocalVariableReadNode ||
              (mrk == NK_CallNode && is_struct_call(c, recv)))
       mci = class_var_static_ci(c, recv);
@@ -15610,7 +15615,7 @@ int emit_class_new_call(Compiler *c, int id, Buf *b) {
     NodeKind krk = nt_kind(nt, recv);
     int kci = -1;
     if (krk == NK_ConstantReadNode || krk == NK_ConstantPathNode)
-      kci = comp_class_index(c, nt_str(nt, recv, "name"));
+      kci = const_node_class_index(c, recv);
     else if (krk == NK_LocalVariableReadNode)
       kci = class_var_static_ci(c, recv);
     if (kci >= 0 && c->classes[kci].is_struct &&
@@ -20960,7 +20965,7 @@ int emit_arg_type_guards(Compiler *c, int id, Buf *b) {
     if (cr >= 0 && cn2 && cc >= 1 && cv && nt_kind(nt, cr) == NK_ConstantReadNode &&
         nt_str(nt, cr, "name") &&
         (sp_streq(nt_str(nt, cr, "name"), "Integer") || sp_streq(nt_str(nt, cr, "name"), "Float")) &&
-        (sp_streq(cn2, "sqrt")) && comp_class_index(c, nt_str(nt, cr, "name")) < 0) {
+        (sp_streq(cn2, "sqrt")) && const_node_class_index(c, cr) < 0) {
       NodeKind ak2 = nt_kind(nt, cv[0]);
       if (ak2 == NK_StringNode || ak2 == NK_SymbolNode || ak2 == NK_ArrayNode ||
           ak2 == NK_HashNode || ak2 == NK_NilNode || ak2 == NK_TrueNode || ak2 == NK_FalseNode) {
@@ -31591,7 +31596,7 @@ int respond_to_static_answer(Compiler *c, int id, int recv, TyKind rt, const cha
     NodeKind rk = nt_kind(nt, recv);
     /* a constant that holds a user object answers as the object does */
     int cobj = rk == NK_ConstantReadNode && ty_is_object(rt) &&
-               nt_str(nt, recv, "name") && comp_class_index(c, nt_str(nt, recv, "name")) < 0 &&
+               nt_str(nt, recv, "name") && const_node_class_index(c, recv) < 0 &&
                builtin_class_id(nt_str(nt, recv, "name")) == 0;
     if (rk == NK_ConstantReadNode && !cobj) {
       const char *rcn = nt_str(nt, recv, "name");

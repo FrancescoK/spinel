@@ -2183,7 +2183,7 @@ int comp_sg_const_candidates(Compiler *c, int class_id, const char *base, int *o
     if (an != 1) return -1;
     NodeKind vk = nt_kind(nt, av[0]);
     if (vk != NK_ConstantReadNode && vk != NK_ConstantPathNode) return -1;
-    int rci = comp_class_index(c, nt_str(nt, av[0], "name"));
+    int rci = const_node_class_index(c, av[0]);
     if (rci < 0) return -1;
     int seen = 0;
     for (int j = 0; j < count; j++) if (out[j] == rci) { seen = 1; break; }

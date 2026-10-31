@@ -2695,7 +2695,7 @@ static int ivs_never_nil(Compiler *c, int v) {
       int r = nt_ref(nt, v, "receiver");
       if (!nm || r < 0) return 0;
       if (sp_streq(nm, "new") && nt_kind(nt, r) == NK_ConstantReadNode) {
-        int ci = comp_class_index(c, nt_str(nt, r, "name"));
+        int ci = const_node_class_index(c, r);
         return ci < 0 ? 1 : comp_cmethod_in_chain(c, ci, "new", NULL) < 0;
       }
       if (is_unary_sign(nm)) return nt_kind(nt, r) == NK_StringNode;
@@ -8280,7 +8280,7 @@ static int class_is_allocated(Compiler *c, int cid) {
       const char *nm = nt_str(nt, u, "name");
       if (!nm || !sp_streq(nm, "allocate")) continue;
       int r = nt_ref(nt, u, "receiver");
-      int rc = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
+      int rc = r >= 0 && nt_kind(nt, r) == NK_ConstantReadNode ? const_node_class_index(c, r) : -1;
       if (rc >= 0) named[rc] = 1; else any = 1;
     }
   }

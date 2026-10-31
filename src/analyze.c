@@ -704,7 +704,7 @@ static void cr_live_collect(CrLive *lv, int s, int id, int cls, int persist) {
   }
   if (k == NK_ClassNode) {
     int cp = nt_ref(nt, id, "constant_path");
-    cr_live_collect(lv, s, nt_ref(nt, id, "body"), cp >= 0 ? comp_class_index(c, nt_str(nt, cp, "name")) : -1, 0);
+    cr_live_collect(lv, s, nt_ref(nt, id, "body"), cp >= 0 ? const_node_class_index(c, cp) : -1, 0);
     return;
   }
   if (k == NK_ModuleNode) {
@@ -2005,7 +2005,7 @@ static int a_scope_forwards_block_to_poly(Compiler *c, int mi) {
 static int an_const_new_init(Compiler *c, int recv, int *init) {
   int rk = recv >= 0 ? nt_kind(c->nt, recv) : -1;
   if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) return 0;
-  int ci = comp_class_index(c, nt_str(c->nt, recv, "name"));
+  int ci = const_node_class_index(c, recv);
   if (ci < 0) return 0;
   *init = comp_method_in_chain(c, ci, "initialize", NULL);
   return 1;
@@ -2171,7 +2171,7 @@ else {
     int const_recv = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode);
     int const_is_class = 0;
     if (const_recv) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int ci = const_node_class_index(c, recv);
       if (ci >= 0) {
         const_is_class = 1; mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
         /* `Klass.new { }` with no `def self.new` hands the block to
@@ -3966,7 +3966,7 @@ static void ie_rself_literal(Compiler *c, int lit) {
 static int ie_new_takes_block(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   NodeKind rk = nt_kind(nt, recv);
-  int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+  int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? const_node_class_index(c, recv) : -1;
   if (ci < 0) return -1;
   int mi = comp_cmethod_in_chain(c, ci, "new", NULL);
   if (mi < 0) mi = comp_method_in_chain(c, ci, "initialize", NULL);
@@ -8241,7 +8241,7 @@ static void desugar_struct_index_ctor(Compiler *c) {
     NodeKind rk = nt_kind(nt, recv);
     int ci = -1;
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
-      ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      ci = const_node_class_index(c, recv);
     else if (rk == NK_LocalVariableReadNode)
       ci = class_var_static_ci(c, recv);
     if (ci < 0 || !c->classes[ci].is_struct) continue;
@@ -8263,7 +8263,7 @@ static void desugar_data_positional_new(Compiler *c) {
     int recv = nt_ref(nt, id, "receiver");
     NodeKind rk = nt_kind(nt, recv);
     if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode) continue;
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = const_node_class_index(c, recv);
     if (ci < 0 || comp_method_in_chain(c, ci, "initialize", NULL) < 0) continue;
     int dc = ci;
     for (int g = 0; dc >= 0 && !c->classes[dc].is_data && g < 64; g++) dc = c->classes[dc].parent;
@@ -14805,7 +14805,7 @@ static void widen_ivars_from_pushed_params(Compiler *c) {
          array's own kind, or dropped (#4213; the same arm #3505 added to
          the nil-marking loop). */
       else if (nt_kind(nt, recv) == NK_ConstantReadNode) {
-        int rci = comp_class_index(c, nt_str(nt, recv, "name"));
+        int rci = const_node_class_index(c, recv);
         if (rci >= 0)
           mi = sp_streq(name, "new") ? comp_method_in_chain(c, rci, "initialize", NULL)
                                      : call_target(c, id, rci, name, CT_CMETHOD, NULL);
@@ -16768,7 +16768,7 @@ static int narrow_object_arrays(Compiler *c) {
       else if (nt_type(nt, recv) &&
                (nt_kind(nt, recv) == NK_ConstantReadNode ||
                 nt_kind(nt, recv) == NK_ConstantPathNode)) {
-        int rci = comp_class_index(c, nt_str(nt, recv, "name"));
+        int rci = const_node_class_index(c, recv);
         oa_tmi = rci >= 0 ? call_target(c, id, rci, name, CT_CMETHOD, NULL) : -1;
         /* `T.new(cols)` names no class method -- `new` is implicit -- so the
            lookup above answered -1 and the argument loop below read that as
@@ -24496,7 +24496,7 @@ static int share_lift_poly_ivar_stores(Compiler *c, int cid, const char *name) {
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     if (!cn || r < 0) continue;
     if (is_struct_constructor(cn) && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) &&
-        comp_class_index(c, nt_str(nt, r, "name")) == cid) {
+        const_node_class_index(c, r) == cid) {
       if (an == 1 && nt_kind(nt, av[0]) == NK_KeywordHashNode) {
         int kn = 0; const int *ke = nt_arr(nt, av[0], "elements", &kn);
         for (int e = 0; e < kn; e++) {
@@ -26779,7 +26779,7 @@ static int an_recv_builtin_without(Compiler *c, int u, const char *un) {
   NodeKind rk = nt_kind(nt, rc);
   if (rk == NK_SelfNode) return 0;
   if ((rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) &&
-      comp_class_index(c, nt_str(nt, rc, "name")) >= 0) return 0;
+      const_node_class_index(c, rc) >= 0) return 0;
   TyKind rt = infer_type(c, rc);
   if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS || rt == TY_VOID || rt == TY_NIL || ty_is_object(rt)) return 0;
   int bc = core_of_type(rt);
@@ -29623,7 +29623,7 @@ static int dyn_call_hands_on(Compiler *c, int call, const char *un, int ur, int 
     NodeKind rk = nt_kind(nt, ur);
     TyKind rt = comp_ntype(c, ur);
     int ci = (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) && nt_str(nt, ur, "name")
-               ? comp_class_index(c, nt_str(nt, ur, "name")) : -1;
+               ? const_node_class_index(c, ur) : -1;
     if (ci >= 0) mi = call_target(c, call, ci, un, CT_CMETHOD, NULL);
     else if (ty_is_object(rt)) mi = call_target(c, call, ty_object_class(rt), un, 0, NULL);
     else if (rt != TY_POLY && rt != TY_UNKNOWN) return 0;
@@ -33116,7 +33116,7 @@ static int promote_spread_string_args(Compiler *c) {
     /* `C.new(*s)` binds C's initialize */
     int ctor = -1, r = nt_ref(nt, n, "receiver");
     if (sp_streq(nm, "new") && r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
-      int ci = nt_str(nt, r, "name") ? comp_class_index(c, nt_str(nt, r, "name")) : -1;
+      int ci = nt_str(nt, r, "name") ? const_node_class_index(c, r) : -1;
       ctor = ci >= 0 ? comp_method_in_chain(c, ci, "initialize", NULL) : -1;
     }
     int first = ctor >= 0 ? ctor : dyn_scopes_named(c, nm);
@@ -33261,7 +33261,7 @@ static int fwd_call_target(Compiler *c, int u) {
   TyKind rt = comp_ntype(c, recv);
   if (ty_is_object(rt)) return call_target(c, u, ty_object_class(rt), nm, 0, NULL);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-    int ci = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+    int ci = nt_str(nt, recv, "name") ? const_node_class_index(c, recv) : -1;
     return ci >= 0 ? call_target(c, u, ci, nm, CT_CMETHOD, NULL) : -1;
   }
   return -1;
@@ -34904,7 +34904,7 @@ int new_recv_classes(Compiler *c, int recv, int *out, int cap) {
     out[0] = k; return 1;
   }
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-    int k = comp_class_index(c, nt_str(nt, recv, "name"));
+    int k = const_node_class_index(c, recv);
     if (k < 0) return 0;
     out[0] = k; return 1;
   }
@@ -38153,7 +38153,7 @@ int nullable_int_value(Compiler *c, int v) {
         }
         if (ty_is_object(rt)) mi = call_target(c, v, ty_object_class(rt), cn, 0, NULL);
         else if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode) {
-          int rci = comp_class_index(c, nt_str(nt, rcv, "name"));
+          int rci = const_node_class_index(c, rcv);
           if (rci >= 0) mi = call_target(c, v, rci, cn, CT_CMETHOD, NULL);
         }
         /* the receiver stayed poly, so no single callee resolves -- fall back
@@ -38237,7 +38237,7 @@ int nullable_int_value(Compiler *c, int v) {
     TyKind rt = infer_type(c, rcv);
     if (ty_is_object(rt)) return dispatch_answers_nil(c, v, ty_object_class(rt), cn, 0);
     if (nt_kind(nt, rcv) == NK_ConstantReadNode || nt_kind(nt, rcv) == NK_ConstantPathNode)
-      return dispatch_answers_nil(c, v, comp_class_index(c, nt_str(nt, rcv, "name")), cn, 1);
+      return dispatch_answers_nil(c, v, const_node_class_index(c, rcv), cn, 1);
     /* `self.class.m` in an instance method: the class methods of self's
        class and of every class below it (codegen's dispatch switch) */
     if (nt_kind(nt, rcv) == NK_CallNode && sp_streq(nt_str(nt, rcv, "name"), "class") &&
@@ -38775,7 +38775,7 @@ static int ps_reached_plainly(Compiler *c, int mi) {
     int t = -1;
     if (r < 0) t = comp_self_call_mi(c, id, cn);
     else if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
-      int rc = comp_class_index(c, nt_str(nt, r, "name"));
+      int rc = const_node_class_index(c, r);
       t = rc >= 0 ? call_target(c, id, rc, cn, CT_CMETHOD, NULL) : -1;
     }
     else {
@@ -39527,7 +39527,7 @@ static int wnh_call_target(Compiler *c, int call) {
   if (!cn) return -1;
   if (r < 0) return comp_self_call_mi(c, call, cn);
   if (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode) {
-    int rc = comp_class_index(c, nt_str(nt, r, "name"));
+    int rc = const_node_class_index(c, r);
     return rc >= 0 ? call_target(c, call, rc, cn, CT_CMETHOD, NULL) : -1;
   }
   TyKind rt = infer_type(c, r);
@@ -40900,7 +40900,7 @@ static void mark_nullable_int_locals(Compiler *c) {
         else if (nt_kind(nt, recv) == NK_ConstantReadNode ||
                  nt_kind(nt, recv) == NK_ConstantPathNode) {
           const char *cnm = nt_str(nt, id, "name");
-          int rci = comp_class_index(c, nt_str(nt, recv, "name"));
+          int rci = const_node_class_index(c, recv);
           if (rci >= 0)
             mi = sp_streq(cnm, "new") ? comp_method_in_chain(c, rci, "initialize", NULL)
                                       : call_target(c, id, rci, cnm, CT_CMETHOD, NULL);
@@ -43728,7 +43728,7 @@ static int ctor_graph_target(Compiler *c, int id) {
     int recv = nt_ref(nt, id, "receiver");
     int rk = recv >= 0 ? nt_kind(nt, recv) : -1;
     int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
-           ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+           ? const_node_class_index(c, recv) : -1;
     if (!name) return -1;
     /* a bare `new` in a class method builds that class */
     Scope *sc = &c->scopes[c->nscope[id]];
@@ -44041,7 +44041,7 @@ void rewrite_builtin_cm_alias_call(Compiler *c, int id) {
   int recv = nt_ref(nt, id, "receiver"), ci = -1;
   if (!nm || nt_int(nt, id, "builtin_only", 0)) return;
   if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
-    ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    ci = const_node_class_index(c, recv);
   else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
     int si = c->nscope[id];
     ci = si >= 0 && c->scopes[si].is_cmethod ? c->scopes[si].class_id : -1;
@@ -44513,7 +44513,7 @@ static void rewrite_array_subclass_new(Compiler *c, int id) {
   if (!nm || (!sp_streq(nm, "new") && !sp_streq(nm, "[]"))) return;
   int k = -1;
   if (recv >= 0 && (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode))
-    k = comp_class_index(c, nt_str(nt, recv, "name"));
+    k = const_node_class_index(c, recv);
   else if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode) {
     Scope *s = comp_scope_of(c, id);
     if (s && s->is_cmethod) k = s->class_id;
@@ -47920,7 +47920,7 @@ static void an_phase_block_inline(Compiler *c) {
         if (ty_is_object(frt)) fmi = call_target(c, p, ty_object_class(frt), fn, 0, NULL);
         else if (nt_kind(c->nt, frecv) == NK_ConstantReadNode ||
                  nt_kind(c->nt, frecv) == NK_ConstantPathNode) {
-          int fci = comp_class_index(c, nt_str(c->nt, frecv, "name"));
+          int fci = const_node_class_index(c, frecv);
           if (fci >= 0) fmi = call_target(c, p, fci, fn, CT_CMETHOD, NULL);
           /* `Klass.new(&b)` with no `def self.new` hands the block to
              initialize, which may store it */
@@ -48404,7 +48404,7 @@ static int ur_isa_conjunct(Compiler *c, int x, const char *v) {
     NodeKind ak = nt_kind(nt, av[0]);
     if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) return -1;
     /* by its last segment, as the emitted test names it */
-    int cls = comp_class_index(c, nt_str(nt, av[0], "name"));
+    int cls = const_node_class_index(c, av[0]);
     return cls >= 0 && !comp_class_is_module(c, &c->classes[cls]) ? cls : -1;
   }
   return -1;
@@ -50826,7 +50826,7 @@ static void an_phase_method_backstops(Compiler *c) {
           int cid = -1;
           if (rv < 0 || nt_kind(nt, rv) == NK_SelfNode) cid = cs && cs->is_cmethod ? cs->class_id : -1;
           else if (nt_kind(nt, rv) == NK_ConstantReadNode || nt_kind(nt, rv) == NK_ConstantPathNode)
-            cid = comp_class_index(c, nt_str(nt, rv, "name"));
+            cid = const_node_class_index(c, rv);
           else {
             TyKind rt = infer_type(c, rv);
             if (rt == TY_POLY || rt == TY_UNKNOWN || rt == TY_CLASS) called = 1;
@@ -53152,7 +53152,7 @@ static void an_phase_reconcile_check(Compiler *c) {
       if (!hits && rt == TY_CLASS && sc->is_cmethod) {
         int rci = -1;
         if (nt_kind(c->nt, recv) == NK_ConstantReadNode || nt_kind(c->nt, recv) == NK_ConstantPathNode)
-          rci = comp_class_index(c, nt_str(c->nt, recv, "name"));
+          rci = const_node_class_index(c, recv);
         else if (nt_kind(c->nt, recv) == NK_CallNode && nt_str(c->nt, recv, "name") &&
                  sp_streq(nt_str(c->nt, recv, "name"), "class")) {
           int robj = nt_ref(c->nt, recv, "receiver");

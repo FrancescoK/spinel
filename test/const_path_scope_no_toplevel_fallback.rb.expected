@@ -1,0 +1,8 @@
+NameError: uninitialized constant Holder::Target
+NameError: uninitialized constant Mod::Target
+NameError: uninitialized constant Holder::Target
+NameError: uninitialized constant Holder::Target
+nil
+9
+1
+Base::Inner

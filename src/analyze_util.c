@@ -230,6 +230,44 @@ int const_path_misses_member(Compiler *c, int id) {
   const_path_scope(c, id, &missing);
   return missing;
 }
+/* The program class a constant or constant path names by its leaf, as
+   comp_class_index answers for the name; -1 for a path to a top-level
+   class whose parent, a class or module of the program, holds no member of
+   that name: an explicit scope does not fall back to Object's constants
+   (Holder::Target with Target defined at the top level names nothing,
+   #10577). Only a top-level class is checked: a nested one a path reaches
+   through a constant write or a compact class header (AS::CoreExt::Err =
+   ..., `class Invoice::Line` in a subclass) is a member the walk does not
+   list, and so is one a constant holding a module reaches. Any other node
+   is its name's. */
+int const_node_class_index(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  int k = comp_class_index(c, nt_str(nt, id, "name"));
+  /* (a class named under another by a compact header carries that name,
+     ruby_name_cache, P::Foo for `class AliasP::Foo`: no top-level one; nor
+     is a native struct, whose module the walk does not list it in) */
+  if (k < 0 || c->classes[k].enclosing_class >= 0 || c->classes[k].ruby_name_cache ||
+      c->classes[k].is_native_class || nt_kind(nt, id) != NK_ConstantPathNode) return k;
+  /* (nor a path whose leaf the qualifying pass found a member for and
+     renamed, qc_orig_name: module M; A = Foo; end makes M::A Foo, renamed
+     to the alias's class afterwards) */
+  if (nt_str(nt, id, "qc_orig_name")) return k;
+  /* (a parent that is a class's own name, not a constant holding one:
+     AliasP = P; AliasP::Foo is P::Foo, which the walk does not follow) */
+  int par = nt_ref(nt, id, "parent");
+  NodeKind pk = par >= 0 ? nt_kind(nt, par) : NK_NilNode;
+  const char *pn = pk == NK_ConstantReadNode || pk == NK_ConstantPathNode ? nt_str(nt, par, "name") : NULL;
+  int pk2 = pn ? comp_class_index(c, pn) : -1;
+  if (pk2 < 0 || sp_streq(pn, "Object") || comp_const(c, pn)) return k;
+  /* (nor a constant the parent holds by that name, a value constant the
+     walk does not list: module Rhs; Leaf = Lhs::Leaf; end) */
+  const char *nm = nt_str(nt, id, "name");
+  int *cands, ncands = comp_const_tail_cands(c, nm, &cands);
+  int owned = comp_class_owned_const(c, pk2, nm, cands, ncands);
+  free(cands);
+  if (owned >= 0) return k;
+  return const_path_misses_member(c, id) ? -1 : k;
+}
 /* The class or module of the program a constant path names, by the
    membership walk above (A::B where two modules each nest a B, renamed
    apart): -1 when it names none, or one the walk cannot list. */
@@ -973,7 +1011,7 @@ int class_var_static_ci(Compiler *c, int node) {
     /* a constant, or a path to one by its leaf (`k = Outer::Foo`), as
        class_recv_static_ci reads a receiver */
     int ci = (vk == NK_ConstantReadNode || vk == NK_ConstantPathNode)
-             ? comp_class_index(c, nt_str(nt, val, "name")) : -1;
+             ? const_node_class_index(c, val) : -1;
     /* k = Struct.new(:a, :b): resolve to the anonymous struct class that
        register_structs synthesized for this write (keyed by def_node) */
     if (ci < 0 && is_struct_call(c, val)) {
@@ -994,7 +1032,7 @@ int class_recv_static_ci(Compiler *c, int node) {
   NodeKind k = nt_kind(nt, node);
   if ((k == NK_ConstantReadNode || k == NK_ConstantPathNode) &&
       nt_str(nt, node, "name"))
-    return comp_class_index(c, nt_str(nt, node, "name"));
+    return const_node_class_index(c, node);
   return class_var_static_ci(c, node);
 }
 
@@ -2379,7 +2417,7 @@ static int yvt_callee_index_scan(Compiler *c, int cid) {
     else if (cn && sp_streq(cn, "new") && nt_type(nt, crecv) &&
              (nt_kind(nt, crecv) == NK_ConstantReadNode ||
               nt_kind(nt, crecv) == NK_ConstantPathNode)) {
-      int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
+      int nci = const_node_class_index(c, crecv);
       if (nci >= 0) rmi = comp_method_in_chain(c, nci, "initialize", NULL);
     }
     /* `Klass.m { block }` / `Mod.m { block }` / `NS::Klass.m { block }`: a
@@ -2390,7 +2428,7 @@ static int yvt_callee_index_scan(Compiler *c, int cid) {
     else if (nt_type(nt, crecv) &&
              (nt_kind(nt, crecv) == NK_ConstantReadNode ||
               nt_kind(nt, crecv) == NK_ConstantPathNode)) {
-      int nci = comp_class_index(c, nt_str(nt, crecv, "name"));
+      int nci = const_node_class_index(c, crecv);
       if (nci >= 0) rmi = call_target(c, cid, nci, cn, CT_CMETHOD, NULL);
     }
   }
@@ -3741,7 +3779,7 @@ int send_blind_recv_owns(Compiler *c, int call, int recv, TyKind srt, const char
      come before Object's private top-level def */
   NodeKind rk = nt_kind(c->nt, recv);
   int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
-           ? comp_class_index(c, nt_str(c->nt, recv, "name")) : self_class_static_ci(c, recv);
+           ? const_node_class_index(c, recv) : self_class_static_ci(c, recv);
   if (ci >= 0 && call_target(c, call, ci, name, CT_CMETHOD, NULL) >= 0) return 1;
   if (srt == TY_POLY) {
     /* any class's chain, from the by-name lists while the chain memo can
@@ -5003,7 +5041,7 @@ static void si_by_name(SiFacts *f, int from, const char *nm, int *hit) {
 static void si_call_targets(Compiler *c, SiFacts *f, int from, int id, const char *nm, int r, TyKind rt, int *hit) {
   const NodeTable *nt = c->nt;
   if (r >= 0 && sp_streq(nm, "new") && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode)) {
-    int k = comp_class_index(c, nt_str(nt, r, "name"));
+    int k = const_node_class_index(c, r);
     if (k >= 0) {
       int mi = comp_method_in_chain(c, k, "initialize", NULL);
       if (mi >= 0) si_target(f, from, mi, hit);

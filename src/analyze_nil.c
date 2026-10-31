@@ -1653,7 +1653,7 @@ static void nf_calls(NF *f, int **yields, int *nyields) {
     if (mi < 0 && sp_streq(cn, "new")) {
       int k = -1;
       if (r >= 0 && (nt_kind(nt, r) == NK_ConstantReadNode || nt_kind(nt, r) == NK_ConstantPathNode))
-        k = comp_class_index(c, nt_str(nt, r, "name"));
+        k = const_node_class_index(c, r);
       else if (r < 0 || nt_kind(nt, r) == NK_SelfNode) {
         Scope *s = comp_scope_of(c, id);
         if (s && s->is_cmethod && s->class_id >= 0) k = s->class_id;

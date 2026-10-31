@@ -179,7 +179,7 @@ static int ic_class_receiver(Compiler *c, int id, int recv) {
   const Scope *sc = comp_scope_of(c, id);
   if (recv < 0 || nt_kind(nt, recv) == NK_SelfNode)
     return sc && sc->class_id >= 0 && sc->is_cmethod ? sc->class_id : -1;
-  if (nt_kind(nt, recv) == NK_ConstantReadNode) return comp_class_index(c, nt_str(nt, recv, "name"));
+  if (nt_kind(nt, recv) == NK_ConstantReadNode) return const_node_class_index(c, recv);
   if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") && is_class_query(nt_str(nt, recv, "name")) &&
       nt_ref(nt, recv, "arguments") < 0) {
     int r = nt_ref(nt, recv, "receiver");

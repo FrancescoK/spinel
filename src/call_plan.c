@@ -308,7 +308,7 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
   }
   int sci = self_class_static_ci(c, recv);   /* `self.class` naming one class */
   if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
-    int ci = sci >= 0 ? sci : comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = sci >= 0 ? sci : const_node_class_index(c, recv);
     int mi = ci >= 0 ? call_target(c, id, ci, name, CT_CMETHOD, NULL) : -1;
     /* a package's native_func, which the constant calls in C directly; its
        def is for the module reached as a value */
@@ -1556,7 +1556,7 @@ static int cplan_new_class(Compiler *c, int id, int *own) {
   int r = nt_ref(nt, id, "receiver");
   NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_NONE;
   *own = 0;
-  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) return comp_class_index(c, nt_str(nt, r, "name"));
+  if (k == NK_ConstantReadNode || k == NK_ConstantPathNode) return const_node_class_index(c, r);
   Scope *s = comp_scope_of(c, id);
   int ci = -1;
   if (s && s->is_cmethod && (r < 0 || k == NK_SelfNode)) ci = s->class_id;
@@ -1903,7 +1903,7 @@ static int cplan_module_args(Compiler *c, int id) {
   if (n < 1 || !av) return 0;
   for (int i = 0; i < n; i++) {
     NodeKind k = nt_kind(nt, av[i]);
-    int ci = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? comp_class_index(c, nt_str(nt, av[i], "name")) : -1;
+    int ci = k == NK_ConstantReadNode || k == NK_ConstantPathNode ? const_node_class_index(c, av[i]) : -1;
     if (ci < 0 || !comp_class_is_module(c, &c->classes[ci])) return 0;
   }
   return 1;
@@ -1985,7 +1985,7 @@ static int limit_exempt(Compiler *c, int id, int lx) {
     int recv = nt_ref(nt, id, "receiver");
     NodeKind rk = nt_kind(nt, recv);
     int ci = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode
-               ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+               ? const_node_class_index(c, recv) : -1;
     return ci >= 0 && call_target(c, id, ci, name, CT_CMETHOD, NULL) >= 0;
   }
   case LX_BINDING: {
@@ -2455,7 +2455,7 @@ static int cplan_eval_reaches_own(Compiler *c, int id, const char *name) {
   TyKind rt = comp_ntype(c, r);
   if (ty_is_object(rt)) return call_target(c, id, ty_object_class(rt), name, 0, NULL) >= 0;
   if (nt_kind(nt, r) == NK_ConstantReadNode) {
-    int k = comp_class_index(c, nt_str(nt, r, "name"));
+    int k = const_node_class_index(c, r);
     return k >= 0 && call_target(c, id, k, name, CT_CMETHOD, NULL) >= 0;
   }
   return 0;

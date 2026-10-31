@@ -902,7 +902,7 @@ static int multi_return_elem_nodes(Compiler *c, int value, const int **elems) {
   if (recv >= 0) {
     NodeKind rk = nt_kind(nt, recv);
     if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-      int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+      int cid = const_node_class_index(c, recv);
       if (cid < 0) return 0;
       mi = call_target(c, value, cid, mn, CT_CMETHOD, NULL);
     }
@@ -1497,7 +1497,7 @@ static int call_target_scope(Compiler *c, int id) {
   if (recv < 0) return comp_self_call_mi(c, id, nm);
   NodeKind rk = nt_kind(nt, recv);
   if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = const_node_class_index(c, recv);
     return ci >= 0 ? call_target(c, id, ci, nm, CT_CMETHOD, NULL) : -1;
   }
   TyKind rt = infer_type(c, recv);
@@ -5817,7 +5817,7 @@ int class_value_escapes(Compiler *c, int cid) {
             sp_streq(nt_str(nt, rc, "name"), "new")) {
           int rr = nt_ref(nt, rc, "receiver");
           if (rr >= 0 && (nt_kind(nt, rr) == NK_ConstantReadNode || nt_kind(nt, rr) == NK_ConstantPathNode))
-            from = comp_class_index(c, nt_str(nt, rr, "name"));
+            from = const_node_class_index(c, rr);
         }
         if (from < 0) { TyKind rt = infer_type(c, rc); if (ty_is_object(rt)) from = ty_object_class(rt); }
         if (from >= 0) {
@@ -5828,7 +5828,7 @@ int class_value_escapes(Compiler *c, int cid) {
       }
       else if (un && rc >= 0 && sp_streq(un, "superclass") &&
                (nt_kind(nt, rc) == NK_ConstantReadNode || nt_kind(nt, rc) == NK_ConstantPathNode)) {
-        int ci = comp_class_index(c, nt_str(nt, rc, "name"));
+        int ci = const_node_class_index(c, rc);
         if (ci >= 0) {
           for (int a = c->classes[ci].parent; a >= 0; a = c->classes[a].parent) esc[a] = 1;
           continue;
@@ -5946,8 +5946,8 @@ int dynamic_new_may_reach(Compiler *c, int call_id, int cid) {
     /* `K.superclass.new`: an ancestor of K (#5271) */
     else if (sp_streq(nt_str(nt, recv, "name"), "superclass") && of >= 0 &&
              (nt_kind(nt, of) == NK_ConstantReadNode || nt_kind(nt, of) == NK_ConstantPathNode) &&
-             comp_class_index(c, nt_str(nt, of, "name")) >= 0) {
-      for (int a = c->classes[comp_class_index(c, nt_str(nt, of, "name"))].parent; a >= 0; a = c->classes[a].parent)
+             const_node_class_index(c, of) >= 0) {
+      for (int a = c->classes[const_node_class_index(c, of)].parent; a >= 0; a = c->classes[a].parent)
         if (a == cid) return 1;
       return 0;
     }
@@ -11215,7 +11215,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
       if (lci >= 0 && !c->classes[lci].is_struct) lci = -1;
       if (((rty_k == NK_ConstantReadNode ||
                    rty_k == NK_ConstantPathNode)) || lci >= 0) {
-        int ci = lci >= 0 ? lci : comp_class_index(c, nt_str(nt, recv, "name"));
+        int ci = lci >= 0 ? lci : const_node_class_index(c, recv);
         if (ci >= 0) {
           if (sp_streq(name, "new") && c->classes[ci].is_struct) {
             changed |= struct_new_types_members(c, id, ci);
@@ -12472,7 +12472,7 @@ static int block_reach(Compiler *c, int si, const BlockSig *s, TyKind *pos,
     int t = -1, byname = 0;
     if (recv < 0) t = comp_self_call_mi(c, f, fn);
     else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
-      int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+      int ci = const_node_class_index(c, recv);
       if (ci >= 0) t = call_target(c, f, ci, fn, CT_CMETHOD, NULL);
       if (ci >= 0 && t < 0 && sp_streq(fn, "new")) t = comp_method_in_chain(c, ci, "initialize", NULL);
     }
@@ -15855,7 +15855,7 @@ static int new_block_initialize(Compiler *c, int id, int *several) {
 static int const_recv_cmethod_mi(Compiler *c, int call, int recv, const char *name) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || !name || nt_kind(nt, recv) != NK_ConstantReadNode || !nt_str(nt, recv, "name")) return -1;
-  int cid = comp_class_index(c, nt_str(nt, recv, "name"));
+  int cid = const_node_class_index(c, recv);
   return cid >= 0 ? call_target(c, call, cid, name, CT_CMETHOD, NULL) : -1;
 }
 
@@ -16930,7 +16930,7 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
       else if (infer_type(c, recv) == TY_STRING || infer_type(c, recv) == TY_STRBUF) ymi = cplan_user_fresh(c, id)->mi;
       else if (sp_streq(name, "new") && (nt_kind(nt, recv) == NK_ConstantReadNode ||
                                          nt_kind(nt, recv) == NK_ConstantPathNode)) {
-        int cid = nt_str(nt, recv, "name") ? comp_class_index(c, nt_str(nt, recv, "name")) : -1;
+        int cid = nt_str(nt, recv, "name") ? const_node_class_index(c, recv) : -1;
         if (cid >= 0) ymi = comp_method_in_chain(c, cid, "initialize", NULL);
       }
       else if (ty_is_object(infer_type(c, recv))) ymi = call_target(c, id, ty_object_class(infer_type(c, recv)), name, 0, NULL);
@@ -18437,7 +18437,7 @@ static int arr_src_param(Compiler *c, Scope *sc, const char *nm, TyKind seed, in
         if (sp_streq(n2, "send") || sp_streq(n2, "__send__") || sp_streq(n2, "public_send")) return 1;
         continue;
       }
-      int k = comp_class_index(c, nt_str(nt, r, "name"));
+      int k = const_node_class_index(c, r);
       if (k < 0 || (k != sc->class_id && !is_descendant(c, k, sc->class_id))) continue;
     }
     else if (!sp_streq(n2, sc->name)) {
@@ -19555,7 +19555,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
     if (rk == NK_SelfNode || r < 0) { Scope *ss = comp_scope_of(c, id); class_arm = ss && ss->is_cmethod; }
     else if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)
-      class_arm = nt_str(nt, r, "name") && comp_class_index(c, nt_str(nt, r, "name")) >= 0;
+      class_arm = nt_str(nt, r, "name") && const_node_class_index(c, r) >= 0;
   }
   if (k0 == NK_CallNode && nm && names[0] == nm && !class_arm && nt_int(nt, id, "dyn_arm", 0) > 0) {
     snprintf(arm_name, sizeof arm_name, "\x02%s", nm);

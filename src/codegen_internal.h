@@ -1209,6 +1209,8 @@ void emit_expr(Compiler *c, int id, Buf *b);
    being defined nowhere the program or the runtime can see? A rescue
    operand is read so when an exception reaches its clause. */
 int const_read_raises(Compiler *c, int id);
+/* The constant path as the program wrote it, for a NameError (codegen_expr.c) */
+void const_path_written(const NodeTable *nt, int id, char *out, size_t cap);
 void emit_constant_slot(Compiler *c, int id, Buf *b);
 void emit_expr_slot(Compiler *c, int node, TyKind slot, Buf *b);
 void emit_tail_value(Compiler *c, int node, Buf *b);

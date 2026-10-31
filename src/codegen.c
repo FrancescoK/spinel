@@ -2109,7 +2109,7 @@ int call_answers_no_value(Compiler *c, int node) {
       cid = self->class_id;
   }
   else if (nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode) {
-    int ci = comp_class_index(c, nt_str(nt, recv, "name"));
+    int ci = const_node_class_index(c, recv);
     if (ci >= 0) mi = call_target(c, node, ci, nm, CT_CMETHOD, NULL);
   }
   else if (ty_is_object(comp_ntype(c, recv))) {
@@ -18460,7 +18460,7 @@ static void scan_prologue_features(Compiler *c) {
     /* and #subclasses on a Class value no constant names */
     if (nrv >= 0 && comp_ntype(c, nrv) == TY_CLASS && nnm && sp_streq(nnm, "subclasses") &&
         (nt_kind(c->nt, nrv) != NK_ConstantReadNode ||
-         comp_class_index(c, nt_str(c->nt, nrv, "name")) < 0)) { g_gen_cls_answers = 1; break; }
+         const_node_class_index(c, nrv) < 0)) { g_gen_cls_answers = 1; break; }
     if (nrv < 0 || (repr_of(c, nrv).kind != RK_BOXED && comp_ntype(c, nrv) != TY_UNKNOWN)) continue;
     if (nnm && (sp_streq(nnm, "subclasses") || sp_streq(nnm, "allocate") ||
                 sp_streq(nnm, "members") || sp_streq(nnm, "keyword_init?")))

@@ -272,11 +272,11 @@ void emit_puts_one(Compiler *c, int arg, Buf *b, int indent) {
     buf_puts(b, "(void)("); emit_expr(c, arg, b); buf_puts(b, "); putchar('\\n');  /* puts nil */\n");
   }
   else if (nt_kind(c->nt, arg) == NK_ConstantReadNode &&
-           nt_str(c->nt, arg, "name") && comp_class_index(c, nt_str(c->nt, arg, "name")) >= 0) {
+           nt_str(c->nt, arg, "name") && const_node_class_index(c, arg) >= 0) {
     /* `puts SomeClass` -- a bare class constant renders its name, or what
        its own class method to_s answers */
     emit_const_read_stmt(c, arg, b, 0);
-    int pci = comp_class_index(c, nt_str(c->nt, arg, "name"));
+    int pci = const_node_class_index(c, arg);
     if (cls_user_display_mi(c, pci, "to_s") >= 0)
       buf_printf(b, "sp_puts_line(sp_class_to_s_disp((sp_Class){%d, NULL}));\n", pci);
     else buf_printf(b, "puts(\"%s\");\n", nt_str(c->nt, arg, "name"));
@@ -17385,7 +17385,7 @@ static void emit_class_body_stmts(Compiler *c, int ci, int body, Buf *b, int ind
       int sx = nt_ref(nt, stmts[k], "expression");
       NodeKind sxk = sx >= 0 ? nt_kind(nt, sx) : NK_NilNode;
       int named = (sxk == NK_ConstantReadNode || sxk == NK_ConstantPathNode) &&
-                  comp_class_index(c, nt_str(nt, sx, "name")) >= 0;
+                  const_node_class_index(c, sx) >= 0;
       if (sxk == NK_SelfNode || named || sg_activates_ci(c, stmts[k]) >= 0)
         emit_stmt_or_defer(c, stmts[k], b, indent);
       continue;
