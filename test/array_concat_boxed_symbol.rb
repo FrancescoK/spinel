@@ -1,6 +1,7 @@
 # spinel: gc-stress
-# A boxed Symbol Array stays an Array read, including an unsnapshotted last
-# operand. The general receiver and its identity survive either result use.
+# This boxed PolyArray contains a Symbol; it does not use the Symbol Array
+# tag. test/concat-repr/symbol_bridge.rb covers that native representation.
+# The general receiver and its identity survive either result use.
 x = [[:s], 0].first
 a = [1, "s"]
 a.concat(x)
