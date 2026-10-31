@@ -1,0 +1,6 @@
+9
+2
+4
+3
+NameError: uninitialized constant String::Foo
+NameError: uninitialized constant Comparable::Bar

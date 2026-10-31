@@ -479,13 +479,20 @@ static void builtin_given_build(Compiler *c, struct BuiltinGiven *g) {
   if (!held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   for (int j = 0; j < c->nclasses; j++)
     if (c->classes[j].is_builtin_const && c->classes[j].name && !is_object_class_name(c->classes[j].name)) held[j] = 1;
-  /* a mixin the class table did not record (called from a method body, with
-     a module held in a variable): a module it names counts as mixed into
-     every builtin, and a computed one gives any name, as a write through a
-     dynamic parent does */
+  /* a mixin the class table did not record, wherever it stands (a method
+     body, a condition, a block, the top level, which is Object's): a module
+     it names counts as mixed into every builtin, and a computed one gives
+     any name, as a write through a dynamic parent does. The table records
+     the calls the load phase applies (LrMixin.applied) */
+  char *rec = calloc((size_t)(nt->count > 0 ? nt->count : 1), 1);
+  if (!rec) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int j = 0; j < c->nclasses; j++) {
+    int nm = 0;
+    const LrMixin *mx = elab_class_mixins(c, j, &nm);
+    for (int i = 0; i < nm; i++) if (mx[i].applied && mx[i].node >= 0 && mx[i].node < nt->count) rec[mx[i].node] = 1;
+  }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
-    const Scope *sc = is_mixin_call(nt_str(nt, id, "name")) ? comp_scope_of(c, id) : NULL;
-    int a = sc && sc->name ? nt_ref(nt, id, "arguments") : -1, an = 0;
+    int a = !rec[id] && is_mixin_call(nt_str(nt, id, "name")) ? nt_ref(nt, id, "arguments") : -1, an = 0;
     const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
     for (int i = 0; i < an; i++) {
       NodeKind ak = nt_kind(nt, av[i]);
@@ -537,6 +544,7 @@ static void builtin_given_build(Compiler *c, struct BuiltinGiven *g) {
       if (!qn || qi < 0 || held[qi] || c->classes[qi].is_builtin_const) anh_add(&g->names, g_cw.names.key[i]);
     }
   }
+  free(rec);
   free(held);
 }
 /* stale when the tree, the class table, a mixin recorded after the classes
