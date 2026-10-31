@@ -283,9 +283,10 @@ void sp_alloc_report_tag(void *scan, const char *name);
    adopts the handle (sp_String_adopt) instead of copying the bytes. */
 void *sp_gc_alloc(size_t sz, void (*fin)(void *), void (*scn)(void *));
 void *sp_gc_alloc_nogc(size_t sz, void (*fin)(void *), void (*scn)(void *));
-static inline char *sp_str_alloc_born(size_t len, int nogc) {
+void *sp_gc_alloc_born(size_t sz);
+static SP_ALWAYS_INLINE inline char *sp_str_alloc_born(size_t len, int nogc) {
   size_t total = sizeof(sp_str_hdr) + 1 + len + 1;
-  struct sp_String_s *r = (struct sp_String_s *)(nogc ? sp_gc_alloc_nogc : sp_gc_alloc)(sizeof(struct sp_String_s) + total, NULL, NULL);
+  struct sp_String_s *r = (struct sp_String_s *)(nogc ? sp_gc_alloc_nogc(sizeof(struct sp_String_s) + total, NULL, NULL) : sp_gc_alloc_born(sizeof(struct sp_String_s) + total));
   sp_str_hdr *h = (sp_str_hdr *)(void *)(r + 1);
   h->next = (sp_str_hdr *)(void *)r;
   h->size = (uint32_t)total;

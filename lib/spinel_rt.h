@@ -22878,6 +22878,24 @@ static sp_sym sp_sym_intern_n(const char *s, size_t n) { (void)s; (void)n; retur
    literal its own site's). The runtime's own files do not see these (they
    spell the element macros of sp_types.h); the generated TU does. */
 static inline sp_String *sp_strface_h_self(sp_String *h) { return h; }
+/* Bytes asked for as a handle are most often a String just made (an
+   interpolation, a builtin's answer, marker 0xfe): its handle is the one it
+   was born in, which the slot adopts here, ahead of sp_String_new_shared's
+   other cases; at -Oz that call and the adoption were not inlined, and an
+   interpolated String paid both calls (#10651) */
+static SP_ALWAYS_INLINE inline sp_String *sp_strface_h_bytes(const char *s) {
+  if (s && ((const unsigned char *)s)[-1] == 0xfe) {
+    sp_str_hdr *h = ((sp_str_hdr *)(void *)(s - 1)) - 1;
+    sp_String *o = (sp_String *)(void *)h->next;
+    if (o && (const char *)(o + 1) == (const char *)h) {
+      o->len = (int64_t)h->len;
+      o->binary = (h->size & SP_STR_SIZE_BINARY) != 0;
+      ((unsigned char *)s)[-1] = 0xfd;
+      return o;
+    }
+  }
+  return sp_String_new_shared(s);
+}
 static inline const char *sp_strface_b_self(const char *s) { return s; }
 static inline const char *sp_strface_b_of(sp_String *h) { return h ? h->data : NULL; }
 static inline const char *sp_strface_b_copy(sp_String *h) { return sp_strbuf_read_own(h); }
@@ -22926,7 +22944,7 @@ static inline sp_RbVal sp_strface_box_self(sp_RbVal v) { return v; }
    runtime's functions, each of which takes the one face its signature says
    (a String argument is its bytes; the runtime finds a payload view's
    handle itself, sp_String_new_shared, sp_box_str) */
-#define SP_STR_HDL(x) SP_ONE_FACE(x, sp_strface_h_self, sp_String_new_shared, sp_strface_zero_h, sp_strface_h_box)
+#define SP_STR_HDL(x) SP_ONE_FACE(x, sp_strface_h_self, sp_strface_h_bytes, sp_strface_zero_h, sp_strface_h_box)
 #define SP_STR_BOX(x) SP_ONE_FACE(x, sp_strface_box_h, sp_strface_box_new, sp_strface_zero_box, sp_strface_box_self)
 /* ...and a String of either face as the face slot `dst` has, where the
    emitter of `dst = v` knows neither (a block parameter a typed walk binds) */
