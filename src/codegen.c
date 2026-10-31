@@ -18268,6 +18268,21 @@ static int scan_ret_leaf_polyish(const VpLeaf *leaf, void *ud) {
   TyKind t = c->ntype[leaf->node];
   return t == TY_POLY || ty_is_array(t) || ty_is_hash(t);
 }
+/* Does the read of a thread-family constant (node i) run no thread: it sits
+   in a method codegen does not write out (one nothing reaches,
+   iter_scope_emitted), or it names the class or module a body defines
+   (`class Thread` reopening it, a definition rather than a use)? *par is
+   the parent map, made once. */
+static int thread_read_idle(Compiler *c, int **par, int i) {
+  const NodeTable *nt = c->nt;
+  int si = i < c->node_cap ? c->nscope[i] : 0;
+  const Scope *sc = si > 0 && si < c->nscopes ? &c->scopes[si] : NULL;
+  if (sc && sc->def_node >= 0 && sc->name && !iter_scope_emitted(c, si)) return 1;
+  if (!*par) *par = du_parent_map(nt);
+  int p = (*par)[i];
+  return p >= 0 && (nt_kind(nt, p) == NK_ClassNode || nt_kind(nt, p) == NK_ModuleNode) &&
+         nt_ref(nt, p, "constant_path") == i;
+}
 static void scan_prologue_features(Compiler *c) {
   const NodeTable *nt = c->nt;
   g_uses_symbols = (c->nsymbols > 0);
@@ -18347,11 +18362,11 @@ static void scan_prologue_features(Compiler *c) {
       /* a program that only reads and writes Thread.current's storage runs
          on the one main thread the single-threaded runtime has as well: it
          keeps that runtime (#10210: the threaded one cost every collection
-         and, with a trap, a scheduler) */
-      else if (sp_streq(nm, "Thread") && thread_current_only(nt, &cpar, i)) g_uses_thread_current = 1;
-      else if (sp_streq(nm, "Thread") || sp_streq(nm, "Queue") || sp_streq(nm, "SizedQueue") ||
-               sp_streq(nm, "Mutex") || sp_streq(nm, "Monitor") ||
-               sp_streq(nm, "ConditionVariable")) g_uses_threads = 1;
+         and, with a trap, a scheduler). A thread named only in a method
+         nothing reaches never runs: the program has none, and keeps the
+         default SIGINT and SIGTERM handlers a threaded one gives up. */
+      else if (is_thread_const_name(nm) && !thread_read_idle(c, &cpar, i) && thread_current_only(nt, &cpar, i)) g_uses_thread_current = 1;
+      else if (is_threading_name(nm) && !thread_read_idle(c, &cpar, i)) g_uses_threads = 1;
       else if (sp_streq(nm, "ARGV") || sp_streq(nm, "ARGF")) g_uses_argv = 1;
       /* builtins/object_space.rb, spliced for a program that defines finalizers */
       else if (sp_streq(nm, "Finalizers__")) g_uses_finalizers = 1;

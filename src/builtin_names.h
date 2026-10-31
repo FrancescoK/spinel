@@ -451,6 +451,9 @@ int is_load_path_global(const char *n); /* $: $-I $LOAD_PATH */
 int is_range_or_time_class(const char *n); /* Range Time */
 int is_numeric_class_name(const char *n); /* Float Integer */
 int is_queue_class_name(const char *n); /* Queue SizedQueue */
+int is_thread_class_name(const char *n); /* Queue SizedQueue Mutex ConditionVariable */
+int is_thread_const_name(const char *n); /* Thread */
+int is_threading_name(const char *n); /* Thread Monitor and is_thread_class_name's */
 int is_array_or_object_class(const char *n); /* Array Object */
 int is_array_hash_or_object_class(const char *n); /* Array Hash Object */
 

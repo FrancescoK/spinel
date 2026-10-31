@@ -1272,6 +1272,19 @@ int is_queue_class_name(const char *n) {
   return sp_streq(n, "Queue") || sp_streq(n, "SizedQueue");
 }
 
+/* The four builtin classes that also live under Thread (`Thread::Mutex`). */
+int is_thread_class_name(const char *n) {
+  return is_queue_class_name(n) || sp_streq(n, "Mutex") || sp_streq(n, "ConditionVariable");
+}
+
+int is_thread_const_name(const char *n) { return n && sp_streq(n, "Thread"); }
+
+/* A constant whose use makes the program threaded: Thread, Monitor and the
+   classes under Thread. */
+int is_threading_name(const char *n) {
+  return is_thread_const_name(n) || sp_streq(n, "Monitor") || is_thread_class_name(n);
+}
+
 int is_standard_output_global(const char *n) {
   return sp_streq(n, "$stdout") || sp_streq(n, "$stderr");
 }

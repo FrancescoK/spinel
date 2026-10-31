@@ -1,0 +1,5 @@
+42
+rescued Interrupt (INT)
+ensure ran
+[SignalException, "SIGTERM", 15]
+done

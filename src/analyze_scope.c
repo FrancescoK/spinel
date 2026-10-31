@@ -1231,12 +1231,6 @@ static void sclass_walk_stmt(Compiler *c, int s, const WalkCtx *w, int target_cl
   sclass_walk_child(c, s, nt_ref(nt, s, "else_clause"), w, target_class, depth + 1, reopen_recv, reopen_class);
 }
 
-/* The four builtin classes that also live under Thread (`Thread::Mutex`). */
-static int is_thread_class_name(const char *n) {
-  return sp_streq(n, "Queue") || sp_streq(n, "SizedQueue") ||
-         sp_streq(n, "Mutex") || sp_streq(n, "ConditionVariable");
-}
-
 /* The name of the C-built class that `class cname` would reopen, else NULL.
    These classes have C names of their own, so a reopening would make a second,
    empty class (or drop the methods). A bare name reopens at the top level, in
