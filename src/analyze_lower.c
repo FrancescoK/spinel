@@ -67,6 +67,8 @@ typedef struct {
   const char *shape;                /* the shape it eliminates, for the check's report */
   LowerGate *gate;                  /* NULL: none. Asked once at the start of a run; 0 skips it. */
   int fix;                          /* 0: one run. n: runs again while a run changed the table, n runs at most */
+  LowerFn *span;                    /* LF_PROGRAM: its form over a span of the walk's (lower_span_ids), run as
+                                       the splice is made, before the walk registers what it holds; NULL: none */
 } Lowering;
 
 /* In the order the stage runs the rows; a row run twice (nil_block_arg) is
@@ -167,7 +169,8 @@ static const Lowering lowerings[LW__COUNT] = {
   [LW_NAME_ANON_BLOCK_KWREST] = { "name_anon_block_kwrest", 0, { NK_BlockNode, NK_LambdaNode },
     name_anon_block_kwrest_at, name_anon_block_kwrest_left, "an anonymous `**` block parameter" },
   [LW_RENAME_SHADOWING_BLOCK_PARAMS] = { "rename_shadowing_block_params", LF_PROGRAM, { NK_NONE },
-    rename_shadowing_block_params_at, NULL, "a block parameter that shadows a local" },
+    rename_shadowing_block_params_at, NULL, "a block parameter that shadows a local", NULL, 0,
+    rename_shadowing_block_params_span },
   [LW_SYM_TO_PROC_CALL] = { "desugar_sym_to_proc_call", 0, { NK_CallNode },
     desugar_sym_to_proc_call_at, NULL, "`:m.to_proc.call(r, a)`" },
   [LW_ENUM_CHAIN_SHAPES] = { "desugar_enum_chain_shapes", 0, { NK_CallNode },
@@ -511,6 +514,8 @@ static void lower_release(LowerCtx *lc) {
   lc->span = NULL;
   lower_scratch_reset(lc);
   free(lc->parent);
+  free(lc->later);
+  blkp_step_free(lc->blkp);
 }
 
 /* ---- spans ---- */
@@ -536,6 +541,34 @@ static void lower_span_collect(NodeTable *nt, LowerSpan *s) {
   qsort(s->nodes, (size_t)s->nnodes, sizeof(int), int_cmp);
 }
 
+int *lower_span_ids(const LowerCtx *lc, int *n) {
+  const LowerSpan *s = lc->span;
+  int m = s->nnodes + (lc->n0 > s->count0 ? lc->n0 - s->count0 : 0);
+  int *ids = malloc(sizeof(int) * (size_t)(m > 0 ? m : 1));
+  if (!ids) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(ids, s->nodes, sizeof(int) * (size_t)s->nnodes);
+  for (int id = s->count0; id < lc->n0; id++) ids[s->nnodes + id - s->count0] = id;
+  *n = m;
+  return ids;
+}
+
+/* A row that visits a span's owner, in a span of the walk's: left to
+   lower_settle, which visits each owner once for all the spans of its body
+   (the walk splices one call at a time, and the visit takes the whole
+   body). A pair already noted for the row's last owner is not noted again. */
+static void lower_later(LowerCtx *lc, int row, int owner) {
+  int k = lc->nlater - 1;
+  while (k >= 0 && lc->later[2 * k] != row) k--;
+  if (k >= 0 && lc->later[2 * k + 1] == owner) return;
+  if (lc->nlater == lc->clater) {
+    lc->clater = lc->clater ? lc->clater * 2 : 16;
+    lc->later = realloc(lc->later, sizeof(int) * 2 * (size_t)lc->clater);
+    if (!lc->later) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  lc->later[2 * lc->nlater] = row;
+  lc->later[2 * lc->nlater++ + 1] = owner;
+}
+
 /* A row's sites in the span: the frame's owner where the row enters at its
    kind (only the spliced statements, for a row that enters at statements;
    each splice's, as a scope of its own, for a row that names a scope's
@@ -553,6 +586,7 @@ static int lower_span_sites(Compiler *c, LowerCtx *lc, const Lowering *w) {
         for (j = i + 1; j < s->nstmts && s->scopes[j] == s->scopes[i]; j++) {}
         n += lower_scope(c, lc, w, s->owner, s->scopes[i], s->stmts + i, j - i, 0, NULL);
       }
+    else if (lc->span_now) lower_later(lc, (int)(w - lowerings), s->owner);
     else n += lower_site(c, lc, w, s->owner, 0, NULL);
   }
   for (int i = 0; i < s->nnodes; i++)
@@ -582,9 +616,17 @@ int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts,
   for (int row = 0; row < LW__COUNT; row++) {
     if (!lc->ran[row]) continue;
     const Lowering *w = &lowerings[row];
-    if (w->flags & LF_PROGRAM) { lc->settle[row] = 1; continue; }
+    if (w->flags & LF_PROGRAM) lc->settle[row] = 1;
+    if ((w->flags & LF_PROGRAM) && !(lc->span_now && w->span)) continue;
     const char *was = nt_set_pass(nt, w->name);
-    int r = lower_pass(c, lc, w);
+    int r;
+    if (w->flags & LF_PROGRAM) {   /* its span form: the span's nodes, the count at its entry */
+      lc->n0 = nt->count;
+      lower_scratch_reset(lc);
+      r = w->span(c, lc, -1);
+      comp_grow_node_arrays(c);
+    }
+    else r = lower_pass(c, lc, w);
     lc->rewrote[row] += r;
     rewrote += r;
     nt_set_pass(nt, was);
@@ -598,21 +640,44 @@ int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts,
 
 /* The end of a step that lowered spans: each row they left runs once more
    over the program, in the order of the table, and the answers the spans
-   kept are dropped */
+   kept are dropped. A row left an owner of the walk's spans visits it once
+   (lower_later). A row with a span form has already run on the walk's
+   spans, before the walk registered what they hold; under
+   SPINEL_LOWER_CHECK its run here must change nothing. */
 void lower_settle(Compiler *c, LowerCtx *lc) {
   if (!lc->span_step) return;
+  NodeTable *nt = (NodeTable *)c->nt;
+  int now = lc->span_now;
   lc->span_step = 0;
+  lc->span_now = 0;
   lower_scratch_reset(lc);
+  blkp_step_free(lc->blkp);
+  lc->blkp = NULL;
   for (int row = 0; row < LW__COUNT; row++) {
     free(lc->span_ids[row]);
     lc->span_ids[row] = NULL;
     lc->span_gate[row] = 0;
   }
   for (int row = 0; row < LW__COUNT; row++) {
+    for (int k = 0; k < lc->nlater; k++) {
+      if (lc->later[2 * k] != row) continue;
+      const char *was = nt_set_pass(nt, lowerings[row].name);
+      lc->n0 = nt->count;
+      lower_scratch_reset(lc);
+      lc->rewrote[row] += lower_site(c, lc, &lowerings[row], lc->later[2 * k + 1], 0, NULL);
+      comp_grow_node_arrays(c);
+      nt_set_pass(nt, was);
+    }
     if (!lc->settle[row]) continue;
     lc->settle[row] = 0;
+    unsigned long long h = lc->check && now && lowerings[row].span ? nt_content_hash(nt) : 0;
     lower_run(c, lc, row);
+    if (h && nt_content_hash(nt) != h)
+      lower_say(lc, lowerings[row].name, "its run at the end of the walk changed the table, after the walk registered what its spans hold");
   }
+  free(lc->later);
+  lc->later = NULL;
+  lc->nlater = lc->clater = 0;
 }
 
 int lower_row_once(Compiler *c, int row) {

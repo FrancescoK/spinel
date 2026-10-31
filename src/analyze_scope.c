@@ -1888,13 +1888,17 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
       walk_child(c, r, rw);
     }
     for (int i = 0; pass == 1 && i < na; i++) {
-      int n = 0;
-      const int *ids = nt_arr_at(c->nt, id, i, &n);
-      for (int j = 0; j < n; j++) {
-        if (ids[j] < 0) continue;
+      /* read again at each step: a form splices into the array, and the
+         statements it puts at j + 1.. are the ones reached next */
+      for (int j = 0;; j++) {
+        int n = 0;
+        const int *ids = nt_arr_at(c->nt, id, i, &n);
+        if (j >= n) break;
+        int ch = ids[j];
+        if (ch < 0) continue;
         WalkCtx aw = cw;
-        aw.pos = elab_child(c->nt, id, ids[j], &w.pos);
-        walk_child(c, ids[j], aw);
+        aw.pos = elab_child(c->nt, id, ch, &w.pos);
+        walk_child(c, ch, aw);
       }
     }
   }

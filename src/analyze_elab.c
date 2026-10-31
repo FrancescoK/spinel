@@ -110,6 +110,7 @@ struct LoadRecord {
   int recorded;
   int frontier;              /* the statements recorded so far, in seq order: while the walk records, a query at p is complete for p.seq <= frontier (lr_ready) */
   struct ElabRec *rec;       /* the record's state while elab_program makes it */
+  struct HostStep *host;     /* ...and the host a walk-time form splices through (elab_walk_host) */
   struct LrHist *hist; int nhist, chist, *hhead;
   struct LrClass *cls; int ncls;
   /* [ncls] the classes the record holds: those the walk made and the class
@@ -435,6 +436,30 @@ void elab_walk_leave(Compiler *c, int e) {
   if (e >= 0) c->lrec->st[e].last = c->lrec->nst - 1;
 }
 
+/* The host a form the registration's walk runs splices through, while
+   the walk runs; NULL otherwise */
+struct HostStep *elab_walk_host(Compiler *c) {
+  LoadRecord *r = c->lrec;
+  return r && r->walk ? r->host : NULL;
+}
+
+/* A form at statement node old, which the walk has entered and has not
+   passed (nothing recorded of it yet), spliced node with in its place:
+   with takes old's statement, at old's point; the statements spliced
+   after it join as the walk reaches them, at its position. 0 when old is
+   no such statement. */
+int elab_walk_replace(Compiler *c, int old, int with) {
+  LoadRecord *r = c->lrec;
+  if (!r || !r->walk || old < 0 || old >= r->n || with < 0) return 0;
+  int k = r->at[old];
+  if (k < r->frontier || k >= r->nst || r->st[k].node != old) return 0;
+  lr_fit(r, c->nt->count);
+  r->st[k].node = with;
+  r->at[with] = k;
+  r->at[old] = -2;
+  return 1;
+}
+
 /* The statements under node id, which stands at pos, that the scope walk
    does not enter (a part it handles wholesale), joined as elab_walk joins
    them */
@@ -515,23 +540,30 @@ static void elab_file(ElabWalk *w, int f, const ElabPos *site) {
   w->r->st[e].last = e;
   w->r->st[e].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
   if (st >= 0) w->r->at[st] = e;
-  const int *v = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
-  for (int k = 0; k < n; k++) {
-    if (v[k] < 0 || nt_kind(nt, v[k]) != NK_PreExecutionNode) continue;
-    if (w->reg) walk_scope_stmt(c, v[k], sc, at);
-    else elab_walk(w, v[k], at);
+  /* the list is read again at each step: a form the walk runs splices
+     into it, and what it puts after a statement is reached next */
+  for (int k = 0;; k++) {
+    const int *vs = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+    if (!vs || k >= n) break;
+    int v = vs[k];
+    if (v < 0 || nt_kind(nt, v) != NK_PreExecutionNode) continue;
+    if (w->reg) walk_scope_stmt(c, v, sc, at);
+    else elab_walk(w, v, at);
   }
-  for (int k = 0; k < n; k++) {
-    if (v[k] < 0) continue;
-    if (nt_kind(nt, v[k]) != NK_PreExecutionNode) {
-      int seen = w->r->at[v[k]] != -2;   /* a statement two lists share joins once */
-      if (w->reg) walk_scope_stmt(c, v[k], sc, at);
+  for (int k = 0;; k++) {
+    const int *vs = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+    if (!vs || k >= n) break;
+    int v = vs[k];
+    if (v < 0) continue;
+    if (nt_kind(nt, v) != NK_PreExecutionNode) {
+      int seen = w->r->at[v] != -2;   /* a statement two lists share joins once */
+      if (w->reg) walk_scope_stmt(c, v, sc, at);
       if (seen) continue;
-      if (!w->reg) elab_walk(w, v[k], at);
+      if (!w->reg) elab_walk(w, v, at);
     }
-    int s = w->r->at[v[k]];
+    int s = w->r->at[v];
     if (s >= 0 && w->r->st[s].top == s) w->r->st[s].rank = w->region == 0 ? (w->share ? w->rank : w->rank++) : -1;
-    int t = prog_ordered_load(c, v[k]);
+    int t = prog_ordered_load(c, v);
     if (t >= 0 && !w->entered[t]) elab_file(w, t, site);
   }
 }
@@ -1982,8 +2014,10 @@ static void lr_later_settle(Compiler *c) {
    method names, the builtins it reopens) and the classes registration has
    made so far; a reference to a builtin before the header that makes its
    class waits for it (lr_later). Check mode makes the record again after
-   the walk and reports where the two differ. */
-void elab_program(Compiler *c) {
+   the walk and reports where the two differ. A form the walk runs splices
+   through host h (elab_walk_host), which lowers each splice at once: the
+   walk reaches its statements next. */
+void elab_program(Compiler *c, struct HostStep *h) {
   LoadRecord *r = lr_get(c);
   int nroots = nt_nroots(c->nt);
   ElabRec x = { c, r, NULL, NULL, NULL, malloc((size_t)nroots), 0 };
@@ -1995,7 +2029,11 @@ void elab_program(Compiler *c) {
   lr_names_take(c);
   lr_reopens_take(c);
   r->rec = &x;
+  r->host = h;
+  h->now = 1;
   elab_points_walk(c, 1);
+  h->now = 0;
+  r->host = NULL;
   double t0 = sp_timing_now();   /* the record's own cost after the walk (the map's is an_elab_points) */
   lr_record_upto(r, r->nst);
   lr_settle_regions(c);
@@ -5016,7 +5054,9 @@ void elab_free(Compiler *c) {
    point: the static class_eval text in it is grafted (sce_span), and
    at the end of the step its statements are lowered by every row that has
    run (lower_span), then the rows a span cannot be asked of run once over
-   the program (lower_settle). Nothing here rebuilds anything of the whole
+   the program (lower_settle). Under the registration's walk (now), which
+   reaches spliced statements next, each splice is lowered as it is made,
+   and the step ends with the walk. Nothing here rebuilds anything of the whole
    program per splice: what the graft asks of the program is asked once per
    step (HostStep), and a span is lowered by a walk of its own nodes. */
 
@@ -5032,6 +5072,15 @@ int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, co
   n = sce_span(c, h, owner, body, at, n, locals, gone);
   int bn = 0;
   const int *st = nt_arr(c->nt, body, "body", &bn);
+  if (h->now && at + n <= bn) {   /* the walk reaches them next: lowered now, as one span */
+    int *sp = malloc(sizeof(int) * (size_t)(2 * n + 1));   /* a row may replace the body's array */
+    if (!sp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    for (int i = 0; i < n; i++) { sp[i] = st[at + i]; sp[n + i] = st[at]; }
+    h->lc->span_now = 1;
+    lower_span(c, h->lc, owner, body, sp, sp + n, n);
+    free(sp);
+    return n;
+  }
   for (int i = at; i < at + n && i < bn; i++) {
     if (h->nspans + 4 > h->cspans) {
       h->cspans = h->cspans ? h->cspans * 2 : 64;

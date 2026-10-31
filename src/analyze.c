@@ -6446,38 +6446,98 @@ int name_anon_block_kwrest_at(Compiler *c, LowerCtx *lc, int id) {
   return 1;
 }
 
-int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
+/* What the pass knows of the program: each block's owning call (the node
+   whose "block" ref it is), a generation stamp per node for "inside this
+   block's body", and the program's local writes and parameters indexed by
+   name, all over the nodes [0, upto). blkp_step_extend takes in the nodes
+   made since, so the walk's spans (rename_shadowing_block_params_span) ask
+   the program without rebuilding it per splice. */
+typedef struct BlkpStep {
+  int *owner, *inbody, *wp;
+  int wpn, cap, upto, gen;
+  BlkpIdx ix;
+} BlkpStep;
+
+static void blkp_step_extend(Compiler *c, BlkpStep *st) {
   const NodeTable *nt = c->nt;
-  int n = nt->count;
-  /* Reverse map block-node -> owning node (the node whose "block" ref is it),
-     built in one O(n) pass. Finding a block's owner by scanning all n nodes
-     per block made this whole pass O(blocks*n) on large inputs (a flattened
-     runtime is ~500k nodes). */
-  int *owner = malloc((size_t)n * sizeof(int));
-  if (!owner) return 0;
-  for (int i = 0; i < n; i++) owner[i] = -1;
-  for (int id = 0; id < n; id++) {
+  int n = nt->count, from = st->upto;
+  if (n <= from) return;
+  st->owner = realloc(st->owner, (size_t)n * sizeof(int));
+  st->inbody = realloc(st->inbody, (size_t)n * sizeof(int));
+  st->wp = realloc(st->wp, (size_t)n * sizeof(int));
+  if (!st->owner || !st->inbody || !st->wp) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = from; i < n; i++) { st->owner[i] = -1; st->inbody[i] = 0; }
+  /* Reverse map block-node -> owning node, built in one O(n) pass. Finding
+     a block's owner by scanning all n nodes per block made this whole pass
+     O(blocks*n) on large inputs (a flattened runtime is ~500k nodes). */
+  for (int id = from; id < n; id++) {
     int b = nt_ref(nt, id, "block");
-    if (b >= 0 && b < n) owner[b] = id;
+    if (b >= 0 && b < n) st->owner[b] = id;
   }
-  /* inbody membership via generation stamp (avoids an O(n) memset per block). */
-  int *inbody = calloc((size_t)n, sizeof(int));
-  if (!inbody) { free(owner); return 0; }
-  /* All local-variable-write and parameter nodes, collected once;
-     the per-param collision scan iterates this set rather than all n nodes (it
+  /* All local-variable-write and parameter nodes, collected once; the
+     per-param collision scan iterates this set rather than all n nodes (it
      re-reads each name fresh, so a rename made earlier in this pass is still
      reflected). */
-  int *wp = malloc((size_t)n * sizeof(int));
-  int wpn = 0;
-  if (!wp) { free(owner); free(inbody); return 0; }
-  for (int w = 0; w < n; w++) {
+  int wp0 = st->wpn;
+  for (int w = from; w < n; w++) {
     const char *wty = nt_type(nt, w);
-    if (a_is_write_node(wty) || is_name_binding_param(wty)) wp[wpn++] = w;
+    if (a_is_write_node(wty) || is_name_binding_param(wty)) st->wp[st->wpn++] = w;
   }
-  BlkpIdx ix;
-  if (!blkp_idx_init(&ix, c, wp, wpn)) { free(wp); free(inbody); free(owner); return 0; }
-  int gen = 0;
-  for (int L = 0; L < n; L++) {
+  st->upto = n;
+  if (!st->ix.head) {
+    if (!blkp_idx_init(&st->ix, c, st->wp, st->wpn)) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    return;
+  }
+  st->ix.wp = st->wp;
+  st->ix.next = realloc(st->ix.next, (size_t)(st->wpn > 0 ? st->wpn : 1) * sizeof(int));
+  if (!st->ix.next) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int i = wp0; i < st->wpn; i++) {
+    const char *nm = nt_str(nt, st->wp[i], "name");
+    unsigned b = nm ? sp_strhash(nm) & st->ix.mask : 0;
+    st->ix.next[i] = nm ? st->ix.head[b] : -1;
+    if (nm) st->ix.head[b] = i;
+  }
+  st->ix.wpn = st->wpn;
+}
+
+void blkp_step_free(BlkpStep *st) {
+  if (!st) return;
+  blkp_idx_free(&st->ix);
+  free(st->owner); free(st->inbody); free(st->wp); free(st);
+}
+
+static void blkp_rename_blocks(Compiler *c, BlkpStep *st, const int *ids, int nids);
+
+int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
+  BlkpStep *st = calloc(1, sizeof *st);
+  if (!st) return 0;
+  blkp_step_extend(c, st);
+  blkp_rename_blocks(c, st, NULL, st->upto);
+  blkp_step_free(st);
+  return 0;
+}
+
+/* The same over the blocks of a span of the walk's (lower_span), as it is
+   spliced: a parameter that collides is renamed before the walk registers
+   it (a define_method block's are the method's). The program's names are
+   kept for the step (LowerCtx.blkp) and take in each span's nodes. */
+int rename_shadowing_block_params_span(Compiler *c, LowerCtx *lc, int id) {
+  if (!lc->blkp && !(lc->blkp = calloc(1, sizeof *lc->blkp))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  blkp_step_extend(c, lc->blkp);
+  int n = 0, *ids = lower_span_ids(lc, &n);
+  blkp_rename_blocks(c, lc->blkp, ids, n);
+  free(ids);
+  return 0;
+}
+
+/* The blocks among ids[0..nids) (NULL: the nodes [0, nids)) */
+static void blkp_rename_blocks(Compiler *c, BlkpStep *st, const int *ids, int nids) {
+  const NodeTable *nt = c->nt;
+  int *owner = st->owner, *inbody = st->inbody;
+  BlkpIdx ix = st->ix;
+  for (int q = 0; q < nids; q++) {
+    int L = ids ? ids[q] : q;
+    if (L >= st->upto) continue;
     const char *ty = nt_type(nt, L);
     NodeKind k = nt_kind(nt, L);
     if (!ty) continue;
@@ -6545,7 +6605,7 @@ int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
        (#4027). There is simply nothing inside to rewrite -- both helpers below
        take a negative body as the empty subtree it is. */
     int body = nt_ref(nt, L, "body");
-    gen++;
+    int gen = ++st->gen;
     blkp_stamp_subtree(nt, body, inbody, gen);
     for (int ii = 0; ii < rn + ne; ii++) {
       int pnode = ii < rn ? reqs[ii] : extras[ii - rn];
@@ -6596,10 +6656,6 @@ int rename_shadowing_block_params_at(Compiler *c, LowerCtx *lc, int id) {
     if (have_locals)
       rename_shadowing_block_locals(c, L, pn, body, inbody, gen, &ix);
   }
-  blkp_idx_free(&ix);
-  free(wp);
-  free(inbody);
-  free(owner);  return 0;
 }
 
 /* ---- --rbs advisory type seeds ----
@@ -47404,8 +47460,13 @@ static void an_phase_desugar_register(Compiler *c) {
   lower_run(c, &lc, LW_RECURSIVE_PARAM_DEFAULTS);   /* def m(x, y = m(..)) -> default helper method */
   qualify_colliding_consts(c);
   qualify_colliding_classes(c);
+  /* the walk is a step of its own: a form it runs splices through the host,
+     which lowers each splice as it is made; the rows a splice leaves to the
+     program run once, at the walk's end */
+  host_begin(&hs, &lc);
+  AN_STEP_V("elab_program", elab_program(c, &hs));   /* walk_scope of each file's top level, and the load record */
+  host_end(c, &hs);
   lower_finish(c, &lc);   /* SPINEL_LOWER_CHECK: the report, and no C */
-  AN_STEP_V("elab_program", elab_program(c));   /* walk_scope of each file's top level, and the load record */
   if (g_dump_load_record) { elab_dump(c, stdout); exit(0); }   /* the load phase's points, as the walk leaves them */
   AN_STEP_V("expand_static_splat_args", expand_static_splat_args(c, 0, c->nt->count));
   AN_STEP_V("register_singleton_defs", register_singleton_defs(c));   /* def CONST.m / def x.m -> synthesized subclass */

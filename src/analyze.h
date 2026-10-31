@@ -227,7 +227,8 @@ typedef enum { LR_INCLUDE, LR_EXTEND, LR_PREPEND, LR_SG_PREPEND } LrMixKind;   /
    (LrOpen.node; a file's root for main's). */
 typedef struct { int node, kind, mod, ref; unsigned char dup, cond, applied; int open; } LrMixin;
 typedef enum { ELAB_GVAR, ELAB_MAIN_IVAR, ELAB_CONST } ElabVar;
-void elab_program(Compiler *c);
+struct HostStep;
+void elab_program(Compiler *c, struct HostStep *h);
 /* the class builders' blocks recorded as their classes' bodies, once
    register_structs has made them */
 void elab_record_builders(Compiler *c);

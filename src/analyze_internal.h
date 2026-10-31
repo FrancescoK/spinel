@@ -799,6 +799,10 @@ typedef struct LowerCtx {
   int span_nids[LW__COUNT];
   struct LowerSpan *span;   /* the span being lowered, or NULL: the program */
   int span_step;            /* spans were lowered since the last lower_settle */
+  int span_now;             /* ... and they are the walk's, lowered one splice at a time as it makes them */
+  int *later, nlater, clater;   /* span_now: (row, owner) pairs, a row that visits the body's owner, which
+                                   lower_settle visits once for all the spans of that body */
+  struct BlkpStep *blkp;    /* rename_shadowing_block_params' span form: the program's names, kept for the step */
 } LowerCtx;
 
 typedef int LowerFn(Compiler *c, LowerCtx *lc, int id);
@@ -812,6 +816,8 @@ void lower_check_unreachable(Compiler *c, LowerCtx *lc, const char *row, int roo
 int lower_run(Compiler *c, LowerCtx *lc, int row);   /* the nodes it rewrote */
 int lower_row_once(Compiler *c, int row);   /* a row on a context of its own, for a pass the fixpoint repeats */
 int lower_span(Compiler *c, LowerCtx *lc, int owner, int body, const int *stmts, const int *scopes, int n);   /* the rows that ran, on spliced statements */
+int *lower_span_ids(const LowerCtx *lc, int *n);   /* the span's nodes and the ones rows appended for it, ascending; the caller frees */
+void blkp_step_free(struct BlkpStep *st);   /* analyze.c */
 void lower_settle(Compiler *c, LowerCtx *lc);   /* the rows spans left to the program, once per step */
 
 /* ---- the host (analyze_elab.c, #9898) ----
@@ -827,10 +833,13 @@ typedef struct HostStep {
   struct SceFacts *sce;    /* the graft's answers about the whole program, made at its first ask in the step */
   int *spans;              /* (owner, body, statement, its splice's first statement) of each statement the step spliced */
   int nspans, cspans;
+  int now;                 /* the registration's walk reaches each splice next: it is lowered as it is made */
 } HostStep;
 void host_begin(HostStep *h, LowerCtx *lc);
 int host_splice(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* the n statements at body[at], in a frame of locals but gone (NULL: not known): the count they become */
 void host_end(Compiler *c, HostStep *h);
+struct HostStep *elab_walk_host(Compiler *c);   /* analyze_elab.c: the host a walk-time form splices through, while the walk runs */
+int elab_walk_replace(Compiler *c, int old, int with);   /* ...and node with, spliced in place of entered statement old, takes its point */
 int desugar_static_class_eval(Compiler *c, HostStep *h);   /* analyze_desugar.c: the graft over every class and module body */
 int sce_span(Compiler *c, HostStep *h, int owner, int body, int at, int n, const char *locals, const char *gone);   /* ... over spliced statements */
 void sce_facts_free(struct SceFacts *f);
@@ -853,7 +862,8 @@ LowerFn desugar_struct_subclass_new_write_at, desugar_struct_subclass_new_write_
 LowerFn refuse_superclass_exprs_at, desugar_sym_to_proc_call_at, desugar_builtin_kwsplat_at;
 LowerGate desugar_user_backtick_gate;
 LowerFn desugar_user_backtick_at;                                            /* analyze.c */
-LowerFn desugar_explicit_initialize_calls_at, scope_numbered_block_params_at, rename_shadowing_block_params_at;
+LowerFn desugar_explicit_initialize_calls_at, scope_numbered_block_params_at, rename_shadowing_block_params_at,
+  rename_shadowing_block_params_span;
 LowerFn desugar_body_local_scopes_at, desugar_define_method_captures_at;     /* analyze_desugar.c */
 LowerFn desugar_forwarding_to_rest_callee_at, desugar_recursive_param_defaults_at;
 LowerFn desugar_stored_enum_each_at;                                         /* analyze_desugar.c */
