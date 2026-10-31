@@ -1,3 +1,4 @@
+# spinel: int64
 # A Range walked from an Integer begin up to a Rational end yields the
 # same Integers as the end truncated: (1..5r/2) walks 1, 2. Spinel keeps
 # these walks (a Rational bound is refused elsewhere: the Range holds it
