@@ -5344,7 +5344,8 @@ static int engine_def_mixed_in_only(NodeTable *nt, int id, int in) {
   return 0;
 }
 
-static int engine_absent(NodeTable *nt, int e, int in) {
+static int engine_absent(Compiler *c, int e, int in) {
+  NodeTable *nt = (NodeTable *)c->nt;
   const char *x = NULL;
   const char *en = nt_kind(nt, e) == NK_CallNode && nt_ref(nt, e, "block") < 0 ? nt_str(nt, e, "name") : NULL;
   if (en && (sp_streq(en, "method_defined?") || sp_streq(en, "public_method_defined?"))) {
@@ -5358,6 +5359,7 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     if (a > 0)
       for (int id = 0; id < nt->count; id++)
         if (me_stmt_defines(nt, id, m) && !engine_inside(nt, in, id, 0) && !engine_def_mixed_in_only(nt, id, in)) return -1;
+    if (a >= 0) comp_def_asked_add(c, m);
     return a;
   }
   /* `L::X.instance_method(:m)` of a module the program defines with that
@@ -5440,13 +5442,14 @@ static int engine_absent(NodeTable *nt, int e, int in) {
   return 1;
 }
 
-static int engine_absent_fold(NodeTable *nt, int e, int in) {
+static int engine_absent_fold(Compiler *c, int e, int in) {
+  NodeTable *nt = (NodeTable *)c->nt;
   NodeKind k = nt_kind(nt, e);
   if (k == NK_AndNode || k == NK_OrNode)
-    return engine_absent_fold(nt, nt_ref(nt, e, "left"), in) | engine_absent_fold(nt, nt_ref(nt, e, "right"), in);
+    return engine_absent_fold(c, nt_ref(nt, e, "left"), in) | engine_absent_fold(c, nt_ref(nt, e, "right"), in);
   int neg = k == NK_CallNode && nt_str(nt, e, "name") && sp_streq(nt_str(nt, e, "name"), "!") &&
             nt_ref(nt, e, "arguments") < 0;
-  int q = neg ? nt_ref(nt, e, "receiver") : e, a = engine_absent(nt, q, in);
+  int q = neg ? nt_ref(nt, e, "receiver") : e, a = engine_absent(c, q, in);
   if (a < 0) return 0;
   engine_blank(nt, q);
   nt_node_reset(nt, e, neg == a ? "TrueNode" : "FalseNode");
@@ -5722,7 +5725,7 @@ int desugar_engine_branches(Compiler *c) {
   }
   for (int id = 0; id < n0; id++)
     if (nt_kind(nt, id) == NK_IfNode || nt_kind(nt, id) == NK_UnlessNode)
-      changed |= engine_absent_fold(nt, nt_ref(nt, id, "predicate"), id);
+      changed |= engine_absent_fold(c, nt_ref(nt, id, "predicate"), id);
   /* `if false; def m ... end; end`: a condition its literals fix defines
      the method only on its live branch, as CRuby runs the body */
   for (int id = 0; id < n0; id++) {
@@ -25559,6 +25562,7 @@ int desugar_def_unless_method_defined(Compiler *c) {
         out[no++] = st; continue;
       }
       touched = 1; changed = 1;
+      comp_def_asked_add(c, m);
       if (dum_defined_before(nt, cn, m, st, 0)) continue;   /* defined already: the guarded body does not run */
       int sn = 0; const int *ss = nt_arr(nt, arm, "body", &sn);
       out = realloc(out, sizeof(int) * (size_t)(no + sn + (bn - i) + 1));

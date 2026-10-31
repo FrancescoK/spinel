@@ -1731,6 +1731,13 @@ typedef struct {
      the first invented name is made (bp_user_uses) */
   char **bp_user;
   int nbp_user, bp_user_built;
+  /* the method names a definition query (`method_defined?(:m)`, its public
+     form) asked before the walk, where a fold answered it from the program's
+     text (desugar_engine_branches, desugar_def_unless_method_defined): a
+     method the walk defines at its point under one of them would have
+     answered the query the other way, so a form that would declines */
+  char **def_asked;
+  int ndef_asked, cdef_asked;
 } Compiler;
 enum { PRES_UNMARKED = 1, PRES_REMOVED = 2 };
 
@@ -1739,6 +1746,7 @@ void comp_free(Compiler *c);
 void ic_free(Compiler *c);   /* implicit_calls.c */
 /* Is `name` one of the n strings in `list`? (0 for a NULL name) */
 int name_list_has(char **list, int n, const char *name);
+void comp_def_asked_add(Compiler *c, const char *name);   /* a fold answered a definition query of name (def_asked) */
 
 /* Resize per-node arrays (ntype/nscope) after the node table grew. */
 void comp_grow_node_arrays(Compiler *c);

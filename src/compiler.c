@@ -538,6 +538,8 @@ void comp_free(Compiler *c) {
   free(c->bp_name); free(c->bp_len); free(c->bp_blk); c->bp_name = NULL; c->bp_len = NULL; c->bp_blk = NULL; c->bp_mask = 0; c->nbp = 0;
   for (int i = 0; i < c->nbp_user; i++) free(c->bp_user[i]);
   free(c->bp_user); c->bp_user = NULL; c->nbp_user = 0; c->bp_user_built = 0;
+  for (int i = 0; i < c->ndef_asked; i++) free(c->def_asked[i]);
+  free(c->def_asked); c->def_asked = NULL; c->ndef_asked = c->cdef_asked = 0;
   c->pres_names = NULL; c->pres_flags = NULL; c->npres = c->cpres = 0;
   free(c->nil_fact);
   free(c->nil_elem_fact);
@@ -2482,6 +2484,9 @@ static void name_append(char ***list, int *n, int *cap, const char *name) {
     *list = realloc(*list, sizeof(char *) * (size_t)*cap);
   }
   (*list)[(*n)++] = strdup(name);
+}
+void comp_def_asked_add(Compiler *c, const char *name) {
+  if (name) name_add(&c->def_asked, &c->ndef_asked, &c->cdef_asked, name);
 }
 unsigned comp_table_gen = 0;   /* bumped when a reader or alias table grows (poly-candidate memo stamp) */
 void comp_add_reader(ClassInfo *ci, const char *name) {
