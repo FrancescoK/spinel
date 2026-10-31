@@ -46,8 +46,9 @@ static void add_kwhash_key_params(const NodeTable *nt, Scope *s, int kwh) {
   }
 }
 
-void collect_def_params(Compiler *c, int def_id, Scope *s) {
-  int pn = nt_ref(c->nt, def_id, "parameters");
+/* The required, then the optional parameters of ParametersNode pn, each
+   with its default. */
+static void collect_positional_params(Compiler *c, int pn, Scope *s) {
   if (pn < 0) return;
   int rn = 0;
   const int *reqs = nt_arr(c->nt, pn, "requireds", &rn);
@@ -62,6 +63,12 @@ void collect_def_params(Compiler *c, int def_id, Scope *s) {
     int dv = nt_ref(c->nt, opts[i], "value");
     if (pname) scope_add_param(s, pname, dv);
   }
+}
+
+void collect_def_params(Compiler *c, int def_id, Scope *s) {
+  int pn = nt_ref(c->nt, def_id, "parameters");
+  if (pn < 0) return;
+  collect_positional_params(c, pn, s);
   int rp = nt_ref(c->nt, pn, "rest");
   if (rp >= 0) {
     NodeKind rpk = nt_kind(c->nt, rp);
@@ -1823,26 +1830,29 @@ static void walk_scope_in(Compiler *c, int id, WalkCtx w) {
           { dm_s->class_id = dm_cls; comp_touch_scope(dm_s->idx); }
           { dm_s->is_cmethod = dm_cmethod; comp_touch_scope(dm_s->idx); }
           /* the block's params are the defined method's params (e.g. the
-             `&:to_s`-rewritten `{ |_spx| _spx.to_s }`'s _spx). */
+             `&:to_s`-rewritten `{ |_spx| _spx.to_s }`'s _spx), all of
+             them: a define_method that desugar_define_method_keywords
+             leaves as a call (one nested in a `begin`, an `if` or an
+             iterator's block, or in a method's body) keeps its rest, post,
+             keyword-rest and `&block` parameters, as the def that row
+             makes of a body's own statement does. A defined method takes
+             its parameters with METHOD semantics, so a defaulted one is a
+             real parameter with that default, and the required count is
+             what a call must supply (#3752). Keyword parameters stay out:
+             the call sites bind them from a DefNode's parameters, which
+             this scope has not, so such a block registers its required and
+             optional ones only, as before. */
           int dm_pn = nt_ref(c->nt, dm_blk, "parameters");
-          int dm_inner = dm_pn >= 0 ? nt_ref(c->nt, dm_pn, "parameters") : -1;
-          int dm_pnode = dm_inner >= 0 ? dm_inner : dm_pn;
-          int dm_rn = 0; const int *dm_reqs = dm_pnode >= 0 ? nt_arr(c->nt, dm_pnode, "requireds", &dm_rn) : NULL;
-          for (int p = 0; p < dm_rn; p++) {
-            const char *pnm = nt_str(c->nt, dm_reqs[p], "name");
-            if (pnm) scope_add_param(dm_s, pnm, -1);
+          int dm_ps = dm_pn >= 0 && nt_kind(c->nt, dm_pn) == NK_BlockParametersNode
+                    ? nt_ref(c->nt, dm_pn, "parameters") : -1;
+          int dm_rn = 0, dm_kn = 0;
+          if (dm_ps >= 0) {
+            (void)nt_arr(c->nt, dm_ps, "requireds", &dm_rn);
+            (void)nt_arr(c->nt, dm_ps, "keywords", &dm_kn);
           }
-          /* a defined method takes its parameters with METHOD semantics, so a
-             defaulted one is a real parameter with that default, and the
-             required count is what a call must supply (#3752) */
+          if (dm_kn == 0) collect_def_params(c, dm_pn, dm_s);
+          else collect_positional_params(c, dm_ps, dm_s);
           dm_s->nrequired = dm_rn;
-          { int dm_on = 0;
-            const int *dm_opts = dm_pnode >= 0 ? nt_arr(c->nt, dm_pnode, "optionals", &dm_on) : NULL;
-            for (int p = 0; p < dm_on; p++) {
-              const char *pnm = nt_str(c->nt, dm_opts[p], "name");
-              int dv = nt_ref(c->nt, dm_opts[p], "value");
-              if (pnm) scope_add_param(dm_s, pnm, dv);
-            } }
           if (nt_int(c->nt, id, "dm_host", 0))
             nt_node_set_int((NodeTable *)c->nt, id, "dm_scope", dm_new_idx + 1);
           child = dm_new_idx;
