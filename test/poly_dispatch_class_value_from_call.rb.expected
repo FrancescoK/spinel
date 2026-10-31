@@ -1,0 +1,28 @@
+=> 7
+=> #<Point x=1>
+=> Point
+=> Point
+#<Point x=5>
+5
+L5
+5
+6
+Point3
+NoMethodError: undefined method 'x' for class Point3
+NoMethodError: undefined method 'label' for class Point3
+NoMethodError: undefined method 'each_part' for class Point3
+Point
+NoMethodError: undefined method 'x' for class Point
+NoMethodError: undefined method 'label' for class Point
+NoMethodError: undefined method 'each_part' for class Point
+#<Point x=8>
+8
+L8
+8
+9
+Point
+NoMethodError: undefined method 'x' for class Point
+#<Point x=9>
+9
+Point
+NoMethodError: undefined method 'x' for class Point

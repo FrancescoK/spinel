@@ -2683,6 +2683,20 @@ static int cpoly_arm_classes(Compiler *c, int id, const char *name, int *ks) {
   return n;
 }
 
+/* Does a class whose Class object may be a value (comp_class_may_be_value:
+   held by a variable, a box or a container, answered by `x.class` and its
+   kin) take an arm in call `id`'s poly dispatch of name? A boxed Class value
+   carries its class's index as cls_id, so the key keeps it off the arms of
+   instances (PPF_KEY_CLSV). */
+static int cpoly_key_clsv(Compiler *c, int id, const char *name) {
+  int *ks = malloc(sizeof(int) * (size_t)(c->nclasses > 0 ? c->nclasses : 1));
+  if (!ks) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int n = cpoly_arm_classes(c, id, name, ks), hit = 0;
+  for (int i = 0; i < n && !hit; i++) hit = comp_class_may_be_value(c, ks[i]);
+  free(ks);
+  return hit;
+}
+
 /* Struct's builtin writer has no method scope, but still owns an arm. */
 int cplan_struct_aset(Compiler *c, int cid, const char *name, int argc) {
   ClassInfo *k = &c->classes[cid];
@@ -3029,6 +3043,7 @@ static void cpoly_user_arms_n(Compiler *c, int id, const char *name, int argc, c
   else if (kwh >= 0 && sp_streq(name, "fetch") && argc == 2) atmp_ty[pos_argc] = TY_SYM_POLY_HASH;
   p->flags = PPF_ROOT | (poly_key_cls0(c, id, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_CLS0 : 0) |
              (poly_key_prim(c, id, name, argc, kwh, pos_argc, splat_a) ? PPF_KEY_PRIM : 0) |
+             (cpoly_key_clsv(c, id, name) ? PPF_KEY_CLSV : 0) |
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
   PolyKw kw = { kwh, 0, kw_ds ? 0 : -1, NULL, NULL, NULL, kwall_any };
   PolyArgs pargs = { argv, pos_argc, NULL, atmp_ty, &kw, NULL };
@@ -3314,6 +3329,7 @@ static void cpoly_flags0(Compiler *c, int id, const char *name, PolyPlan *p, Pol
   p->flags = (root ? PPF_ROOT : 0) | (deref ? PPF_DEREF : 0) |
              (poly_key_cls0(c, id, name, 0, -1, 0, -1) ? PPF_KEY_CLS0 : 0) |
              (poly_key_prim(c, id, name, 0, -1, 0, -1) ? PPF_KEY_PRIM : 0) |
+             (cpoly_key_clsv(c, id, name) ? PPF_KEY_CLSV : 0) |
              (poly_exc_cand(c, name) ? PPF_KEY_EXC : 0);
 }
 

@@ -378,6 +378,8 @@ enum {
   PPF_KEY_CLS0 = 4,   /* class 0 has an arm: a non-object value is kept off it */
   PPF_KEY_PRIM = 8,   /* a primitive reopening has an arm: the tag maps to its class */
   PPF_KEY_EXC  = 16,  /* a user exception class answers: the exception is re-keyed */
+  PPF_KEY_CLSV = 32,  /* a class whose Class object may be a value has an arm: a Class
+                         value, which carries its class's index, is kept off it */
   PPF_SEEN     = 256  /* (--plan-check) the flags were observed */
 };
 

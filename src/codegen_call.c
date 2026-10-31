@@ -1295,49 +1295,9 @@ int poly_exc_cand(Compiler *c, const char *name) {
   return 0;
 }
 
-static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int key_guard, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b);
-/* Does the program hold one of its classes as a value -- a constant naming
-   a class of the program that is not a call's receiver (`K.new`), a
-   namespace (`K::X`) or a class or module's name or superclass? Asked once
-   per program: keyed by the node count, the nodes emission adds rebuilt the
-   parent map of the whole program at every dispatch. */
-static const NodeTable *g_bcv_nt = NULL;
-static int g_bcv = 0;
-static int program_boxes_class_values(Compiler *c) {
-  const NodeTable *nt = c->nt;
-  if (g_bcv_nt == nt) return g_bcv;
-  g_bcv_nt = nt; g_bcv = 0;
-  int *parent = an_parent_map((NodeTable *)nt);
-  if (!parent) { g_bcv = 1; return 1; }
-  for (int id = 0; id < nt->count && !g_bcv; id++) {
-    NodeKind k = nt_kind(nt, id);
-    if (k != NK_ConstantReadNode && k != NK_ConstantPathNode) continue;
-    const char *nm = nt_str(nt, id, "name");
-    int ci = nm ? comp_class_index(c, nm) : -1;
-    if (ci < 0 || is_builtin_reopen(c->classes[ci].name)) continue;
-    int par = parent[id];
-    if (par < 0) continue;
-    NodeKind pk = nt_kind(nt, par);
-    if (pk == NK_CallNode && nt_ref(nt, par, "receiver") == id) continue;
-    if (pk == NK_ConstantPathNode) continue;
-    if ((pk == NK_ClassNode || pk == NK_ModuleNode) &&
-        (nt_ref(nt, par, "constant_path") == id || nt_ref(nt, par, "superclass") == id)) continue;
-    /* the reads resolved where they stand: `rescue K`, `include K` and its
-       kin, `x.is_a?(K)` and its kin */
-    if (pk == NK_RescueNode) continue;
-    if (nt_kind(nt, par) == NK_ArgumentsNode && parent[par] >= 0 && nt_kind(nt, parent[par]) == NK_CallNode) {
-      const char *cn = nt_str(nt, parent[par], "name");
-      if (cn && (sp_streq(cn, "include") || sp_streq(cn, "extend") || sp_streq(cn, "prepend") ||
-                 sp_streq(cn, "is_a?") || sp_streq(cn, "kind_of?") || sp_streq(cn, "instance_of?") ||
-                 sp_streq(cn, "raise"))) continue;
-    }
-    g_bcv = 1;
-  }
-  free(parent);
-  return g_bcv;
-}
-static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+static void emit_poly_dispatch_key_top(Compiler *c, int tv, int key_guard, int prim_cand, int exc_cand,
                                        const char *pick_name, Buf *b);
 /* `sp_io_pick_class(<handle>, names, idx)` over the reopened IO classes
    that define `name` (public ones only when asked): the one the handle's
@@ -1545,10 +1505,10 @@ void emit_io_reopen_call(Compiler *c, int id, int recv, const char *name, Buf *b
 /* The dispatch key of a whole dispatch: emit_poly_dispatch_key_pick's, and
    an Array subclass instance, boxed as its Array, keys by the class its
    scan names (#7449). The pick's own recursions take the pick alone. */
-static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+static void emit_poly_dispatch_key_top(Compiler *c, int tv, int key_guard, int prim_cand, int exc_cand,
                                        const char *pick_name, Buf *b) {
   if (!program_has_arysub(c)) {
-    emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+    emit_poly_dispatch_key_pick(c, tv, key_guard, prim_cand, exc_cand, pick_name, b);
     return;
   }
   int kt = ++g_tmp;
@@ -1561,11 +1521,11 @@ static void emit_poly_dispatch_key_top(Compiler *c, int tv, int cls0_cand, int p
   for (int k = 0; pick_name && k < c->nclasses; k++)
     if (comp_arysub_name_is_array(c, k, pick_name)) buf_printf(b, " && _t%d != %d", kt, k);
   buf_printf(b, " ? _t%d : ", kt);
-  emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+  emit_poly_dispatch_key_pick(c, tv, key_guard, prim_cand, exc_cand, pick_name, b);
   buf_puts(b, "; })");
 }
-void emit_poly_dispatch_key(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand, Buf *b) {
-  emit_poly_dispatch_key_top(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
+void emit_poly_dispatch_key(Compiler *c, int tv, int key_guard, int prim_cand, int exc_cand, Buf *b) {
+  emit_poly_dispatch_key_top(c, tv, key_guard, prim_cand, exc_cand, NULL, b);
 }
 
 /* The reopening of builtin `cls` an OBJ box of it keys to in a dispatch of
@@ -1581,7 +1541,7 @@ static int poly_key_reopen(Compiler *c, int cls, const char *nm) {
    its own for pick_name (when given) re-keyed to the builtin exception
    reopening defining it that is nearest the runtime class up its ancestry,
    or to no arm when none is above it (NoMethodError). */
-static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int prim_cand, int exc_cand,
+static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int key_guard, int prim_cand, int exc_cand,
                                         const char *pick_name, Buf *b) {
   /* a boxed IO handle keys by its kind to the reopening that has the method */
   static int io_done = 0;
@@ -1590,7 +1550,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
     if (emit_io_pick(c, tv, pick_name, 0, &ib)) {
       buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_IO) ? %s : ", tv, tv, ib.p);
       io_done = 1;
-      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, pick_name, b);
+      emit_poly_dispatch_key_pick(c, tv, key_guard, prim_cand, exc_cand, pick_name, b);
       io_done = 0;
       buf_puts(b, ")");
       free(ib.p);
@@ -1608,7 +1568,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
          the name takes the nearest reopening's arm */
       int kt = ++g_tmp;
       buf_printf(b, "({ int _k%d = ", kt);
-      emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, exc_cand, NULL, b);
+      emit_poly_dispatch_key_pick(c, tv, key_guard, prim_cand, exc_cand, NULL, b);
       buf_printf(b, "; if (_t%d.tag == SP_TAG_OBJ && (_t%d.cls_id == SP_BUILTIN_EXCEPTION", tv, tv);
       for (int k = 0; k < c->nclasses; k++)
         if (class_is_exc_subclass(c, k)) buf_printf(b, " || _t%d.cls_id == %d", tv, k);
@@ -1627,7 +1587,7 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
       return;
     }
     buf_printf(b, "((_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == SP_BUILTIN_EXCEPTION) ? sp_exc_user_cls_id(_t%d) : ", tv, tv, tv);
-    emit_poly_dispatch_key_pick(c, tv, cls0_cand, prim_cand, 0, NULL, b);
+    emit_poly_dispatch_key_pick(c, tv, key_guard, prim_cand, 0, NULL, b);
     buf_puts(b, ")");
     return;
   }
@@ -1647,11 +1607,12 @@ static void emit_poly_dispatch_key_pick(Compiler *c, int tv, int cls0_cand, int 
      the plain path otherwise, which the hot per-dispatch sites stay on
      (#4219). */
   /* A boxed class value carries its class's index as cls_id too, so where
-     the program holds a class as a value it would enter that class's
-     instance arm (`klass.is_a?(Module)` taking a program is_a? meant for
-     its instances): the key is guarded there as well. */
+     a class whose Class object may be a value has an arm it would enter
+     that class's instance arm (`klass.is_a?(Module)` taking a program
+     is_a? meant for its instances, a `x.class` value in a poly slot): the
+     key is guarded there as well (PPF_KEY_CLSV). */
   if (!g_promote_mode && !prim_cand) {
-    if (cls0_cand || program_boxes_class_values(c))
+    if (key_guard)
       buf_printf(b, "(_t%d.tag == SP_TAG_OBJ ? _t%d.cls_id : 0x7fffffff)", tv, tv);
     else buf_printf(b, "_t%d.cls_id", tv);
     return;
@@ -10171,7 +10132,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* a genuine String in a slot whose name a user class owns (#4816) */
       emit_poly_str_prearm(c, id, recv, name, 0, NULL, NULL, NULL, ret, tv, tr, b);
       buf_puts(b, "switch (");
-      emit_poly_dispatch_key_top(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+      emit_poly_dispatch_key_top(c, tv, (form & (PPF_KEY_CLS0 | PPF_KEY_CLSV)) != 0, (form & PPF_KEY_PRIM) != 0,
                                   (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame0);
@@ -10607,7 +10568,7 @@ int emit_poly_method_dispatch(Compiler *c, int id, Buf *b) {
       /* where this switch starts, so its end can tell whether any arm below
          wrote the `default:` label (see the builtin default at the close) */
       size_t sw_start = b->len;
-      emit_poly_dispatch_key_top(c, tv, (form & PPF_KEY_CLS0) != 0, (form & PPF_KEY_PRIM) != 0,
+      emit_poly_dispatch_key_top(c, tv, (form & (PPF_KEY_CLS0 | PPF_KEY_CLSV)) != 0, (form & PPF_KEY_PRIM) != 0,
                                   (form & PPF_KEY_EXC) != 0, name, b);
       buf_puts(b, ") {");
       if (g_plan_check) pa_resume(pa_frame);
