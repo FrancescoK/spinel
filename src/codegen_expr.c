@@ -5673,7 +5673,7 @@ static int emit_range_literal(Compiler *c, int id, Buf *b, const NodeTable *nt) 
     emit_range_build(b, fn, &lo, &hi, excl, in_order);
     return 1;
   }
-  fn = fend ? "sp_range_new_fend" : pend ? "sp_range_new_pend" : "sp_range_new";
+  fn = fend ? "sp_range_new_fend" : pend ? (range_rat_walk(c, id) ? "sp_range_new_pend_walk" : "sp_range_new_pend") : "sp_range_new";
   /* a nil that arrives at run time -- boxed, or an Integer slot's nil --
      is the absent bound too; read as a number, `lo..x` with x nil was the
      empty `lo..0` */

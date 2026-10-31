@@ -18938,6 +18938,32 @@ static void reject_range_reopen_nonint(Compiler *c) {
    `(1r..3).each` iterated where CRuby raises "can't iterate from
    Rational". Every use is refused, also the folds and matches that never
    build a Range: they read the same truncated bound. */
+/* Is Range literal rn only walked from an Integer begin up to its end,
+   `(1..x).each` / to_a / sum / map ...? Then a Rational end truncated is the
+   same walk: (1..5r/2) yields 1, 2 in CRuby too. Not an exclusive end:
+   (1...5r/2) walks 1, 2 where (1...2) walks 1. */
+static const char *const range_rat_walk_names[] = {
+  "each", "to_a", "entries", "sum", "map", "collect", "select", "filter",
+  "reject", "each_with_index", "inject", "reduce", NULL };
+int range_rat_walk(Compiler *c, int rn) {
+  static Compiler *for_c; static unsigned char *mark; static int cap;
+  const NodeTable *nt = c->nt;
+  if (for_c != c) {
+    for_c = c; free(mark); cap = nt->count; mark = calloc((size_t)cap + 1, 1);
+    NT_FOREACH_KIND(nt, NK_CallNode, id) {
+      const char *nm = nt_str(nt, id, "name");
+      int k = 0;
+      while (nm && range_rat_walk_names[k] && !sp_streq(nm, range_rat_walk_names[k])) k++;
+      if (!nm || !range_rat_walk_names[k]) continue;
+      int r = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
+      if (r < 0 || r >= cap || nt_kind(nt, r) != NK_RangeNode || nt_range_excl(nt, r)) continue;
+      int lo = nt_ref(nt, r, "left");
+      if (lo >= 0 && comp_ntype(c, lo) == TY_INT) mark[r] = 1;
+    }
+  }
+  return rn >= 0 && rn < cap && mark[rn];
+}
+
 static void reject_range_rational_bound(Compiler *c) {
   const NodeTable *nt = c->nt;
   NT_FOREACH_KIND(nt, NK_RangeNode, id) {
@@ -18946,6 +18972,7 @@ static void reject_range_rational_bound(Compiler *c) {
     int ends[2] = { nt_ref(nt, id, "left"), nt_ref(nt, id, "right") };
     for (int k = 0; k < 2; k++) {
       TyKind t = ends[k] >= 0 ? comp_ntype(c, ends[k]) : TY_UNKNOWN;
+      if (k == 1 && t != TY_COMPLEX && range_rat_walk(c, id)) continue;
       /* (--int-overflow=promote holds a computed Rational boxed) */
       if (t != TY_RATIONAL && t != TY_COMPLEX && !an_rat_value(c, ends[k])) continue;
       unsupported_feature(c, id,
