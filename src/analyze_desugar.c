@@ -9606,20 +9606,27 @@ static int program_defines_object_method_named(Compiler *c, const char *name) {
   }
   return 0;
 }
+int builtin_instance_method_known(const char *cls, const char *m);
 /* May call `call`, of `name` on a receiver of type rt, reach a method the
-   program defines? For a program object, its class's chain; for a builtin, the
-   program's reopening of it; for either, a method every object answers.
-   A receiver of no single class asks the whole program. */
+   program defines? A name the builtin class defines itself (Mutex#synchronize,
+   Array#fill) is asked of that class's chain alone: a method of Object or the
+   top level, or of an unrelated class, does not displace it. Any other name
+   (Kernel's tap and then): for a program object, its class's chain; for a
+   builtin, the program's reopening of it; for either, a method every object
+   answers. A receiver of no single class asks the whole program. */
 static int recv_may_reach_program_method(Compiler *c, int call, TyKind rt, const char *name) {
-  int k = -1;
+  int k = -1, own = 0;
   if (ty_is_object(rt)) k = ty_object_class(rt);
   else {
+    int core = core_of_type(rt);
+    own = core >= 0 && builtin_instance_method_known(core_class_name(core), name);
     const char *bn = builtin_class_of_type(rt);
-    if (!bn) return program_defines_method_named(c, name);
-    k = comp_class_index(c, bn);
+    if (own) k = comp_core_class(c, core);
+    else if (!bn) return program_defines_method_named(c, name);
+    else k = comp_class_index(c, bn);
   }
   if (k >= 0 && call_target(c, call, k, name, 0, NULL) >= 0) return 1;
-  return program_defines_object_method_named(c, name);
+  return !own && program_defines_object_method_named(c, name);
 }
 
 /* The in-place Array iterators have no blockless form yet (CRuby's

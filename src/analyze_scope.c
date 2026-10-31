@@ -783,7 +783,7 @@ static int collect_dm_each_unroll(Compiler *c, int id, const WalkCtx *w) {
 const char *builtin_class_of_type(TyKind t) {
   switch (t) {
   case TY_STRBUF: case TY_FLOAT_RANGE: case TY_STR_RANGE: case TY_ENUMERATOR:
-  case TY_RATIONAL: case TY_COMPLEX: case TY_PROC: case TY_QUEUE: case TY_EXCEPTION: return NULL;
+  case TY_RATIONAL: case TY_COMPLEX: case TY_PROC: case TY_QUEUE: case TY_MUTEX: case TY_EXCEPTION: return NULL;
   default: return ty_is_obj_array(t) ? NULL : core_class_name(core_of_type(t));
   }
 }

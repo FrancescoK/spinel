@@ -2056,6 +2056,7 @@ int core_of_type(TyKind t) {
   if (t == TY_COMPLEX) return CORE_COMPLEX;
   if (t == TY_PROC) return CORE_PROC;
   if (t == TY_QUEUE) return CORE_QUEUE;
+  if (t == TY_MUTEX) return CORE_MUTEX;
   if (t == TY_EXCEPTION) return CORE_EXCEPTION;
   return -1;
 }

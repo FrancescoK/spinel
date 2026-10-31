@@ -1,0 +1,19 @@
+:top
+42
+:forwarded
+[true, true]
+true
+:lambda
+:literal
+:safe_nav
+nil
+false
+:user_module
+2
+:user_class
+:boxed_mutex
+:boxed_guarded
+:poly_mutex
+:poly_guarded
+"boom"
+false
