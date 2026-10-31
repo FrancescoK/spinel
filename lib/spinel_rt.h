@@ -21107,6 +21107,13 @@ static sp_RbVal sp_poly_enum_proc(sp_RbVal recv, int op, sp_Proc *blk) {
                                       op == SP_PENUM_EACH_KEY ? "each_key" : "each_value", recv));
     return sp_box_nil();
   }
+  /* a Float Range cannot be walked (from Float, or from NilClass when it is
+     beginless): CRuby's TypeError, as the inline walk raises it
+     (sp_poly_iter_check) */
+  if (recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_FLOAT_RANGE && recv.v.p) {
+    sp_frange_iter_raise(*(sp_FloatRange *)recv.v.p, 0);
+    return sp_box_nil();
+  }
   /* a String Range (a Range of Symbols too) walks its members */
   sp_RbVal walk = recv.tag == SP_TAG_OBJ && recv.cls_id == SP_BUILTIN_STR_RANGE ? sp_poly_iter_subject(recv) : recv;
   sp_bool first_of_pair = FALSE, spread_pair = FALSE;
