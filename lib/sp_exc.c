@@ -1584,3 +1584,330 @@ void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
   sp_poly_recur_top = x->rrn;
   sp_poly_recur_ixtop = 0;   /* the index described the other context's frames */
 }
+
+/* ---- Raising: sp_raise_cls and what it calls ---------------------------
+   Moved from spinel_rt.h beside the handler stacks it walks, so that a
+   program does not compile them. The at_exit hooks stay in the TU, which
+   installs its drain here (sp_at_exit_run_fn); the symbol interner is the
+   TU's too (sp_json_sym_intern_fn, set by its sp_tu_init). */
+#include <ctype.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "sp_bt.h"      /* the --debug backtrace a raise snapshots */
+#include "sp_array.h"
+void sp_exc_resignal(const char *cls, const char *msg);   /* lib/sp_cold.c */
+int (*sp_at_exit_run_fn)(int) = NULL;
+/* the program's at_exit drain, which answers the status to exit with */
+static int sp_exc_at_exit(int status) { return sp_at_exit_run_fn ? sp_at_exit_run_fn(status) : status; }
+/* Drop the catch entries, break scopes and proc-return homes a raise unwinds
+   past. sp_raise_cls calls this just before it longjmps to sp_exc_stack
+   [sp_exc_top-1]; that handler is the frame the exception lands in, and every
+   entry opened INSIDE it dies with the C frames the longjmp skips over.
+
+   Each of the three records the exception depth at its own entry, so "opened
+   inside the landing frame" reads the same on all of them: the landing frame
+   was armed at sp_exc_top-1, so anything entered after it recorded sp_exc_top
+   or more, and anything entered before it recorded less.
+
+   The raise is the one place this can be done once. A landing pops the same
+   entries with `> sp_exc_top` after its own sp_exc_top--, but only six of the
+   ten emitted landings ever did so, and the four that did not -- Kernel#loop
+   in either form, the enumerator fold and the ext-host try -- leaked every
+   entry that unwound through them. Here it also costs the emitted code
+   nothing.
+
+   Not called for a proc return, a throw or a valued break: those longjmp to
+   sp_exc_stack themselves, and each trims its own target stack first
+   (sp_throw sets sp_catch_top, sp_brk_throw sets sp_brk_top, sp_proc_return
+   walks to a live home), so the entries between here and the target are still
+   the ones they mean to deliver to. */
+static void sp_handler_stacks_unwind(void) {
+  /* a dead catch entry is worse than a leak: sp_catch_top is fixed at 64, so a
+     raise out of a catch in a loop walks it off the end -- and a later `throw`
+     that matches one longjmps into a finished frame */
+  while (sp_catch_top > 0 && sp_catch_exc_top[sp_catch_top - 1] >= sp_exc_top)
+    sp_catch_top--;
+  /* a home node whose method the raise unwinds past: a later proc-return to it
+     must miss and raise LocalJumpError, not longjmp into a freed C frame */
+  while (sp_proc_ret_head && sp_proc_ret_head->exc_top >= sp_exc_top)
+    sp_proc_ret_head = sp_proc_ret_head->prev;
+  /* and a break scope, addressed by serial, for the same reason */
+  while (sp_brk_top > 0 && sp_brk_exc_top[sp_brk_top - 1] >= sp_exc_top)
+    sp_brk_top--;
+}
+/* Build the carried NameError/NoMethodError with #name recovered from the
+   message's first quoted token (see sp_raise_cls, #2758). */
+static void *sp_exc_recover_named(const char *cls, const char *msg) {
+  char nb[128];
+  const char *q1 = strchr(msg, '\'');
+  const char *q2 = q1 ? strchr(q1 + 1, '\'') : NULL;
+  if (q2 && q2 > q1 + 1 && (size_t)(q2 - q1) <= 128) {
+    size_t n = (size_t)(q2 - q1 - 1);
+    memcpy(nb, q1 + 1, n); nb[n] = 0;
+  }
+  else if (strncmp(msg, "instance variable ", 18) == 0) {
+    /* "instance variable @v not defined": the name is the unquoted token
+       after the prefix, the ivar remove_instance_variable could not find */
+    const char *p = msg + 18;
+    size_t n = 0;
+    while (p[n] && p[n] != ' ' && n < 127) n++;
+    if (n == 0) return NULL;
+    memcpy(nb, p, n); nb[n] = 0;
+  }
+  else {
+    /* "uninitialized constant NAME": the name is the unquoted trailing token,
+       the constant the message reports as missing (#3034) */
+    const char *pfx = "uninitialized constant ";
+    if (strncmp(msg, pfx, 23) != 0) return NULL;
+    const char *p = msg + 23;
+    size_t n = 0;
+    while (p[n] && (isalnum((unsigned char)p[n]) || p[n] == '_' || p[n] == ':') && n < 127) n++;
+    if (n == 0) return NULL;
+    memcpy(nb, p, n); nb[n] = 0;
+  }
+  sp_Exception *e = sp_exc_new(cls, msg);   /* launders msg into the GC heap */
+  SP_GC_ROOT(e);
+  e->xname = sp_box_sym(sp_json_sym_intern_fn(nb));   /* the program's interner, which its TU installs */
+  return e;
+}
+/* CRuby's tail format "<message> (<ClassName>)", prefixed by the raising frame
+   and followed by its callers when the backtrace substrate is live (a --debug
+   build). Without it there is no location to print, and an uncaught raise in a
+   multi-file program said only what went wrong, never where (#3974). Frames
+   are method-granularity, so there is no `:line:`. */
+/* The text of the report: the message (the class's name when it has none) and
+   the class in parentheses. The class is shown as it prints: an unnamed
+   Class.new class prints its #<Class:0x...> form, and CRuby adds no
+   "(Class)" suffix for it. */
+static void sp_exc_print_uncaught_text(const char *cls, const char *msg) {
+  const char *shown = sp_exc_cls_display(cls);
+  const char *text = (msg && *msg) ? msg : shown;
+  if (sp_exc_cls_unnamed(shown)) fprintf(stderr, "%s\n", text);
+  else fprintf(stderr, "%s (%s)\n", text, shown);
+}
+void sp_exc_print_uncaught(const char *cls, const char *msg, sp_StrArray *bt) {
+#if SP_BT_AVAILABLE
+  if (sp_bt_enabled) {
+    if (!bt && sp_bt_n > 0) bt = sp_bt_format(sp_bt_buf, sp_bt_n);
+    if (bt && bt->len > 0) {
+      fprintf(stderr, "%s: ", sp_StrArray_get(bt, 0));
+      sp_exc_print_uncaught_text(cls, msg);
+      for (sp_int _i = 1; _i < bt->len; _i++)
+        fprintf(stderr, "\tfrom %s\n", sp_StrArray_get(bt, _i));
+      return;
+    }
+  }
+#endif
+  sp_exc_print_uncaught_text(cls, msg);
+}
+/* The C stack ran out. Unlike the handler-stack exhaustion below, this one
+   CAN be rescued: the frames that filled the stack are about to be unwound,
+   and the handler that catches it sits in one of them.
+   Called from the SIGSEGV handler, on the alternate signal stack, so nothing
+   here may allocate or take a lock -- sp_raise_cls does both. These are the
+   three plain stores sp_raise_cls ends with, and the same longjmp: the
+   landing pad reads the class and message from the slots, and restores the
+   root watermark itself. With no handler armed there is nothing to jump to,
+   so the caller's report stands and the process dies as before. */
+void sp_raise_stack_overflow(void) {
+  if (sp_exc_top <= 0) return;   /* nothing armed: let the handler report */
+  sp_exc_msg[sp_exc_top-1] = (&("\xff" "stack level too deep")[1]);
+  sp_exc_cls[sp_exc_top-1] = "SystemStackError";
+  sp_exc_obj[sp_exc_top-1] = NULL;
+  sp_pending_exc_obj = NULL;
+  sp_pending_cause = NULL;
+  sp_inflight_cause = NULL;
+  sp_explicit_cause = NULL;
+  sp_explicit_cause_set = 0;
+  sp_last_exc_cls = "SystemStackError";
+  sp_unwind_kind = SP_UNWIND_NONE;
+  sp_handler_stacks_unwind();
+  sp_poly_recur_unwind();
+  longjmp(sp_exc_stack[sp_exc_top-1], 1);
+}
+/* Whether `obj` is on the cause chain that starts at `c` (c itself
+   included). The walk stops at a cycle that does not pass through `obj`. */
+static int sp_exc_cause_chain_reaches(sp_Exception *c, void *obj) {
+  sp_Exception *slow = c;
+  while (c) {
+    if ((void *)c == obj) return 1;
+    c = c->cause;
+    if (!c) return 0;
+    if ((void *)c == obj) return 1;
+    c = c->cause;
+    slow = slow->cause;
+    if (c == slow) return 0;
+  }
+  return 0;
+}
+/* The cause a raise takes when none is named is `c`: the exception being
+   handled, else the one an ensure body has in flight. An object raised again
+   while one of its own effects is that exception (an exception whose cause
+   chain leads back to it) keeps the cause it had: the other would close a
+   ring, or make it its own cause. Every raise passes here, so the raised
+   object comes in as a local and `c` is tested first: a raise made with
+   nothing handled and nothing in flight goes on at that test. */
+/* A frozen exception takes no implicit cause, as in CRuby: one first raised
+   with `cause: nil` kept nil when raised again inside a rescue (#8276) */
+static SP_INLINE void *sp_exc_implicit_cause(void *c, void *obj) {
+  if (obj && sp_gc_is_frozen(obj)) return ((sp_Exception *)obj)->cause;
+  if (c && obj && sp_exc_cause_chain_reaches((sp_Exception *)c, obj)) return ((sp_Exception *)obj)->cause;
+  return c;
+}
+/* --exceptions=abort has no frame to jump to: every raise is reported as
+   uncaught and traps (sp_setjmp.h) */
+#ifdef SP_EXC_ABORT
+# define SP_EXC_UNWINDS 0
+#else
+# define SP_EXC_UNWINDS 1
+#endif
+SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
+  /* a raise leaves any region a signal may be raised in at once (#9222):
+     what follows allocates */
+  sp_sig_async_ok = 0;
+  /* Launder the message onto the string heap and root the copy before anything
+     below allocates. `msg` is the caller's own pointer and comes in one of two
+     shapes, neither of which survives a collection here. A raiser that formats
+     its text -- sp_sprintf, as sp_raise_poly_nomethod and its kin do -- hands
+     over a heap string nothing roots, so the sweep inside sp_exc_recover_named,
+     inside sp_exc_apply_staged, or inside the slot store below freed it under
+     the reads that follow. A bare C literal, the other shape and by far the commoner one, cannot simply
+     be rooted instead: it has no marker byte, so sp_mark_string would read -- and sometimes write -- the
+     byte in front of it. Copying first and rooting the copy is the idiom
+     lib/sp_exc.c documents above sp_exc_new; sp_msg_heapify allocates without
+     giving the collector a turn, so there is no window between the two. The
+     no-message sentinel keeps its identity: that identity is what tells an
+     empty message apart from no message at all (#3711).
+     The root is never popped, because this function longjmps -- and that costs
+     nothing: every exception landing restores sp_gc_nroots to the watermark it
+     recorded before its own setjmp (sp_exc_rootmark, or a C local in the
+     Kernel#loop and enumerator landings), which discards this entry, and a
+     fiber's trampoline hands the whole root stack back to its resumer. */
+  int cont = sp_reraise_continues;   /* an ensure resuming its exception (see there) */
+  sp_reraise_continues = 0;
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_msg_heapify(msg);
+  /* a frozen message (a literal's) as frozen text (sp_exc_msg_plain) */
+  if (!sp_exc_msg_empty_given(msg)) msg = sp_exc_msg_plain(msg);
+  SP_GC_ROOT_STR(msg);
+#if SP_BT_AVAILABLE
+  /* A pass-through, a bare raise, or an ensure resuming its saved exception
+     keeps the frames of the raise that made it, as CRuby does. */
+  if (sp_bt_enabled && !sp_bt_keep && !sp_reraise_current && !cont) sp_bt_n = sp_bt_capture(sp_bt_buf, 256);
+#endif
+  sp_bt_keep = 0;
+  /* A real exception supersedes any non-local unwind in flight (e.g. raised from
+     inside an `ensure` running during a proc-return / throw): clear the unwind so
+     an outer handler treats this as an exception, not a continued unwind. */
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* a bare `raise` inside a rescue re-raises the handled exception itself, so
+     it keeps the cause it already has (#3745) */
+  if (sp_reraise_current) {
+    sp_reraise_current = 0;
+    if (!sp_pending_exc_obj && sp_cur_handled()) sp_pending_exc_obj = sp_cur_handled();
+  }
+  /* NameError/NoMethodError#name: the runtime raisers' messages carry the
+     offending name as the first quoted token ("undefined method 'foo' for
+     ..."); materialize the carried object with #name set so a rescue binding
+     reads it (#2758). Keyed on the exact runtime message shapes. */
+  if (!sp_pending_exc_obj && msg && cls && sp_exc_top > 0 &&
+      (strcmp(cls, "NoMethodError") == 0 || strcmp(cls, "NameError") == 0) &&
+      (strncmp(msg, "undefined method '", 18) == 0 ||
+       strncmp(msg, "undefined local variable or method '", 36) == 0 ||   /* 36 = prefix len; 37 compared the NUL too (#3121) */
+       strncmp(msg, "private method '", 16) == 0 ||      /* visibility refusals carry the name too */
+       strncmp(msg, "protected method '", 18) == 0 ||
+       strncmp(msg, "instance variable ", 18) == 0 ||   /* remove_instance_variable of an absent ivar */
+       strncmp(msg, "uninitialized constant ", 23) == 0))   /* const_get / bad const (#3034) */
+    sp_pending_exc_obj = sp_exc_recover_named(cls, msg);
+  /* the introspection staging (receiver/key/value) rides the carried object */
+  if (sp_pending_exc_flags && msg && cls && sp_exc_top > 0)
+    sp_pending_exc_obj = sp_exc_apply_staged(cls, msg, sp_pending_exc_obj);
+  sp_pending_exc_flags = 0;
+  /* An explicit `cause:` replaces the cause the raised object already
+     carries, as CRuby's does: a rescue clause fills only an empty cause, so
+     it never saw the new one. A frozen exception is raised as a copy that
+     takes the cause, as in CRuby. A cause whose chain leads back to the
+     object would close a cycle: CRuby raises ArgumentError instead. The
+     object named as its own cause leaves its cause as it is. */
+  if (sp_exc_top > 0 && sp_explicit_cause_set && sp_explicit_cause && sp_pending_exc_obj) {
+    if (sp_explicit_cause == sp_pending_exc_obj) {
+      sp_explicit_cause = ((sp_Exception *)sp_pending_exc_obj)->cause;
+    }
+    else if (sp_exc_cause_chain_reaches((sp_Exception *)sp_explicit_cause, sp_pending_exc_obj)) {
+      sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_pending_exc_obj = NULL;
+      sp_raise_cls("ArgumentError", "circular causes");
+    }
+    else {
+      if (sp_gc_is_frozen(sp_pending_exc_obj)) sp_pending_exc_obj = sp_exc_dup((sp_Exception *)sp_pending_exc_obj);
+      sp_gc_wb(sp_pending_exc_obj);
+      ((sp_Exception *)sp_pending_exc_obj)->cause = (sp_Exception *)sp_explicit_cause;
+    }
+  }
+  /* The slot takes the laundered copy made at the top of this function (or the
+     bare-raise sentinel, or NULL) as it stands: it is already a string-heap
+     one with a marker byte, so sp_mark_in_flight_exceptions can mark it from
+     here to the landing, and copying it a second time would only reintroduce
+     an allocation between the last read of the caller's pointer and this
+     store. */
+  /* Uncaught: CRuby's tail format "<message> (<ClassName>)", prefixed by the
+     raising frame and followed by its callers when the backtrace substrate is
+     live (a --debug build). Without it there is no location to print, and an
+     uncaught raise in a multi-file program said only what went wrong, never
+     where (#3974). Frames are method-granularity, so there is no `:line:`. */
+  /* The implicit cause is the exception being handled, unless that is the
+     very object raised: re-raised from its own rescue (a bare `raise`,
+     `raise e`, or through an ensure), it keeps the cause it had instead of
+     becoming its own -- the pending cause is that cause, so a rescue that
+     stores the pending cause outright (a modifier rescue) keeps it too. */
+  if (SP_EXC_UNWINDS && sp_exc_top > 0) { sp_exc_msg[sp_exc_top-1] = msg; sp_exc_cls[sp_exc_top-1] = cls; void *raised = sp_pending_exc_obj; sp_exc_obj[sp_exc_top-1] = raised; sp_pending_exc_obj = NULL; sp_pending_cause = cont && raised ? (void *)((sp_Exception *)raised)->cause : sp_explicit_cause_set ? sp_explicit_cause : sp_cur_handled() ? (sp_cur_handled() == raised ? (void *)((sp_Exception *)raised)->cause : sp_exc_implicit_cause(sp_cur_handled(), raised)) : sp_exc_implicit_cause(sp_inflight_cause, raised); sp_inflight_cause = NULL; sp_explicit_cause = NULL; sp_explicit_cause_set = 0; sp_last_exc_cls = cls; sp_handler_stacks_unwind(); sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top-1], 1); }
+  /* Uncaught SystemExit terminates silently with its status (Kernel#exit).
+     Read the status BEFORE the hooks run: it lives in the pending exception
+     object, which nothing roots once the hooks start allocating. */
+  if (strcmp(cls, "SystemExit") == 0) exit(sp_exc_at_exit(sp_exc_exit_status(sp_pending_exc_obj)));
+  /* A killed main fiber (Fiber#kill, lib/sp_fiber.c) ends the program with
+     status 1 after the at_exit hooks, as CRuby does. */
+  if (strcmp(cls, "FiberKillSignal") == 0) exit(sp_exc_at_exit(1));
+  /* CRuby's report prints what #message answers, so an exception class that
+     defines its own #message (or #to_s, which the default #message calls)
+     prints that text rather than the one stored at #new. A `raise Class`
+     carries no object, so one is made to ask. Ask before the hooks run: once
+     they allocate, nothing roots the pending object. */
+  if (sp_user_exc_message_fn) {
+    sp_Exception *e = sp_pending_exc_obj ? (sp_Exception *)sp_pending_exc_obj : sp_exc_new(cls, msg);
+    SP_GC_ROOT(e);
+    const char *own = sp_user_exc_message_fn(e);
+    if (own) { msg = sp_msg_heapify(own); SP_GC_ROOT_STR(msg); }
+  }
+  /* An uncaught exception prints its text AFTER the hooks have run, which is
+     the order CRuby prints them in, and the status is theirs to change (a hook
+     that calls `exit 5` makes an uncaught raise exit 5, still printing the
+     error). `msg` survives the hooks because it was laundered onto the string
+     heap and rooted at the top of this function and that root is never popped;
+     `cls` is a codegen-emitted literal the collector never touches. The
+     backtrace substrate is not so lucky: a hook that raises overwrites it, so
+     a debug build keeps its own copy across the drain. */
+#if SP_BT_AVAILABLE
+  /* The object may have kept its original trace across a bare raise inside
+     ensure. Hooks clear the pending object, so root its trace before draining. */
+  sp_StrArray *_bt_obj = (sp_bt_enabled && sp_pending_exc_obj)
+    ? ((sp_Exception *)sp_pending_exc_obj)->backtrace : NULL;
+  if (_bt_obj) _sp_gc_root_push((void **)&_bt_obj);
+  void *_bt_keep[256];
+  int _bt_keep_n = (sp_bt_enabled && sp_bt_n > 0) ? sp_bt_n : 0;
+  if (_bt_keep_n > 0) memcpy(_bt_keep, sp_bt_buf, sizeof(void *) * (size_t)_bt_keep_n);
+#endif
+  { int status = sp_exc_at_exit(1);
+#if SP_BT_AVAILABLE
+    if (_bt_keep_n > 0) { memcpy(sp_bt_buf, _bt_keep, sizeof(void *) * (size_t)_bt_keep_n); sp_bt_n = _bt_keep_n; }
+    sp_exc_print_uncaught(cls, msg, _bt_obj);
+#else
+    sp_exc_print_uncaught(cls, msg, NULL);
+#endif
+    sp_exc_resignal(cls, msg);
+#ifdef SP_EXC_ABORT
+    (void)status;
+    sp_exc_abort_trap();   /* --exceptions=abort: the host's failure (sp_setjmp.h) */
+#else
+    exit(status);
+#endif
+  } }

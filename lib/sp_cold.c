@@ -2031,6 +2031,8 @@ sp_PolyArray *sp_str_chars_poly(const char *s) {SP_GC_ROOT_STR(s);
 #endif
 #include "sp_exc.h"     /* sp_bt_block */
 int sp_bt_enabled = 0;          /* set to 1 by debug-build main() */
+void *sp_bt_buf[256];           /* frames captured at the last raise */
+int sp_bt_n = 0;
 const char *sp_bt_srcfile = ""; /* toplevel .rb path, set by debug main() */
 const char *const *sp_bt_files = 0;
 const sp_bt_block *sp_bt_blocks = 0;

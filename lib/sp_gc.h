@@ -725,6 +725,8 @@ extern int (*sp_class_is_module_fn)(sp_Class c);
  * String tag bytes: 0xfe heap-unmarked -> 0xfc marked (0xfa -> 0xf8 for a
  * collectable frozen one); others skipped. */
 void sp_gc_mark_str(const char *s);   /* lib/sp_gc.c: the bitmap mark of a slab string, the byte of a malloc'd one */
+/* The frozen bit of a GC object's header */
+static inline sp_bool sp_gc_is_frozen(void *p) { if (!p) return FALSE; return ((sp_gc_hdr *)((char *)p - sizeof(sp_gc_hdr)))->frozen; }
 static inline void sp_mark_string(const char *s) {
   if (!s) return;
   /* 0xfe or 0xfa in one compare: a second branch in this layout-sensitive

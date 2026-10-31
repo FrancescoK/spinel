@@ -78,4 +78,23 @@ void *sp_exc_ctx_new(void);
 void sp_exc_ctx_free(void *p);
 void sp_exc_ctx_mark(void *p);   /* GC: a suspended fiber's carried exc objects */
 
+/* The stacks the two helpers below read, declared (and documented) with the
+   rest in spinel_rt.h and defined in lib/sp_exc.c */
+extern SP_TLS volatile int sp_exc_top;
+extern SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
+extern SP_TLS void *sp_exc_handling[SP_EXC_STACK_MAX];
+extern SP_TLS int sp_rescue_sp;
+#ifdef SP_CEXT
+extern SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
+#endif
+/* Called immediately before every longjmp into sp_exc_stack: the landing frame
+   is the one on top, and the walk frames pushed since it armed are about to be
+   jumped over, so give the path back the depth that frame recorded. */
+static inline void sp_poly_recur_unwind(void) {
+#ifdef SP_CEXT
+  if (sp_exc_top > 0) sp_cext_arena_restore(sp_exc_cextmark[sp_exc_top - 1]);
+#endif
+  if (sp_exc_top > 0) sp_poly_recur_pop(sp_poly_recur_mark[sp_exc_top - 1]);
+}
+#define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
 #endif
