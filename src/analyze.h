@@ -118,6 +118,10 @@ void an_nil_facts(Compiler *c);
    (analyze_const.c). Runs once the constants are registered, ahead of the
    folds that decide `defined?(K)`. */
 void an_const_presence(Compiler *c);
+/* Whether the read at node id finds constant name assigned: the load
+   record's answer at the read's point, the one an_const_presence asks of
+   every read (analyze_const.c). */
+int an_const_read_finds(Compiler *c, int id, const char *name);
 int const_has_flag(const LocalVar *lv);
 LocalVar *an_const_read_effect(Compiler *c, int id);
 int an_const_read_keeps_class(Compiler *c, int id);
