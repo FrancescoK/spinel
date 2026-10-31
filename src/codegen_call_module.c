@@ -1275,6 +1275,9 @@ int emit_call_module_fn_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, c
     /* the time every collection so far took (sp_gc_stat_seconds), in
        nanoseconds as CRuby answers it */
     if (sp_streq(name, "total_time") && argc == 0) { buf_puts(b, "((sp_int)(sp_gc_stat_seconds * 1e9))"); return 1; }
+    /* the collections so far, minor and full alike, as CRuby counts them
+       (sp_gc_cycle, which GC.stat reports as "cycle") */
+    if (sp_streq(name, "count") && argc == 0) { buf_puts(b, "((sp_int)sp_gc_cycle)"); return 1; }
     /* GC.stat(key): the one statistic, ArgumentError for a key not kept */
     if (sp_streq(name, "stat") && argc == 1 && nt_kind(nt, argv[0]) != NK_KeywordHashNode) {
       buf_puts(b, "sp_gc_stat_key("); emit_boxed(c, argv[0], b); buf_puts(b, ")");
