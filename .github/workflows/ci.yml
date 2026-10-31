@@ -363,7 +363,7 @@ jobs:
   # and a gap leaves its list with its fix. clang -O0, as the 32-bit lane:
   # the lane checks what the mode answers, not what an optimizer makes of it.
   int-overflow:
-    name: ubuntu-latest / --int-overflow=${{ matrix.mode }}
+    name: ubuntu-latest / --int-overflow=${{ matrix.mode }} (${{ matrix.shard }}/2)
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -371,6 +371,11 @@ jobs:
       fail-fast: false
       matrix:
         mode: [wrap, promote]
+        # Each mode's corpus in two halves: a push that edits a runtime
+        # header misses every result-cache entry and runs all of it, which
+        # took 57 minutes for wrap and passed the 60-minute limit for
+        # promote (run 41163306805).
+        shard: [1, 2]
     env:
       CC: sccache clang
       SCCACHE_DIR: ${{ github.workspace }}/.sccache
@@ -386,8 +391,8 @@ jobs:
         uses: actions/cache@v6
         with:
           path: .sccache
-          key: sccache-ubuntu-latest-clang-${{ matrix.mode }}-${{ github.run_id }}
-          restore-keys: sccache-ubuntu-latest-clang-${{ matrix.mode }}-
+          key: sccache-ubuntu-latest-clang-${{ matrix.mode }}-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: sccache-ubuntu-latest-clang-${{ matrix.mode }}-${{ matrix.shard }}-
 
       - name: Pre-start sccache server
         run: sccache --start-server
@@ -412,11 +417,11 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build/result-cache
-          key: result-cache-${{ matrix.mode }}-${{ github.run_id }}
-          restore-keys: result-cache-${{ matrix.mode }}-
+          key: result-cache-${{ matrix.mode }}-${{ matrix.shard }}-${{ github.run_id }}
+          restore-keys: result-cache-${{ matrix.mode }}-${{ matrix.shard }}-
 
       - name: Run the test corpus under --int-overflow=${{ matrix.mode }}
-        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0 SPINEL_INT_OVERFLOW=${{ matrix.mode }}
+        run: make -j$(getconf _NPROCESSORS_ONLN) test-corpus OPT=-O0 SPINEL_INT_OVERFLOW=${{ matrix.mode }} TEST_SHARD=${{ matrix.shard }}/2
 
       - name: sccache stats
         if: always()
