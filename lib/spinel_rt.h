@@ -16279,71 +16279,73 @@ SP_CONSTRUCTOR static void sp_json_install_hooks(void) {
 #endif
 
 #include "sp_setjmp.h"
-/* Depth of the begin/rescue/ensure handler stack. Each entry holds a jmp_buf
-   (200-300 bytes on common targets) plus the parallel arrays below, all
-   static in every generated program. A build can set it with
-   -DSP_EXC_STACK_MAX=<n>, as it can SP_GC_STACK_MAX; the depth that matters
-   is the deepest nesting of simultaneously active handlers, not the number
-   of begin blocks in the source. Pushes are bounds-checked, so a program
-   that nests deeper raises SystemStackError (sp_stack_too_deep). */
-#ifndef SP_EXC_STACK_MAX
-#define SP_EXC_STACK_MAX 64
-#endif
+/* The begin/rescue/ensure handler stack, SP_EXC_STACK_MAX deep (sp_exc_ctx.h).
+   Each entry holds a jmp_buf (200-300 bytes on common targets) plus the
+   parallel arrays below, defined once in lib/sp_exc.c rather than in every
+   generated program. The depth that matters is the deepest nesting of
+   simultaneously active handlers, not the number of begin blocks in the
+   source. Pushes are bounds-checked, so a program that nests deeper raises
+   SystemStackError (sp_stack_too_deep). The program refers to the depths the
+   archive was built with, so a program compiled with another one fails to
+   link rather than indexing a stack of another size. */
+SP_CONSTRUCTOR static void sp_exc_depths_agree(void) {
+  (void)*(const volatile int *)&SP_EXC_DEPTHS_SYM(SP_EXC_STACK_MAX, SP_CATCH_STACK_MAX);
+}
 /* Per-worker (SP_TLS) in the threaded build: this is the active exception/ensure
    handler stack of the thread currently executing. It is swapped per fiber by
    sp_exc_ctx_save/load, which assumes a single active stack -- true at N=1, but
    with N>1 every OS worker runs a fiber concurrently, so each needs its own.
    Empty (plain static, byte-identical) in the single-threaded build. */
-static SP_TLS jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
-static SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
+extern SP_TLS jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
+extern SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
 /* GC-root watermark at each handler's entry: a raise longjmps past the
    __attribute__((cleanup)) pops of SP_GC_ROOT locals in the unwound frames,
    so the landing restores sp_gc_nroots from the popped slot. A side array
    (not a per-region C local) so protected regions add no stack locals --
    an extra local per region measurably shifts hot-function frames. */
-static SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
+extern SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
 #ifdef SP_CEXT
-static SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
+extern SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
 #endif
-static SP_TLS volatile int sp_exc_top = 0;
-static SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
-static SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
+extern SP_TLS volatile int sp_exc_top;
+extern SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
+extern SP_TLS volatile const char *sp_last_exc_cls;
 /* The raised exception OBJECT, carried alongside (cls,msg) so a user
    exception subclass keeps its ivars across raise -> rescue (#1415).
    NULL for a bare string/builtin raise, which reconstructs on catch.
    sp_pending_exc_obj is set by sp_raise_exc just before the longjmp and
    consumed into the per-frame slot by sp_raise_cls. */
-static SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
-static SP_TLS void *sp_pending_exc_obj = NULL;
+extern SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
+extern SP_TLS void *sp_pending_exc_obj;
 /* The exception currently being handled (set by a rescue body), and the cause
    captured for the next raised exception -- Exception#cause threads the former
    into a newly raised exception's `cause` field. */
-static SP_TLS void *sp_pending_cause = NULL;
+extern SP_TLS void *sp_pending_cause;
 /* The exception unwinding through an `ensure` body: a raise from inside that
    body takes it as its cause, the way a raise inside a rescue takes $! (#3745). */
-static SP_TLS void *sp_inflight_cause = NULL;
+extern SP_TLS void *sp_inflight_cause;
 static inline void sp_inflight_restore(void **p) { sp_inflight_cause = *p; }
 /* A bare `raise` re-raises the handled exception itself, keeping the cause it
    already carries rather than becoming its own cause (#3745). */
-static SP_TLS int sp_reraise_current = 0;
+extern SP_TLS int sp_reraise_current;
 /* An exception passing on (a rescue that does not match it, a modifier
    rescue that catches StandardError only): sp_raise_cls raises it again from
    the landing, and snapshotting the stack there replaced the frames below
    with the landing's own -- a debug build's backtrace named the rescuing
    method and up, never the statement that raised (#5084). The pass-through
    sets this so the raise keeps the snapshot it already has. */
-static SP_TLS int sp_bt_keep = 0;
+extern SP_TLS int sp_bt_keep;
 /* `raise ..., cause: exc`: the explicit cause overrides the implicit
    currently-handled exception for exactly one raise. The `_set` flag records
    that a cause: was given at all, so `cause: nil` suppresses the implicit cause
    rather than reading as "no cause given" (#2990). */
-static SP_TLS void *sp_explicit_cause = NULL;
-static SP_TLS int sp_explicit_cause_set = 0;
+extern SP_TLS void *sp_explicit_cause;
+extern SP_TLS int sp_explicit_cause_set;
 /* Set by an ensure that resumes an exception it ran for: the propagation
    goes on, not a new raise, so the exception keeps the cause it was raised
    with, nil among them, where a raise in a rescue clause takes the handled
    one (#8375). */
-static SP_TLS int sp_reraise_continues = 0;
+extern SP_TLS int sp_reraise_continues;
 /* The exception handled at each active rescue-body depth (CRuby's per-rescue
    errinfo). The "currently handled" exception -- what Exception#cause threads --
    is the innermost: sp_rescue_sp>0 ? sp_exc_handling[sp_rescue_sp-1] : NULL. A
@@ -16351,12 +16353,12 @@ static SP_TLS int sp_reraise_continues = 0;
    already popped, so nested rescue bodies share an sp_exc_top. Pushed on rescue
    entry; popped on every exit -- fall-through, return/break/next/retry (codegen
    pops sp_rescue_sp), and raise-out (the landing restores sp_rescue_mark). */
-static SP_TLS void *sp_exc_handling[SP_EXC_STACK_MAX];
-static SP_TLS int sp_rescue_sp = 0;
+extern SP_TLS void *sp_exc_handling[SP_EXC_STACK_MAX];
+extern SP_TLS int sp_rescue_sp;
 /* sp_rescue_sp captured at each begin frame's arm, restored on that frame's
    exception landing so a rescue body that exits by raising doesn't leak its push
    (a side array beside the handler stack, mirroring sp_exc_rootmark). */
-static SP_TLS int sp_rescue_mark[SP_EXC_STACK_MAX];
+extern SP_TLS int sp_rescue_mark[SP_EXC_STACK_MAX];
 /* The container-walk path's depth (sp_inspect.h) at each handler's arm. Any
    non-local exit out of a guarded walk -- a raise, a throw, a break out of a
    block, a proc's non-local return -- longjmps past the sp_poly_recur_pop calls,
@@ -16370,7 +16372,7 @@ static SP_TLS int sp_rescue_mark[SP_EXC_STACK_MAX];
    a runtime call (sp_exc_check_depth, sp_catch_check_depth, sp_brk_push), so
    only the proc-return home -- a struct the method builds on its own C stack --
    needs a line in generated code. */
-static SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
+extern SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
 /* Called immediately before every longjmp into sp_exc_stack: the landing frame
    is the one on top, and the walk frames pushed since it armed are about to be
    jumped over, so give the path back the depth that frame recorded. */
@@ -16496,10 +16498,9 @@ static sp_StrArray *sp_caller(sp_int start, sp_bool have_len, sp_int len) {
    ensures it passes over). Declared here, before sp_raise_cls, so a real raise
    can clear it -- an exception raised inside an ensure during an unwind
    supersedes that unwind. The machinery that uses it lives further down. */
-enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW, SP_UNWIND_BREAK, SP_UNWIND_EXIT };
 struct sp_proc_home;
-static SP_TLS int sp_unwind_kind = SP_UNWIND_NONE, sp_unwind_target = -1, sp_unwind_exc_top = 0;  /* per-worker (see sp_exc_stack) */
-static SP_TLS struct sp_proc_home *sp_unwind_home = NULL;  /* PROCRET target (THROW uses sp_unwind_target) */
+extern SP_TLS int sp_unwind_kind, sp_unwind_target, sp_unwind_exc_top;  /* per-worker (see sp_exc_stack) */
+extern SP_TLS struct sp_proc_home *sp_unwind_home;  /* PROCRET target (THROW uses sp_unwind_target) */
 /* forward: materialize the exception object for a raise that carried none
    (a bare `raise "msg"` / `raise Cls, msg` / builtin runtime raise), so `$!`
    and `rescue => e` bind one real object with a stable identity. The struct
@@ -17569,22 +17570,19 @@ void sp_bigint_raise_zerodiv(const char *msg) { sp_raise_cls("ZeroDivisionError"
    The SP_UNWIND_* enum and sp_unwind_* state are declared earlier (before
    sp_raise_cls, which clears them when a real exception supersedes an unwind). */
 
-/* Depth of the catch/throw stack: the same jmp_buf cost and the same knob as
-   SP_EXC_STACK_MAX above (-DSP_CATCH_STACK_MAX=<n>). */
-#ifndef SP_CATCH_STACK_MAX
-#define SP_CATCH_STACK_MAX 64
-#endif
-static SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];   /* per-worker (see sp_exc_stack) */
-static SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
+/* The catch/throw stack, SP_CATCH_STACK_MAX deep (sp_exc_ctx.h): the same
+   jmp_buf cost as the handler stack above, defined in lib/sp_exc.c too. */
+extern SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];   /* per-worker (see sp_exc_stack) */
+extern SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
 /* 0 = name tag (symbol/string, matched by content); 1 = object tag (matched
    by pointer identity, CRuby's non-symbol tag semantics) */
-static SP_TLS unsigned char sp_catch_tag_kind[SP_CATCH_STACK_MAX];
+extern SP_TLS unsigned char sp_catch_tag_kind[SP_CATCH_STACK_MAX];
 /* boxed value channel, like sp_brk_val: any thrown value carries faithfully */
-static SP_TLS sp_RbVal sp_catch_val[SP_CATCH_STACK_MAX];
-static SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
-static SP_TLS int sp_catch_rootmark[SP_CATCH_STACK_MAX]; /* GC-root watermark at entry (see sp_exc_rootmark) */
-static SP_TLS int sp_catch_recur_mark[SP_CATCH_STACK_MAX]; /* walk-path depth at entry (see sp_poly_recur_mark) */
-static SP_TLS volatile int sp_catch_top = 0;
+extern SP_TLS sp_RbVal sp_catch_val[SP_CATCH_STACK_MAX];
+extern SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];  /* exception depth at each catch's entry */
+extern SP_TLS int sp_catch_rootmark[SP_CATCH_STACK_MAX]; /* GC-root watermark at entry (see sp_exc_rootmark) */
+extern SP_TLS int sp_catch_recur_mark[SP_CATCH_STACK_MAX]; /* walk-path depth at entry (see sp_poly_recur_mark) */
+extern SP_TLS volatile int sp_catch_top;
 /* Guard a catch push, like sp_exc_check_depth: the arm's first store is
    sp_catch_tag[sp_catch_top], so this runs in front of it -- which also makes
    it the one place every catch arm passes through, so the walk path's depth is
@@ -17685,12 +17683,12 @@ static void sp_throw(const char *tag, int kind, sp_RbVal val) {
    ~8% fps in a program that never breaks from a block. TLS holds only
    the pointers, so break-free programs pay nothing. */
 #define SP_BRK_STACK_MAX 64
-static SP_TLS jmp_buf *sp_brk_stack;              /* lazily allocated */
-static SP_TLS sp_RbVal *sp_brk_val;
-static SP_TLS sp_int *sp_brk_serial;
-static SP_TLS int *sp_brk_exc_top;                /* sp_exc_top at scope entry */
-static SP_TLS int *sp_brk_recur_mark;            /* walk-path depth at scope entry (see sp_poly_recur_mark) */
-static SP_TLS volatile int sp_brk_top = 0;
+extern SP_TLS jmp_buf *sp_brk_stack;              /* lazily allocated */
+extern SP_TLS sp_RbVal *sp_brk_val;
+extern SP_TLS sp_int *sp_brk_serial;
+extern SP_TLS int *sp_brk_exc_top;                /* sp_exc_top at scope entry */
+extern SP_TLS int *sp_brk_recur_mark;            /* walk-path depth at scope entry (see sp_poly_recur_mark) */
+extern SP_TLS volatile int sp_brk_top;
 /* shared counter (not SP_TLS) so serials are globally unique; see
    sp_proc_home_seq for the same shape */
 static sp_int sp_brk_seq = 1;
@@ -17798,7 +17796,7 @@ static void sp_mark_brk_vals(void) {
    the exception stack. sp_proc_home_seq stays a single shared counter so home ids
    are globally unique across workers (a lambda may be called on a different
    worker than it was created on); the bump is atomic in the threaded build. */
-static SP_TLS sp_proc_home *sp_proc_ret_head = NULL;
+extern SP_TLS sp_proc_home *sp_proc_ret_head;
 static sp_int sp_proc_home_seq = 0;
 static sp_int sp_proc_home_next(void) {
 #ifdef SP_THREADS

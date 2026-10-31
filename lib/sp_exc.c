@@ -1427,3 +1427,52 @@ SP_NORETURN void sp_exc_abort_trap(void) {
   __builtin_trap();
 }
 #endif
+
+/* The handler stacks a generated program pushes and pops (begin/rescue/
+   ensure, catch/throw, break scopes, proc-return homes) and the unwind in
+   flight, declared and documented in spinel_rt.h. Defined here, once, so the
+   runtime functions that walk them can live in this archive rather than be
+   compiled into every program. Per worker (SP_TLS) in the threaded build. */
+#include "sp_alloc.h"   /* sp_str_empty */
+const int SP_EXC_DEPTHS_SYM(SP_EXC_STACK_MAX, SP_CATCH_STACK_MAX) = 1;
+SP_TLS jmp_buf sp_exc_stack[SP_EXC_STACK_MAX];
+SP_TLS const char *sp_exc_msg[SP_EXC_STACK_MAX];
+SP_TLS int sp_exc_rootmark[SP_EXC_STACK_MAX];
+#ifdef SP_CEXT
+SP_TLS sp_cext_arena_mark sp_exc_cextmark[SP_EXC_STACK_MAX];
+#endif
+SP_TLS volatile int sp_exc_top = 0;
+SP_TLS const char *sp_exc_cls[SP_EXC_STACK_MAX];
+SP_TLS volatile const char *sp_last_exc_cls = sp_str_empty;
+SP_TLS void *sp_exc_obj[SP_EXC_STACK_MAX];
+SP_TLS void *sp_pending_exc_obj = NULL;
+SP_TLS void *sp_pending_cause = NULL;
+SP_TLS void *sp_inflight_cause = NULL;
+SP_TLS int sp_reraise_current = 0;
+SP_TLS int sp_bt_keep = 0;
+SP_TLS void *sp_explicit_cause = NULL;
+SP_TLS int sp_explicit_cause_set = 0;
+SP_TLS int sp_reraise_continues = 0;
+SP_TLS void *sp_exc_handling[SP_EXC_STACK_MAX];
+SP_TLS int sp_rescue_sp = 0;
+SP_TLS int sp_rescue_mark[SP_EXC_STACK_MAX];
+SP_TLS int sp_poly_recur_mark[SP_EXC_STACK_MAX];
+SP_TLS int sp_unwind_kind = SP_UNWIND_NONE;
+SP_TLS int sp_unwind_target = -1;
+SP_TLS int sp_unwind_exc_top = 0;
+SP_TLS struct sp_proc_home *sp_unwind_home = NULL;
+SP_TLS jmp_buf sp_catch_stack[SP_CATCH_STACK_MAX];
+SP_TLS const char *sp_catch_tag[SP_CATCH_STACK_MAX];
+SP_TLS unsigned char sp_catch_tag_kind[SP_CATCH_STACK_MAX];
+SP_TLS sp_RbVal sp_catch_val[SP_CATCH_STACK_MAX];
+SP_TLS int sp_catch_exc_top[SP_CATCH_STACK_MAX];
+SP_TLS int sp_catch_rootmark[SP_CATCH_STACK_MAX];
+SP_TLS int sp_catch_recur_mark[SP_CATCH_STACK_MAX];
+SP_TLS volatile int sp_catch_top = 0;
+SP_TLS jmp_buf *sp_brk_stack;
+SP_TLS sp_RbVal *sp_brk_val;
+SP_TLS sp_int *sp_brk_serial;
+SP_TLS int *sp_brk_exc_top;
+SP_TLS int *sp_brk_recur_mark;
+SP_TLS volatile int sp_brk_top = 0;
+SP_TLS sp_proc_home *sp_proc_ret_head = NULL;

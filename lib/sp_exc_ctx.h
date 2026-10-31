@@ -4,9 +4,8 @@
  * the proc-return home node whose chain it carries.
  *
  * Types only, plus the three context operations that touch nothing else
- * (sp_exc_ctx_new/free/mark, lib/sp_exc.c). sp_exc_ctx_save/load copy the
- * handler stacks in and out, and those stacks are TU-local statics of
- * spinel_rt.h, so the two stay there. */
+ * (sp_exc_ctx_new/free/mark, lib/sp_exc.c). The handler stacks themselves are
+ * defined in lib/sp_exc.c and declared in spinel_rt.h. */
 #include "sp_setjmp.h"
 #include "sp_types.h"   /* sp_int */
 #include "sp_gc.h"      /* sp_RbVal */
@@ -14,6 +13,23 @@
 #ifdef SP_CEXT
 #include "sp_cext.h"
 #endif
+
+/* Depth of the begin/rescue/ensure handler stack and of the catch/throw
+   stack. The stacks themselves are defined in lib/sp_exc.c, so the depth is
+   the one the runtime archive was built with: -DSP_EXC_STACK_MAX=<n> (or
+   SP_CATCH_STACK_MAX) goes to the archive's build, and a program compiled
+   with another value fails to link (sp_exc_stacks_<exc>_<catch>). */
+#ifndef SP_EXC_STACK_MAX
+#define SP_EXC_STACK_MAX 64
+#endif
+#ifndef SP_CATCH_STACK_MAX
+#define SP_CATCH_STACK_MAX 64
+#endif
+#define SP_EXC_DEPTHS_SYM_(e, c) sp_exc_stacks_##e##_##c
+#define SP_EXC_DEPTHS_SYM(e, c) SP_EXC_DEPTHS_SYM_(e, c)
+extern const int SP_EXC_DEPTHS_SYM(SP_EXC_STACK_MAX, SP_CATCH_STACK_MAX);
+/* What an ensure body runs for while the unwind it interrupts is held */
+enum { SP_UNWIND_NONE, SP_UNWIND_PROCRET, SP_UNWIND_THROW, SP_UNWIND_BREAK, SP_UNWIND_EXIT };
 
 /* A non-lambda proc's home method: a node on that method's C stack, linked
    onto the per-fiber chain sp_proc_ret_head (see the proc-return machinery in
