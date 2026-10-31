@@ -3,6 +3,7 @@ map: TypeError can't iterate from Float
 select: TypeError can't iterate from Float
 count: TypeError can't iterate from Float
 sum: TypeError can't iterate from Float
+sum(0): TypeError can't iterate from Float
 each_with_index: TypeError can't iterate from Float
 find: TypeError can't iterate from Float
 any?: TypeError can't iterate from Float
@@ -10,6 +11,8 @@ sort_by: TypeError can't iterate from Float
 reverse_each: TypeError can't iterate from Float
 beginless each: TypeError can't iterate from NilClass
 endless each: TypeError can't iterate from Float
+beginless sum(0): TypeError can't iterate from NilClass
 int each: 1..4
 int map: [2, 4, 6, 8]
+int sum(10): 20
 bag map: [4, 5]

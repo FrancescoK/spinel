@@ -11,7 +11,7 @@ class Bag
   def map = @xs.map { |x| yield x }
   def select = @xs.select { |x| yield x }
   def count = @xs.count { |x| yield x }
-  def sum = @xs.sum { |x| yield x }
+  def sum(init = 0) = @xs.sum(init) { |x| yield x }
   def each_with_index = @xs.each_with_index { |x, i| yield x, i }
   def find = @xs.find { |x| yield x }
   def any? = @xs.any? { |x| yield x }
@@ -36,6 +36,7 @@ try("map") { f.map { |x| x } }
 try("select") { f.select { |x| x } }
 try("count") { f.count { |x| x } }
 try("sum") { f.sum { |x| x } }
+try("sum(0)") { f.sum(0) { |x| x } }
 try("each_with_index") { f.each_with_index { |x, i| x } }
 try("find") { f.find { |x| x } }
 try("any?") { f.any? { |x| x } }
@@ -43,8 +44,10 @@ try("sort_by") { f.sort_by { |x| x } }
 try("reverse_each") { f.reverse_each { |x| x } }
 try("beginless each") { box(..2.0).each { |x| x } }
 try("endless each") { box(1.0..).each { |x| break x } }
+try("beginless sum(0)") { box(..2.0).sum(0) { |x| x } }
 
 i = box(1..4)
 try("int each") { i.each { |x| x } }
 try("int map") { i.map { |x| x * 2 } }
+try("int sum(10)") { i.sum(10) { |x| x } }
 try("bag map") { box(Bag.new(3, 4)).map { |x| x + 1 } }
