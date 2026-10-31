@@ -327,6 +327,15 @@ jobs:
       - name: Build (parse + regexp + spinelc), 32-bit
         run: make -j$(getconf _NPROCESSORS_ONLN) all
 
+      # The result cache, kept across runs as the other lanes keep it: one
+      # entry the rotating quarters share.
+      - name: Restore the result cache
+        uses: actions/cache@v6
+        with:
+          path: build/result-cache
+          key: result-cache-m32-${{ github.run_id }}
+          restore-keys: result-cache-m32-
+
       # clang -O0: the lane checks word-size assumptions, not what an
       # optimizer makes of them, and the corpus is all compile time. Nearly
       # every push misses sccache for the whole corpus (the runtime header
