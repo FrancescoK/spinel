@@ -641,6 +641,10 @@ int is_class_plain_query(const char *n) {
   return visibility_of_name(n) != 0;
 }
 
+int is_class_compare(const char *n) {
+  return sp_streq(n, "==") || sp_streq(n, "!=") || sp_streq(n, "equal?") || sp_streq(n, "eql?");
+}
+
 int is_class_self_answer(const char *n) {
   return n && (is_mixin_call(n) || sp_streq(n, "private_class_method") || sp_streq(n, "public_class_method") ||
                sp_streq(n, "private_constant") || sp_streq(n, "public_constant") ||

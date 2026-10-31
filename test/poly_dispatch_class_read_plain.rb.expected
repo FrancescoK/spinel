@@ -1,0 +1,10 @@
+12
+["A", true, "A", "other", "A"]
+["B", false, "B", "other", "4"]
+["Pt", false, "Pt", "other", "3"]
+["Dt", false, "Dt", "other", "4"]
+5
+NoMethodError: undefined method 'val' for class Pt
+6
+NoMethodError: undefined method 'val' for class Dt
+NoMethodError: undefined method 'val' for class B

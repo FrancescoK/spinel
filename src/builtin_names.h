@@ -270,6 +270,7 @@ int is_mixin_call(const char *n); /* include extend prepend */
    inspect === == ... respond_to? attr_* visibility. Not include, extend,
    prepend, private_constant, private_class_method and public_class_method:
    those answer their receiver. */
+int is_class_compare(const char *n);  /* == != equal? eql? */
 int is_class_plain_query(const char *n);
 int is_class_self_answer(const char *n); /* include extend prepend private_class_method public_class_method private_constant public_constant remove_method undef_method: answer their receiver */
 int is_self_rebinding_call(const char *n); /* instance_/class_/module_ eval and exec, define_singleton_method */

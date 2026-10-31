@@ -3441,16 +3441,57 @@ static void cv_self_answers(Compiler *c, unsigned char *v, int n, int cls, int d
     for (int j = 0; j < m; j++) cv_self_answers(c, v, ids[j], ncls, 0, depth + 1);
   }
 }
+/* Is the Class value that `.class` call n answers consumed where no poly
+   dispatch can follow it: written into a string (`"#{x.class}"`, also as the
+   branch of a conditional inside one), compared (`==`, `!=`, `equal?`,
+   `eql?`), asked its name, text or an ordering (the plain class queries), the
+   subject of a `case` (compared with `===`), or thrown away? Such a read does not make the classes
+   values: the builtin files' error messages read `.class` that way.
+   par: an_parent_map. */
+static int cv_class_read_plain(const NodeTable *nt, const int *par, int n) {
+  VpUp up;
+  VpUpKind k = vp_climb(nt, par, n, VPS_ALL, &up);
+  if (k == VPU_DROPPED) return 1;
+  if (k != VPU_ENDED || up.parent < 0) return 0;
+  int e = up.parent, child = up.node;
+  NodeKind ek = nt_kind(nt, e);
+  if (ek == NK_EmbeddedStatementsNode) return 1;
+  if (ek == NK_CaseNode) return nt_ref(nt, e, "predicate") == child;
+  const char *nm;
+  if (ek == NK_CallNode && nt_ref(nt, e, "receiver") == child)
+    return nt_ref(nt, e, "block") < 0 && (nm = nt_str(nt, e, "name")) && is_class_plain_query(nm);
+  if (ek == NK_ArgumentsNode && par[e] >= 0 && nt_kind(nt, par[e]) == NK_CallNode)
+    return (nm = nt_str(nt, par[e], "name")) && is_class_compare(nm);
+  return 0;
+}
+static int cv_argc(const NodeTable *nt, int n) {
+  int args = nt_ref(nt, n, "arguments"), an = 0;
+  if (args >= 0) nt_arr(nt, args, "arguments", &an);
+  return an;
+}
+/* The name a send / public_send / __send__ call (n) is handed as a literal
+   Symbol or String first argument, or NULL when it is computed. */
+static const char *cv_send_literal_name(const NodeTable *nt, int n) {
+  int args = nt_ref(nt, n, "arguments"), an = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (an < 1) return NULL;
+  if (nt_kind(nt, av[0]) == NK_SymbolNode) return nt_str(nt, av[0], "value");
+  if (nt_kind(nt, av[0]) == NK_StringNode) return nt_str(nt, av[0], "content");
+  return NULL;
+}
 static void cv_build(Compiler *c) {
   const NodeTable *nt = c->nt;
   int nk = c->nclasses, nn = nt->count;
   unsigned char *v = calloc((size_t)nk + 1, 1), *nonval = calloc((size_t)nn + 1, 1);
-  if (!v || !nonval) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int *par = an_parent_map(nt);
+  if (!v || !nonval || !par) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int all = 0, rel = 0, cls_call = 0, owner = 0, methods = 0;
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;
     NodeKind dk = dn >= 0 && dn < nn ? nt_kind(nt, dn) : NK_NONE;
-    if ((dk != NK_ClassNode && dk != NK_ModuleNode) || c->classes[k].is_singleton_of ||
+    int named_struct = (c->classes[k].is_struct || c->classes[k].is_data) && !c->classes[k].is_anon_struct &&
+                       !c->classes[k].is_native_class && !c->classes[k].is_singleton_of;
+    if (((dk != NK_ClassNode && dk != NK_ModuleNode) && !named_struct) || c->classes[k].is_singleton_of ||
         c->classes[k].is_native_class || class_is_prim_reopen(c, k))
       v[k] = 1;
   }
@@ -3488,7 +3529,12 @@ static void cv_build(Compiler *c) {
     if (is_method_owner_query(nm)) owner = 1;
     if (is_method_object_maker(nm)) methods = 1;
     if (is_class_relatives_query(nm)) rel = 1;
-    if (is_class_query(nm) && nt_ref(nt, n, "arguments") < 0) cls_call = 1;
+    if (is_class_query(nm) && cv_argc(nt, n) == 0 && !cv_class_read_plain(nt, par, n)) cls_call = 1;
+    /* `x.send(:class)`: the same call, and a computed name may be "class" */
+    if (is_send_family(nm)) {
+      const char *sn = cv_send_literal_name(nt, n);
+      if ((!sn || is_class_query(sn)) && !cv_class_read_plain(nt, par, n)) cls_call = 1;
+    }
     if (is_mixin_call(nm) || is_kind_query(nm) || is_raise_alias(nm)) cv_nonval_args(nt, nonval, n);
     NodeKind rk = recv >= 0 ? nt_kind(nt, recv) : NK_NONE;
     if (rk != NK_ConstantReadNode && rk != NK_ConstantPathNode && rk != NK_SelfNode) continue;
@@ -3533,6 +3579,15 @@ static void cv_build(Compiler *c) {
     if (dn < 0 || dn >= nn || (nt_kind(nt, dn) != NK_ClassNode && nt_kind(nt, dn) != NK_ModuleNode)) continue;
     if (cv_self_value(nt, nonval, nt_ref(nt, dn, "body"), nt_kind(nt, dn) == NK_ModuleNode)) cv_mark_tree(c, v, k);
   }
+  /* a named Struct.new / Data.define block is a class body: `self` read as a
+     value in it, or in its `def self.x`, names the class */
+  NT_FOREACH_KIND(nt, NK_CallNode, n) {
+    int blk = nt_ref(nt, n, "block"), recv = nt_ref(nt, n, "receiver"), w = par[n];
+    if (blk < 0 || recv < 0 || nt_kind(nt, blk) != NK_BlockNode || nt_kind(nt, recv) != NK_ConstantReadNode ||
+        !is_record_class_builder(nt_str(nt, recv, "name"), nt_str(nt, n, "name")) ||
+        w < 0 || nt_kind(nt, w) != NK_ConstantWriteNode) continue;
+    if (cv_self_value(nt, nonval, nt_ref(nt, blk, "body"), 0)) cv_mark_name(c, v, nt_str(nt, w, "name"));
+  }
   /* (a reopened class's other bodies, and methods defined on a constant) */
   NT_FOREACH_KIND(nt, NK_ClassNode, n) {
     int p = nt_ref(nt, n, "constant_path");
@@ -3573,6 +3628,7 @@ static void cv_build(Compiler *c) {
     for (int e = 0; rel && e < c->classes[k].nextended_mods; e++) v[c->classes[k].extended_mods[e]] = 1;
   }
   free(nonval);
+  free(par);
   free(c->cls_value);
   c->cls_value = v;
   c->cls_value_n = nk;

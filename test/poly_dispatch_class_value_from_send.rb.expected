@@ -1,0 +1,9 @@
+A3
+B4
+NoMethodError: undefined method 'tag' for class B
+A5
+NoMethodError: undefined method 'tag' for class A
+B6
+B7
+NoMethodError: undefined method 'tag' for class A
+A8

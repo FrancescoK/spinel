@@ -1,0 +1,6 @@
+P1
+Q2
+NoMethodError: undefined method 'tag' for class P
+D3
+Q4
+NoMethodError: undefined method 'tag' for class D
