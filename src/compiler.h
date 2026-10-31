@@ -990,6 +990,9 @@ typedef struct {
   int unreferenced;    /* a class the program opens with `class` that no reached
                           code names (compute_reachable, #10592): none of its
                           methods is reached and it has no instance */
+  int ctor_late;       /* the census after the last reachability pass found
+                          an object of it built where only that pass reached:
+                          it gets a constructor, no dispatch arm (#10649) */
   int no_instance;     /* such a class whose instance side no reached code
                           opens: its singleton methods may run, but nothing
                           builds one, and its instance methods stay unreached */

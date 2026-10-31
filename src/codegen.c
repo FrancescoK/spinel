@@ -11869,7 +11869,7 @@ static void anon_name_expr(char *out, size_t cap, int ci);
    exist (compute_instantiated) does not, except a value type, whose boxing
    function is defined with it and is named by the methods taking self. */
 int class_has_ctor(const ClassInfo *ci) {
-  return ci->instantiated || ci->is_value_type;
+  return ci->instantiated || ci->ctor_late || ci->is_value_type;
 }
 /* Are class cid's instances kept in a per-class pool? An exception, an Array
    subclass and a subclass of a native class are built otherwise. */

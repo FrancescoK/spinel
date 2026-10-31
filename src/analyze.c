@@ -53464,10 +53464,12 @@ void analyze_program(Compiler *c) {
   /* The census again, on what this pass reached: it opens the instances of
      a class reached code is typed with (an object built only where nothing
      runs), and a construction in one of its methods, now reached, builds
-     its class too. Taken as more, never less: the dispatch's arms and the
-     types settled on the census above. Without it a reached
-     `SSLSocket#initialize` called `SSLContext.new`, whose constructor the
-     C left out (#10643). */
+     its class too. Such a class gets its constructor (ClassInfo.ctor_late)
+     and nothing else: the dispatch's arms and the types were settled on
+     the census above, and a class added to them now gave a call typed
+     Integer an arm of another class's String reader (#10649). Without it a
+     reached `SSLSocket#initialize` called `SSLContext.new`, whose
+     constructor the C left out (#10643). */
   {
     int nk = c->nclasses;
     unsigned char *was = malloc((size_t)(nk ? nk : 1) * 3);
@@ -53478,9 +53480,10 @@ void analyze_program(Compiler *c) {
     }
     compute_instantiated(c, 0);
     for (int k = 0; k < nk; k++) {
-      c->classes[k].instantiated |= was[3 * k];
-      c->classes[k].ctor_site |= was[3 * k + 1];
-      c->classes[k].ctor_reachable |= was[3 * k + 2];
+      c->classes[k].ctor_late = c->classes[k].instantiated && !was[3 * k];
+      c->classes[k].instantiated = was[3 * k];
+      c->classes[k].ctor_site = was[3 * k + 1];
+      c->classes[k].ctor_reachable = was[3 * k + 2];
     }
     free(was);
   }
