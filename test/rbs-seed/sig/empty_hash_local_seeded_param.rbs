@@ -1,0 +1,4 @@
+module EmptyHashSeedMaker
+  EXTENSIONS: Hash[Symbol, Hash[String, String]]
+  def self.serialized: (Hash[Symbol, Hash[String, String]] extensions_map) -> Integer
+end

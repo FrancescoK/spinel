@@ -8885,7 +8885,15 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     LocalVar *p = m->pnames[i] ? scope_local(m, m->pnames[i]) : NULL;
     if (!p || cext_scope(c, mi)) continue;
     int anode = layout_plain_arg(c, m, argv, &L, i);
-    if (p->rbs_seeded && (anode < 0 || param_seed_holds_arg(c, p, anode, infer_type(c, anode)))) continue;
+    if (p->rbs_seeded && (anode < 0 || param_seed_holds_arg(c, p, anode, infer_type(c, anode)))) {
+      /* the declaration types the parameter; an empty-`{}`-only local passed
+         here still takes the Hash it declares, as it takes an inferred
+         parameter's below: the literal has no key or value to go by, and
+         left alone it became the String-keyed default the seed then refused
+         (#10656). A local a store has typed is not bound. */
+      if (anode >= 0) changed |= bind_empty_hash_arg(c, p->rbs_type != TY_UNKNOWN ? p->rbs_type : p->type, anode);
+      continue;
+    }
     if (anode < 0 && !L.gather) {
       int src = from == ARG_KWH ? kwh : from == ARG_ELEM ? argv[L.splat] : argv[L.arg[i]];
       changed |= slot_take(c, p, bound_source_type(c, src, p), src);
