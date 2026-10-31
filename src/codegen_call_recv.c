@@ -6971,7 +6971,10 @@ static void emit_hash_fetch_default_tail(Compiler *c, int id, int dflt, const ch
     Buf db; memset(&db, 0, sizeof db);
     emit_expr(c, dflt, &db);
     const char *dt_text = db.p ? db.p : "NULL";
-    if (fetch_operand_is_inert(c, dflt) || fzl_text_id(dt_text) >= 0)
+    /* (a shared String local's read can allocate, sp_strbuf_read_pub, and
+       the receiver is held unrooted when the key and the default are
+       inert: evaluated ahead of the probe, it has to allocate nothing) */
+    if ((fetch_operand_is_inert(c, dflt) && repr_of(c, dflt).kind != RK_STRBUF) || fzl_text_id(dt_text) >= 0)
       /* a default that costs nothing up front (a local, nil, a frozen
          literal's bytes): one probe */
       buf_printf(b, "; SP_STR_B(sp_%sHash_fetch_or%s(_t%d, _t%d, SP_STR_B(%s)))", hn, ks, th, tk, dt_text);
