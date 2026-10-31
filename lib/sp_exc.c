@@ -1476,3 +1476,111 @@ SP_TLS int *sp_brk_exc_top;
 SP_TLS int *sp_brk_recur_mark;
 SP_TLS volatile int sp_brk_top = 0;
 SP_TLS sp_proc_home *sp_proc_ret_head = NULL;
+
+/* The per-fiber handler context's save and load (spinel_rt.h describes the
+   context): the live prefix of every handler array into the outgoing fiber's
+   context and out of the incoming one's. */
+void sp_exc_ctx_save(void *p) {            /* current globals -> ctx */
+  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+  int n = sp_exc_top;
+  if (n > x->ecap) { x->ecap = n;
+    x->es = (jmp_buf *)realloc(x->es, sizeof(jmp_buf) * n);
+    x->em = (const char **)realloc(x->em, sizeof(char *) * n);
+    x->ec = (const char **)realloc(x->ec, sizeof(char *) * n);
+    x->eo = (void **)realloc(x->eo, sizeof(void *) * n);
+    x->rrem = (int *)realloc(x->rrem, sizeof(int) * n);
+    x->erm = (int *)realloc(x->erm, sizeof(int) * n);
+    x->ersm = (int *)realloc(x->ersm, sizeof(int) * n); }
+#ifdef SP_CEXT
+  x->cext_marks = (sp_cext_arena_mark *)realloc(x->cext_marks, sizeof(sp_cext_arena_mark) * n);
+  if (n && !x->cext_marks) sp_oom_die();
+  for (int i = 0; i < n; ++i) x->cext_marks[i] = sp_exc_cextmark[i];
+  sp_cext_arena_context_save(&x->cext_arena);
+#endif
+  for (int i = 0; i < n; i++) { memcpy(x->es[i], sp_exc_stack[i], sizeof(jmp_buf));
+    x->em[i] = sp_exc_msg[i]; x->ec[i] = sp_exc_cls[i]; x->eo[i] = sp_exc_obj[i];
+    x->erm[i] = sp_exc_rootmark[i]; x->ersm[i] = sp_rescue_mark[i];
+    /* the arm's walk-path depth travels with the arm: two green threads whose
+       handlers sit at the same index would otherwise share one slot, and a
+       raise in one would restore the other's depth -- a HIGHER one resurrects
+       frames that belong to the other context (see sp_poly_recur_mark) */
+    x->rrem[i] = sp_poly_recur_mark[i]; }
+  x->en = n;
+  int m = sp_catch_top;
+  if (m > x->ccap) { x->ccap = m;
+    x->cs = (jmp_buf *)realloc(x->cs, sizeof(jmp_buf) * m);
+    x->ct = (const char **)realloc(x->ct, sizeof(char *) * m);
+    x->ctk = (unsigned char *)realloc(x->ctk, sizeof(unsigned char) * m);
+    x->cv = (sp_RbVal *)realloc(x->cv, sizeof(sp_RbVal) * m);
+    x->cet = (int *)realloc(x->cet, sizeof(int) * m);
+    x->rrcm = (int *)realloc(x->rrcm, sizeof(int) * m);
+    x->crm = (int *)realloc(x->crm, sizeof(int) * m); }
+  for (int i = 0; i < m; i++) { memcpy(x->cs[i], sp_catch_stack[i], sizeof(jmp_buf));
+    x->ct[i] = sp_catch_tag[i]; x->ctk[i] = sp_catch_tag_kind[i];
+    x->cv[i] = sp_catch_val[i]; x->cet[i] = sp_catch_exc_top[i];
+    x->rrcm[i] = sp_catch_recur_mark[i]; x->crm[i] = sp_catch_rootmark[i]; }
+  x->cn = m;
+  int bn = sp_brk_top;
+  if (bn > x->bcap) { x->bcap = bn;
+    x->bs = (jmp_buf *)realloc(x->bs, sizeof(jmp_buf) * bn);
+    x->bv = (sp_RbVal *)realloc(x->bv, sizeof(sp_RbVal) * bn);
+    x->bser = (sp_int *)realloc(x->bser, sizeof(sp_int) * bn);
+    x->bet = (int *)realloc(x->bet, sizeof(int) * bn);
+    x->rrbm = (int *)realloc(x->rrbm, sizeof(int) * bn);
+    if (!x->bs || !x->bv || !x->bser || !x->bet || !x->rrbm) sp_oom_die(); }
+  for (int i = 0; i < bn; i++) { memcpy(x->bs[i], sp_brk_stack[i], sizeof(jmp_buf));
+    x->bv[i] = sp_brk_val[i]; x->bser[i] = sp_brk_serial[i]; x->bet[i] = sp_brk_exc_top[i];
+    x->rrbm[i] = sp_brk_recur_mark[i]; }
+  x->bn = bn;
+  x->prhead = sp_proc_ret_head;
+  x->uk = sp_unwind_kind; x->ut = sp_unwind_target; x->ue = sp_unwind_exc_top; x->uh = sp_unwind_home;
+  int rn = sp_rescue_sp;
+  if (rn > x->rcap) { x->rcap = rn;
+    x->shand = (void **)realloc(x->shand, sizeof(void *) * rn);
+    if (!x->shand) sp_oom_die(); }
+  for (int i = 0; i < rn; i++) x->shand[i] = sp_exc_handling[i];
+  x->rn = rn; x->pcause = sp_pending_cause; x->icause = sp_inflight_cause;
+  /* The container-walk path travels with the green thread, like the handler
+     stack above it: a fiber suspended in the middle of an #inspect resumes
+     still knowing what it was inside, and the fiber that runs meanwhile starts
+     from an empty path rather than reading this one's frames. Almost always
+     nothing to copy -- a yield lands between walks, not inside one. */
+  int rrn = sp_poly_recur_top;
+  if (rrn > x->rrcap) { x->rrcap = rrn;
+    x->rrf = (sp_poly_recur_frame *)realloc(x->rrf, sizeof(sp_poly_recur_frame) * rrn);
+    if (!x->rrf) sp_oom_die(); }
+  for (int i = 0; i < rrn; i++) x->rrf[i] = sp_poly_recur_stack[i];
+  x->rrn = rrn;
+}
+void sp_exc_ctx_load(void *p) {            /* ctx -> current globals */
+  sp_exc_ctx_t *x = (sp_exc_ctx_t *)p;
+#ifdef SP_CEXT
+  for (int i = 0; i < x->en; ++i) sp_exc_cextmark[i] = x->cext_marks[i];
+  sp_cext_arena_context_load(&x->cext_arena);
+#endif
+  for (int i = 0; i < x->en; i++) { memcpy(sp_exc_stack[i], x->es[i], sizeof(jmp_buf));
+    sp_exc_msg[i] = x->em[i]; sp_exc_cls[i] = x->ec[i]; sp_exc_obj[i] = x->eo[i];
+    sp_poly_recur_mark[i] = x->rrem[i];
+    sp_exc_rootmark[i] = x->erm[i]; sp_rescue_mark[i] = x->ersm[i]; }
+  sp_exc_top = x->en;
+  /* the marker covers one slot past top (handler consumption window); zero
+     it so a stale entry from another fiber's context is never chased */
+  if (x->en < SP_EXC_STACK_MAX) { sp_exc_msg[x->en] = 0; sp_exc_obj[x->en] = 0; }
+  for (int i = 0; i < x->cn; i++) { memcpy(sp_catch_stack[i], x->cs[i], sizeof(jmp_buf));
+    sp_catch_tag[i] = x->ct[i]; sp_catch_tag_kind[i] = x->ctk[i];
+    sp_catch_val[i] = x->cv[i]; sp_catch_exc_top[i] = x->cet[i];
+    sp_catch_recur_mark[i] = x->rrcm[i]; sp_catch_rootmark[i] = x->crm[i]; }
+  sp_catch_top = x->cn;
+  for (int i = 0; i < x->bn; i++) { memcpy(sp_brk_stack[i], x->bs[i], sizeof(jmp_buf));
+    sp_brk_val[i] = x->bv[i]; sp_brk_serial[i] = x->bser[i]; sp_brk_exc_top[i] = x->bet[i];
+    sp_brk_recur_mark[i] = x->rrbm[i]; }
+  sp_brk_top = x->bn;
+  sp_proc_ret_head = x->prhead;
+  sp_unwind_kind = x->uk; sp_unwind_target = x->ut; sp_unwind_exc_top = x->ue; sp_unwind_home = x->uh;
+  for (int i = 0; i < x->rn; i++) sp_exc_handling[i] = x->shand[i];
+  sp_rescue_sp = x->rn; sp_pending_cause = x->pcause; sp_inflight_cause = x->icause;
+  if (x->rrn > sp_poly_recur_cap) sp_poly_recur_grow(x->rrn);
+  for (int i = 0; i < x->rrn; i++) sp_poly_recur_stack[i] = x->rrf[i];
+  sp_poly_recur_top = x->rrn;
+  sp_poly_recur_ixtop = 0;   /* the index described the other context's frames */
+}
