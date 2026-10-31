@@ -7069,23 +7069,10 @@ static void prepend_cell_write(Compiler *c, int late, int list, int after, int c
    object made before then has the methods the class had (CRuby's call
    picks by whether the include has run), so the copies such an include
    makes are guarded copies of a cell the statement sets, as a later
-   prepend's are (prepend_late_stmt). Only where a top-level statement that
-   runs code lies between the first body and the reopening: with none, no
-   object of the class and no call on one can have run ahead of the
-   include (refuse_mixin_after_calls asks the same). */
-static int top_code_runs_between(Compiler *c, int lo, int hi) {
-  const NodeTable *nt = c->nt;
-  int n = 0, *st = prog_top_seq(c, &n, NULL), runs = 0;
-  for (int q = 0; q < n && !runs; q++) {
-    NodeKind qk = nt_kind(nt, st[q]);
-    if (qk == NK_ClassNode || qk == NK_ModuleNode || qk == NK_DefNode || qk == NK_LoadNode) continue;
-    int f, r;
-    elab_top_place(c, st[q], &f, &r);
-    runs = r > lo && r < hi;
-  }
-  free(st);
-  return runs;
-}
+   prepend's are (prepend_late_stmt), wherever the record orders the
+   reopening after the first body, which is where the refusal rule asks
+   (refuse_mixin_after_calls counts a call in an earlier statement's lambda
+   too, though no code runs between the two bodies). */
 static int include_late_stmt(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
   int nb = 0;
@@ -7097,12 +7084,7 @@ static int include_late_stmt(Compiler *c, int ci, int body) {
        region's runs at a time the record does not fix */
     LoadPoint p0 = elab_point_of(c, ob[0].node), p1 = elab_point_of(c, s);
     int o = elab_cmp(p0, p1);
-    if (!(o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0))) return -1;
-    int f0, r0, f1, r1;
-    elab_top_place(c, ob[0].node, &f0, &r0);
-    elab_top_place(c, s, &f1, &r1);
-    /* (a place the record does not rank is guarded, as it may run anywhere) */
-    return r0 < 0 || r1 < 0 || top_code_runs_between(c, r0, r1) ? s : -1;
+    return o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0) ? s : -1;
   }
   return -1;
 }
@@ -7120,9 +7102,11 @@ void process_include_body(Compiler *c, int ci, int body_node) {
   const NodeTable *nt = c->nt;
   /* (a core class's or module's reopening keeps its includes as they were:
      the core's methods are not the program's copies a guard entry can
-     hold, Enumerable's above all, which is materialized on its own) */
+     hold, Enumerable's above all, which is materialized on its own; so
+     does a reopening of Class, the module Class__reopen every class
+     extends) */
   const char *cn = c->classes[ci].name;
-  int core = is_builtin_reopen_name(cn) || is_builtin_module_name(cn);
+  int core = is_builtin_reopen_name(cn) || is_builtin_module_name(cn) || sp_streq(cn, CLASS_REOPEN_NAME);
   int late = core ? -1 : include_late_stmt(c, ci, body_node), cell = 0, cell_stmt = -1;
   int sc = nt_ref(nt, c->classes[ci].def_node, "superclass");
   NodeKind sk = sc >= 0 ? nt_kind(nt, sc) : NK_NONE;
