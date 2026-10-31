@@ -11776,7 +11776,9 @@ static void bc_check(Bc *b, int id, int in_defined) {
   free(hit);
   if (r != 0) return;
   if (in_defined) {
-    /* defined?(X) answers nil, as for a name defined nowhere */
+    /* defined?(X) answers nil, as for a name defined nowhere, unless an
+       autoload registers it ("constant" while it is pending) */
+    if (nt_autoload_named(nt, n)) return;
     nt_set_str((NodeTable *)nt, id, "name", "SpinelNoSuchConstant__");
     return;
   }
@@ -11871,7 +11873,7 @@ static void bc_check_scoped(Bc *b, int v) {
   }
   char *p = bc_resolve(b, par);
   if (p && *p && p[0] != '?' && p[0] != '#' && bc_mod(b, p, 0) &&
-      bc_scoped_lookup(b, p, nm) == 0)
+      bc_scoped_lookup(b, p, nm) == 0 && !nt_autoload_named(nt, nm))
     nt_set_str((NodeTable *)nt, v, "name", "SpinelNoSuchConstant__");
   free(p);
 }

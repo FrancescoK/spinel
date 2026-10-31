@@ -661,6 +661,12 @@ void nt_add_autoload(NodeTable *nt, int node, int file, const char *name, const 
   nt->autoloads[nt->nautoloads++] = (AutoloadRegistration){ node, file, 0, 0, dup_n(name, strlen(name)), path ? dup_n(path, strlen(path)) : NULL };
 }
 
+int nt_autoload_named(const NodeTable *nt, const char *name) {
+  for (int k = 0; name && k < nt->nautoloads; k++)
+    if (sp_streq(nt->autoloads[k].name, name)) return 1;
+  return 0;
+}
+
 void nt_free(NodeTable *nt) {
   if (!nt) return;
   for (int k = 0; k < nt->count; k++) {

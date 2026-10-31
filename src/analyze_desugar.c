@@ -5429,8 +5429,10 @@ static int engine_absent(NodeTable *nt, int e, int in) {
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_SymbolNode) x = nt_str(nt, av[0], "value");
     if (ac >= 1 && nt_kind(nt, av[0]) == NK_StringNode) x = nt_str(nt, av[0], "content");
   }
+  /* (an autoload's name is defined while its registration is pending,
+     whatever the file defines: the run time answers) */
   if (!x || comp_is_wellknown_const(x) || is_builtin_class_name(x) || is_builtin_module_name(x) ||
-      is_builtin_exception_name(x)) return -1;
+      is_builtin_exception_name(x) || nt_autoload_named(nt, x)) return -1;
   /* A top-level `defined?(X)` looks X up in Object alone, so a same-named
      constant some module or class owns (ffi-yajl's FFI_Yajl::FFI beside the
      `require "ffi" unless defined?(FFI)` guard) is not the one it asks about. */

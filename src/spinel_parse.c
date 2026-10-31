@@ -7219,7 +7219,8 @@ static SpGraphFile *sp_graph_rec(SpLoadGraph *g, int f) {
  * candidates). A path not known is a set too, an open one: it may name any
  * file of the program. */
 #define SP_REQ_MAX 16
-typedef struct { char *v[SP_REQ_MAX]; int n, open; } SpPaths;
+/* called: a local the path reads may be changed by a call on it (sp_local_scan) */
+typedef struct { char *v[SP_REQ_MAX]; int n, open, called; } SpPaths;
 typedef struct { const pm_parser_t *pp; const pm_node_t *const *stack; int depth; const char *dir; } SpReqCtx;
 
 static void sp_paths_free(SpPaths *k) {
@@ -7281,8 +7282,10 @@ static bool sp_param_binds(const pm_node_t *n, void *data) {
 
 /* The writes of one local of a scope: `lvl` soft scopes below it, a write
    names it by that depth. A plain write is counted (its value kept); any
-   other form that assigns it (a target, an operator write) is `other`. */
-typedef struct { pm_constant_id_t name; int lvl, nwrite, other; const pm_node_t *val; } SpLocalScan;
+   other form that assigns it (a target, an operator write) is `other`; a
+   call on it that may change the String it holds (`path << "x"`, any but a
+   reader of String's) is `called`. */
+typedef struct { pm_constant_id_t name; int lvl, nwrite, other, called; const pm_node_t *val; } SpLocalScan;
 static bool sp_local_scan(const pm_node_t *n, void *data) {
   SpLocalScan *s = data;
   switch (PM_NODE_TYPE(n)) {
@@ -7303,6 +7306,22 @@ static bool sp_local_scan(const pm_node_t *n, void *data) {
     SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_OR_WRITE_NODE, pm_local_variable_or_write_node_t)
     SP_LOCAL_OTHER(PM_LOCAL_VARIABLE_AND_WRITE_NODE, pm_local_variable_and_write_node_t)
 #undef SP_LOCAL_OTHER
+    case PM_CALL_NODE: {
+      const pm_call_node_t *c = (const pm_call_node_t *)n;
+      const pm_local_variable_read_node_t *r = c->receiver && PM_NODE_TYPE(c->receiver) == PM_LOCAL_VARIABLE_READ_NODE ?
+                                               (const pm_local_variable_read_node_t *)c->receiver : NULL;
+      if (r && r->name == s->name && (int)r->depth == s->lvl) {
+        const pm_constant_t *m = pm_constant_pool_id_to_constant(&g_parser->constant_pool, c->name);
+        char name[32];
+        if (m->length >= sizeof name) s->called = 1;
+        else {
+          memcpy(name, m->start, m->length);
+          name[m->length] = '\0';
+          if (!is_string_read_only_method(name)) s->called = 1;
+        }
+      }
+      return true;
+    }
     default: return true;
   }
 }
@@ -7362,7 +7381,7 @@ static bool sp_reads_visit(const pm_node_t *n, void *data) {
    one expression in its scope, that expression's), or the words of the loop
    it is the parameter of. 0 when it is neither: any value. */
 static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_read_node_t *rd,
-                       const pm_node_list_t **words, pm_constant_id_t *wid) {
+                       const pm_node_list_t **words, pm_constant_id_t *wid, int *called) {
   int si = -1, hop = 0;
   for (int i = x->depth - 1; i >= 0 && si < 0; i--) {
     pm_node_type_t t = PM_NODE_TYPE(x->stack[i]);
@@ -7379,8 +7398,9 @@ static int sp_req_bind(const SpReqCtx *x, PevCtx *ev, const pm_local_variable_re
     pm_visit_node(params, sp_param_binds, &ps);
     if (ps.found) return 0;
   }
-  SpLocalScan sc = { rd->name, 0, 0, 0, NULL };
+  SpLocalScan sc = { rd->name, 0, 0, 0, 0, NULL };
   if (body) pm_visit_node(body, sp_local_scan, &sc);
+  *called |= sc.called;
   if (sc.other || (word ? sc.nwrite != 0 : sc.nwrite != 1)) return 0;
   if (word) { *wid = pid; return 1; }
   PevCtx sub;   /* (the expression's own locals are not looked into) */
@@ -7409,7 +7429,7 @@ static void sp_req_paths(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out) 
   for (int i = 0; ok && i < rs.n; i++) {
     const pm_node_list_t *w = NULL;
     pm_constant_id_t id = 0;
-    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id);
+    ok = sp_req_bind(x, &ev, rs.rd[i], &w, &id, &out->called);
     if (ok && w) { ok = !words; words = w; wid = id; }
   }
   char *wname = words ? cstr(wid) : NULL;
@@ -7439,7 +7459,7 @@ static void sp_req_beside(const SpReqCtx *x, const pm_node_t *arg, SpPaths *out)
   pm_constant_id_t pid = 0;
   for (int i = x->depth - 1; i >= 0 && !words; i--)
     if (PM_NODE_TYPE(x->stack[i]) == PM_BLOCK_NODE && sp_each_words(x, i, 0, &words, &pid)) {
-      SpLocalScan sc = { pid, 0, 0, 0, NULL };   /* (a word the block assigns anew is not the loop's) */
+      SpLocalScan sc = { pid, 0, 0, 0, 0, NULL };   /* (a word the block assigns anew is not the loop's) */
       pm_visit_node(sp_scope_body(x->stack[i]), sp_local_scan, &sc);
       if (sc.nwrite || sc.other) { sp_paths_open(out); return; }
     }
@@ -7593,7 +7613,9 @@ static int sp_graph_computed(SpSiteWalk *w, const pm_call_node_t *n, const char 
     }
     else sp_req_paths(&x, name, &names);
     SpLoadEdge *edge = &g->edge[e];
-    edge->nauto = names.open || bad || beside || kv.n != 1 || nfile != 1 ? 0 : names.n;
+    /* (a call on a local the path or the name reads may change its String:
+       the registration takes the value the call leaves, so it stays open) */
+    edge->nauto = names.open || bad || beside || kv.n != 1 || nfile != 1 || kv.called || names.called ? 0 : names.n;
     edge->autoload = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
     edge->auto_path = edge->nauto ? calloc((size_t)edge->nauto, sizeof(char *)) : NULL;
     edge->auto_file = edge->nauto ? calloc((size_t)edge->nauto, sizeof(int)) : NULL;

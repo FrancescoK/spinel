@@ -484,6 +484,11 @@ printf 'autoload :Lib, ARGV.first\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload registration"
 printf '%%w[lib other].each { |path| autoload :Lib, File.join(__dir__, path) }\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload registration"
+# a call on the path's local may change its String before the registration
+printf 'path = File.join(__dir__, "lib")\npath.replace(File.join(__dir__, "other"))\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload registration"
+printf 'path = File.join(__dir__, "lib")\n[1].each { path << "" }\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
+refused autoload "unresolved autoload registration"
 # An implicit rescue/ensure wraps the whole body, which its emitter cannot
 # dispatch. Keep the graph refusal; an explicit begin statement is executable.
 for body in 'class Holder' 'module Holder' 'class Holder; end; class << Holder'; do
@@ -495,7 +500,12 @@ done
 printf 'require_relative "main"\n' > "$tmp/entry/lib.rb"
 printf 'require_relative "lib"\nputs "main"\n' > "$tmp/entry/main.rb"
 refused entry "the program's own entry file"
+# a computed path no file matches may name any file, the entry among them...
 printf '%%w[ig ih].each_with_index { |v, i| require File.join("main", v) }\n' > "$tmp/entry/main.rb"
+refused entry "a computed require may load the program's own entry file"
+# ...and a closed set that names it beside another file
+printf 'puts "lib"\n' > "$tmp/entry/lib.rb"
+printf '%%w[lib main].each { |v| require File.join(__dir__, v) } if ARGV.size > 5\n' > "$tmp/entry/main.rb"
 refused entry "a computed require may load the program's own entry file"
 printf 'Object.new.autoload(:Lib, File.join(__dir__, "lib"))\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload owner"

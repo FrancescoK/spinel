@@ -256,6 +256,10 @@ void nt_dump(const NodeTable *nt, FILE *out);
 unsigned long long nt_content_hash(const NodeTable *nt);
 
 void nt_add_autoload(NodeTable *nt, int node, int file, const char *name, const char *path);
+/* Does a registration of the program name constant `name`? A defined? of it
+   is then the run time's question until the load record answers it at the
+   read (elab_autoload_read): "constant" while the registration is pending. */
+int nt_autoload_named(const NodeTable *nt, const char *name);
 void nt_free(NodeTable *nt);
 /* Renumber the nodes to an order: order[k] is the id node k had (node_table.c). */
 void nt_renumber(NodeTable *nt, const int *order);

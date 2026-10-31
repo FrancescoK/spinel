@@ -3926,6 +3926,26 @@ static int defined_super_reaches(Compiler *c, int sup) {
   return v < 0 ? -1 : v > 0;
 }
 
+/* One segment's test in a defined? path whose reads have a flag or an
+   autoload: its presence flag, or a registration whose file has not started
+   to run. CRuby answers "constant" for a pending registration whatever its
+   file defines, and nil inside the file until it assigns the constant (the
+   file counts as loaded from its start, sp_load_file). A segment with a
+   registration but no flag of its own keeps the registration's answer once
+   the file has run when a definition exists. */
+static void emit_defined_seg_test(Compiler *c, int seg, Buf *b) {
+  ConstReadEffect ce = an_const_read_effect(c, seg);
+  int a = ce.autoload;
+  buf_puts(b, "(");
+  if (ce.presence) buf_printf(b, "cst_%s__set", ce.presence->name);
+  else if (ce.class_presence) buf_printf(b, "sp_class_present_%d", ce.class_presence - 1);
+  else if (a && const_seg_resolves(c, seg)) { buf_printf(b, "sp_auto_%d_registered)", a); return; }
+  else if (!a) buf_puts(b, "0");
+  if (a) buf_printf(b, "%s(sp_auto_%d_registered && (!sp_auto_%d_loaded || !*sp_auto_%d_loaded))",
+                    ce.presence || ce.class_presence ? " || " : "", a, a, a);
+  buf_puts(b, ")");
+}
+
 /* A defined?(...) expression (emit_expr_node's arms, in their order) */
 static int emit_defined_value(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty);
 static int emit_defined_expr(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *ty) {
@@ -4046,14 +4066,8 @@ static int emit_defined_value(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       int reads[16], n = comp_defined_reads(c, id, reads, 16);
       buf_puts(b, "(");
       for (int k = 0; k < n; k++) {
-        ConstReadEffect ce = an_const_read_effect(c, reads[k]);
         if (k) buf_puts(b, " && ");
-        buf_puts(b, "(");
-        if (ce.presence) buf_printf(b, "cst_%s__set", ce.presence->name);
-        else if (ce.class_presence) buf_printf(b, "sp_class_present_%d", ce.class_presence - 1);
-        else buf_puts(b, "0");
-        if (ce.autoload) buf_printf(b, " || sp_auto_%d_registered", ce.autoload);
-        buf_puts(b, ")");
+        emit_defined_seg_test(c, reads[k], b);
       }
       if (n < 1) buf_puts(b, "0");
       buf_puts(b, " ? SPL(\"constant\") : NULL)");

@@ -4817,8 +4817,10 @@ void elab_dump(Compiler *c, FILE *out) {
         fprintf(out, "form #%d runs code%s\n", elab_point_of(c, h->b).seq, h->v[h->n - 1].vis == ELAB_YES && !h->v[h->n - 1].may ? "" : " (maybe)");
       continue;
     }
-    else if (h->a == -2 - (int)ELAB_CONST && h->b < 0)
-      fprintf(out, "const #<Class:%s>::%s:", lr_class_name(c, -h->b - 2), h->name);
+    else if ((h->a == LR_KEY_CONST || h->a == LR_KEY_AUTO) && h->b < 0)
+      fprintf(out, "%s #<Class:%s>::%s:", h->a == LR_KEY_AUTO ? "autoload" : "const", lr_class_name(c, -h->b - 2), h->name);
+    else if (h->a == LR_KEY_AUTO)   /* a registration, keyed by its owner as a constant is */
+      fprintf(out, "autoload %s%s%s:", h->b >= 2 ? c->classes[h->b - 2].name : "", h->b >= 2 ? "::" : "", h->name);
     else if (h->a < LR_MAIN) fprintf(out, "%s%s%s%s:", vars[-2 - h->a], h->b >= 2 ? c->classes[h->b - 2].name : "",
                                 h->b >= 2 ? "::" : h->b == 0 && h->a == -2 - (int)ELAB_CONST ? "?::" : "", h->name);
     else fprintf(out, "%s%s%s:", h->a == LR_MAIN ? "main" : c->classes[h->a].name, h->b ? "." : "#", h->name);

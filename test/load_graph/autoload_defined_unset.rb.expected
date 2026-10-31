@@ -1,0 +1,12 @@
+"constant"
+guarded
+1
+"constant"
+"constant"
+unset lib loaded
+"uninitialized constant UnsetTop"
+nil
+"constant"
+unset leaf lib loaded
+"uninitialized constant UnsetScope::Leaf"
+nil
