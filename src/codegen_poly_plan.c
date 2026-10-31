@@ -20,11 +20,14 @@ static int g_pa_n, g_pa_cap;
 static long g_pa_compared, g_pa_arms, g_pa_conflict, g_pa_missing, g_pa_extra;
 static long g_pa_trial_kept, g_pa_trial_dropped;
 
-/* (codegen_internal.h) the kinds sp_poly_enum_proc walks */
+/* (codegen_internal.h) the kinds sp_poly_enum_proc walks, and a Float Range,
+   which it answers with the TypeError a walk of one raises (without it the
+   Range fell to the user-class switch's NoMethodError) */
 void emit_penum_kind_test(Buf *b, int tv) {
   buf_printf(b, "_t%d.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(_t%d.cls_id) || sp_poly_is_hash_kind(_t%d.cls_id) || "
-                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR)",
-             tv, tv, tv, tv, tv, tv);
+                "_t%d.cls_id == SP_BUILTIN_RANGE || _t%d.cls_id == SP_BUILTIN_STR_RANGE || _t%d.cls_id == SP_BUILTIN_ENUMERATOR || "
+                "_t%d.cls_id == SP_BUILTIN_FLOAT_RANGE)",
+             tv, tv, tv, tv, tv, tv, tv);
 }
 
 int pa_begin(int id) {
