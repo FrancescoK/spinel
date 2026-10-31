@@ -61,6 +61,13 @@ sp_oint sp_StrIntHash_oget(sp_StrIntHash*h,const char*k);
 /* h.fetch(k, d): the value, or d (nil included) when k is absent */
 sp_oint sp_StrIntHash_fetch_or(sp_StrIntHash*h,const char*k,sp_oint d);
 void sp_StrIntHash_set(sp_StrIntHash*h,const char*k,sp_int v);
+/* `h[k] op= v` in one probe: the slot the read finds (-1 on a miss), the
+   value there as `h[k]` reads it (the default on a miss), and the store into
+   that slot (a set on a miss). Nothing between the read and the store may
+   change the hash; an Integer value is no reference, so no barrier. */
+sp_int sp_StrIntHash_opw_slot(sp_StrIntHash*h,const char*k);
+static inline sp_oint sp_StrIntHash_opw_get(sp_StrIntHash*h,sp_int i){if(i<0)return h->default_nil?sp_oint_nil():sp_oint_of(h->default_v);return(SP_UNLIKELY(h->vnil!=NULL)&&sp_nilbit_get(h->vnil,i))?sp_oint_nil():sp_oint_of(h->vals[i]);}
+static inline void sp_StrIntHash_opw_put(sp_StrIntHash*h,sp_int i,const char*k,sp_int v){if(i<0){sp_StrIntHash_set(h,k,v);return;}h->vals[i]=v;if(SP_UNLIKELY(h->vnil!=NULL))sp_nilbit_clr(h->vnil,i);}
 sp_bool sp_StrIntHash_has_key(sp_StrIntHash*h,const char*k);
 sp_bool sp_StrIntHash_has_value(sp_StrIntHash*h,sp_int v);
 sp_int sp_StrIntHash_length(sp_StrIntHash*h);
@@ -99,6 +106,8 @@ void sp_StrStrHash_mark_env(sp_StrStrHash*h);
 #endif
 static inline void sp_StrStrHash_set(sp_StrStrHash*h,const char*k,const char*v){sp_StrStrHash_set_e(h,k,SP_SEFX(v));}
 sp_bool sp_StrStrHash_has_key(sp_StrStrHash*h,const char*k);
+/* h.fetch(k, d) in one probe: the value's bytes, or d when k is absent */
+const char *sp_StrStrHash_fetch_or(sp_StrStrHash*h,const char*k,const char*d);
 sp_bool sp_StrStrHash_has_value_e(sp_StrStrHash*h,sp_strelem v);
 static inline sp_bool sp_StrStrHash_has_value(sp_StrStrHash*h,const char*v){return sp_StrStrHash_has_value_e(h,SP_SEFX(v));}
 sp_int sp_StrStrHash_length(sp_StrStrHash*h);
@@ -126,6 +135,7 @@ static inline const char *sp_IntStrHash_get(sp_IntStrHash*h,sp_int k){sp_strelem
 sp_IntStrHash*sp_IntStrHash_merge(sp_IntStrHash*a,sp_IntStrHash*b);
 void sp_IntStrHash_update(sp_IntStrHash*a,sp_IntStrHash*b);
 sp_bool sp_IntStrHash_has_key(sp_IntStrHash*h,sp_int k);
+const char *sp_IntStrHash_fetch_or(sp_IntStrHash*h,sp_int k,const char*d);
 sp_bool sp_IntStrHash_has_value_e(sp_IntStrHash*h,sp_strelem v);
 static inline sp_bool sp_IntStrHash_has_value(sp_IntStrHash*h,const char*v){return sp_IntStrHash_has_value_e(h,SP_SEFX(v));}
 sp_int sp_IntStrHash_length(sp_IntStrHash*h);
@@ -140,6 +150,9 @@ sp_IntIntHash*sp_IntIntHash_new(void);
 sp_IntIntHash*sp_IntIntHash_new_with_default(sp_int d);
 void sp_IntIntHash_grow(sp_IntIntHash*h);
 void sp_IntIntHash_set(sp_IntIntHash*h,sp_int k,sp_int v);
+sp_int sp_IntIntHash_opw_slot(sp_IntIntHash*h,sp_int k);
+static inline sp_oint sp_IntIntHash_opw_get(sp_IntIntHash*h,sp_int i){if(i<0)return h->default_nil?sp_oint_nil():sp_oint_of(h->default_v);return(SP_UNLIKELY(h->vnil!=NULL)&&sp_nilbit_get(h->vnil,i))?sp_oint_nil():sp_oint_of(h->vals[i]);}
+static inline void sp_IntIntHash_opw_put(sp_IntIntHash*h,sp_int i,sp_int k,sp_int v){if(i<0){sp_IntIntHash_set(h,k,v);return;}h->vals[i]=v;if(SP_UNLIKELY(h->vnil!=NULL))sp_nilbit_clr(h->vnil,i);}
 sp_int sp_IntIntHash_get(sp_IntIntHash*h,sp_int k);
 /* D3b-ii: as the sp_StrIntHash ones above */
 void sp_IntIntHash_set_nil(sp_IntIntHash*h,sp_int k);
@@ -166,6 +179,7 @@ static inline void sp_IntIntHash_delete_okey(sp_IntIntHash*h,sp_oint k){if(!k.ni
 static inline sp_strelem sp_IntStrHash_get_okey_e(sp_IntStrHash*h,sp_oint k){if (SP_UNLIKELY(!h)) sp_nil_recv("[]");if(SP_UNLIKELY(k.nil))return h->default_v;return sp_IntStrHash_get_e(h,k.v);}
 static inline const char *sp_IntStrHash_get_okey(sp_IntStrHash*h,sp_oint k){sp_strelem e=sp_IntStrHash_get_okey_e(h,k);return SP_SEB(e);}
 static inline sp_bool sp_IntStrHash_has_key_okey(sp_IntStrHash*h,sp_oint k){return !k.nil&&sp_IntStrHash_has_key(h,k.v);}
+static inline const char *sp_IntStrHash_fetch_or_okey(sp_IntStrHash*h,sp_oint k,const char*d){if(SP_UNLIKELY(k.nil))return d;return sp_IntStrHash_fetch_or(h,k.v,d);}
 static inline void sp_IntStrHash_delete_okey(sp_IntStrHash*h,sp_oint k){if(!k.nil)sp_IntStrHash_delete(h,k.v);}
 sp_int sp_IntIntHash_length(sp_IntIntHash*h);
 sp_IntArray*sp_IntIntHash_keys(sp_IntIntHash*h);

@@ -25389,7 +25389,17 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
        that holds nil (D3b-ii), is `nil + 1`, CRuby's NoMethodError. The
        default is a run-time property (default_nil), so the plain getter,
        which answers default_v (0) for a miss, would fold it as 0. */
-    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT)
+    /* With a key of the hash's own kind and a right-hand side that cannot
+       touch the hash, the read finds the slot once and the store writes it
+       (opw_slot / opw_get / opw_put): a counting loop's `h[k] += 1` was two
+       probes, the second half its time. */
+    int ts = 0;
+    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT && !ok && !subtree_has_side_effect(c, v)) {
+      ts = ++g_tmp;
+      buf_printf(b, "sp_int _t%d = sp_%sHash_opw_slot(_t%d, %s); ", ts, hn, ta, rk);
+      snprintf(slot, sizeof slot, "sp_oint_val(sp_%sHash_opw_get(_t%d, _t%d), \"%s\")", hn, ta, ts, op);
+    }
+    else if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT)
       snprintf(slot, sizeof slot, "sp_oint_val(sp_%sHash_oget%s(_t%d, %s), \"%s\")", hn, rs, ta, rk, op);
     else
       snprintf(slot, sizeof slot, "sp_%sHash_get%s(_t%d, %s)", hn, rs, ta, rk);
@@ -25409,7 +25419,8 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     free(rhs);
     buf_puts(b, "; ");
     buf_printf(b, "if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s); ", ta, ta, hash_box_cls(rt));
-    buf_printf(b, "sp_%sHash_set(_t%d, %s, %s_t%d%s); }\n", hn, ta, sk, ONE_HV_O(hn), tv, ONE_HV_C(hn));
+    if (ts) buf_printf(b, "sp_%sHash_opw_put(_t%d, _t%d, %s, _t%d); }\n", hn, ta, ts, sk, tv);
+    else buf_printf(b, "sp_%sHash_set(_t%d, %s, %s_t%d%s); }\n", hn, ta, sk, ONE_HV_O(hn), tv, ONE_HV_C(hn));
     return;
   }
 

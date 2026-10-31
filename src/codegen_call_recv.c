@@ -6917,9 +6917,16 @@ static void emit_hash_fetch_default_tail(Compiler *c, int id, int dflt, const ch
   }
   else if (vt == TY_STRING) {
     /* (one representation: the value is the handle; both arms as bytes) */
-    buf_printf(b, "; sp_%sHash_has_key%s(_t%d, _t%d) ? SP_STR_B(sp_%sHash_get%s(_t%d, _t%d)) : SP_STR_B(", hn, ks, th, tk, hn, ks, th, tk);
-    emit_expr(c, dflt, b);
-    buf_puts(b, ")");
+    Buf db; memset(&db, 0, sizeof db);
+    emit_expr(c, dflt, &db);
+    const char *dt_text = db.p ? db.p : "NULL";
+    if (fetch_operand_is_inert(c, dflt) || fzl_text_id(dt_text) >= 0)
+      /* a default that costs nothing up front (a local, nil, a frozen
+         literal's bytes): one probe */
+      buf_printf(b, "; SP_STR_B(sp_%sHash_fetch_or%s(_t%d, _t%d, SP_STR_B(%s)))", hn, ks, th, tk, dt_text);
+    else
+      buf_printf(b, "; sp_%sHash_has_key%s(_t%d, _t%d) ? SP_STR_B(sp_%sHash_get%s(_t%d, _t%d)) : SP_STR_B(%s)", hn, ks, th, tk, hn, ks, th, tk, dt_text);
+    free(db.p);
   }
   else {
     buf_printf(b, "; sp_%sHash_has_key%s(_t%d, _t%d) ? sp_%sHash_get%s(_t%d, _t%d) : ", hn, ks, th, tk, hn, ks, th, tk);

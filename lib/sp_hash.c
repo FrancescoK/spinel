@@ -44,6 +44,7 @@ sp_bool sp_StrIntHash_has_key(sp_StrIntHash*h,const char*k){SP_GC_ROOT(h);SP_GC_
 /* h.fetch(k, d) in one probe: the value, or d when k is absent (the
    hash's own default does not apply to fetch) */
 sp_oint sp_StrIntHash_fetch_or(sp_StrIntHash*h,const char*k,sp_oint d){SP_GC_ROOT(h);SP_GC_ROOT_STR(k);if (SP_UNLIKELY(!h)) sp_nil_recv("fetch");sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_probe_eq(h->keys[idx],k))return SP_HV_NIL(h,idx)?sp_oint_nil():sp_oint_of(h->vals[idx]);idx=(idx+1)&h->mask;}return d;}
+sp_int sp_StrIntHash_opw_slot(sp_StrIntHash*h,const char*k){if (SP_UNLIKELY(!h)) sp_nil_recv("[]");return sp_StrIntHash_slot(h,k);}
 /* Hash#value? -- scan values in insertion order. Issue #738. */
 sp_bool sp_StrIntHash_has_value(sp_StrIntHash*h,sp_int v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?");for(sp_int i=0;i<h->len;i++){sp_oint o=sp_StrIntHash_vget(h,h->order[i]);if(!o.nil&&o.v==v)return TRUE;}return FALSE;}
 /* value?(nil) */
@@ -89,6 +90,7 @@ if(v&&SP_UNLIKELY(((sp_gc_hdr*)((char*)h-sizeof(sp_gc_hdr)))->finalize==sp_StrSt
 #endif
 sp_gc_wb((void*)h);if(h->len*2>=h->cap)sp_StrStrHash_grow(h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_probe_eq(h->keys[idx],k)){h->vals[idx]=v;return;}idx=(idx+1)&h->mask;}k=sp_hash_key_str(k);sp_gc_wb((void*)h);h->keys[idx]=k;h->vals[idx]=v;h->order[h->len]=k;h->len++;}
 sp_bool sp_StrStrHash_has_key(sp_StrStrHash*h,const char*k){SP_GC_ROOT(h);SP_GC_ROOT_STR(k);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_probe_eq(h->keys[idx],k))return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+const char *sp_StrStrHash_fetch_or(sp_StrStrHash*h,const char*k,const char*d){if (SP_UNLIKELY(!h)) sp_nil_recv("fetch");sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_probe_eq(h->keys[idx],k))return SP_SEB(h->vals[idx]);idx=(idx+1)&h->mask;}return d;}
 sp_bool sp_StrStrHash_has_value_e(sp_StrStrHash*h,sp_strelem v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?"); if (!v)return FALSE;for(sp_int i=0;i<h->len;i++){sp_strelem x=sp_StrStrHash_get_e(h,h->order[i]);if(x&&sp_str_eq(SP_SEB(x),SP_SEB(v)))return TRUE;}return FALSE;}
 sp_int sp_StrStrHash_length(sp_StrStrHash*h){return h->len;}
 void sp_StrStrHash_delete(sp_StrStrHash*h,const char*k){SP_GC_ROOT(h);SP_GC_ROOT_STR(k); sp_gc_wb((void*)h);sp_int idx=(sp_int)(sp_str_hash(k)&h->mask);while(h->keys[idx]){if(sp_str_probe_eq(h->keys[idx],k)){sp_order_drop_str(h->order,h->len,h->keys[idx]);h->keys[idx]=NULL;h->vals[idx]=NULL;h->len--;sp_int j=(idx+1)&h->mask;while(h->keys[j]){sp_int nj=(sp_int)(sp_str_hash(h->keys[j])&h->mask);if((j>idx&&(nj<=idx||nj>j))||(j<idx&&nj<=idx&&nj>j)){h->keys[idx]=h->keys[j];h->vals[idx]=h->vals[j];h->keys[j]=NULL;h->vals[j]=NULL;idx=j;}j=(j+1)&h->mask;}return;}idx=(idx+1)&h->mask;}}
@@ -115,6 +117,7 @@ sp_strelem sp_IntStrHash_get_e(sp_IntStrHash*h,sp_int k){if (SP_UNLIKELY(!h)) sp
 sp_IntStrHash*sp_IntStrHash_merge(sp_IntStrHash*a,sp_IntStrHash*b){SP_GC_ROOT(a);SP_GC_ROOT(b);if (SP_UNLIKELY(!a)) sp_nil_recv("merge");sp_IntStrHash*r=sp_IntStrHash_new();r->default_v=a->default_v;for(sp_int i=0;i<a->len;i++)sp_IntStrHash_set(r,a->order[i],sp_IntStrHash_get(a,a->order[i]));if(b){for(sp_int i=0;i<b->len;i++)sp_IntStrHash_set(r,b->order[i],sp_IntStrHash_get(b,b->order[i]));}return r;}
 void sp_IntStrHash_update(sp_IntStrHash*a,sp_IntStrHash*b){if (SP_UNLIKELY(!a)) sp_nil_recv("update"); if (!b||a==b)return;SP_GC_ROOT(a);SP_GC_ROOT(b);for(sp_int i=0;i<b->len;i++)sp_IntStrHash_set(a,b->order[i],sp_IntStrHash_get(b,b->order[i]));}
 sp_bool sp_IntStrHash_has_key(sp_IntStrHash*h,sp_int k){sp_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
+const char *sp_IntStrHash_fetch_or(sp_IntStrHash*h,sp_int k,const char*d){if (SP_UNLIKELY(!h)) sp_nil_recv("fetch");sp_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return SP_SEB(h->vals[idx]);idx=(idx+1)&h->mask;}return d;}
 sp_bool sp_IntStrHash_has_value_e(sp_IntStrHash*h,sp_strelem v){if (SP_UNLIKELY(!h)) sp_nil_recv("value?"); if (!v)return FALSE;for(sp_int i=0;i<h->len;i++){sp_strelem x=sp_IntStrHash_get_e(h,h->order[i]);if(x&&sp_str_eq(SP_SEB(x),SP_SEB(v)))return TRUE;}return FALSE;}
 sp_int sp_IntStrHash_length(sp_IntStrHash*h){return h->len;}
 sp_IntArray*sp_IntStrHash_keys(sp_IntStrHash*h){SP_GC_ROOT(h);sp_IntArray*a=sp_IntArray_new();SP_GC_ROOT(a);for(sp_int i=0;i<h->len;i++)sp_IntArray_push(a,h->order[i]);return a;}
@@ -160,6 +163,7 @@ void sp_IntStrHash_delete(sp_IntStrHash*h,sp_int k){ sp_gc_wb((void*)h);if (SP_U
 sp_oint sp_IntIntHash_oget(sp_IntIntHash*h,sp_int k){if (SP_UNLIKELY(!h)) sp_nil_recv("[]");sp_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return SP_HV_NIL(h,idx)?sp_oint_nil():sp_oint_of(h->vals[idx]);idx=(idx+1)&h->mask;}return h->default_nil?sp_oint_nil():sp_oint_of(h->default_v);}
 sp_bool sp_IntIntHash_has_key(sp_IntIntHash*h,sp_int k){sp_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return TRUE;idx=(idx+1)&h->mask;}return FALSE;}
 sp_oint sp_IntIntHash_fetch_or(sp_IntIntHash*h,sp_int k,sp_oint d){if (SP_UNLIKELY(!h)) sp_nil_recv("fetch");sp_int idx=_sp_istr_idx(h->mask,k);while(h->used[idx]){if(h->keys[idx]==k)return SP_HV_NIL(h,idx)?sp_oint_nil():sp_oint_of(h->vals[idx]);idx=(idx+1)&h->mask;}return d;}
+sp_int sp_IntIntHash_opw_slot(sp_IntIntHash*h,sp_int k){if (SP_UNLIKELY(!h)) sp_nil_recv("[]");return sp_IntIntHash_slot(h,k);}
 sp_int sp_IntIntHash_length(sp_IntIntHash*h){if (SP_UNLIKELY(!h)) sp_nil_recv("length");return h->len;}
 sp_IntArray*sp_IntIntHash_keys(sp_IntIntHash*h){SP_GC_ROOT(h);sp_IntArray*a=sp_IntArray_new();SP_GC_ROOT(a);if (SP_UNLIKELY(!h)) sp_nil_recv("keys");for(sp_int i=0;i<h->len;i++)sp_IntArray_push(a,h->order[i]);return a;}
 sp_IntArray*sp_IntIntHash_values(sp_IntIntHash*h){SP_GC_ROOT(h);sp_IntArray*a=sp_IntArray_new();SP_GC_ROOT(a);if (SP_UNLIKELY(!h)) sp_nil_recv("values");for(sp_int i=0;i<h->len;i++)sp_IntArray_push_o(a,sp_IntIntHash_vget(h,h->order[i]));return a;}
