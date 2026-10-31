@@ -14736,6 +14736,7 @@ static int value_block_name_free(Compiler *c, const char *name) {
   }
   return !comp_name_reader_any(c, name);
 }
+int an_name_binder_free(Compiler *c, const char *name) { return value_block_name_free(c, name); }
 int desugar_value_form_drop_block(Compiler *c) {
   static const char *const names[] = { "count", "any?", "all?", "none?", "one?", NULL };
   NodeTable *nt = (NodeTable *)c->nt;

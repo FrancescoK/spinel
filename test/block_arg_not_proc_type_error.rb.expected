@@ -1,0 +1,30 @@
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of Integer into Proc
+TypeError: no implicit conversion of Plain into Proc
+TypeError: no implicit conversion of Object into Proc
+TypeError: no implicit conversion of Plain into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of Plain into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of Integer into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of Float into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+mk 6
+TypeError: no implicit conversion of FalseClass into Proc
+TypeError: no implicit conversion of FalseClass into Proc
+1
+1
+1
+1
+1
+1
+1
+[false, true]
+[nil, true]
+nil
