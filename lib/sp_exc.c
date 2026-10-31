@@ -1911,3 +1911,96 @@ SP_NORETURN SP_COLD void sp_raise_cls(const char *cls, const char *msg) {
     exit(status);
 #endif
   } }
+
+/* ---- Arming, protecting and resuming: the rest of the handler-stack
+   operations a program used to compile (the fiber trampoline's base frame,
+   rb_protect, a fiber's re-raise into its resumer, the unwind through
+   ensures, Signal.trap's call). require's loader stays in the program:
+   a --debug backtrace names its frame Kernel#require, and the archive's
+   -O2 build leaves no frame there. */
+#include "sp_proc.h"
+/* Continue a non-local unwind after a handler has run its ensure: if more ensure
+   handlers lie between here and the target, longjmp to the next; otherwise
+   deliver to the target (the proc-return home node, or the matched catch slot). */
+void sp_unwind_resume(void) {
+  if (sp_exc_top > sp_unwind_exc_top) { sp_poly_recur_unwind(); longjmp(sp_exc_stack[sp_exc_top - 1], 1); }
+  int kind = sp_unwind_kind;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  if (kind == SP_UNWIND_EXIT) exit(sp_exc_at_exit(0));
+  /* the ensures are done; deliver, giving the walk path back the depth the
+     target arm recorded (the intervening exception frames restored their own on
+     the way here) */
+  if (kind == SP_UNWIND_PROCRET) {
+    sp_poly_recur_pop(sp_unwind_home->recur_mark);
+    longjmp(sp_unwind_home->jb, 1);
+  }
+  if (kind == SP_UNWIND_BREAK) {
+    sp_poly_recur_pop(sp_brk_recur_mark[sp_unwind_target]);
+    longjmp(sp_brk_stack[sp_unwind_target], 1);
+  }
+  sp_poly_recur_pop(sp_catch_recur_mark[sp_unwind_target]);
+  longjmp(sp_catch_stack[sp_unwind_target], 1);
+}
+void sp_exc_arm(jmp_buf b)     { sp_exc_check_depth();
+#ifdef SP_CEXT
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+#endif
+  memcpy(sp_exc_stack[sp_exc_top], b, sizeof(jmp_buf)); sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++; }
+void sp_fiber_reraise(const char *cls, const char *msg, void *obj) {
+  if (obj) sp_pending_exc_obj = obj;
+  /* the message a raise left in the handler stack, or one the program
+     handed Fiber#raise / Thread#raise: a String with a marker byte. A
+     frozen one (a literal's, sp_exc_msg_plain) is handed on counted, so
+     the re-raise keeps its mark */
+  if (msg && !sp_exc_msg_empty_given(msg) && !sp_cmsg_p(msg) &&
+      (((const unsigned char *)msg)[-1] == 0xfa || ((const unsigned char *)msg)[-1] == 0xf8))
+    msg = sp_exc_msg_counted_frozen(msg, sp_str_byte_len(msg));
+  sp_raise_cls(cls, msg);
+}
+int sp_exc_protect(void (*fn)(void *), void *ctx) {
+  int catch_top = sp_catch_top, brk_top = sp_brk_top;
+  sp_proc_home *ret_head = sp_proc_ret_head;
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) { fn(ctx); sp_exc_top--; return 0; }
+  sp_exc_top--;
+  sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+  sp_catch_top = catch_top; sp_brk_top = brk_top; sp_proc_ret_head = ret_head;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* a `raise x, cause: expr` stages its cause before evaluating expr; an
+     unwind out of expr that lands here must not leave it staged for the next
+     raise */
+  sp_explicit_cause = NULL; sp_explicit_cause_set = 0;
+  return 1;
+}
+void sp_trap_call(sp_Proc *p, int no) {
+  sp_exc_check_depth();
+  sp_exc_rootmark[sp_exc_top] = sp_gc_nroots; sp_rescue_mark[sp_exc_top] = sp_rescue_sp;
+  sp_exc_msg[sp_exc_top] = 0; sp_exc_obj[sp_exc_top] = 0; sp_exc_top++;
+  if (setjmp(sp_exc_stack[sp_exc_top - 1]) == 0) {
+    SP_GC_ROOT(p);   /* the proc may re-trap its signal, dropping sp_trap_proc's hold */
+    sp_int slot = (sp_int)no;
+    _sp_proc_poly_args[0] = sp_box_int((sp_int)no);
+    sp_proc_call(p, 1, &slot);
+    sp_exc_top--;
+    return;
+  }
+  sp_exc_top--;
+  sp_gc_nroots = sp_exc_rootmark[sp_exc_top]; sp_rescue_sp = sp_rescue_mark[sp_exc_top];
+  /* Take the exit before unblocking: a delivery that was pending runs its
+     proc right there, reusing this slot, and must not see (or clear) an
+     unwind still in flight. */
+  const char *ecls = sp_exc_cls[sp_exc_top], *emsg = sp_exc_msg[sp_exc_top];
+  void *eobj = sp_exc_obj[sp_exc_top];
+  SP_GC_ROOT_STR(emsg); SP_GC_ROOT(eobj);
+  int uk = sp_unwind_kind, ut = sp_unwind_target, ue = sp_unwind_exc_top;
+  struct sp_proc_home *uh = sp_unwind_home;
+  sp_unwind_kind = SP_UNWIND_NONE;
+  /* out of line on purpose: glibc marks sigprocmask __leaf__, and GCC would
+     keep the unwind state in registers across a direct call */
+  sp_sig_unblock(no, 0);
+  sp_unwind_kind = uk; sp_unwind_target = ut; sp_unwind_exc_top = ue; sp_unwind_home = uh;
+  if (sp_unwind_kind != SP_UNWIND_NONE) sp_unwind_resume();
+  sp_pending_exc_obj = eobj; sp_raise_cls(ecls, emsg);
+}

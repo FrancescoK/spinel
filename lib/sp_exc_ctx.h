@@ -97,4 +97,21 @@ static inline void sp_poly_recur_unwind(void) {
   if (sp_exc_top > 0) sp_poly_recur_pop(sp_poly_recur_mark[sp_exc_top - 1]);
 }
 #define sp_cur_handled() (sp_rescue_sp > 0 ? sp_exc_handling[sp_rescue_sp-1] : NULL)
+SP_NORETURN SP_COLD void sp_stack_too_deep(void);   /* lib/sp_exc.c */
+/* Guard an exception-frame arm. Every arm stores into sp_exc_rootmark
+   [sp_exc_top] (or sp_exc_msg[sp_exc_top]) before it bumps sp_exc_top, so what
+   the check must precede is that first indexed store, not the ++; it opens the
+   frame-arming sequence at every arm the codegen emits. The depth is not a
+   lexical property: a method whose body is a begin/rescue keeps its frame armed
+   across the calls that body makes, so ordinary recursion 65 deep reaches the
+   end of the array just as 65 nested begins do. Inside a fiber body, and inside
+   a thread's, one slot is already spent on the frame the runtime arms around it
+   (sp_exc_arm below), so 63 of the body's own is the last that fits. */
+static inline void sp_exc_check_depth(void) {
+  if (SP_UNLIKELY(sp_exc_top >= SP_EXC_STACK_MAX)) sp_stack_too_deep();
+#ifdef SP_CEXT
+  sp_exc_cextmark[sp_exc_top] = sp_cext_arena_snapshot();
+#endif
+  sp_poly_recur_mark[sp_exc_top] = sp_poly_recur_top;
+}
 #endif
