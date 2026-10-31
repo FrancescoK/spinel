@@ -14983,10 +14983,16 @@ static int narrow_int_table_ivars(Compiler *c, int in_round) {
         if (sc->class_id != ci) {
           /* An unrelated class with an ivar of the same name is a different
              slot -- ignore it. A subclass (or a module transplanted in) reads
-             THIS slot from code this pass does not vet, so that disqualifies. */
+             THIS slot from code this pass does not vet, so that disqualifies;
+             so does an ancestor, whose methods the class inherits and runs on
+             its own copy of the slot (a subclass rewriting an ancestor's Float
+             table as an Integer one was pinned while the ancestor stayed boxed:
+             the two layouts disagreed). */
           int related = 0;
           for (int k = sc->class_id; k >= 0; k = c->classes[k].parent)
             if (k == ci) { related = 1; break; }
+          for (int k = c->classes[ci].parent; k >= 0 && !related; k = c->classes[k].parent)
+            if (k == sc->class_id) related = 1;
           if (!related) continue;
           ok = 0; break;
         }
