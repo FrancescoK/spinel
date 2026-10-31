@@ -325,6 +325,10 @@ static int cw_path_target(const ConstWalk *w, int id) {
           k == NK_ConstantPathOperatorWriteNode) && nt_ref(w->nt, p, "target") == id;
 }
 
+int an_const_read_finds(Compiler *c, int id, const char *name) {
+  return elab_const_slot_present_at(c, name, elab_point_from(c, id)) == ELAB_YES;
+}
+
 /* Mark the constants some assignment can follow a read of: LocalVar.const_early
    (see the header comment). */
 void an_const_presence(Compiler *c) {
@@ -368,7 +372,7 @@ void an_const_presence(Compiler *c) {
     int listed = cn && is_constants_list_name(cn), computed = cn && !rn && is_const_query_name(cn) && nt_ref(nt, id, "arguments") >= 0;
     if ((!lv && !listed && !computed) || !cw_placed(&w, id)) continue;
     for (int i = lv ? cw_index(&w, lv) : 0, end = lv ? i + 1 : c->nconsts; i < end; i++)
-      if (!first_settled[i] && elab_const_slot_present_at(c, c->consts[i].name, elab_point_from(c, id)) != ELAB_YES)
+      if (!first_settled[i] && !an_const_read_finds(c, id, c->consts[i].name))
         early_reads[i] |= listed ? 2 : computed ? 4 : 1;
   }
   for (int i = 0; i < c->nconsts; i++) {

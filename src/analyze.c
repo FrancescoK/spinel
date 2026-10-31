@@ -3099,11 +3099,12 @@ static void reject_dynamic_mixin_args(Compiler *c) {
 }
 
 /* The renames rewrite_const_alias_receivers has decided and not yet made: a
-   constant node and the class name it takes (an owned copy). */
-typedef struct AliasRename { int node; char *name; } AliasRename;
+   constant node and the class name it takes (an owned copy), and whether
+   its scope holds the name the program wrote (held: the rename keeps it). */
+typedef struct AliasRename { int node; char *name; int held; } AliasRename;
 typedef struct AliasRenames { AliasRename *v; int n, cap; } AliasRenames;
 
-static void alias_rename_add(AliasRenames *q, int node, const char *name) {
+static void alias_rename_add(AliasRenames *q, int node, const char *name, int held) {
   if (q->n == q->cap) {
     q->cap = q->cap ? q->cap * 2 : 64;
     q->v = realloc(q->v, sizeof *q->v * (size_t)q->cap);
@@ -3111,16 +3112,42 @@ static void alias_rename_add(AliasRenames *q, int node, const char *name) {
   }
   q->v[q->n].node = node;
   q->v[q->n].name = strdup(name);
+  q->v[q->n].held = held;
   q->n++;
+}
+
+/* The name a read or write had before qualify_colliding_consts renamed it
+   (`X8::S` read as `X8::X8__S`), kept for the classes pass, which resolves
+   the module path a constant alias names in the names the program wrote.
+   The path lookups take a kept name as proof that the scope holds the
+   constant (const_node_class_index): qualify_colliding_consts renames a
+   path only after it finds the member, and an alias rename keeps the name
+   only for a path whose scope holds the name and finds it assigned
+   (alias_read_held, asked before the edit). */
+static void qc_keep_orig_name(const NodeTable *nt, int node) {
+  const char *nm = nt_str(nt, node, "name");
+  if (nm && !nt_str(nt, node, "qc_orig_name")) nt_node_set_str((NodeTable *)nt, node, "qc_orig_name", nm);
 }
 
 /* Makes the queued renames and frees the queue. */
 static void alias_renames_apply(Compiler *c, AliasRenames *q) {
   for (int i = 0; i < q->n; i++) {
+    if (q->v[i].held) qc_keep_orig_name(c->nt, q->v[i].node);
     nt_set_str((NodeTable *)c->nt, q->v[i].node, "name", q->v[i].name);
     free(q->v[i].name);
   }
   free(q->v);
+}
+
+/* Whether a renamed alias read keeps the name the program wrote: its scope
+   holds that name (const_path_misses_member), and a path read finds the
+   alias assigned where it runs (an_const_read_finds, the presence pass's
+   question): `M::Top2` ahead of `module M; Top2 = Top; end` is CRuby's
+   NameError, which the renamed leaf's class would otherwise answer. Asked
+   before any edit, while the node still carries the written name. */
+static int alias_read_held(Compiler *c, int node) {
+  if (const_path_misses_member(c, node)) return 0;
+  return nt_kind(c->nt, node) != NK_ConstantPathNode || an_const_read_finds(c, node, nt_str(c->nt, node, "name"));
 }
 
 /* Asks the class a constant node names when it names a class alias, and
@@ -3136,7 +3163,7 @@ static void ask_const_alias_name(Compiler *c, int node, AliasRenames *q) {
   const char *rn = nt_str(nt, node, "name");
   if (!rn || comp_class_index(c, rn) >= 0) return;  /* already a class name */
   const char *real = resolve_class_alias(c, rn);
-  if (real && !sp_streq(real, rn)) alias_rename_add(q, node, real);
+  if (real && !sp_streq(real, rn)) alias_rename_add(q, node, real, alias_read_held(c, node));
 }
 
 /* `extend Alias` / `include Alias` / `prepend Alias` with `Alias = Mod`
@@ -3156,7 +3183,7 @@ static void ask_mixin_alias_args(Compiler *c, int call, AliasRenames *q) {
     if (!rn || comp_class_index(c, rn) >= 0) continue;
     const char *real = resolve_class_alias_chain(c, rn);
     if (!real || sp_streq(real, rn) || comp_class_index(c, real) < 0) continue;
-    alias_rename_add(q, av[j], real);
+    alias_rename_add(q, av[j], real, alias_read_held(c, av[j]));
   }
 }
 
@@ -3203,7 +3230,7 @@ static void ask_raise_target(Compiler *c, int t, AliasRenames *q) {
   LocalVar *lv = comp_const(c, rn);
   if (lv && lv->const_early) return;
   const char *real = resolve_class_alias(c, rn);
-  if (real && !sp_streq(real, rn)) alias_rename_add(q, t, real);
+  if (real && !sp_streq(real, rn)) alias_rename_add(q, t, real, alias_read_held(c, t));
 }
 
 /* The exception classes named by `raise Alias, msg` and by `rescue Alias`
@@ -5099,13 +5126,6 @@ void qc_collect_writes(Compiler *c, int node, char (*path)[64], int depth,
 
 /* Reconstruct a path read's chain (["RootNS","Mid","LEAF"]) and whether it is
    root-anchored. Returns the chain length, or 0 if unsupported. */
-/* The name a read or write had before qualify_colliding_consts renamed it
-   (`X8::S` read as `X8::X8__S`), kept for the classes pass, which resolves
-   the module path a constant alias names in the names the program wrote. */
-static void qc_keep_orig_name(const NodeTable *nt, int node) {
-  const char *nm = nt_str(nt, node, "name");
-  if (nm && !nt_str(nt, node, "qc_orig_name")) nt_node_set_str((NodeTable *)nt, node, "qc_orig_name", nm);
-}
 int qc_read_chain(const NodeTable *nt, int node, char (*chain)[64], int *abs_anchor) {
   return qc_read_chain_as(nt, node, chain, abs_anchor, 0);
 }
