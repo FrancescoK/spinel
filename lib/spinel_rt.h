@@ -20952,8 +20952,10 @@ static sp_RbVal sp_poly_hash_merge_blk(sp_RbVal recv, sp_RbVal other, sp_Proc *b
 /* sum(init) { } on a boxed Array, Hash or Range: init plus each answer */
 static sp_RbVal sp_poly_sum_init_proc(sp_RbVal recv, sp_RbVal init, sp_Proc *blk) {
   SP_GC_ROOT(blk); SP_GC_ROOT_RBVAL(init);
+  /* a Float Range goes on to sp_poly_enum_proc, which raises its TypeError */
   if (!(recv.tag == SP_TAG_OBJ && (sp_poly_is_array_kind(recv.cls_id) || sp_poly_is_hash_kind(recv.cls_id) ||
-        recv.cls_id == SP_BUILTIN_RANGE || recv.cls_id == SP_BUILTIN_ENUMERATOR))) {
+        recv.cls_id == SP_BUILTIN_RANGE || recv.cls_id == SP_BUILTIN_FLOAT_RANGE ||
+        recv.cls_id == SP_BUILTIN_ENUMERATOR))) {
     sp_raise_nomethod(sp_nomethod_msg("sum", recv));
     return sp_box_nil();
   }
