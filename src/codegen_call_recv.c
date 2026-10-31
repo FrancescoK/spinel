@@ -6892,10 +6892,13 @@ static int emit_merge_bang_boxed_block(Compiler *c, int id, int recv, const int 
   const NodeTable *nt = c->nt;
   if (!is_hash_merge_bang(nt_str(nt, id, "name")) || argc != 1 || rt != TY_POLY_POLY_HASH || blk < 0 ||
       nt_kind(nt, blk) != NK_BlockNode || repr_of(c, argv[0]).kind != RK_BOXED || call_breaks(c, id)) return 0;
-  int bp = nt_ref(nt, blk, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, on = 0, kn = 0, ln = 0;
-  if (pn >= 0) { nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "keywords", &kn); nt_arr(nt, pn, "posts", &ln); }
-  if (on || kn || ln || (pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0)) {
-    unsupported_feature(c, id, "a merge! conflict block with a default, keyword or post-rest parameter over a boxed Hash");
+  int bp = nt_ref(nt, blk, "parameters"), pn = bp >= 0 ? nt_ref(nt, bp, "parameters") : -1, on = 0, kn = 0, ln = 0, rn = 0;
+  if (pn >= 0) { nt_arr(nt, pn, "optionals", &on); nt_arr(nt, pn, "keywords", &kn); nt_arr(nt, pn, "posts", &ln); nt_arr(nt, pn, "requireds", &rn); }
+  /* (a fourth required parameter reads nil at every conflict, which the
+     three bindings below do not give it: a value it took at one conflict
+     would show at the next) */
+  if (on || kn || ln || rn > 3 || (pn >= 0 && nt_ref(nt, pn, "keyword_rest") >= 0)) {
+    unsupported_feature(c, id, "a merge! conflict block with a default, keyword, post-rest or fourth required parameter over a boxed Hash");
     return 0;
   }
   int arg = argv[0];
@@ -6904,9 +6907,14 @@ static int emit_merge_bang_boxed_block(Compiler *c, int id, int recv, const int 
   snprintf(ks, sizeof ks, "_t%d", tk);
   snprintf(vs, sizeof vs, "_t%d", tv);
   snprintf(gs, sizeof gs, "sp_PolyPolyHash_get(_t%d, _t%d)", tr, tk);
+  /* the argument is evaluated before merge! looks at its receiver, so a
+     frozen receiver raises after the argument's own effects; a user object
+     is converted through its #to_hash first when the program defines one
+     (Compiler.uses_kw_to_hash), as the other merge! arms convert it */
   buf_printf(b, "({ sp_PolyPolyHash *_t%d = ", tr); emit_expr(c, recv, b); buf_printf(b, "; SP_GC_ROOT(_t%d);", tr);
   buf_printf(b, " sp_RbVal _t%d = ", to); emit_boxed(c, arg, b); buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);", to);
   buf_printf(b, " if (sp_gc_is_frozen(_t%d)) sp_raise_frozen_hash_at(_t%d, %s);", tr, tr, hash_box_cls(rt));
+  if (c->uses_kw_to_hash) buf_printf(b, " if (sp_poly_is_user_obj(_t%d)) _t%d = sp_kw_splat_conv(_t%d, 0);", to, to, to);
   buf_printf(b, " if (_t%d.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(_t%d.cls_id))"
                 " sp_raise_cls(\"TypeError\", sp_sprintf(\"no implicit conversion of %%s into Hash\", sp_convert_src_name(_t%d)));",
              to, to, to);

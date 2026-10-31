@@ -20905,6 +20905,9 @@ static sp_RbVal sp_poly_hash_merge_blk(sp_RbVal recv, sp_RbVal other, sp_Proc *b
     sp_raise_nomethod(sp_nomethod_msg(name, recv));
     return sp_box_nil();
   }
+  /* a user object converts through its #to_hash, when the program has one
+     (the bridge's row 5), as a typed merge! converts it */
+  if (sp_obj_conv_fn && sp_poly_is_user_obj(other)) other = sp_kw_splat_conv(other, 0);
   if (other.tag != SP_TAG_OBJ || !sp_poly_is_hash_kind(other.cls_id))
     sp_raise_cls("TypeError", sp_sprintf("no implicit conversion of %s into Hash", sp_convert_src_name(other)));
   if (sp_gc_is_frozen(recv.v.p)) sp_raise_frozen_hash_at(recv.v.p, recv.cls_id);
