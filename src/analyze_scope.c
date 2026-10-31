@@ -2911,6 +2911,20 @@ static void class_note_included_mod(Compiler *c, int ci, int mod_ci) {
     cif->included_mods = nm;
   }
   cif->included_mods[cif->nincluded_mods++] = mod_ci;
+  c->mixin_gen++;
+}
+static void class_note_prepended_mod(Compiler *c, int ci, int mod_ci) {
+  ClassInfo *cif = &c->classes[ci];
+  for (int m = 0; m < cif->nprepended_mods; m++)
+    if (cif->prepended_mods[m] == mod_ci) return;
+  if (cif->nprepended_mods >= cif->cprepended_mods) {
+    cif->cprepended_mods = cif->cprepended_mods ? cif->cprepended_mods * 2 : 4;
+    int *nm = realloc(cif->prepended_mods, sizeof(int) * (size_t)cif->cprepended_mods);
+    if (!nm) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+    cif->prepended_mods = nm;
+  }
+  cif->prepended_mods[cif->nprepended_mods++] = mod_ci;
+  c->mixin_gen++;
 }
 
 /* A copied &block has the same Proc-or-NULL ABI as the original. It is
@@ -7172,6 +7186,7 @@ void process_include_body(Compiler *c, int ci, int body_node) {
       else if (!c->classes[ci].cmp_prepended && comp_comparable_reaches(c, mod_id))
         c->classes[ci].cmp_prepended = 2;
       if (is_enumerable_module_name(mname)) c->classes[ci].enum_prepended = 1;
+      if (mod_id >= 0) class_note_prepended_mod(c, ci, mod_id);
       continue;
     }
     if (is_comparable_module_name(mname) && !c->classes[ci].cmp_inc_at)

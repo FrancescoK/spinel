@@ -491,6 +491,7 @@ void comp_free(Compiler *c) {
   free(c->cext_classes);
   share_facts_free(c);
   share_plan_free(c);
+  builtin_given_free(c);
   ic_free(c);
   free(c->bsl_gen);
   free(c->bsl_val);

@@ -1029,6 +1029,8 @@ typedef struct {
      includes that module. */
   int *included_mods;
   int nincluded_mods, cincluded_mods;
+  int *prepended_mods;   /* the modules it prepends (a program module of the class table) */
+  int nprepended_mods, cprepended_mods;
   /* Where Enumerable sits among this class's own includes: 0 when its bodies
      do not include it, else 1 + the number of program modules included
      before it (a later include goes in front in Ruby's lookup). Set where
@@ -1648,6 +1650,8 @@ typedef struct {
      name indexes the walk that answers it reads (analyze_scope.c's
      poly_ivar_set_reaches), built on first use and freed with the compiler */
   struct PivsFacts *pivs;
+  unsigned mixin_gen;   /* bumped when a class records an include or a prepend */
+  struct BuiltinGiven *builtin_given; /* the names the program gives to builtin scopes (analyze_util.c) */
   /* an ivar of a builtin value can be written (desugar_builtin_ivars): a
      reflective read, list or copy of an Array, a Hash or a Random asks the
      runtime's map (sp_bivar_*), and the boxed set gains its builtin arm */
@@ -1974,6 +1978,7 @@ int comp_defined_early(Compiler *c, int pred, const char **early, int cap);
    names (analyze_util.c) */
 int const_path_misses_member(Compiler *c, int id);
 int const_node_class_index(Compiler *c, int id);
+void builtin_given_free(Compiler *c);
 int const_path_class(Compiler *c, int id);
 /* a segment naming a builtin class, module or constant (analyze_util.c) */
 int const_seg_builtin(Compiler *c, int id);

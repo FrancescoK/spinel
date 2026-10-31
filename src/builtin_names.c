@@ -84,6 +84,10 @@ int is_int_arith_op(const char *n) {
   return is_basic_arith(n) || sp_streq(n, "%");
 }
 
+int is_object_class_name(const char *n) {
+  return sp_streq(n, "Object");
+}
+
 int is_object_root(const char *n) {
   return sp_streq(n, "Object") || sp_streq(n, "BasicObject") || sp_streq(n, "Kernel");
 }
@@ -2231,7 +2235,7 @@ int is_constless_builtin_name(const char *n) {
   static const char *const names[] = {
     "Object", "BasicObject", "Kernel", "Comparable", "Enumerable", "Array", "Hash", "String",
     "Integer", "Numeric", "Struct", "Data", "Symbol", "Proc", "Range", "Module", "Class", "Time",
-    "Rational", "Dir", "Fiber", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "MatchData",
+    "Rational", "Fiber", "Mutex", "Queue", "SizedQueue", "ConditionVariable", "MatchData",
     "Method", "UnboundMethod", "NilClass", "TrueClass", "FalseClass", "Signal", "Warning", NULL
   };
   for (int i = 0; names[i]; i++) if (sp_streq(names[i], n)) return 1;

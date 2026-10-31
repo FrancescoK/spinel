@@ -28,6 +28,7 @@ int is_int_bit_op(const char *n);     /* & | ^ << >>: Integer's bitwise operator
 int is_embedding_builtin(const char *nm); /* Array Hash String: subclass instances embed the builtin */
 int is_class_name_name(const char *n);   /* name */
 int is_inspect_name(const char *n);       /* inspect */
+int is_object_class_name(const char *n);   /* Object alone: the top level's constants */
 int is_object_root(const char *n);    /* Object Kernel BasicObject: the classes every object has */
 int is_send_family(const char *n);    /* send __send__ public_send */
 int is_method_name_reflection(const char *n); /* send family, method public_method instance_method define_method define_singleton_method alias_method singleton_method respond_to? method_defined? */

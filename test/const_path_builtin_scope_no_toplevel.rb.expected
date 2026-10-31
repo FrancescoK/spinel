@@ -1,0 +1,47 @@
+NameError: uninitialized constant String::Foo
+NameError: uninitialized constant StandardError::Foo
+NameError: uninitialized constant Comparable::Foo
+NameError: uninitialized constant Kernel::Foo
+NameError: uninitialized constant Hash::Foo
+NameError: uninitialized constant String::Pt
+NameError: uninitialized constant StandardError::Dt
+3
+NameError: uninitialized constant String::Foo
+NameError: uninitialized constant String::Foo
+nil
+nil
+nil
+9
+9
+"constant"
+2
+3
+4
+6
+7
+8
+"constant"
+"constant"
+6
+6
+"constant"
+"constant"
+"constant"
+"constant"
+"constant"
+"constant"
+nil
+61
+62
+63
+64
+65
+66
+"constant"
+"constant"
+1
+4
+#<data Dp a=5, b=6>
+71
+72
+74

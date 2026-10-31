@@ -90,6 +90,9 @@ static int program_writes_const_in(Compiler *c, const char *pn, const char *nm) 
       if (const_path_is(nt, nt_ref(nt, w, "target"), pn, nm)) return 1;
   NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t)
     if (const_path_is(nt, t, pn, nm)) return 1;
+  /* a self-alias write the desugaring dropped (desugar_constant_path_self_alias) */
+  NT_FOREACH_KIND(nt, NK_NilNode, d)
+    if (const_path_is(nt, (int)nt_int(nt, d, "dropped_target", -1), pn, nm)) return 1;
   return 0;
 }
 /* The Ruby leaf of a class's name: a name qualify_colliding_classes gave
@@ -180,6 +183,7 @@ static int program_places_const_dynamically(Compiler *c, const char *nm) {
   return 0;
 }
 int const_seg_builtin(Compiler *c, int id);
+static int builtin_scope_lacks_member(Compiler *c, int seg);
 /* The scope a constant path segment names, for defined?: a class or module
    of the program (its index), or -1 for one whose constants are not the
    program's to list (a builtin, the top level, a value, a dynamic parent).
@@ -205,6 +209,9 @@ static int const_path_scope(Compiler *c, int seg, int *missing) {
   if (pkk != NK_ConstantReadNode && pkk != NK_ConstantPathNode) return -1;
   pk = const_path_scope(c, par, missing);
   if (*missing || pk < 0) {
+    /* a builtin scope holds only its own members (String::Foo, with Foo
+       defined at the top level, names nothing) */
+    if (!*missing && builtin_scope_lacks_member(c, seg)) { *missing = 1; return -1; }
     /* a builtin, the top level, a value: the leaf decides, by its name */
     int k = comp_class_index(c, nm);
     return !*missing && k >= 0 && !c->classes[k].is_builtin_const && !comp_const(c, nm) ? k : -1;
@@ -251,14 +258,17 @@ int const_node_class_index(Compiler *c, int id) {
   /* (nor a path whose leaf the qualifying pass found a member for and
      renamed, qc_orig_name: module M; A = Foo; end makes M::A Foo, renamed
      to the alias's class afterwards) */
-  if (nt_str(nt, id, "qc_orig_name")) return k;
+  if (nt_str(nt, id, "qc_orig_name")) return builtin_scope_lacks_member(c, id) ? -1 : k;
   /* (a parent that is a class's own name, not a constant holding one:
      AliasP = P; AliasP::Foo is P::Foo, which the walk does not follow) */
   int par = nt_ref(nt, id, "parent");
   NodeKind pk = par >= 0 ? nt_kind(nt, par) : NK_NilNode;
   const char *pn = pk == NK_ConstantReadNode || pk == NK_ConstantPathNode ? nt_str(nt, par, "name") : NULL;
   int pk2 = pn ? comp_class_index(c, pn) : -1;
-  if (pk2 < 0 || sp_streq(pn, "Object") || comp_const(c, pn)) return k;
+  if (!pn || is_object_class_name(pn) || comp_const(c, pn)) return k;
+  /* (a builtin scope the program never reopened has no class entry,
+     String::Foo) */
+  if (pk2 < 0) return builtin_scope_lacks_member(c, id) ? -1 : k;
   /* (nor a constant the parent holds by that name, a value constant the
      walk does not list: module Rhs; Leaf = Lhs::Leaf; end) */
   const char *nm = nt_str(nt, id, "name");
@@ -357,7 +367,7 @@ int const_path_in_closed_builtin(Compiler *c, int id) {
     return 0;
   const char *pn = nt_str(nt, par, "name"), *nm = nt_str(nt, id, "name");
   if (!pn || !nm || sp_streq(pn, "Object")) return 0;
-  if (!is_builtin_class_name(pn) && !is_builtin_module_name(pn)) return 0;
+  if (!is_builtin_class_name(pn) && !is_builtin_module_name(pn) && !is_builtin_exception_name(pn)) return 0;
   if (comp_const(c, pn)) return 0;
   /* the walks below look at the whole program: once per path while the
      tree and the class table stay as they are */
@@ -439,8 +449,135 @@ static int cw_name(const NodeTable *nt, const char *nm) {
         if (t >= 0) cw_add(1, nt_str(nt, t, "name"), t);
       }
     NT_FOREACH_KIND(nt, NK_ConstantPathTargetNode, t) cw_add(1, nt_str(nt, t, "name"), t);
+    /* a self-alias write the desugaring dropped keeps its target */
+    NT_FOREACH_KIND(nt, NK_NilNode, d) {
+      int t = (int)nt_int(nt, d, "dropped_target", -1);
+      if (t >= 0) cw_add(1, nt_str(nt, t, "name"), t);
+    }
   }
   return anh_find(&g_cw.names, nm);
+}
+/* The names the program gives to builtin scopes, built once per tree and
+   class table (the key const_path_in_closed_builtin keeps): a body of a
+   reopened builtin (Object's are the top level's), a `B::NAME = v` path
+   write or a dropped self-alias into one, a class nested in one, a module
+   mixed into one with its own members. A constant the program puts into
+   Exception is reached as StandardError::NAME and ArgumentError::NAME, into
+   Comparable as String::NAME, into Enumerable as Array::NAME: the ancestors
+   of a builtin without constants are builtins too, and the program's
+   reopenings are all they can add. */
+struct BuiltinGiven { const NodeTable *nt; unsigned ver, mixins; int ncls, ncon, dynamic; const int *cbody; ANameHash names; };
+void builtin_given_free(Compiler *c) {
+  if (!c->builtin_given) return;
+  anh_free(&c->builtin_given->names);
+  free(c->builtin_given);
+  c->builtin_given = NULL;
+}
+static void builtin_given_build(Compiler *c, struct BuiltinGiven *g) {
+  const NodeTable *nt = c->nt;
+  char *held = calloc((size_t)(c->nclasses ? c->nclasses : 1), 1);   /* scopes whose members a builtin sees */
+  if (!held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  for (int j = 0; j < c->nclasses; j++)
+    if (c->classes[j].is_builtin_const && c->classes[j].name && !is_object_class_name(c->classes[j].name)) held[j] = 1;
+  /* a mixin the class table did not record (called from a method body, with
+     a module held in a variable): a module it names counts as mixed into
+     every builtin, and a computed one gives any name, as a write through a
+     dynamic parent does */
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const Scope *sc = is_mixin_call(nt_str(nt, id, "name")) ? comp_scope_of(c, id) : NULL;
+    int a = sc && sc->name ? nt_ref(nt, id, "arguments") : -1, an = 0;
+    const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+    for (int i = 0; i < an; i++) {
+      NodeKind ak = nt_kind(nt, av[i]);
+      if (ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) { g->dynamic = 1; continue; }
+      const char *mn = nt_str(nt, av[i], "name"), *al = resolve_class_alias_chain(c, mn);
+      int m = comp_class_index(c, al ? al : mn);
+      if (m >= 0) held[m] = 1;
+    }
+  }
+  for (int pass = 0; pass < 32; pass++) {      /* modules mixed into a builtin, and into those */
+    int grew = 0;
+    for (int j = 0; j < c->nclasses; j++) {
+      if (!held[j] && !c->classes[j].is_builtin_const) continue;
+      const ClassInfo *kj = &c->classes[j];
+      for (int i = 0; i < kj->nincluded_mods + kj->nprepended_mods; i++) {
+        int m = i < kj->nincluded_mods ? kj->included_mods[i] : kj->prepended_mods[i - kj->nincluded_mods];
+        if (m >= 0 && m < c->nclasses && !held[m]) held[m] = grew = 1;
+      }
+    }
+    if (!grew) break;
+  }
+  for (int j = 0; j < c->nclasses; j++) {
+    int e = c->classes[j].enclosing_class;
+    if (e >= 0 && held[e] && c->classes[j].name) anh_add(&g->names, class_leaf_name(c->classes[j].name));
+  }
+  for (int i = 0; i < c->nconsts; i++) {       /* a body constant is keyed OWNER__NAME */
+    const char *key = c->consts[i].name, *sep = NULL, *own = key;
+    for (const char *p = key; (p = strstr(p, "__")) != NULL; p += 2) { own = sep ? sep + 2 : key; sep = p; }
+    if (!sep || sep == key) continue;
+    char ob[256];
+    snprintf(ob, sizeof ob, "%.*s", (int)(sep - own), own);
+    int o = comp_class_index(c, ob);
+    if (o >= 0 && held[o]) anh_add(&g->names, sep + 2);
+  }
+  (void)cw_name(nt, "");
+  for (int i = 0; i < g_cw.names.n; i++) {
+    /* a constant written in such a body, by the name the program wrote (a
+       class alias, `SA = Foo`, included) */
+    for (int w = g_cw.head[0][i]; w >= 0 && c->node_cbody; w = g_cw.next[w]) {
+      int o = w < c->node_cap ? c->node_cbody[w] : -1;
+      if (o >= 0 && held[o]) anh_add(&g->names, nt_str(nt, w, "qc_orig_name") ? nt_str(nt, w, "qc_orig_name") : g_cw.names.key[i]);
+    }
+    for (int t = g_cw.head[1][i]; t >= 0; t = g_cw.next[t]) {
+      int q = nt_ref(nt, t, "parent");
+      NodeKind qk = q >= 0 ? nt_kind(nt, q) : NK_NilNode;
+      const char *qn = qk == NK_ConstantReadNode || qk == NK_ConstantPathNode ? nt_str(nt, q, "name") : NULL;
+      int qi = qn ? comp_class_index(c, qn) : -1;
+      if (qn && is_object_class_name(qn)) continue;
+      if (!qn || qi < 0 || held[qi] || c->classes[qi].is_builtin_const) anh_add(&g->names, g_cw.names.key[i]);
+    }
+  }
+  free(held);
+}
+/* stale when the tree, the class table, a mixin recorded after the classes
+   were counted (c->mixin_gen) or the class-body map changed */
+static int program_gives_builtin_const(Compiler *c, const char *nm) {
+  struct BuiltinGiven *g = c->builtin_given;
+  if (!g) {
+    g = c->builtin_given = calloc(1, sizeof *g);
+    if (!g) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  }
+  if (g->nt != c->nt || g->ver != c->nt->version || g->ncls != c->nclasses || g->ncon != c->nconsts || g->mixins != c->mixin_gen ||
+      g->cbody != c->node_cbody) {
+    anh_free(&g->names);
+    memset(&g->names, 0, sizeof g->names);
+    g->dynamic = 0;
+    g->nt = c->nt; g->ver = c->nt->version; g->ncls = c->nclasses; g->ncon = c->nconsts; g->mixins = c->mixin_gen; g->cbody = c->node_cbody;
+    builtin_given_build(c, g);
+  }
+  return g->dynamic || anh_has(&g->names, nm);
+}
+/* `P::NAME` through a builtin class, module or exception P without
+   constants of its own (is_constless_builtin_name: String, Comparable,
+   StandardError), NAME a top-level class of the program: no member of P
+   unless the program gives NAME to P (const_path_in_closed_builtin: its
+   body, a path write, a lexically nested namesake) or to any builtin scope
+   (program_gives_builtin_const), or a write through a dynamic parent may
+   place it. A builtin with constants (File, Process, Float) lists members
+   the compiler has no table of, so its paths keep the leaf's class. */
+static int builtin_scope_lacks_member(Compiler *c, int seg) {
+  const NodeTable *nt = c->nt;
+  if (!const_path_in_closed_builtin(c, seg)) return 0;
+  const char *pn = nt_str(nt, nt_ref(nt, seg, "parent"), "name"), *nm = nt_str(nt, seg, "name");
+  /* the name the program wrote, a collision key (Holds__Qux) by its leaf */
+  const char *wn = nt_str(nt, seg, "qc_orig_name");
+  nm = class_leaf_name(wn ? wn : nm);
+  /* a top-level class: a constant aliasing one (`SA = Foo`) is asked once its
+     path is renamed, with the name written (the alias pass runs before the
+     mixins are recorded, so it cannot tell yet) */
+  int k = comp_class_index(c, nt_str(nt, seg, "name"));
+  if (!is_constless_builtin_name(pn) || k < 0 || c->classes[k].enclosing_class >= 0) return 0;
+  return !program_gives_builtin_const(c, nm) && !program_places_const_dynamically(c, nm);
 }
 /* `P::NAME` where P is a class or module of the program (not Object) and
    NAME is a constant the program writes only at the top level: Object's
