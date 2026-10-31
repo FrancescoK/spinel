@@ -6779,9 +6779,10 @@ static void prepend_copy_name(Compiler *c, int mi);
    a hidden `def <shadow>(<the copy's parameters>) = super` in class ci,
    at like's place (the module method's def), so that until the include has
    run a call reaches what the class's superclass answers, or raises
-   NoMethodError, as in CRuby. With the module method's own parameters the
-   guard entry keeps the method's arity, as a later prepend's does: a call
-   that passes them by position reaches it as it reached the method. The
+   NoMethodError, as in CRuby. It takes the parameters of the method it
+   stands in front of (the superclass's, else the module method's), so the
+   guard entry keeps that arity, as a later prepend's does: a call that
+   passes them by position reaches it as it reached the method. The
    entry's else arm calls it by its hidden name. */
 static int inc_super_behind(Compiler *c, int ci, const char *name, int like) {
   NodeTable *nt = (NodeTable *)c->nt;
@@ -6794,7 +6795,13 @@ static int inc_super_behind(Compiler *c, int ci, const char *name, int like) {
   /* (the def keeps the program's name, as a renamed copy's does: its
      super is the superclass's method of that name) */
   int def = disp_def_build(nt, like, name, 0, 0, 0, NULL, 0, sup);
-  int lp = nt_ref(nt, like, "parameters");
+  /* (the superclass's method's parameters when the program defines one: a
+     module method of another arity makes the entry forward its arguments
+     as they came, and `super` passes on what the shadow took, so
+     Parent#value(x) behind M#value is still reached as value(7)) */
+  int pc = c->classes[ci].parent;
+  int sm = pc >= 0 ? comp_method_in_chain(c, pc, name, NULL) : -1;
+  int lp = nt_ref(nt, sm >= 0 ? c->scopes[sm].def_node : like, "parameters");
   int params = lp >= 0 ? nt_clone_subtree(nt, lp) : -1;
   nt_node_set_ref(nt, def, "parameters", params);
   int body = nt_new_node(nt, "StatementsNode");
