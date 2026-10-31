@@ -6853,3 +6853,42 @@ void sp_raise_frozen_array_rv(sp_RbVal v) {
   sp_exc_stage_recv(v);
   sp_raise_cls("FrozenError", msg);
 }
+
+/* The roots the runtime itself holds, marked from the generated TU's
+   sp_re_mark_globals at each collection: the regex registers, ARGV and
+   ARGF, the top-level self, and the proc calling convention's side channel.
+   That channel holds boxed values with nothing else pointing at them: a proc
+   writes its result to _sp_proc_poly_ret and returns, and the caller reads it
+   back after, with an allocation in between (the push it is on its way to);
+   the arguments are the same on the way in. A slot keeps its value after its
+   reader is done, so it can name a freed object by the next cycle: the
+   scratch marker skips a slab slot that is free. Here rather than in the
+   header, every program compiled its own copy of these marks, with each
+   sp_mark_string inlined: the marker was the largest function a small
+   program compiled. Under verify, each group is named as the generated
+   marker names its own (#3404). */
+#include "sp_gc.h"
+#include "sp_re.h"
+#include "sp_argf.h"
+#include "sp_proc.h"
+void sp_mark_rt_roots(void) {
+#define SP_RT_PHASE(x) do { if (sp_gc_verify_on()) sp_gc_dbg_phase = (x); } while (0)
+  SP_RT_PHASE("globals:regex");
+  sp_mark_string(sp_re_last_str);
+  for (int i = 0; i < 10; i++) sp_mark_string(sp_re_captures[i]);
+  sp_mark_string(sp_re_match_str);
+  sp_mark_string(sp_re_match_pre);
+  sp_mark_string(sp_re_match_post);
+  SP_RT_PHASE("globals:argv");
+  for (sp_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
+  if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
+  if (sp_loaded_features_cache) sp_gc_mark(sp_loaded_features_cache);
+  if (sp_load_path_cache) sp_gc_mark(sp_load_path_cache);
+  if (sp_main_obj) sp_gc_mark(sp_main_obj);   /* top-level self */
+  sp_mark_string(sp_argf_obj.fname);   /* the file ARGF took off ARGV */
+  SP_RT_PHASE("globals:proc-channel");
+  sp_mark_rbval_scratch(_sp_proc_poly_ret);
+  for (int i = 0; i < SP_PROC_ARG_SLOTS; i++) sp_mark_rbval_scratch(_sp_proc_poly_args[i]);
+  if (_sp_proc_poly_wide) sp_gc_mark(_sp_proc_poly_wide);
+#undef SP_RT_PHASE
+}

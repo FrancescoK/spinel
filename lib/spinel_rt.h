@@ -1594,6 +1594,7 @@ extern SP_TLS sp_RbVal _sp_proc_poly_ret;
    host too: sp_proc_call_blk, inlined into the host's TU, and the kernel's
    sp_proc_call and proc bodies must meet in the same slot. */
 extern SP_TLS sp_Proc *_sp_proc_blk;
+void sp_mark_rt_roots(void);   /* lib/sp_cold.c */
 static void sp_re_mark_globals(void) {
 #ifdef SP_SHARE_STRING_LITERALS
   sp_String_mark_literals();
@@ -1605,19 +1606,10 @@ static void sp_re_mark_globals(void) {
      proc-return home, a break value or fiber storage (#3404). Costs a store
      per group and only when verify is on. */
 #define SP_GLB_PHASE(x) do { if (sp_gc_verify_on()) sp_gc_dbg_phase = (x); } while (0)
-  SP_GLB_PHASE("globals:regex");
-  sp_mark_string(sp_re_last_str);
-  for (int i = 0; i < 10; i++) sp_mark_string(sp_re_captures[i]);
-  sp_mark_string(sp_re_match_str);
-  sp_mark_string(sp_re_match_pre);
-  sp_mark_string(sp_re_match_post);
-  SP_GLB_PHASE("globals:argv");
-  for (sp_int i = 0; i < sp_argv.len; i++) sp_mark_string(sp_argv.data[i]);
-  if (sp_argv_array_cache) sp_gc_mark(sp_argv_array_cache);
-  if (sp_loaded_features_cache) sp_gc_mark(sp_loaded_features_cache);
-  if (sp_load_path_cache) sp_gc_mark(sp_load_path_cache);
-  if (sp_main_obj) sp_gc_mark(sp_main_obj);   /* top-level self */
-  sp_mark_string(sp_argf_obj.fname);   /* the file ARGF took off ARGV */
+  /* the regex registers, ARGV and ARGF, the top-level self and the proc
+     calling convention's side channel: lib/sp_cold.c, compiled once rather
+     than in every program */
+  sp_mark_rt_roots();
   SP_GLB_PHASE("globals:exceptions");
   sp_mark_in_flight_exceptions();
   SP_GLB_PHASE("globals:proc-homes");
@@ -1634,19 +1626,6 @@ static void sp_re_mark_globals(void) {
      as are not heap strings, and sp_mark_string skips those. */
   SP_GLB_PHASE("globals:program-name");
   sp_mark_string(sp_program_name);
-  /* The proc calling convention's side channel holds boxed values with
-     nothing else pointing at them: a proc writes its result to
-     _sp_proc_poly_ret and returns, and the caller reads it back after, with
-     an allocation in between (the push it is on its way to); the arguments
-     are the same on the way in. Both are roots. A slot keeps its value
-     after its reader is done, so it can name a freed object by the next
-     cycle: the scratch marker skips a slab slot that is free. Marked here
-     rather than by the generated marker so that a program with no globals
-     of its own carries no marker and no startup hook at all. */
-  SP_GLB_PHASE("globals:proc-channel");
-  sp_mark_rbval_scratch(_sp_proc_poly_ret);
-  for (int i = 0; i < SP_PROC_ARG_SLOTS; i++) sp_mark_rbval_scratch(_sp_proc_poly_args[i]);
-  if (_sp_proc_poly_wide) sp_gc_mark(_sp_proc_poly_wide);
   SP_GLB_PHASE("globals");
 #undef SP_GLB_PHASE
 }
