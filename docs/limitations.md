@@ -997,10 +997,11 @@ give the parameter the argument's kind (an rbs seed, or call sites that all
 pass the same kind).
 
 A typed Hash is handled the same way. A parameter the method stores keys or
-values of another kind into, by `[]=`, `store`, or a `merge!`, `update` or
-`replace` of another of its parameters, widens a hash literal the call passes, or one it
-follows back to through locals and method values; a typed Hash it cannot
-follow back to one, such as a getter's, is refused:
+values of another kind into, by `[]=`, `store`, a `merge!`, `update` or
+`replace` of another of its parameters, or a conflict block's value beside
+one, widens a hash literal the call passes, or one it follows back to through
+locals and method values; a typed Hash it cannot follow back to one, such as
+a getter's, is refused:
 
 ```ruby
 class Holder
@@ -1013,7 +1014,9 @@ into(Holder.new.h, { "d" => [1] })
 ```
 
 The other hash's boxed keys and values are left to the store, which raises
-`TypeError` for one the hash cannot hold, as for a typed array.
+`TypeError` for one the hash cannot hold, as for a typed array. A conflict block
+with a default, keyword or post-rest parameter, into a Hash a call widened for
+such a merge, is refused.
 
 #### ENV passed around as a value is a snapshot
 

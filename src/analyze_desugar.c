@@ -14151,6 +14151,7 @@ int fold_static_is_a(Compiler *c) {
     int cp = (int)nt_int(nt, cid, "enum_copy", -1);
     if (copy_site && cp >= 0 && cp < n0) copy_site[cp] = copy_site[cp] == -1 ? cid : -2;
   }
+  int blocks = -1;   /* merge_block_recorded, asked once a test would be decided */
   for (int id = 0; id < n0; id++) {
     NodeKind k = nt_kind(nt, id);
     if (k != NK_IfNode && k != NK_UnlessNode) continue;
@@ -14196,6 +14197,8 @@ int fold_static_is_a(Compiler *c) {
     if (!lv) continue;
     TyKind t = lv->type;
     if (t == TY_UNKNOWN || t == TY_POLY || t == TY_POLY_ARRAY || t == TY_NIL || t == TY_VOID) continue;
+    if (blocks < 0) blocks = merge_block_recorded(c);
+    if (blocks) continue;
     int ans = ty_is_array(t) || ty_is_obj_array(t);
     if (k == NK_UnlessNode) ans = !ans;
     if (!fold_if_arm(c, id, pred, ans, s, is_elsif)) break;

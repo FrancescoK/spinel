@@ -3339,6 +3339,22 @@ static int note_merge_param_srcs(Compiler *c, int recv, const int *argv, int an)
     if (infer_type(c, argv[ai]) == TY_POLY) ch |= mask_add(&lv->store_merge_src, unassigned_param_or_kwarg_read(c, sc, argv[ai]));
   return ch;
 }
+/* Records the merge! `id` on the parameter `lv` once; 1 when it was not yet. */
+static int merge_block_add(LocalVar *lv, int id) {
+  int n = lv->store_merge_nblocks;
+  for (int i = 0; i < n; i++) if (lv->store_merge_blocks[i] == id) return 0;
+  if (n >= (int)(sizeof lv->store_merge_blocks / sizeof lv->store_merge_blocks[0])) return 0;
+  lv->store_merge_blocks[lv->store_merge_nblocks++] = id;
+  return 1;
+}
+/* A conflict block beside it: its value lands in obj too, so the call is
+   recorded for the binding to ask what the block answers by then. One that
+   may break is left to the store: emit_hash_call has no arm for it. */
+static int note_merge_param_block(Compiler *c, int id, int recv) {
+  LocalVar *lv = merge_param_recv(c, recv);
+  if (!lv || nt_ref(c->nt, id, "block") < 0 || call_breaks(c, id)) return 0;
+  return merge_block_add(lv, id);
+}
 static void wbas_share_begin(int *changed, int *any);
 static void wbas_share_step(int *changed, int *any);
 static void wbas_share_end(void);
@@ -3598,6 +3614,7 @@ static int infer_write_container_usage(Compiler *c, const NodeTable *nt, int nfb
           is_idx_write = 1;
         }
         if (boxed || other) changed |= note_merge_param_srcs(c, recv, argv, an);
+        if (boxed) changed |= note_merge_param_block(c, id, recv);
         if (other || (boxed && !merge_param_recv(c, recv))) is_idx_write = 0;
         if (!is_idx_write) continue;
         /* a conflict block's value is stored under the colliding key */
@@ -8090,6 +8107,31 @@ static int layout_source_arg(Compiler *c, Scope *m, const int *argv, const ArgLa
   return layout_plain_arg(c, m, argv, L, i);
 }
 
+/* What the conflict block of the merge! `id` answers. An Array or Hash literal
+   is one before its parts have types: it is asked in the round that may decide
+   an `is_a?(Array)` over a value read back, which would not wait for them. */
+static TyKind merge_block_value(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  TyKind t = hash_merge_block_value_ty(c, id);
+  if (t != TY_UNKNOWN) return t;
+  int body = nt_ref(nt, nt_ref(nt, id, "block"), "body"), bn = 0;
+  const int *bb = body >= 0 ? nt_arr(nt, body, "body", &bn) : NULL;
+  NodeKind k = bn > 0 ? nt_kind(nt, bb[bn - 1]) : NK_NilNode;
+  return k == NK_ArrayNode ? TY_POLY_ARRAY : k == NK_HashNode ? TY_POLY_POLY_HASH : TY_UNKNOWN;
+}
+
+/* 1 when a conflict block is recorded on a parameter: the Hashes bound to it
+   may yet widen for what it answers, whose type settles late, so a value read
+   back from one is not decided ahead of that (fold_static_is_a). */
+int merge_block_recorded(Compiler *c) {
+  for (int s = 0; s < c->nscopes; s++) {
+    Scope *sc = &c->scopes[s];
+    for (int i = 0; i < sc->nlocals; i++)
+      if (sc->locals[i].store_merge_nblocks) return 1;
+  }
+  return 0;
+}
+
 /* 1 when a call passing `argv` has parameter `p` store into a container of
    type `ct` a key or value that `ct` cannot hold, where the method takes that
    key or value from another of its parameters (p's store_key_src and
@@ -8098,9 +8140,15 @@ static int layout_source_arg(Compiler *c, Scope *m, const int *argv, const ArgLa
    splat or gathered has its elements' type only, and is not asked. */
 int param_src_misfits(Compiler *c, Scope *m, LocalVar *p, TyKind ct, const int *argv,
                       const ArgLayout *L) {
-  if (!p || !argv || !(p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src)) return 0;
+  if (!p || !argv || !(p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src |
+                       (unsigned long long)p->store_merge_nblocks)) return 0;
   int arr = ty_is_array(ct) && ct != TY_POLY_ARRAY;
   if (!arr && !(ty_is_hash(ct) && ct != TY_POLY_POLY_HASH)) return 0;
+  for (int b = 0; !arr && b < p->store_merge_nblocks; b++) {
+    /* (of a block's nil, only a String-valued Hash cannot store one) */
+    TyKind bv = merge_block_value(c, p->store_merge_blocks[b]);
+    if (bv == TY_NIL ? ty_hash_val(ct) == TY_STRING : merged_kv_misfits(c, ct, TY_UNKNOWN, bv)) return 1;
+  }
   for (int j = 0; j < L->n && j < 64; j++) {
     int isk = (int)((p->store_key_src >> j) & 1ULL), isv = (int)((p->store_val_src >> j) & 1ULL);
     int ise = (int)((p->store_elems_src >> j) & 1ULL), ism = (int)((p->store_merge_src >> j) & 1ULL);
@@ -8997,10 +9045,13 @@ static int bind_args_params(Compiler *c, int call_id, int mi, const int *argv, i
     /* A caller that hands its own parameters on, as the container and as
        the key or value, stores them the same way: record it on the caller's
        container parameter, for its own callers' binding to check. */
-    if (p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src) {
+    if (p->store_key_src | p->store_val_src | p->store_elems_src | p->store_merge_src |
+        (unsigned long long)p->store_merge_nblocks) {
       Scope *cs = comp_scope_of(c, call_id);
       int ck = unassigned_param_read(c, cs, anode);
       LocalVar *cp = ck >= 0 ? scope_local(cs, cs->pnames[ck]) : NULL;
+      for (int b = 0; cp && !cp->rbs_seeded && b < p->store_merge_nblocks; b++)
+        changed |= merge_block_add(cp, p->store_merge_blocks[b]);
       for (int j = 0; cp && !cp->rbs_seeded && j < L.n && j < 64; j++) {
         int aj = layout_source_arg(c, m, argv, &L, j);
         if (aj < 0) continue;
