@@ -1,0 +1,24 @@
+["s", :k]
+[1, 2, 3]
+[4, 5]
+[6, 7]
+[9, 8]
+[true, true, true, false, false, false, false, true, true, true, false, true, true, false, false]
+[true, true, true, false, false, false, false, true, true, true, false, true, true, false, false]
+[true, true, true, false, false, false, false, true, true, true, false, true, true, false, false]
+[true, true, true, false, false, false, false, true, true, true, false, true, true, false, false]
+array of 2
+array of 0
+no Hash, no Bag
+a Stack is an Array
+a Stack is no Bag
+not a bag
+not other
+tagged
+not a bag
+enumerable
+an Array
+not an Enumerable
+["array", "enumerable", "not nil", "object", "not bag", "not hash"]
+not an array
+["not array", "not enumerable", "nil", "object", "not bag", "not hash"]

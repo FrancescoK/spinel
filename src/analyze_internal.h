@@ -178,6 +178,10 @@ int class_inherits_builtin_exception(Compiler *c, int ci);
    class, reaches Kernel's, which builds a new String each call. */
 int an_super_object_text(Compiler *c, int n, int mi);
 int an_user_defines_or_reads(Compiler *c, const char *name);
+/* Defined in codegen_util.c: does a value of builtin type t answer `is_a?(cn)` (1), not (0), or
+   only at run time (-1); exact is the instance_of? form. Reached by name, as codegen_internal.h is
+   not included here. */
+int ty_matches_class(Compiler *c, TyKind t, const char *cn, int exact);
 /* The universal "what a receiver answers" table (analyze_infer.c) and the
    lookup its consumers use. See the note on AN_POLY_RAW. */
 struct an_poly_raw_row { const char *n; int ac; TyKind t; };

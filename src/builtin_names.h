@@ -18,6 +18,8 @@ int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation 
 int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
 int is_bind_call(const char *n);  /* bind_call: an UnboundMethod bound and called in one */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
+int is_instance_of_query(const char *n);   /* instance_of? */
+int is_case_eq(const char *n);        /* === */
 int is_round_family(const char *n);   /* round ceil floor truncate */
 int is_push_alias(const char *n);     /* push << append */
 int is_bit_op(const char *n);         /* & | ^ */

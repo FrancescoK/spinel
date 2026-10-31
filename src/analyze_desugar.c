@@ -14075,7 +14075,7 @@ static int scope_writes_local(Compiler *c, Scope *s, const char *vn) {
 /* Keep the arm `ans` of the IfNode/UnlessNode `id` whose predicate is
    `pred`, blank the other, and forget the scope's local types (see below).
    Answers 0 when a node could not be made. */
-static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const unsigned char *is_elsif) {
+static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, unsigned char *is_elsif, int n0) {
   NodeTable *nt = (NodeTable *)c->nt;
   NodeKind k = nt_kind(nt, id);
   int then_s = nt_ref(nt, id, "statements");
@@ -14084,10 +14084,13 @@ static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const u
   int drop = ans ? els : then_s;
   if (keep >= 0 && nt_kind(nt, keep) == NK_ElseNode) keep = nt_ref(nt, keep, "statements");
   if (keep >= 0 && nt_kind(nt, keep) != NK_StatementsNode) {
-    /* an `elsif` chain: the surviving arm is the next IfNode itself */
+    /* an `elsif` chain: the surviving arm is the next IfNode itself, a
+       statement now, not its parent's `subsequent` any more: when its own
+       test folds too it stays an IfNode's arm to blank, not an ElseNode */
     int st = nt_new_node(nt, "StatementsNode");
     if (st < 0) return 0;
     nt_node_set_arr(nt, st, "body", &keep, 1);
+    if (is_elsif && keep < n0) is_elsif[keep] = 0;
     keep = st;
   }
   nt_subtree_blank(nt, pred);
@@ -14117,6 +14120,53 @@ static int fold_if_arm(Compiler *c, int id, int pred, int ans, Scope *s, const u
     lv_set_type(l, TY_UNKNOWN); l->gc_root = (int)TY_UNKNOWN;
   }
   return 1;
+}
+
+/* Does the program define an instance method `===` on Class or Module (a
+   `class Class` reopening, recorded as the Class reopening's own methods, or
+   a Module one), which every `K === v` with K a class calls? */
+static int class_case_eq_defined(Compiler *c, int pred) {
+  int mod = comp_core_class(c, CORE_MODULE);
+  return class_reopen_cmethod(c, pred, -1, "===") >= 0 ||
+         (mod >= 0 && call_target(c, pred, mod, "===", 0, NULL) >= 0);
+}
+
+/* The class test an if/unless predicate asks of a local: `v.is_a?(K)`,
+   `v.kind_of?(K)`, `v.instance_of?(K)` or `K === v`, K a bare constant.
+   Sets *local to the local read, *kn to K's name, *exact to the instance_of?
+   form and *case_eq to the `===` form; 0 when the predicate is no such test. */
+static int local_class_test(const NodeTable *nt, int pred, int *local, const char **kn, int *exact, int *case_eq) {
+  if (pred < 0 || nt_kind(nt, pred) != NK_CallNode || nt_ref(nt, pred, "block") >= 0) return 0;
+  const char *nm = nt_str(nt, pred, "name");
+  int recv = nt_ref(nt, pred, "receiver");
+  int args = nt_ref(nt, pred, "arguments");
+  int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
+  if (!nm || recv < 0 || an != 1 || !av) return 0;
+  *case_eq = is_case_eq(nm);
+  if (!*case_eq && !is_kind_query(nm)) return 0;
+  int lv = *case_eq ? av[0] : recv, kc = *case_eq ? recv : av[0];
+  if (nt_kind(nt, lv) != NK_LocalVariableReadNode || nt_kind(nt, kc) != NK_ConstantReadNode) return 0;
+  *local = lv; *kn = nt_str(nt, kc, "name"); *exact = is_instance_of_query(nm);
+  return *kn != NULL;
+}
+
+/* Is a local of the settled type t an instance of the class kn: 1 or 0, -1
+   when only the run-time test knows. An Array is one of Array, Object,
+   Enumerable and the modules the program mixed into them (ty_matches_class,
+   which codegen's folded `is_a?` asks as well), and of no other class; but
+   a typed Array local can hold nil (a missing element, a `&.` chain, a
+   branch that did not run), so it is decided only for a class nil answers
+   as an Array does (Object, a user class, Hash), and `is_a?(Array)` and
+   `kind_of?(Array)` keep the answer they always had. A local of any other
+   settled type is decided for those two alone, as no Array: the other forms
+   and classes are left to the run-time test for it, because an object's
+   class may be an Array's subclass. */
+static int settled_local_is_a(Compiler *c, TyKind t, const char *kn, int exact, int case_eq) {
+  int is_array_class = ty_matches_class(c, TY_POLY_ARRAY, kn, 1) == 1;
+  if (!case_eq && !exact && is_array_class) return ty_is_array(t) || ty_is_obj_array(t);
+  if (!ty_is_array(t) && !ty_is_obj_array(t)) return -1;
+  int ans = ty_matches_class(c, TY_POLY_ARRAY, kn, exact);
+  return ans == ty_matches_class(c, TY_NIL, kn, exact) ? ans : -1;
 }
 
 /* `if v.is_a?(Array)` / `kind_of?` on a local whose type has settled is
@@ -14180,19 +14230,19 @@ int fold_static_is_a(Compiler *c) {
       }
       if (ans < 0) continue;
       if (k == NK_UnlessNode) ans = !ans;
-      changed |= fold_if_arm(c, id, pred, ans, ps, is_elsif);
+      changed |= fold_if_arm(c, id, pred, ans, ps, is_elsif, n0);
       continue;
     }
-    if (pred < 0 || nt_kind(nt, pred) != NK_CallNode || nt_ref(nt, pred, "block") >= 0) continue;
-    const char *nm = nt_str(nt, pred, "name");
-    if (!nm || (!sp_streq(nm, "is_a?") && !sp_streq(nm, "kind_of?"))) continue;
-    int recv = nt_ref(nt, pred, "receiver");
-    if (recv < 0 || nt_kind(nt, recv) != NK_LocalVariableReadNode) continue;
-    int args = nt_ref(nt, pred, "arguments");
-    int an = 0; const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &an) : NULL;
-    if (an != 1 || !av || nt_kind(nt, av[0]) != NK_ConstantReadNode) continue;
-    const char *kn = nt_str(nt, av[0], "name");
-    if (!kn || !sp_streq(kn, "Array")) continue;
+    int recv, exact, case_eq;
+    const char *kn;
+    if (!local_class_test(nt, pred, &recv, &kn, &exact, &case_eq)) continue;
+    /* a constant that names no class is no test (`R === v` on a Range
+       constant, an undefined name's NameError), and a class method `===`
+       answers as the program says */
+    int kci = comp_class_index(c, kn);
+    if (kci < 0 && !is_builtin_class_name(kn) && !is_builtin_module_name(kn)) continue;
+    if (case_eq && kci >= 0 && call_target(c, pred, kci, "===", CT_CMETHOD, NULL) >= 0) continue;
+    if (case_eq && class_case_eq_defined(c, pred)) continue;
     const char *vn = nt_str(nt, recv, "name");
     Scope *s = vn ? comp_scope_of(c, recv) : NULL;
     LocalVar *lv = s ? scope_local(s, vn) : NULL;
@@ -14201,9 +14251,10 @@ int fold_static_is_a(Compiler *c) {
     if (t == TY_UNKNOWN || t == TY_POLY || t == TY_POLY_ARRAY || t == TY_NIL || t == TY_VOID) continue;
     if (blocks < 0) blocks = merge_block_recorded(c);
     if (blocks) continue;
-    int ans = ty_is_array(t) || ty_is_obj_array(t);
+    int ans = settled_local_is_a(c, t, kn, exact, case_eq);
+    if (ans < 0) continue;
     if (k == NK_UnlessNode) ans = !ans;
-    if (!fold_if_arm(c, id, pred, ans, s, is_elsif)) break;
+    if (!fold_if_arm(c, id, pred, ans, s, is_elsif, n0)) break;
     changed = 1;
   }
   free(is_elsif);

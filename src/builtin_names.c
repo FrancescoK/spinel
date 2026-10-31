@@ -63,6 +63,9 @@ int is_kind_query(const char *n) {
   return sp_streq(n, "is_a?") || sp_streq(n, "kind_of?") || sp_streq(n, "instance_of?");
 }
 
+int is_instance_of_query(const char *n) { return n && sp_streq(n, "instance_of?"); }
+int is_case_eq(const char *n) { return n && sp_streq(n, "==="); }
+
 
 int is_round_family(const char *n) {
   return sp_streq(n, "round") || sp_streq(n, "ceil") || sp_streq(n, "floor") || sp_streq(n, "truncate");
