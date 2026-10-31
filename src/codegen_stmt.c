@@ -25392,9 +25392,13 @@ void emit_index_op_write(Compiler *c, int id, Buf *b, int indent) {
     /* With a key of the hash's own kind and a right-hand side that cannot
        touch the hash, the read finds the slot once and the store writes it
        (opw_slot / opw_get / opw_put): a counting loop's `h[k] += 1` was two
-       probes, the second half its time. */
+       probes, the second half its time. The right-hand side is a plain
+       Integer: a boxed one or an object is converted by a call (to_int,
+       coerce) that could change the hash between the read and the store. */
     int ts = 0;
-    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT && !ok && !subtree_has_side_effect(c, v)) {
+    Repr rv = repr_of(c, v);
+    if ((rt == TY_STR_INT_HASH || rt == TY_INT_INT_HASH) && vt == TY_INT && !ok &&
+        rv.kind == RK_SCALAR && rv.as_ty == TY_INT && !subtree_has_side_effect(c, v)) {
       ts = ++g_tmp;
       buf_printf(b, "sp_int _t%d = sp_%sHash_opw_slot(_t%d, %s); ", ts, hn, ta, rk);
       snprintf(slot, sizeof slot, "sp_oint_val(sp_%sHash_opw_get(_t%d, _t%d), \"%s\")", hn, ta, ts, op);
