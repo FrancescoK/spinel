@@ -18932,6 +18932,31 @@ static void reject_range_reopen_nonint(Compiler *c) {
   }
 }
 
+/* A Range holds sp_int bounds, or Float or String ones, so a Rational or
+   Complex bound has nowhere to live: the Integer Range truncated it.
+   `(1r..3).begin` answered 1, `(1r/2..2) === 1r/4` answered true, and
+   `(1r..3).each` iterated where CRuby raises "can't iterate from
+   Rational". Every use is refused, also the folds and matches that never
+   build a Range: they read the same truncated bound. */
+static void reject_range_rational_bound(Compiler *c) {
+  const NodeTable *nt = c->nt;
+  NT_FOREACH_KIND(nt, NK_RangeNode, id) {
+    Scope *sc = comp_scope_of(c, id);
+    if (sc && !sc->reachable) continue;
+    int ends[2] = { nt_ref(nt, id, "left"), nt_ref(nt, id, "right") };
+    for (int k = 0; k < 2; k++) {
+      TyKind t = ends[k] >= 0 ? comp_ntype(c, ends[k]) : TY_UNKNOWN;
+      /* (--int-overflow=promote holds a computed Rational boxed) */
+      if (t != TY_RATIONAL && t != TY_COMPLEX && !an_rat_value(c, ends[k])) continue;
+      unsupported_feature(c, id,
+        "a Range with a Rational or Complex bound: a Range holds Integer, Float or "
+        "String bounds, so it has nowhere to hold one. Comparing against the bounds "
+        "directly (`x >= lo && x <= hi`) needs no Range and does work");
+      break;
+    }
+  }
+}
+
 /* IO#gets and IO#readline set $_ in CRuby; here they do not, so a program
    that reads $_ would read nil, or a line some other write left, where
    CRuby reads the line just read. Such a gets is refused, as a bare gets
@@ -21626,6 +21651,7 @@ char *codegen_program(const NodeTable *nt) {
   reject_define_method_early(c);
   reject_define_method_runtime_block(c);
   reject_range_reopen_nonint(c);
+  reject_range_rational_bound(c);
   reject_io_gets_last_line(c);
 
   Buf b; memset(&b, 0, sizeof b);
