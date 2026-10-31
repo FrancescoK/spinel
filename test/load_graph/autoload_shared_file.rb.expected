@@ -1,0 +1,7 @@
+["constant", "constant"]
+shared lib loaded
+[:inside, nil, nil]
+[:assigned, "constant", "constant"]
+2
+["constant", "constant"]
+1

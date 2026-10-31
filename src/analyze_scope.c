@@ -11775,10 +11775,15 @@ static void bc_check(Bc *b, int id, int in_defined) {
   int r = bc_lookup(b, n, &hit);
   free(hit);
   if (r != 0) return;
+  /* a name an autoload registers, which the program defines only in scopes
+     the read does not look in: once the file runs, the read and defined?
+     would take the leaf's class from those scopes */
+  if (nt_autoload_named(nt, n)) {
+    unsupported_feature(b->c, id, "--load-model=graph: an autoloaded constant the program defines only in another scope, for now");
+    return;
+  }
   if (in_defined) {
-    /* defined?(X) answers nil, as for a name defined nowhere, unless an
-       autoload registers it ("constant" while it is pending) */
-    if (nt_autoload_named(nt, n)) return;
+    /* defined?(X) answers nil, as for a name defined nowhere */
     nt_set_str((NodeTable *)nt, id, "name", "SpinelNoSuchConstant__");
     return;
   }
@@ -11872,9 +11877,13 @@ static void bc_check_scoped(Bc *b, int v) {
     if (sp_streq(nt_str(nt, par, "name"), "SpinelNoSuchConstant__")) return;
   }
   char *p = bc_resolve(b, par);
-  if (p && *p && p[0] != '?' && p[0] != '#' && bc_mod(b, p, 0) &&
-      bc_scoped_lookup(b, p, nm) == 0 && !nt_autoload_named(nt, nm))
-    nt_set_str((NodeTable *)nt, v, "name", "SpinelNoSuchConstant__");
+  if (p && *p && p[0] != '?' && p[0] != '#' && bc_mod(b, p, 0) && bc_scoped_lookup(b, p, nm) == 0) {
+    if (!nt_autoload_named(nt, nm)) nt_set_str((NodeTable *)nt, v, "name", "SpinelNoSuchConstant__");
+    /* a registration of the leaf: refused where the leaf names a constant
+       elsewhere, as bc_check refuses a bare read */
+    else if (bc_has(&b->nested, nm) || bc_has(&b->defs, nm))
+      unsupported_feature(b->c, v, "--load-model=graph: an autoloaded constant the program defines only in another scope, for now");
+  }
   free(p);
 }
 

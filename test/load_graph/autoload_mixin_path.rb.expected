@@ -1,0 +1,15 @@
+main
+mix path lib loaded
+"inc"
+"ext"
+"pre"
+[5, 6]
+5
+"inc"
+"ext"
+"own"
+"base"
+MixPath::Base
+mix path base lib loaded
+"base2"
+MixPathBase

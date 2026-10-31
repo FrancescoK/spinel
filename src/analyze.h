@@ -371,6 +371,7 @@ int elab_stamp_same(ElabStamp a, ElabStamp b);
 int elab_runs_unseen(Compiler *c);
 int elab_autoload_read(Compiler *c, int id);
 int elab_autoload_scope_open(Compiler *c, int id);
+int elab_autoload_file_defines(Compiler *c, int slot, int file);
 /* may a version of `name` run outside its interval: does the program name
    the method by a Symbol or a String, name or make methods by computed
    names, or run code the record has not seen? */

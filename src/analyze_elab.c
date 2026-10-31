@@ -5185,3 +5185,17 @@ int elab_autoload_scope_open(Compiler *c, int id) {
     open = lr_const_in(c, LR_MAIN, lr_written_name(c->nt, id), at, at.region < 0, 1, &d, 0, LR_KEY_AUTO) != ELAB_NO;
   return open;
 }
+
+/* Does the file of the registration in slot write its constant, under its
+   owner, whenever the file runs? A write under a condition, in another file
+   or under another owner does not count. */
+int elab_autoload_file_defines(Compiler *c, int slot, int file) {
+  LoadRecord *r = c->lrec;
+  if (!r || slot < 1 || slot > r->nhist) return 0;
+  const LrHist *a = &r->hist[slot - 1], *h = lr_hist(r, LR_KEY_CONST, a->b, a->name, 0);
+  for (int i = 0; h && i < h->n; i++) {
+    int e = h->v[i].node < r->n ? r->at[h->v[i].node] : -1;
+    if (e >= 0 && r->st[e].file == file && !h->v[i].may) return 1;
+  }
+  return 0;
+}

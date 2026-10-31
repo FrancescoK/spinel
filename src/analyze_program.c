@@ -621,6 +621,27 @@ static int prog_mixin_plain_stmt(Compiler *c, int id) {
   return 0;
 }
 
+/* Does another registration, of another constant, name registration a's
+   file? */
+static int prog_autoload_file_shared(const Compiler *c, const AutoloadRegistration *a) {
+  for (int i = 0; i < c->nautoloads; i++)
+    if (c->autoloads[i].file == a->file && c->autoloads[i].slot != a->slot) return 1;
+  return 0;
+}
+
+/* Is a class or module header's scope, some parent segment of its path
+   (`class Outer::Box`, or `Outer::Box.include(M)`, which the desugaring
+   made such a header), a constant an autoload defines? CRuby runs the file
+   at the header, before the class opens; the scope walk registers the
+   class at the header, without the scope the file makes. */
+static int prog_header_scope_autoloaded(Compiler *c, int id) {
+  int cp = nt_ref(c->nt, id, "constant_path");
+  for (int p = cp >= 0 && nt_kind(c->nt, cp) == NK_ConstantPathNode ? nt_ref(c->nt, cp, "parent") : -1; p >= 0;
+       p = nt_kind(c->nt, p) == NK_ConstantPathNode ? nt_ref(c->nt, p, "parent") : -1)
+    if (elab_autoload_read(c, p)) return 1;
+  return 0;
+}
+
 /* What --load-model=graph does not load yet, refused by name (#9898), asked
    once the load sites are known, ahead of the desugaring:
      - a require of the program's own entry file, which CRuby runs again as
@@ -667,12 +688,22 @@ void prog_refuse_loads(Compiler *c) {
         unsupported_feature(c, id, "--load-model=graph: autoload registration in a deferred class or module body, for now");
       if (!a[j].slot) unsupported_feature(c, id, "--load-model=graph: unresolved autoload owner");
       if (!a[j].file) unsupported_feature(c, id, "--load-model=graph does not load the program's own entry file again, for now");
+      /* after another registration's autoload ran the file, CRuby still
+         answers defined? of this one "constant" until its own runs; the
+         runtime keeps the file's state, not each registration's */
+      if (a[j].file > 0 && prog_autoload_file_shared(c, &a[j]) && !elab_autoload_file_defines(c, a[j].slot, a[j].file))
+        unsupported_feature(c, id, "--load-model=graph: autoload registrations sharing a file that does not define each one's constant, for now");
     }
   }
-  if (c->nautoloads)
+  if (c->nautoloads) {
     NT_FOREACH_KIND(nt, NK_ConstantPathNode, id)
       if (elab_autoload_scope_open(c, id))
         unsupported_feature(c, id, "--load-model=graph loads an autoload's file at its constant's first reference only later, for now");
+    NodeKind hk[] = { NK_ClassNode, NK_ModuleNode };
+    for (int hi = 0; hi < 2; hi++) NT_FOREACH_KIND(nt, hk[hi], id)
+      if (prog_header_scope_autoloaded(c, id))
+        unsupported_feature(c, id, "--load-model=graph: a class header whose scope an autoload defines, for now");
+  }
   int *parent = an_parent_map(nt);
   if (!parent) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   NodeKind kinds[] = { NK_LoadNode, NK_PostExecutionNode, NK_ReturnNode };

@@ -489,6 +489,27 @@ printf 'path = File.join(__dir__, "lib")\npath.replace(File.join(__dir__, "other
 refused autoload "unresolved autoload registration"
 printf 'path = File.join(__dir__, "lib")\n[1].each { path << "" }\nautoload :Lib, path\np Lib\n' > "$tmp/autoload/main.rb"
 refused autoload "unresolved autoload registration"
+# a header whose scope an autoload defines runs the file before it opens the
+# class, after the scope walk registered it; an explicit-receiver mixin
+# becomes such a header
+printf 'module Lib; class Box; end; end\n' > "$tmp/autoload/lib.rb"
+printf 'autoload :Lib, File.join(__dir__, "lib")\nmodule M; end\nclass Lib::Box; include M; end\np Lib::Box.new\n' > "$tmp/autoload/main.rb"
+refused autoload "a class header whose scope an autoload defines"
+printf 'autoload :Lib, File.join(__dir__, "lib")\nmodule M; end\nLib::Box.include(M)\np Lib::Box.new\n' > "$tmp/autoload/main.rb"
+refused autoload "a class header whose scope an autoload defines"
+# after one registration ran the shared file, CRuby answers defined? of the
+# other "constant" until its own autoload runs
+printf 'Lib = 1\n' > "$tmp/autoload/lib.rb"
+printf 'autoload :Lib, File.join(__dir__, "lib")\nautoload :Other, File.join(__dir__, "lib")\np Lib\np defined?(Other)\n' > "$tmp/autoload/main.rb"
+refused autoload "autoload registrations sharing a file that does not define each one's constant"
+# the file defines the constant only in another scope, whose class of that
+# leaf the read (bare or scoped) would take
+printf 'module Holder; class Lib; end; end\n' > "$tmp/autoload/lib.rb"
+printf 'autoload :Lib, File.join(__dir__, "lib")\nbegin; Lib; rescue NameError; end\np defined?(Lib)\n' > "$tmp/autoload/main.rb"
+refused autoload "an autoloaded constant the program defines only in another scope"
+printf 'class Lib; end\n' > "$tmp/autoload/lib.rb"
+printf 'class S\n  autoload :Lib, File.join(__dir__, "lib")\nend\nbegin; S::Lib; rescue NameError; end\np defined?(S::Lib)\n' > "$tmp/autoload/main.rb"
+refused autoload "an autoloaded constant the program defines only in another scope"
 # An implicit rescue/ensure wraps the whole body, which its emitter cannot
 # dispatch. Keep the graph refusal; an explicit begin statement is executable.
 for body in 'class Holder' 'module Holder' 'class Holder; end; class << Holder'; do
