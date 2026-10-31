@@ -1,0 +1,4 @@
+class Report
+  def total: (untyped, untyped) -> untyped
+  def span: (untyped, untyped) -> untyped
+end

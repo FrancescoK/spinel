@@ -528,11 +528,17 @@ typedef struct {
     int leading;
 } ir_comment;
 
+/* The bytes a continuation line's comment marker takes: `#|` (ruby/rbs's
+   continuation of a signature over several lines), or `#` and one space */
+static size_t ir_cont_prefix(const char *s, size_t n) {
+    return n >= 2 && (s[1] == '|' || s[1] == ' ') ? 2 : 1;
+}
+
 static void ir_ann_add_comment(const ir_file *f, ir_ann *a, const ir_comment *cm) {
     const char *s = (const char *) f->src + cm->start;
     size_t n = cm->end - cm->start;
     while (n > 0 && (s[n - 1] == '\r' || s[n - 1] == '\n')) n--;
-    size_t pre = n >= 2 && s[1] == ' ' ? 2 : 1;
+    size_t pre = ir_cont_prefix(s, n);
     ir_ann_add_line(a, s + pre, n - pre, cm->line, cm->col + (int) pre);
 }
 
@@ -1219,14 +1225,17 @@ static void ir_associate(ir_file *f, ir_walk *w) {
                 pending_blank = -1;
             }
             else if (cur != NULL) {
-                size_t pre = n >= 2 && s[1] == ' ' ? 2 : 1;
+                /* a continuation: `#|` and the rest of the signature, or an
+                   indented line after `# ` */
+                bool bar = n >= 2 && s[1] == '|';
+                size_t pre = ir_cont_prefix(s, n);
                 bool blank = true;
                 for (size_t z = pre; z < n; z++)
                     if (s[z] != ' ' && s[z] != '\t') { blank = false; break; }
                 if (blank) {
                     if (pending_blank < 0) pending_blank = k;
                 }
-                else if (s[pre] == ' ' || s[pre] == '\t') {
+                else if (bar || s[pre] == ' ' || s[pre] == '\t') {
                     /* Internal blank comment lines belong to a continuation;
                        trailing blank comment lines do not. */
                     if (pending_blank >= 0)
