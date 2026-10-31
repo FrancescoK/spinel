@@ -7080,6 +7080,21 @@ static void prepend_cell_write(Compiler *c, int late, int list, int after, int c
    reopening after the first body, which is where the refusal rule asks
    (refuse_mixin_after_calls counts a call in an earlier statement's lambda
    too, though no code runs between the two bodies). */
+/* Does a top-level statement that runs code lie between places lo and hi?
+   A module's reopening is guarded only then (include_late_stmt). */
+static int top_code_runs_between(Compiler *c, int lo, int hi) {
+  const NodeTable *nt = c->nt;
+  int n = 0, *st = prog_top_seq(c, &n, NULL), runs = 0;
+  for (int q = 0; q < n && !runs; q++) {
+    NodeKind qk = nt_kind(nt, st[q]);
+    if (qk == NK_ClassNode || qk == NK_ModuleNode || qk == NK_DefNode || qk == NK_LoadNode) continue;
+    int f, r;
+    elab_top_place(c, st[q], &f, &r);
+    runs = r > lo && r < hi;
+  }
+  free(st);
+  return runs;
+}
 static int include_late_stmt(Compiler *c, int ci, int body) {
   const NodeTable *nt = c->nt;
   int nb = 0;
@@ -7091,7 +7106,17 @@ static int include_late_stmt(Compiler *c, int ci, int body) {
        region's runs at a time the record does not fix */
     LoadPoint p0 = elab_point_of(c, ob[0].node), p1 = elab_point_of(c, s);
     int o = elab_cmp(p0, p1);
-    return o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0) ? s : -1;
+    if (!(o == PROG_BEFORE || (o == PROG_UNKNOWN && p0.region >= 0 && p1.region >= 0))) return -1;
+    /* (a module's reopening only where code runs between its bodies: the
+       hidden method a guarded copy falls back to is not carried into the
+       module's includers, so a module guarded with nothing run between
+       called a function no one defined) */
+    if (!comp_class_is_module(c, &c->classes[ci])) return s;
+    int f0, r0, f1, r1;
+    elab_top_place(c, ob[0].node, &f0, &r0);
+    elab_top_place(c, s, &f1, &r1);
+    /* (a place the record does not rank is guarded, as it may run anywhere) */
+    return r0 < 0 || r1 < 0 || top_code_runs_between(c, r0, r1) ? s : -1;
   }
   return -1;
 }
