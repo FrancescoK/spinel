@@ -4426,6 +4426,11 @@ static SP_NOINLINE SP_COLD SP_UNUSED void sp_frange_minn_raise(sp_FloatRange r, 
 static SP_UNUSED sp_RbVal sp_range_num_end(sp_RbVal v) {
   if (SP_UNLIKELY(v.tag == SP_TAG_STR || v.tag == SP_TAG_SYM || v.tag == SP_TAG_BOOL || sp_poly_is_strbuf(v)))
     sp_raise_cls("ArgumentError", "bad value for range");
+  /* a Range holds Integer, Float or String bounds: a Rational or Complex
+     one read out of a box was truncated to its integer part */
+  if (SP_UNLIKELY(sp_poly_is_rational(v) || sp_poly_is_brat(v) ||
+                  (v.tag == SP_TAG_OBJ && v.cls_id == SP_BUILTIN_COMPLEX)))
+    sp_raise_cls("NotImplementedError", "a Range with a Rational or Complex bound is not supported by spinel");
   return v;
 }
 /* The boxed begin of an Integer-represented Range whose end is a Float
