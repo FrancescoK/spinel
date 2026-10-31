@@ -3139,6 +3139,12 @@ static void qc_keep_orig_name(const NodeTable *nt, int node) {
 static void alias_renames_apply(Compiler *c, AliasRenames *q) {
   for (int i = 0; i < q->n; i++) {
     if (q->v[i].held) qc_keep_orig_name(c->nt, q->v[i].node);
+    /* the path as written, for the NameError text alone (const_path_written):
+       qc_orig_name additionally says the scope holds the name and drives the
+       lookups, which a rename whose scope does not hold it must not claim */
+    const char *was = nt_str(c->nt, q->v[i].node, "name");
+    if (was && !nt_str(c->nt, q->v[i].node, "written_name"))
+      nt_node_set_str((NodeTable *)c->nt, q->v[i].node, "written_name", was);
     nt_set_str((NodeTable *)c->nt, q->v[i].node, "name", q->v[i].name);
     free(q->v[i].name);
   }

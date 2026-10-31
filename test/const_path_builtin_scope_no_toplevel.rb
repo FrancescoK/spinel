@@ -208,3 +208,16 @@ Hash.mix
 try { String::MA1.v }
 try { ArgumentError::Bx2.v }
 try { Hash::MA4.v }
+
+# a class alias that no scope on the path holds: the NameError names the path
+# as written, not the class the alias stands for (also for a class of the
+# program as the scope)
+class Bx9; def self.v = 79; end
+Al9 = Bx9
+module Mi9; MA9 = Bx9; end
+try { String::Al9.v }
+try { Comparable::MA9.v }
+try { StandardError::Al9.new }
+class Hd9; end
+try { Hd9::Al9.v }
+try { Hd9::MA9.v }

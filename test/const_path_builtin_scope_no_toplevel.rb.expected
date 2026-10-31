@@ -45,3 +45,8 @@ nil
 71
 72
 74
+NameError: uninitialized constant String::Al9
+NameError: uninitialized constant Comparable::MA9
+NameError: uninitialized constant StandardError::Al9
+NameError: uninitialized constant Hd9::Al9
+NameError: uninitialized constant Hd9::MA9
