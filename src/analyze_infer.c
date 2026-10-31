@@ -4508,10 +4508,11 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
         (sp_streq(name, "start") || sp_streq(name, "compact")))
       { *out = TY_NIL; return 1; }
-    /* GC.total_time: the collector's accumulated time, in nanoseconds */
+    /* GC.total_time: the collector's accumulated time, in nanoseconds;
+       GC.count: the collections so far */
     if (rk == NK_ConstantReadNode &&
         nt_str(nt, recv, "name") && sp_streq(nt_str(nt, recv, "name"), "GC") &&
-        sp_streq(name, "total_time") && argc == 0)
+        (sp_streq(name, "total_time") || sp_streq(name, "count")) && argc == 0)
       { *out = TY_INT; return 1; }
     /* Encoding.find(name): a boxed Encoding (nil for "internal") */
     if (rk == NK_ConstantReadNode &&
