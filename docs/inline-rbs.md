@@ -82,7 +82,7 @@ annotations with ruby/rbs's default `untyped` signatures.
 | No parameters | `#: () -> void` or `#: -> void` |
 | Leading `@rbs` signature | `# @rbs (Integer) -> Integer` |
 | Indented continuation | `#: (Integer,` followed by `#   String) -> void` |
-| `#|` continuation | `#: (` followed by `#|   Integer,` and `#| ) -> void` |
+| `#\|` continuation | `#: (` followed by `#\|   Integer,` and `#\| ) -> void` |
 | Named parameter and return lines | `# @rbs x: Integer`, `# @rbs return: String` |
 | Trailing return on a regular method | `def m(x) #: Integer` |
 | Leading signature on an endless method | `#: (Integer) -> Integer` above `def m(x) = x` |
