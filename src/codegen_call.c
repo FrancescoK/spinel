@@ -15524,6 +15524,13 @@ static int emit_new_call_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
       TyKind nret = repr_of(c, id).as_ty;
       const char *ndflt = (is_scalar_ret(nret) && nret != TY_UNKNOWN)
                           ? default_value_from_compiler(c, nret) : "sp_box_nil()";
+      /* the placeholder of a pointer object is typed: a bare NULL is void *,
+         and a field read on it (`Holder::Pt.new(1).x`) names no member of it */
+      char ndptr[160];
+      if (ty_is_object(nret) && !comp_ty_value_obj(c, nret) && ty_object_class(nret) < c->nclasses) {
+        snprintf(ndptr, sizeof ndptr, "((%s *)NULL)", class_ctype(c, ty_object_class(nret)));
+        ndflt = ndptr;
+      }
       /* A constant that IS a known builtin class (a socket class Spinel
          recognizes but whose constructor it has not implemented) exists --
          the METHOD is what is missing, so say so. Only a genuinely undefined
