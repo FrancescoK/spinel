@@ -154,6 +154,11 @@ int cplan_initializers(Compiler *c, int id, int *out, int cap);
    receiver and add members, and nothing here promises a set only grows. */
 enum { CPT_UNKNOWN = -1, CPT_MAX = 64 };
 int cplan_targets(Compiler *c, int id, int *out, int cap);
+/* cplan_targets, for a reader that wants the code the call's emission
+   names (reachability): the same answer, but for a call on a boxed receiver
+   the methods of the arms its dispatch has, which the receiver's class
+   facts bound, not every class's method of the name. */
+int cplan_emitted_targets(Compiler *c, int id, int *out, int cap);
 /* Why cplan_targets answers CPT_UNKNOWN for call id: its members are more
    than cap (CPT_WHY_CAP), or its receiver is of a type the analysis did not
    settle (CPT_WHY_RECV_UNTYPED) -- the two ct_resolve gives up on, whose
@@ -172,6 +177,11 @@ unsigned cplan_targets_drops(void);
    can only raise ArgumentError, and answers nothing. */
 TyKind cplan_poly_operator_ret(Compiler *c, int id);
 int cplan_target_binds(Compiler *c, int id, int mi);
+/* Can method mi run with argc plain positional arguments (no keyword hash)?
+   A def the program writes says (cplan_target_binds' judgement); anything
+   else -- a define_method block, an accessor, a wrapper the compiler made --
+   takes every count. */
+int cplan_def_takes_argc(Compiler *c, int mi, int argc);
 int cplan_boxed_cmethod(Compiler *c, int id, const char *name);
 /* Object fallback behind a class-gated exception accessor, or -1. */
 int cplan_exc_object_method(Compiler *c, int call, const char *name);

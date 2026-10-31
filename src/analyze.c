@@ -525,12 +525,30 @@ static int cr_scope_has_super(Compiler *c, int s) {
    dispatch asks it of a #message / #to_s override */
 int scope_calls_super(Compiler *c, int s) { return cr_scope_has_super(c, s); }
 
+/* Is `nm` called by bare name, or on an instance, with an argument count the
+   call site shows ("\x04<nm>" is added with each "\x04<count> <nm>",
+   compute_reachable)? An alias or a prepend chain of it is live whatever the
+   count: they are not scopes the count can rule out. */
+static int cn_counted(const ANameHash *cn_set, const char *nm, int on_instance) {
+  char ab[300];
+  snprintf(ab, sizeof ab, "\x04%s%s", on_instance ? "\x03" : "", nm);
+  return anh_has(cn_set, ab);
+}
+
+/* Does a call by name reach scope t: not a replaced version, and for a call
+   on an instance not a class method (a module function is one an instance
+   can run) */
+static int cr_name_reaches(Compiler *c, int t, int on_instance) {
+  const Scope *sc = &c->scopes[t];
+  return !sc->replaced && (!on_instance || !sc->is_cmethod || sc->is_module_function);
+}
+
 /* Is `nm` called: by bare name, or on a known instance (`K.new.nm`, marked
    "\x03nm" by compute_reachable)? */
 static int cn_live(const ANameHash *cn_set, const char *nm) {
   char ib[300];
   snprintf(ib, sizeof ib, "\x03%s", nm);
-  return anh_has(cn_set, nm) || anh_has(cn_set, ib);
+  return anh_has(cn_set, nm) || anh_has(cn_set, ib) || cn_counted(cn_set, nm, 0) || cn_counted(cn_set, nm, 1);
 }
 
 /* The settled element kind already includes a literal block's next values.
@@ -996,6 +1014,7 @@ static void cr_live_scope(CrLive *lv, int s, char **calls, int ncalls) {
     const char *nm = calls[i];
     if (!nm || nm[0] == '\x01') continue;
     if (nm[0] == '\x02' || nm[0] == '\x03') nm++;
+    else if (nm[0] == '\x04') { nm = strchr(nm, ' ') + 1; nm += nm[0] == '\x03'; }
     for (int f = 0; finders[f]; f++) if (sp_streq(nm, finders[f])) { cr_live_all(lv); break; }
   }
 }
@@ -1129,6 +1148,15 @@ static void cr_live_end(CrLive *lv) {
   free(lv->seg_first); free(lv->seg_next); anh_free(&lv->seg);
 }
 
+/* The scopes of a name, from `first` along `link`, that can take `argc`
+   positional arguments: a call by name with a count the call shows
+   ("\x04<count> <name>", compute_reachable) */
+static void cr_reach_counted(CrLive *lv, int first, const int *link, int argc, int on_instance) {
+  for (int t = first; t >= 0; t = link[t])
+    if (cr_name_reaches(lv->c, t, on_instance) && !lv->c->scopes[t].reachable && cplan_def_takes_argc(lv->c, t, argc))
+      cr_live_reach(lv, t);
+}
+
 void compute_reachable(Compiler *c, int typed) {
   /* Build per-scope call sets (CallNode names, not entering nested DefNodes). */
   char ***scope_calls = calloc((size_t)c->nscopes, sizeof(char **));
@@ -1141,7 +1169,7 @@ void compute_reachable(Compiler *c, int typed) {
   cr_live_begin(&lv, c, queue, &qtail);
   lv.typed = typed == 2;
   ic_begin(c, typed);
-  if (typed == 2) g_cr_typed = &c->ic->class_only;
+  if (typed == 2) { g_cr_typed = &c->ic->class_only; cplan_targets_drop(); }
   else { g_cr_untyped = &c->ic->class_only; cr_literal_locals_build(c); }
   for (int s = 0; s < c->nscopes; s++) {
     const Scope *sc = &c->scopes[s];
@@ -1250,7 +1278,11 @@ void compute_reachable(Compiler *c, int typed) {
      top-level def of it, a private method of Object every receiver has.
      "\x03<name>" is a call on a known instance (`K.new.m`, or a receiverless
      or `self.` call in a class's instance method): every scope of the name
-     but the class methods, which no instance can reach. None of these
+     but the class methods, which no instance can reach. "\x04<count> <name>"
+     is a plain call, or "\x04<count> \x03<name>" a call on a known instance,
+     whose positional argument count is known: the scopes of the name that can
+     take that many (cr_reach_counted); the targets the call plan lists, and
+     those of a super, are marked "\x01<scope>". None of these
      reaches a replaced method version, which only the calls bound to it
      reach ("\x01<scope>", cr_collect_versions). */
   #define MARK_NAME(NM) do { const char *_mn=(NM); if(_mn && _mn[0]=='\x01'){ int _t=atoi(_mn+1); \
@@ -1270,6 +1302,10 @@ void compute_reachable(Compiler *c, int typed) {
       for(int _t=SN_FIRST(_mn+1);_t>=0;_t=sn_link[_t]) \
         if((!c->scopes[_t].is_cmethod || c->scopes[_t].is_module_function) && !c->scopes[_t].replaced && !c->scopes[_t].reachable) \
           cr_live_reach(&lv, _t); } } \
+    else if(_mn && _mn[0]=='\x04'){ const char *_nm=strchr(_mn,' ')+1; int _in=_nm[0]=='\x03'; \
+      if(!anh_has(&cn_set,_mn) && !anh_has(&cn_set,_nm) && !anh_has(&cn_set,_nm+_in)){ \
+        char _sk[300]; snprintf(_sk,sizeof _sk,"\x04%s",_nm); CN_ADD(_mn); CN_ADD(_sk); \
+        cr_reach_counted(&lv, SN_FIRST(_nm+_in), sn_link, atoi(_mn+1), _in); } } \
     else if(_mn && !anh_has(&cn_set,_mn)){ CN_ADD(_mn); \
     for(int _t=SN_FIRST(_mn);_t>=0;_t=sn_link[_t]) \
       if(!c->scopes[_t].replaced && !c->scopes[_t].reachable) \
@@ -1539,7 +1575,7 @@ void compute_reachable(Compiler *c, int typed) {
            method's chain is live through a call that can reach a class method:
            not an instance-only "\x03" mark (`K.new.m`), nor an instance method
            of the name being reachable. */
-        int pf_in_called = cside ? anh_has(&cn_set, pf) : cn_live(&cn_set, pf);
+        int pf_in_called = cside ? (anh_has(&cn_set, pf) || cn_counted(&cn_set, pf, 0)) : cn_live(&cn_set, pf);
         if (!pf_in_called)
           for (int t = SN_FIRST(pf); t >= 0; t = sn_link[t])
             if (c->scopes[t].reachable && (!cside || c->scopes[t].is_cmethod)) { pf_in_called = 1; break; }

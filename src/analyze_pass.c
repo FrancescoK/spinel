@@ -19453,6 +19453,47 @@ static int cr_recv_builtin_class(Compiler *c, const NodeTable *nt, int id, const
   return cn && comp_class_index(c, cn) < 0 && is_builtin_class_name(cn);
 }
 
+/* How many positional arguments the call at `id` passes, or -1 when the
+   call alone does not say: a splat spreads an array, a keyword hash can bind
+   as a trailing positional Hash, and `&blk` and `...` carry arguments the
+   call site does not show. */
+static int cr_call_argc(const NodeTable *nt, int id) {
+  int an = 0, a = nt_ref(nt, id, "arguments");
+  const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
+  if (nt_argv_has(nt, av, an, NT_ARG_SPLAT | NT_ARG_KEYWORDS | NT_ARG_BLOCK | NT_ARG_FORWARDING) ||
+      nt_call_has_block_arg(nt, id)) return -1;
+  return an;
+}
+
+/* Reach, for the call `id`, each method the call plan lists as its target
+   (cplan_emitted_targets), whatever its arity: its code is what the call
+   runs, or what its dispatch arms name, and a call that passes the wrong
+   count raises ArgumentError there at run time. A replaced version or an
+   entry is reached by the calls bound to it (cr_collect_versions). Answers
+   the number of targets, or CPT_UNKNOWN where the plan cannot list them. */
+static int cr_add_targets(Compiler *c, int id, char ***out, int *n, int *cap) {
+  int tg[CPT_MAX], ntg = cplan_emitted_targets(c, id, tg, CPT_MAX);
+  for (int i = 0; i < ntg; i++) {
+    char m[24];
+    if (c->scopes[tg[i]].replaced || c->scopes[tg[i]].entry != ENTRY_NONE) continue;
+    snprintf(m, sizeof m, "\x01%d", tg[i]);
+    cr_add_name(out, n, cap, m);
+  }
+  return ntg;
+}
+
+/* "\x04<count> <mark>" for a call whose argument count is known and whose
+   targets the plan lists (cr_add_targets): the scopes of the name that can
+   take the count are reached by name. NULL for a call whose targets the
+   plan cannot list: it reaches every scope of the name. */
+static const char *cr_count_name(Compiler *c, const NodeTable *nt, int id, const char *mark,
+                                 char *buf, size_t cap, char ***out, int *n, int *ncap) {
+  int argc = cr_call_argc(nt, id);
+  if (argc < 0 || cr_add_targets(c, id, out, n, ncap) == CPT_UNKNOWN ||
+      snprintf(buf, cap, "\x04%d %s", argc, mark) >= (int)cap) return NULL;
+  return buf;
+}
+
 /* Collect CallNode names in the subtree rooted at `id`, stopping at nested
    DefNodes (which are separate method scopes). `out` / `n` / `cap` are
    the dynamic string array to append to. */
@@ -19614,8 +19655,20 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
     builtin_recv = 1;
   if (!builtin_recv && k0 == NK_CallNode && nm && names[0] == nm) builtin_recv = cr_recv_builtin_class(c, nt, id, nm);
   if (builtin_recv) names[0] = NULL;
+  /* Once the types are settled, a plain name, or one on a known instance,
+     reaches the scopes of that name that can take the call's argument count
+     (cr_count_name, compute_reachable). A 0-argument `r.attribute` kept a
+     2-parameter `attribute` alive, and with it a define_method whose name
+     is not literal. */
+  char argc_name[300];
+  if (g_cr_typed && k0 == NK_CallNode && names[0] && (names[0] == nm || names[0] == inst_name) && !nt_int(nt, id, "dyn_arm", 0)) {
+    const char *cn = cr_count_name(c, nt, id, names[0], argc_name, sizeof argc_name, out, n, cap);
+    if (cn) names[0] = cn;
+  }
   for (int j = 0; j < 3; j++) cr_add_name(out, n, cap, names[j]);
   if (!builtin_recv) cr_collect_versions(c, nt, id, out, n, cap);
+  /* the method a super reaches is what the plan says (cplan_resolve_super), for the instance and the class side, a module and a prepend alike */
+  if (g_cr_typed && (ty_k == NK_SuperNode || ty_k == NK_ForwardingSuperNode)) cr_add_targets(c, id, out, n, cap);
   if (k0 == NK_CallNode || nt_implied_possible(nt, id)) cr_collect_implied(c, nt, id, out, n, cap);
   int inner_self = instance_self && k0 != NK_BlockNode && k0 != NK_LambdaNode;
   int nr = nt_num_refs(nt, id);

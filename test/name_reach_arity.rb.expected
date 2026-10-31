@@ -1,0 +1,76 @@
+:zero
+[:opt, 1, 2]
+[:opt, 1, 5]
+[:rest, 1, []]
+[:rest, 1, [2, 3]]
+[:post, 1, 0, [], 2]
+[:post, 1, 2, [], 3]
+[:post, 1, 2, [3, 4], 5]
+[:kw, 1, 1]
+[:kw, 1, 5]
+[:kwrest, 1, {}]
+[:kwrest, 1, {x: 2}]
+:none
+[:opt3, 1, 2, 3]
+[:rest4, 1, 2, 3, 4]
+[:post1, 7]
+[:kw2, 1, 2]
+[:kwrest2, 1, 2]
+[:none1, 3]
+[:p, 1]
+[:q, 1, 2]
+[:r]
+[:two, 1, 2]
+[:one, 3]
+:zero
+[:two, 4, 5]
+:zero
+6
+[:two, 1, 2]
+:zero
+[:one, 4]
+[:two, 1, 2]
+[:one, 3]
+[:two, 5, 6]
+2
+[:two, 7, 8]
+:zero
+[:orig, 1, 2]
+[:orig, 3, 4]
+:zero
+:zero2
+[:zero]
+[:one, 2]
+[:sec, 1, 2]
+[:other, 5]
+[:par, 1, 10]
+[:par, 2, 3]
+:zero
+[:animal, 5, 1, :loud]
+:meow
+[:wrap, [:k, 1, 2]]
+:jay
+[:one, 7]
+[:two, 1, 2]
+5
+-2
+8
+10
+7
+ArgumentError
+:zero
+typed: wrong number of arguments (given 0, expected 2)
+self: wrong number of arguments (given 1, expected 2)
+cmethod: wrong number of arguments (given 1, expected 2)
+top: wrong number of arguments (given 1, expected 2)
+poly: wrong number of arguments (given 1, expected 2)
+class_value: wrong number of arguments (given 1, expected 2)
+1
+1
+1
+1
+super_parent: wrong number of arguments (given 1, expected 0)
+super_typed: wrong number of arguments (given 1, expected 0)
+super_module: wrong number of arguments (given 1, expected 0)
+super_prepend: wrong number of arguments (given 1, expected 0)
+super_class_method: wrong number of arguments (given 1, expected 0)

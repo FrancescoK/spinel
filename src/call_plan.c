@@ -1795,6 +1795,19 @@ TyKind cplan_poly_operator_ret(Compiler *c, int id) {
   return found ? TY_BOOL : TY_UNKNOWN;
 }
 
+/* Does method mi take pos_argc positional arguments and the keyword hash
+   kwh (-1 for none): the judgement of its dispatch arm and of a call's
+   emission (poly_arm_count) */
+static int cplan_def_takes(Compiler *c, int mi, int kwh, int pos_argc) {
+  char exp[256];
+  return poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, -1, exp, sizeof exp) >= 0;
+}
+
+int cplan_def_takes_argc(Compiler *c, int mi, int argc) {
+  const Scope *sc = &c->scopes[mi];
+  return sc->def_node < 0 || nt_kind(c->nt, sc->def_node) != NK_DefNode || cplan_def_takes(c, mi, -1, argc);
+}
+
 int cplan_target_binds(Compiler *c, int id, int mi) {
   const NodeTable *nt = c->nt;
   if (id < 0 || mi < 0 || mi >= c->nscopes || nt_kind(nt, id) != NK_CallNode) return 1;
@@ -1810,8 +1823,7 @@ int cplan_target_binds(Compiler *c, int id, int mi) {
         k == NK_BlockArgumentNode)
       return 1;
   }
-  char exp[256];
-  return poly_arm_count(c, &c->scopes[mi], kwh, pos_argc, -1, exp, sizeof exp) >= 0;
+  return cplan_def_takes(c, mi, kwh, pos_argc);
 }
 
 /* See call_plan.h. ct_resolve answers CPT_UNKNOWN only for a member past
@@ -1858,6 +1870,25 @@ int cplan_targets(Compiler *c, int id, int *out, int cap) {
   if (n > 0) memcpy(out, g_ct_pool + g_ct_off[id], (size_t)n * sizeof *out);
   /* (the targets are what the asker reads next: their values, their parameters) */
   for (int i = 0; i < n; i++) IMEMO_DEP_SCOPE(out[i]);
+  return n;
+}
+
+/* See call_plan.h. A boxed receiver's cplan_targets lists every class's
+   method of the name; its dispatch has an arm only for the classes its
+   receiver can hold (comp_poly_candidates_at) and that fit the call, one
+   raising ArgumentError for a count the method refuses (PA_ARITY). */
+int cplan_emitted_targets(Compiler *c, int id, int *out, int cap) {
+  const CallPlan *p = cplan_user_fresh(c, id);
+  if (p->via != UC_POLY || p->mi < 0 || p->dispatch == CP_REFUSE) return cplan_targets(c, id, out, cap);
+  const PolyPlan *pp = cplan_poly_fresh(c, id);
+  int n = 0;
+  for (int i = 0; i < pp->n; i++) {
+    int mi = pp->arm[i].mi, seen = 0;
+    for (int j = 0; j < n && !seen; j++) seen = out[j] == mi;
+    if (mi < 0 || seen) continue;
+    if (n == cap) return CPT_UNKNOWN;
+    out[n++] = mi;
+  }
   return n;
 }
 
