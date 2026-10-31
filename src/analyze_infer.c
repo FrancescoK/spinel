@@ -12142,12 +12142,25 @@ static int an_rat_arith(Compiler *c, int n, int depth) {
   int ri = !rr && an_int_literal(nt, recv);
   return (rr && (ai || ar)) || (ar && ri);
 }
-/* Is a local or an instance variable named name written some way the
-   VS_WRITE chain does not hold: `x += v`, `x ||= v`, `x, y = ...`? Such a
-   slot may hold anything, so it is no Rational. By name, in any scope. */
-static int an_rat_slot_rewritten(Compiler *c, const char *name) {
+/* The slot key of a local's holder lv read or written at node n: the scope
+   whose locals hold it (the node's own first; a block's read of an outer
+   local is the outer scope's), or -1. An ivar's key is its class. */
+static int an_rat_local_key(Compiler *c, const LocalVar *lv, int n) {
+  Scope *own = comp_scope_of(c, n);
+  if (own && lv >= own->locals && lv < own->locals + own->nlocals) return (int)(own - c->scopes);
+  for (int si = 0; si < c->nscopes; si++)
+    if (lv >= c->scopes[si].locals && lv < c->scopes[si].locals + c->scopes[si].nlocals) return si;
+  return -1;
+}
+/* Is the local (local != 0) or instance variable `name` whose slot key is
+   `key` written some way the VS_WRITE chain does not hold: `x += v`,
+   `x ||= v`, `x, y = ...`? Such a slot may hold anything, so it is no
+   Rational. A rewrite whose slot cannot be resolved counts for every slot
+   of its name. */
+typedef struct { const char *name; int local, key; } AnRatRewrite;
+static int an_rat_slot_rewritten(Compiler *c, int local, const char *name, int key) {
   static Compiler *for_c; static int for_count = -1; static unsigned for_ver;
-  static const char **names; static int nn, cap;
+  static AnRatRewrite *rw; static int nn, cap;
   const NodeTable *nt = c->nt;
   /* version as well as count: a rename pass rewrites a name in place */
   if (for_c != c || for_count != nt->count || for_ver != nt->version) {
@@ -12160,16 +12173,21 @@ static int an_rat_slot_rewritten(Compiler *c, const char *name) {
       NT_FOREACH_KIND(nt, ks[i], w) {
         const char *wn = nt_str(nt, w, "name");
         if (!wn) continue;
+        int wl = i < 4, wk = -1;
+        HolderRef hw;
+        if (holder_of_node(c, w, &hw))
+          wk = wl ? (hw.lv ? an_rat_local_key(c, hw.lv, w) : -1) : hw.cid;
         if (nn == cap) {
           cap = cap ? cap * 2 : 16;
-          const char **p = realloc(names, (size_t)cap * sizeof *names);
+          AnRatRewrite *p = realloc(rw, (size_t)cap * sizeof *rw);
           if (!p) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-          names = p;
+          rw = p;
         }
-        names[nn++] = wn;
+        rw[nn++] = (AnRatRewrite){ wn, wl, wk };
       }
   }
-  for (int i = 0; i < nn; i++) if (sp_streq(names[i], name)) return 1;
+  for (int i = 0; i < nn; i++)
+    if (rw[i].local == local && (rw[i].key < 0 || rw[i].key == key) && sp_streq(rw[i].name, name)) return 1;
   return 0;
 }
 /* A program's own Rational (or Integer) operator answers what it likes. (A
@@ -12197,20 +12215,19 @@ static int an_rat_value_d(Compiler *c, int n, int depth) {
   if (k != NK_LocalVariableReadNode && k != NK_InstanceVariableReadNode) return 0;
   HolderRef h;
   if (!holder_of_node(c, n, &h) || !h.name) return 0;
-  if (an_rat_slot_rewritten(c, h.name)) return 0;
   int key = -1;
   if (k == NK_LocalVariableReadNode) {
     if (!h.lv || h.lv->is_param) return 0;
     /* the slot is the read's own scope's (holder_of_node resolves it
        there); asking every scope which holds the slot was 17k range
        tests per numeric call site, every round */
-    Scope *own = comp_scope_of(c, n);
-    if (own && h.lv >= own->locals && h.lv < own->locals + own->nlocals) key = (int)(own - c->scopes);
-    for (int si = 0; si < c->nscopes && key < 0; si++)
-      if (h.lv >= c->scopes[si].locals && h.lv < c->scopes[si].locals + c->scopes[si].nlocals) key = si;
+    key = an_rat_local_key(c, h.lv, n);
   }
   else key = h.cid;
   if (key < 0) return 0;
+  /* (a rewrite of a slot of the same name elsewhere, another scope's local
+     or another class's ivar, leaves this one as it is) */
+  if (an_rat_slot_rewritten(c, k == NK_LocalVariableReadNode, h.name, key)) return 0;
   int any = 0;
   for (int e = comp_vsite_first(c, VS_WRITE, k, h.name, key); e >= 0; e = comp_vsite_next(c, e)) {
     int w = comp_vsite_node(c, e);
