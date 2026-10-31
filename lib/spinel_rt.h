@@ -4584,7 +4584,10 @@ static SP_UNUSED sp_PolyArray *sp_range_minmax_poly(sp_Range r) {
    is kept as written (sp_range_new_fend), anything else converts as an
    Integer bound does. */
 static SP_UNUSED sp_Range sp_range_new_pend_w(sp_oint f, sp_RbVal e, sp_int x, int walk) {
-  e = sp_range_int_bound(sp_range_num_end(e), walk);
+  e = sp_range_int_bound(sp_range_num_end(e), walk && sp_poly_is_rational(e));
+  /* the walk stops at the last Integer <= the end: floor, not truncation
+     ((-3..-5r/2) walks only -3) */
+  if (walk && sp_poly_is_rational(e)) e = sp_box_int(sp_rational_floor_i(sp_poly_as_rational(e)));
   if (e.tag == SP_TAG_FLT) { sp_Range r = sp_range_new_fend(f.nil ? SP_RANGE_NO_BEGIN : f.v, e.v.f, x); r.nobeg = f.nil; return r; }
   return sp_range_new_o(f, e.tag == SP_TAG_NIL ? sp_oint_nil() : sp_oint_of(sp_poly_to_i(e)), x);
 }

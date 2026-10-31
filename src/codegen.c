@@ -18939,27 +18939,42 @@ static void reject_range_reopen_nonint(Compiler *c) {
    Rational". Every use is refused, also the folds and matches that never
    build a Range: they read the same truncated bound. */
 /* Is Range literal rn only walked from an Integer begin up to its end,
-   `(1..x).each` / to_a / sum / map ...? Then a Rational end truncated is the
+   `(1..x).each` / to_a / sum / map ...? Then a Rational end floored is the
    same walk: (1..5r/2) yields 1, 2 in CRuby too. Not an exclusive end:
    (1...5r/2) walks 1, 2 where (1...2) walks 1. */
 static const char *const range_rat_walk_names[] = {
   "each", "to_a", "entries", "sum", "map", "collect", "select", "filter",
-  "reject", "each_with_index", "inject", "reduce", NULL };
+  "reject", "inject", "reduce", NULL };
 int range_rat_walk(Compiler *c, int rn) {
   static Compiler *for_c; static unsigned char *mark; static int cap;
   const NodeTable *nt = c->nt;
   if (for_c != c) {
     for_c = c; free(mark); cap = nt->count; mark = calloc((size_t)cap + 1, 1);
+    /* each answers the Range itself, which holds the end
+       truncated: only one whose answer is dropped (a statement before
+       another one, or anywhere in the top-level statements) */
+    unsigned char *dropped = calloc((size_t)cap + 1, 1);
+    NT_FOREACH_KIND(nt, NK_StatementsNode, st) {
+      int n = 0; const int *bb = nt_arr(nt, st, "body", &n);
+      for (int i = 0; i + 1 < n; i++) if (bb[i] >= 0 && bb[i] < cap) dropped[bb[i]] = 1;
+    }
+    NT_FOREACH_KIND(nt, NK_ProgramNode, pg) {
+      int st = nt_ref(nt, pg, "statements");
+      int n = 0; const int *bb = st >= 0 ? nt_arr(nt, st, "body", &n) : NULL;
+      for (int i = 0; i < n; i++) if (bb[i] >= 0 && bb[i] < cap) dropped[bb[i]] = 1;
+    }
     NT_FOREACH_KIND(nt, NK_CallNode, id) {
       const char *nm = nt_str(nt, id, "name");
       int k = 0;
       while (nm && range_rat_walk_names[k] && !sp_streq(nm, range_rat_walk_names[k])) k++;
       if (!nm || !range_rat_walk_names[k]) continue;
+      if (k == 0 && !dropped[id]) continue;
       int r = nt_paren_single(nt, nt_ref(nt, id, "receiver"));
       if (r < 0 || r >= cap || nt_kind(nt, r) != NK_RangeNode || nt_range_excl(nt, r)) continue;
       int lo = nt_ref(nt, r, "left");
       if (lo >= 0 && comp_ntype(c, lo) == TY_INT) mark[r] = 1;
     }
+    free(dropped);
   }
   return rn >= 0 && rn < cap && mark[rn];
 }
