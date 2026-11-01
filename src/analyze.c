@@ -2610,6 +2610,24 @@ static void mp_free(MpIx *ix) {
   free(ix->tab);
 }
 
+/* A callable forward the desugar read into a temp ahead of the call
+   (`&@w.method(:keep)`, #10714) became a block reading that temp, and the
+   block may still become a proc where nothing above decides it: a reopened
+   Array#each_with_object that yields takes it through its proc form, from a
+   builtin receiver. Left uncelled, the temp had no storage in the proc and
+   the call was refused. The temp is the desugar's own, written once before
+   the call, so a cell where the block is spliced or looped in place instead
+   costs the cell and not an answer. A local of the program's is not one:
+   only the temp the desugar names on its block (fwd_temp). */
+static void a_cell_forward_temp(Compiler *c, int call, int blk) {
+  const char *tn = nt_str(c->nt, blk, "fwd_temp");
+  Scope *s = tn ? comp_scope_of(c, call) : NULL;
+  LocalVar *lv = s ? scope_local(s, tn) : NULL;
+  if (!lv || lv->is_cell) return;
+  { lv->is_cell = 1; comp_touch_scope(lv->owner); }
+  lv->cell_outlives = 1;
+}
+
 void mark_proc_captures(Compiler *c) {
   const NodeTable *nt = c->nt;
   char *inproc = (char *)calloc((size_t)nt->count, 1);
@@ -2668,6 +2686,7 @@ void mark_proc_captures(Compiler *c) {
       if (!qp && nt_kind(nt, q) == NK_CallNode) {
         int qblk = nt_ref(nt, q, "block");
         qb = qblk >= 0 && nt_kind(nt, qblk) == NK_BlockNode;
+        if (qb) a_cell_forward_temp(c, q, qblk);
       }
       if (qp || qb) { qproc[q] = (char)qp; ql[nql++] = q; }
     }

@@ -10181,6 +10181,14 @@ int desugar_value_callable_forwards(Compiler *c) {
        of that method may not have given: codegen's block_given? in the
        callee answers from the outer block, not from this literal */
     if (anon) nt_node_set_int(nt, blocknode, "fwd_yield", 1);
+    /* the temp the callable was read into, which the block reads: the
+       capture marking cells it (mark_proc_captures). Not a fill's: the
+       program's own fill keeps the `&b` form, so the builtin's runs it */
+    if (hoist) {
+      char tn[48];
+      snprintf(tn, sizeof tn, "__fwdc_%s", comp_node_tag(c, id));
+      nt_node_set_str(nt, blocknode, "fwd_temp", tn);
+    }
 
     nt_node_set_ref(nt, id, "block", blocknode);  /* call now takes a literal block */
     for (int j = 0; anon && j < n0; j++)
