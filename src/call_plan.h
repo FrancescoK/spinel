@@ -509,6 +509,7 @@ typedef enum {
 const char *cplan_call_name(const NodeTable *nt, int id);
 int cplan_nil(Compiler *c, int id);
 int cplan_nil_answer_served(Compiler *c, int id);   /* codegen_call.c: nil's answer has the call's type */
+int cplan_nil_lookup_raises(Compiler *c, int id);   /* `recv.method(:m)` of a method nil lacks: NameError */
 /* Is a nil fact's source `why` (nil_fact_why) a nil the program writes --
    a literal, a missing else, a safe navigation, a slot read before its
    write, an element of an Array the program stores nil into -- which a

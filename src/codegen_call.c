@@ -26045,6 +26045,12 @@ static const char *nil_answer_text(Compiler *c, int id, char *buf, size_t cap) {
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   if (!nm) return NULL;
+  /* nil.method(:m) of a method nil lacks raises (cplan_nil_lookup_raises) */
+  if (t == TY_METHOD && cplan_nil_lookup_raises(c, id)) {
+    snprintf(buf, cap, "({ sp_raise_cls(\"NameError\", \"undefined method '%s' for class 'NilClass'\"); "
+                       "(sp_BoundMethod *)0; })", method_sym_arg(c, id));
+    return buf;
+  }
   /* nil.to_s is its one frozen empty String (equal? across calls) */
   if ((sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && t == TY_STRING && an == 0)
     return sp_streq(nm, "to_s") ? "sp_str_frozen_empty" : "(&(\"\\xff\" \"nil\")[1])";
@@ -26102,6 +26108,7 @@ int cplan_nil_answer_served(Compiler *c, int id) {
   int a = nt_ref(nt, id, "arguments"), an = 0;
   const int *av = a >= 0 ? nt_arr(nt, a, "arguments", &an) : NULL;
   if (!nm) return 0;
+  if (cplan_nil_lookup_raises(c, id)) return t == TY_METHOD;
   if ((sp_streq(nm, "to_s") || sp_streq(nm, "inspect")) && an == 0) return t == TY_STRING;
   if ((is_to_i_name(nm) || is_hash_name(nm)) && an == 0) return t == TY_INT || tr.kind == RK_BOXED;
   if (is_to_f_name(nm) && an == 0) return t == TY_FLOAT || tr.kind == RK_BOXED;
@@ -26151,7 +26158,8 @@ static int emit_nil_answer_call(Compiler *c, int id, Buf *b) {
   /* only where the class answers the name itself: Object's own == (an
      identity), nil? and to_s take a NULL receiver as nil in their emitters
      already (`cur != nil` is the pointer test) */
-  if (!class_answers_name(c, id, ty_object_class(rt), cplan_call_name(nt, id))) return 0;
+  if (!class_answers_name(c, id, ty_object_class(rt), cplan_call_name(nt, id)) && !cplan_nil_lookup_raises(c, id))
+    return 0;
   Buf hb; memset(&hb, 0, sizeof hb);
   int mark, held;
   char rtext[32] = "";

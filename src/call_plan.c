@@ -3880,6 +3880,21 @@ static int cplan_nil_user_method(Compiler *c, int call, const char *name) {
   return 0;
 }
 
+/* Is call id a Method lookup, `recv.method(:m)` or `recv.public_method(:m)`
+   with the name written, of a method nil does not have? nil answers the
+   lookup itself, and its answer is CRuby's NameError ("undefined method 'm'
+   for class 'NilClass'"), where a Method bound to the NULL receiver ran the
+   class's method on it. */
+int cplan_nil_lookup_raises(Compiler *c, int id) {
+  const NodeTable *nt = c->nt;
+  const char *nm = cplan_call_name(nt, id);
+  int argc = 0;
+  call_args(nt, id, &argc);
+  if (!nm || !(sp_streq(nm, "method") || sp_streq(nm, "public_method")) || argc != 1) return 0;
+  const char *m = method_sym_arg(c, id);
+  return m && !is_nil_method(m) && !cplan_nil_user_method(c, id, m);
+}
+
 int cplan_nil_written(int why) {
   return why == NFW_NIL || why == NFW_NO_ELSE || why == NFW_SAFE_NAV || why == NFW_UNSET || why == NFW_ELEM_NIL || why == NFW_ELEM ||
          why == NFW_TAKEN;
@@ -3965,6 +3980,11 @@ int cplan_nil(Compiler *c, int id) {
   /* (and see cplan_nil_ivar_tested) */
   NodeKind rk = nt_kind(nt, r);
   int ivar_tested = rk == NK_InstanceVariableReadNode && cplan_nil_ivar_tested(c, r, rt, nm);
+  /* (and a Method lookup nil lacks, on an ivar a write of the program's own
+     leaves nil, as ivar_nil_recv_guard tests a call through one: the
+     lookup is no hot call, and the Method it built ran on NULL) */
+  int lookup = cplan_nil_lookup_raises(c, id);
+  if (rk == NK_InstanceVariableReadNode && lookup && cplan_nil_written(nil_fact_why(c, r))) ivar_tested = 1;
   if ((rk == NK_InstanceVariableReadNode && !conv && !ivar_tested) || rk == NK_ClassVariableReadNode) return CN_NONE;
   /* a local or a global is tested in its slot, where a mutator writes
      back: a slot that holds the pointer, or a shared String's handle; one
