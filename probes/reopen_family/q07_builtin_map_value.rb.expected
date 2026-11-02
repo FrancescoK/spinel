@@ -1,0 +1,17 @@
+q07_builtin_map_value.rb:3:in 'W#mul': wrong number of arguments (given 2, expected 1) (ArgumentError)
+
+    caller: q07_builtin_map_value.rb:8
+    |   def run = [@arr.map(&mk(2).method(:mul)), @arr.select(&mk(1).method(:mul)), @arr.each_with_index.map(&mk(3).method(:mul))]
+                                                                                                        ^^^^
+    callee: q07_builtin_map_value.rb:3
+    |   def mul(x) = x * @k
+            ^^^
+	from q07_builtin_map_value.rb:8:in 'Array#each'
+	from q07_builtin_map_value.rb:8:in 'Enumerable#each_with_index'
+	from q07_builtin_map_value.rb:8:in 'Enumerator#each'
+	from q07_builtin_map_value.rb:8:in 'Enumerable#map'
+	from q07_builtin_map_value.rb:8:in 'H#run'
+	from q07_builtin_map_value.rb:10:in '<main>'
+mk2
+mk1
+mk3

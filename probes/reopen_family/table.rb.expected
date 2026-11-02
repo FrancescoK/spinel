@@ -1,0 +1,47 @@
+a1_keep_chg_reopen_ewo             pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+a2_keep_chg_reopen_ewo_kw          pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+b1_iter_chg_between                pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+b2_iter_chg_between_kw             pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+c1_iter_chg_before                 pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+d1_setter                          pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+d2_ivar_set                        pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+d3_other_obj                       pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+e1_noyield_missing                 pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+e2_noyield_count                   pre=W1/W1/W1 master=W1/W1/W1 branch=W1/W1/W1 gc=
+e3_method_override_count           pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+e4_nil_recv                        pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 GC-DIFF *vs-master MODES
+e5_noyield_nil_recv                pre=W1/W1/W1 master=W1/W1/W1 branch=W1/W1/W1 gc=
+e6_empty_missing                   pre=W1/W2/W3 master=W4/W5/W6 branch=W7/W8/W9  *vs-master *vs-pre MODES
+f1_global_recv                     pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+f2_closure_local                   pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+f3_ivar_name                       pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+f4_global_keep_chg                 pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+g_each_reopen_keepchg              pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+g_ewi_reopen_keepchg               pre=W1/W2/W3 master=W4/W5/W6 branch=W7/W8/W9  *vs-master *vs-pre MODES
+g_inject_reopen_keepchg            pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+g_map_reopen_keepchg               pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+h_each_builtin_keepchg             pre=W1/W1/W1 master=ok/ok/ok branch=ok/ok/ok gc= *vs-pre
+h_ewi_builtin_keepchg              pre=W1/W1/W1 master=ok/ok/ok branch=ok/ok/ok gc= *vs-pre
+h_inject_builtin_keepchg           pre=W1/W1/W1 master=W1/W1/W1 branch=W1/W1/W1 GC-DIFF
+h_map_builtin_keepchg              pre=W1/W1/W1 master=ok/ok/ok branch=ok/ok/ok gc= *vs-pre
+i_each_otherclass_keepchg          pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+i_ewi_otherclass_keepchg           pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+i_ewo_otherclass_keepchg           pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+i_ewo_otherclass_keepchg_kw        pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+i_inject_otherclass_keepchg        pre=W1/W1/W1 master=W1/W1/W1 branch=W1/W1/W1 GC-DIFF
+i_map_otherclass_keepchg           pre=W1/W1/W1 master=ok/ok/ok branch=W1/W1/W1 gc= *vs-master
+j1_module_included_ewo             pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+j2_enumerable_reopen_ewo           pre=W1/W1/W1 master=ok/ok/ok branch=ok/ok/ok gc= *vs-pre
+j3_prepend_ewo                     pre=W1/W1/W1 master=W2/W3/W2 branch=W1/W1/W1 gc= *vs-master MODES
+j4_refine_ewo                      pre=W1/W1/W1 master=W1/W1/W1 branch=W1/W1/W1 
+j5_module_included_ewo_nochg       pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
+j6_enumerable_reopen_nochg         pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+k1_userclass_ewo_keepchg           pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+k2_userclass_ewo_argchg            pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+k3_userclass_each_keepchg          pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+l1_pr_pos                          pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
+l2_pr_kw                           pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
+l3_reopen_all_elems_argchg         pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
+l4_reopen_nochg                    pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
+l5_reopen_self_lookup              pre=ok/ok/ok master=ok/ok/ok branch=ok/ok/ok gc=
+l6_value_pos                       pre=ok/ok/ok master=W1/W2/W1 branch=ok/ok/ok gc= *vs-master MODES
