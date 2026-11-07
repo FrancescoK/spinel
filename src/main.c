@@ -29,6 +29,7 @@
 #include "csplit.h"
 #include "unit_cache.h"
 #include "decide.h"
+#include "method_table_check.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -569,7 +570,9 @@ static void usage(void) {
     "              the program, and exit (debug)\n"
     "  --check-value-pos  Check the value-position iterator's limits and exit (debug)\n"
     "  --dump-implied-calls  Print the methods CRuby calls for each node of the program\n"
-    "              that its text does not name, and exit (debug)\n");
+    "              that its text does not name, and exit (debug)\n"
+    "  --method-table-check  Print the reads of the static method tables made outside\n"
+    "              call_target, and the answers that are the table's last definition (debug)\n");
 }
 
 /* --dump-ast (1), --dump-value-positions (2), --check-value-pos (3),
@@ -1054,6 +1057,7 @@ int main(int argc, char **argv) {
     else if (sp_streq(a, "--emit-rbs"))    { emit_rbs = 1; i++; }
     else if (sp_streq(a, "--emit-types"))  { emit_types = 1; i++; }
     else if (sp_streq(a, "--plan-check"))  { g_plan_check = 1; i++; }
+    else if (sp_streq(a, "--method-table-check")) { g_method_table_check = 1; i++; }
     else if (sp_streq(a, "--arm-check"))   { g_arm_check = 1; i++; }
     else if (sp_streq(a, "--repr-check"))  { g_repr_check = 1; i++; }
     else if (analysis_dump_flag(a))        { i++; }
