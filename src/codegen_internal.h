@@ -131,6 +131,7 @@ void ren_unpark(RenPark *p);
 const char *strbuf_local_name(Compiler *c, int recv);
 int strbuf_ivar_owner(Compiler *c, int node);
 int attr_assign_slot(Compiler *c, int id, int *cid, int *iv);
+int attr_orw_slot(Compiler *c, int id, int *cid, int *iv);
 const int *codegen_node_parents(Compiler *c, int node);
 int node_is_block_stmt(Compiler *c, int node);
 int user_assign_handle(Compiler *c, int id);

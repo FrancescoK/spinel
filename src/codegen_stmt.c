@@ -1864,9 +1864,11 @@ int strbuf_bang_chain(Compiler *c, int v) {
   int args[32], base = str_alias_chain_base(c, v);
   return strbuf_chain_bang_base(c, v, base) && strbuf_chain_links_m(c, v, base, args, 1) > 0;
 }
-/* --share-strings: v (through parentheses) is an attribute assignment on a
-   handle, whose value is the one String it was handed (repr_write_share):
-   a leaf a handle route reads as that handle (emit_strbuf_write_handle). */
+/* --share-strings: v (through parentheses) is an attribute's write on a
+   handle (`o.x = s`, whose value is the one String it was handed, or
+   `o.x ||= s` and `o.x &&= s`, whose value is the String the field holds
+   after it: repr_write_share): a leaf a handle route reads as that handle
+   (emit_strbuf_write_handle). */
 /* ...on a receiver whose class is known only at run time? */
 static int strbuf_assign_boxed_recv(Compiler *c, int v) {
   int r = nt_ref(c->nt, nt_paren_single(c->nt, v), "receiver");
@@ -1875,7 +1877,8 @@ static int strbuf_assign_boxed_recv(Compiler *c, int v) {
 }
 int strbuf_assign_leaf(Compiler *c, int v) {
   v = nt_paren_single(c->nt, v);
-  return v >= 0 && nt_kind(c->nt, v) == NK_CallNode && repr_write_share(c, v);
+  NodeKind k = v >= 0 ? nt_kind(c->nt, v) : NK_NONE;
+  return (k == NK_CallNode || k == NK_CallOrWriteNode || k == NK_CallAndWriteNode) && repr_write_share(c, v);
 }
 /* --share-strings: v (through parentheses) is `freeze` over a leaf, a chain
    over one or another such freeze, which answers that handle, frozen (as it
@@ -3857,7 +3860,11 @@ int emit_recv_route_handle(Compiler *c, int id, int recv, Buf *b) {
   /* (a held chain's shadow has none: its shim holds the handle and writes
      the shadow back, emit_held_self_answer_shim) */
   if (sb_shadowed_reader(c, nt_paren_single(c->nt, recv))) return 0;
+  /* (a head holds the expression a receiver's parentheses wrap, as
+     emit_bang_self_form's route form does: a call distributed over a
+     conditional's arms keeps an arm's own parentheses as its receiver) */
   int th = ran_first_handle(recv);
+  if (th < 0) th = ran_first_handle(nt_paren_single(c->nt, recv));
   if (th >= 0) { buf_printf(b, "_t%d", th); return 1; }
   /* a receiver a head ran into its bytes alone has no handle to give (the
      operand-order rewrite's trial binding has run nothing: the route runs
