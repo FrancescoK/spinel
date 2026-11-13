@@ -27140,8 +27140,9 @@ static int emit_operands_in_order(Compiler *c, int id, Buf *b) {
       converts = 1;
     /* an operand the nil arm's head ran (VR_HEAD_HELD) reads as its temp:
        it runs nothing here, and bound again it was copied into a second
-       rooted slot */
-    if (repr_of(c, operand[i]).head_held) continue;
+       rooted slot; nor does one that ran first beside the code the
+       String group binds (string_group_at): it is its temp */
+    if (repr_of(c, operand[i]).head_held || (sro && arg_ran_first(operand[i], 0))) continue;
     NodeKind k = nt_kind(nt, operand[i]);
     int state_read = (k == NK_InstanceVariableReadNode || k == NK_ClassVariableReadNode ||
                       k == NK_GlobalVariableReadNode);

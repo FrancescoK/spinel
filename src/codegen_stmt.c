@@ -1,4 +1,5 @@
 #include "codegen_internal.h"
+#include "order_plan.h"
 static void emit_ivar_lhs_otext(Compiler *c, int cid, int iv, const char *ivn, const char *lhs, const char *otext, Buf *b);
 static int emit_strbuf_boxed_store(Compiler *c, int v, Buf *b);
 #include "repr.h"
@@ -25013,6 +25014,21 @@ void emit_str_frozen_check(Compiler *c, int recv, Buf *b) {
   buf_puts(b, "if ("); emit_expr(c, recv, b); buf_puts(b, ") sp_str_check_mutable(");
   emit_expr(c, recv, b); buf_puts(b, ");");
 }
+/* The String argument of a mutator that takes its receiver's bytes from
+   the handle held in the statement: one that runs code (order_runs_code)
+   may change the receiver in place, so it runs first, into a rooted temp,
+   and the bytes are read after it, as CRuby reads the String once its
+   arguments ran (C leaves the order of a call's operands open). Answers
+   that temp, or -1 with nothing emitted: the argument is rendered in the
+   call. */
+static int str_mut_arg_first(Compiler *c, int arg, Buf *b) {
+  if (!order_runs_code(c, arg)) return -1;
+  int t = ++g_tmp;
+  buf_printf(b, "const char *_t%d = ", t);
+  emit_str_expr(c, arg, b);
+  buf_printf(b, "; SP_GC_ROOT_STR(_t%d); ", t);
+  return t;
+}
 /* emit_array_mutate_stmt_body's String mutators done by reassigning the
    receiver: replace, prepend, concat, delete_prefix! /
    delete_suffix! (answers 1 emitted, 0 declined, -1 to go on) */
@@ -25049,9 +25065,11 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
           free(srefR2.p);
           return 1;
         }
-        buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, ", tbR, srefR2.p, tbR);
+        buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); ", tbR, srefR2.p);
         free(srefR2.p);
-        buf_puts(b, "sp_str_concat("); emit_str_expr(c, argv[0], b);
+        int taP = str_mut_arg_first(c, argv[0], b);
+        buf_printf(b, "sp_String_set_bin(_t%d, sp_str_concat(", tbR);
+        if (taP >= 0) buf_printf(b, "_t%d", taP); else emit_str_expr(c, argv[0], b);
         buf_printf(b, ", sp_String_cstr(_t%d))", tbR);
         buf_puts(b, "); }\n");
         return 1;
@@ -25088,10 +25106,11 @@ static int str_mutate_reassign_arms(Compiler *c, Buf *b, int indent, const NodeT
         const char *base3 = sp_streq(name, "delete_prefix!") ? "delete_prefix" : "delete_suffix";
         int tbD = ++g_tmp;
         emit_indent(b, indent);
-        buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ",
-                   tbD, srefD.p, tbD, base3, tbD);
+        buf_printf(b, "{ sp_String *_t%d = SP_STR_HDL(%s); ", tbD, srefD.p);
         free(srefD.p);
-        emit_expr(c, argv[0], b);
+        int taD = str_mut_arg_first(c, argv[0], b);
+        buf_printf(b, "sp_String_set_bin(_t%d, sp_str_%s(sp_String_cstr(_t%d), ", tbD, base3, tbD);
+        if (taD >= 0) buf_printf(b, "_t%d", taD); else emit_expr(c, argv[0], b);
         buf_puts(b, ")); }\n");
         return 1;
       }

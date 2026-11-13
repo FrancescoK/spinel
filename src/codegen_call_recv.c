@@ -3,6 +3,7 @@
    movement, no logic change. */
 
 #include "codegen_internal.h"
+#include "order_plan.h"
 
 int g_ivg_box_node = -1;
 #include "call_plan.h"
@@ -4900,13 +4901,21 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              they are held there too, ahead of it, as the plain receiver's
              are (held below) */
           Buf *hb = rd_call && sb_block_hoists(c, id) ? g_pre : b;
+          /* an argument that runs code may change the receiver in place
+             (and move its payload): the arguments are bound ahead of the
+             plain form, which reads the receiver's bytes from the handle
+             after them (the String group, string_group_at), and the bytes
+             the change is told by are the receiver's once it ran */
+          int late = 0;
+          for (int a = 0; a < argc && hb == b && !late; a++) late = order_runs_code(c, argv[a]);
           buf_puts(b, "({ ");
           size_t hat = hb->len;
           if (hb != b) emit_indent(hb, g_indent);
           buf_printf(hb, "sp_String *_t%d = SP_STR_HDL(%s);", tsb, lbB.p ? lbB.p : srefB.p);
           free(lbB.p); free(srefB.p);
           emit_route_recv_root(c, hrB, tsb, 0, NULL, TY_UNKNOWN, hb);
-          buf_printf(hb, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;%s", tob, tsb, tob, hb != b ? "\n" : " ");
+          if (late) buf_puts(hb, " ");
+          else buf_printf(hb, " const char *_t%d = sp_String_cstr(_t%d); (void)_t%d;%s", tob, tsb, tob, hb != b ? "\n" : " ");
           /* (the handle read held ahead is the receiver's, written back
              below, as the enclosing bang declares it in the statement) */
           /* gsub!/sub! answer nil when no SUBSTITUTION was made, which the
@@ -4928,6 +4937,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
             nC = 2;
             if (was_sb) { view_push(c, recv, TY_STRING); nC = 3; }
             view_bind_temp(recv, tob);
+            if (late) snprintf(g_argov_text[g_n_argov - 1], ARGOV_TEXT_LEN, "SP_STR_B(_t%d)", tsb);
           }
           /* a sibling, an operand or the block may run a sub of its own: the
              call enters the runtime through its wrapper, and a block form answers
@@ -4958,6 +4968,7 @@ static int emit_str_mutator_call(Compiler *c, int id, Buf *b, const NodeTable *n
              itself and every successful mutation answered nil (#4014). */
           int tchg = ++g_tmp;
           buf_printf(b, "const char *_t%d = %s; ", tnb, nbB.p ? nbB.p : "");
+          if (late) buf_printf(b, "const char *_t%d = sp_String_cstr(_t%d); (void)_t%d; ", tob, tsb, tob);
           if (sb_nil_nc || sb_same_ok)
             buf_printf(b, "int _t%d = !sp_str_eq(_t%d, _t%d)%s; ", tchg, tob, tnb, smB);
           if (sb_same_ok) buf_printf(b, "if (_t%d) ", tchg);
