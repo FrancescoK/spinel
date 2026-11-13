@@ -1501,6 +1501,11 @@ void emit_value_identity(Compiler *c, int recv, int arg, Buf *b);
    an operand that runs between the hold and the read and changes the
    String in place is seen, and one that rebinds the slot is not. */
 void hold_string_handle_decl(Compiler *c, int node, int t, int root, Buf *b);
+/* hold_string_handle_decl of `node` into a new rooted temp, then bound:
+   its handle reads are the temp and its value reads SP_STR_B of it. The
+   binding's mark, for view_unbind; -1, writing nothing, when the override
+   table is full. */
+int hold_string_handle(Compiler *c, int node, Buf *b);
 /* hold_operand as a statement of its own in g_pre, at the current indent. */
 int hold_operand_pre(Compiler *c, int node, TyKind ty, int boxed, int t, int root);
 int emit_splat_gather(Compiler *c, Scope *m, const int *argv, const ArgLayout *L);
