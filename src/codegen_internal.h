@@ -686,7 +686,6 @@ int node_may_reassign_state(Compiler *c, int id);
    Strings, Symbols, their ranges and typed Arrays can; a builtin over those
    alone, with no block, cannot: `total + i.to_s` (codegen_call.c). */
 int subtree_may_run_proc(Compiler *c, int id);
-int node_may_run_proc(Compiler *c, int id);
 /* a builtin reading a value of kind t runs no program code */
 int ty_runs_no_code(TyKind t);
 /* --share-strings: a watched scan's handle and length before its loop, and

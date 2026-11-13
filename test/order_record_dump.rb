@@ -227,6 +227,18 @@ PROGRAMS = [
     h = {}
     p a, h, foo
   RUBY
+  # an Array literal, a Range over Integers, a Regexp literal and a Hash
+  # literal with String keys only build their values: no code, so beside
+  # reads alone no row; beside a call, the Array literal is a read the
+  # call may change (HOLD)
+  ["v1_value_builders.rb", <<~'RUBY'],
+    def f(*a) = a
+    s = +"ab"
+    n = 1
+    g = proc { s << "z"; 2 }
+    p f([s], (0..n), /a/, {"k" => s}, s)
+    p f([s], (0..n), /a/, {"k" => s}, g.call)
+  RUBY
 ]
 
 dir = File.join(Dir.tmpdir, "spinel_order_dump_#{Process.pid}")

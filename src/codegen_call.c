@@ -26499,8 +26499,9 @@ int ty_runs_no_code(TyKind t) {
 }
 
 /* See codegen_internal.h. */
-int node_may_run_proc(Compiler *c, int id) {
+int subtree_may_run_proc(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
+  if (id < 0) return 0;
   switch (nt_kind(nt, id)) {
     case NK_YieldNode: case NK_SuperNode: case NK_ForwardingSuperNode:
     case NK_BlockNode: case NK_LambdaNode: case NK_BlockArgumentNode:
@@ -26524,12 +26525,6 @@ int node_may_run_proc(Compiler *c, int id) {
     default:
       break;
   }
-  return -1;
-}
-int subtree_may_run_proc(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  if (id < 0) return 0;
-  if (node_may_run_proc(c, id) > 0) return 1;
   for (int i = 0; i < nt_num_refs(nt, id); i++)
     if (subtree_may_run_proc(c, nt_ref_at(nt, id, i))) return 1;
   for (int i = 0; i < nt_num_arrs(nt, id); i++) {
