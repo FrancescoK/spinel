@@ -946,10 +946,13 @@ static int prog_stmt_quiet(const NodeTable *nt, int st) {
    with jumps a break, next, redo or return outside a block or a loop of
    its own, which a block or a loop around the begin may take, past the
    rest of the body, to a later point. A def's body does not run where the
-   def stands. file: per root, 0 not asked, 1 being asked, 2 no, 3 yes;
-   seen: the nodes already asked, which hold none (prog_bodies_load_src). bodies: the walk is of a body a call may
-   run. */
-typedef struct { Compiler *c; unsigned char *file; int jumps, le; unsigned char *seen; int bodies; } LoadSrc;
+   def stands. file: per root, 0 not asked, 1 being asked (or finished,
+   its cycle of requires not), 2 no, 3 yes; seen: the nodes already asked,
+   which hold none (prog_bodies_load_src). scc: the walk's state per root
+   (prog_file_load_src): its number, the lowest number it reaches, and a
+   stack of the roots whose cycle is open, nstk deep; cur, the root being
+   walked, 0 for none. bodies: the walk is of a body a call may run. */
+typedef struct { Compiler *c; unsigned char *file; int jumps, le; unsigned char *seen; int *idx, *low, *stk, nstk, next, cur, bodies; } LoadSrc;
 static int prog_load_src(LoadSrc *s, int n);
 static int prog_load_src_kids(LoadSrc *s, int n) {
   const NodeTable *nt = s->c->nt;
@@ -962,17 +965,40 @@ static int prog_load_src_kids(LoadSrc *s, int n) {
   return 0;
 }
 /* ...the statements of root r, the file a require loads (its own jumps
-   end the file) */
+   end the file). Files that require each other answer as one: the walk
+   numbers the roots as it enters them, and a require of a root still being
+   asked reaches its number (low). A root that reaches no lower one than
+   its own ends its cycle (a strongly connected component, as Tarjan's
+   walk finds it): every root pushed since is in it, and the cycle's
+   answer is the root's, which has read every statement of every file in
+   it. A file with a cycle still open caches nothing, so no answer is
+   taken from a file whose own requires have not all been asked. A yes
+   settles the files pushed since it too: each requires the one that
+   raises. Linear in the files and their requires. */
+static int prog_file_scc_pop(LoadSrc *s, int r, int ans) {
+  int m;
+  do { m = s->stk[--s->nstk]; s->file[m] = ans; } while (m != r);
+  return ans == 3;
+}
 static int prog_file_load_src(LoadSrc *s, int r) {
   if (r <= 0 || r >= nt_nroots(s->c->nt)) return 0;
-  if (!s->file[r]) {
-    int j = s->jumps;
-    s->file[r] = 1;
-    s->jumps = 0;
-    s->file[r] = prog_load_src(s, prog_root_stmts(s->c, r)) ? 3 : 2;
-    s->jumps = j;
+  if (s->file[r] >= 2) return s->file[r] == 3;
+  if (s->file[r] == 1) {
+    if (s->idx[r] < s->low[s->cur]) s->low[s->cur] = s->idx[r];
+    return 0;
   }
-  return s->file[r] == 3;
+  int j = s->jumps, prev = s->cur, hit;
+  s->file[r] = 1;
+  s->idx[r] = s->low[r] = ++s->next;
+  s->stk[s->nstk++] = r;
+  s->cur = r;
+  s->jumps = 0;
+  hit = prog_load_src(s, prog_root_stmts(s->c, r));
+  s->jumps = j;
+  s->cur = prev;
+  if (prev && s->low[r] < s->low[prev]) s->low[prev] = s->low[r];
+  if (hit) return prog_file_scc_pop(s, r, 3);
+  return s->low[r] == s->idx[r] ? prog_file_scc_pop(s, r, 2) : 0;
 }
 /* ...the constant reference a raise's first argument names (`raise K`, `raise K, msg`, `raise K.new(msg)`, `raise
    M::K`), -1 for any other */
@@ -1290,12 +1316,16 @@ static void prog_note_rescues(Compiler *c) {
   int hooks = prog_may_give_hook(c);
   unsigned char *retry = calloc((size_t)nt->count + 1, 1);
   LoadSrc src = { c, calloc((size_t)nt_nroots(nt) + 1, 1), 0, prog_names_load_error(c, parent) };
-  if (!retry || !src.file) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  int *scc = calloc(3 * ((size_t)nt_nroots(nt) + 1), sizeof(int));   /* (idx, low and stk) */
+  if (!retry || !src.file || !scc) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   NT_FOREACH_KIND(nt, NK_RetryNode, id) {   /* the clause each `retry` is in */
     int a = parent[id];
     while (a >= 0 && nt_kind(nt, a) != NK_RescueNode) a = parent[a];
     if (a >= 0) retry[a] = 1;
   }
+  src.idx = scc;
+  src.low = scc + nt_nroots(nt) + 1;
+  src.stk = scc + 2 * (nt_nroots(nt) + 1);
   /* (one walk: a body nested in another is asked once) */
   if (!(src.seen = calloc((size_t)nt->count + 1, 1))) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   int calls = prog_bodies_load_src(&src, NK_DefNode) || prog_bodies_load_src(&src, NK_BlockNode) ||
@@ -1324,6 +1354,7 @@ static void prog_note_rescues(Compiler *c) {
   }
   free(retry);
   free(src.file);
+  free(scc);
 }
 
 /* The warning a require of no file gets where the program runs it (seen,
