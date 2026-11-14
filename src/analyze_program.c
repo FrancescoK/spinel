@@ -919,14 +919,17 @@ static int prog_may_give_hook(const Compiler *c) {
 /* Is statement st taken to raise nothing (prog_note_rescues): a def, a
    literal, or a variable's or a constant's write of one? Not quite
    CRuby's: a def on a receiver that takes no singleton method (`def
-   x.foo` with x an Integer) and a write of a special global that checks
-   its value (`$~ = 1`, `$/ = 1`, `$stdout = 1`) raise a TypeError, which
-   is not told apart. */
+   x.foo` with x an Integer) raises a TypeError, which is not told apart.
+   A write of a global CRuby checks or refuses (is_checked_gvar_name) may
+   raise, so it is not quiet. */
 static int prog_stmt_quiet(const NodeTable *nt, int st) {
   switch (nt_kind(nt, st)) {
     case NK_DefNode: case NK_IntegerNode: case NK_FloatNode: case NK_StringNode: case NK_SymbolNode:
     case NK_NilNode: case NK_TrueNode: case NK_FalseNode: case NK_SelfNode: return 1;
-    case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode: case NK_GlobalVariableWriteNode:
+    case NK_GlobalVariableWriteNode:
+      if (is_checked_gvar_name(nt_str(nt, st, "name"))) return 0;
+      return prog_stmt_quiet(nt, nt_ref(nt, st, "value"));
+    case NK_LocalVariableWriteNode: case NK_InstanceVariableWriteNode:
     case NK_ConstantWriteNode: return prog_stmt_quiet(nt, nt_ref(nt, st, "value"));
     default: return 0;
   }
