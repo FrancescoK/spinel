@@ -750,6 +750,7 @@ int is_cvar_get_name(const char *n);       /* class_variable_get */
 int is_cvar_defined_name(const char *n);   /* class_variable_defined? */
 int is_cvar_reflection_name(const char *n);   /* class_variable_get class_variable_set class_variable_defined? */
 int is_hook_protocol_name(const char *n);  /* append_features extend_object prepend_features: what include, extend and prepend send before their hooks */
+int is_errinfo_gvar_name(const char *n); /* $!, the exception being handled */
 int is_port_gvar_name(const char *n);      /* $stdout $stderr $>: assigning an object makes it the port output goes to */
 
 /* A name the compiler synthesizes for a protocol method (the no-argument

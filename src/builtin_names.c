@@ -3139,6 +3139,9 @@ int is_hook_protocol_name(const char *n) {
   return n && (sp_streq(n, "append_features") || sp_streq(n, "extend_object") || sp_streq(n, "prepend_features"));
 }
 
+/* $!: the exception being handled, nil outside a rescue. */
+int is_errinfo_gvar_name(const char *n) { return n && sp_streq(n, "$!"); }
+
 int is_port_gvar_name(const char *n) {
   return n && (sp_streq(n, "$stdout") || sp_streq(n, "$stderr") || sp_streq(n, "$>"));
 }
