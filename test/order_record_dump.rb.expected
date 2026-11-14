@@ -161,12 +161,19 @@ c1_shift_to_int.rb:8 array: 0 @x HOLD(by 1) across | 1 (..).<< AHEAD code | guar
 c1_shift_to_int.rb:8 call <<: none (pure)
 c1_shift_to_int.rb:9 array: none (pure)
 c1_shift_to_int.rb:9 call <<: none (pure)
-c1_shift_to_int.rb:11 call new: none (pure)
-c1_shift_to_int.rb:12 call p: none (tail)
-c1_shift_to_int.rb:12 call run: 0 k INLINE across | 1 O.new AHEAD code | guard=call steps=0
-c1_shift_to_int.rb:12 call new: none (pure)
-c1_shift_to_int.rb:13 call p: none (tail)
-c1_shift_to_int.rb:13 call plain: none (pure)
+c1_shift_to_int.rb:10 call <<: none (pure)
+c1_shift_to_int.rb:11 array: 0 @x HOLD(by 1) across | 1 shift AHEAD code | guard=call steps=0
+c1_shift_to_int.rb:11 call shift: none (pure)
+c1_shift_to_int.rb:13 call new: none (pure)
+c1_shift_to_int.rb:14 call p: none (tail)
+c1_shift_to_int.rb:14 call run: 0 k INLINE across | 1 O.new AHEAD code | guard=call steps=0
+c1_shift_to_int.rb:14 call new: none (pure)
+c1_shift_to_int.rb:15 call p: none (tail)
+c1_shift_to_int.rb:15 call plain: none (pure)
+c1_shift_to_int.rb:16 call p: none (tail)
+c1_shift_to_int.rb:16 call via: 0 K.new AHEAD code across | 1 O.new AHEAD code | guard=call steps=0
+c1_shift_to_int.rb:16 call new: none (pure)
+c1_shift_to_int.rb:16 call new: none (pure)
 == c2_rescue_cvar.rb
 c2_rescue_cvar.rb:3 array: 0 @@x HOLD(by 1) across | 1 Parentheses AHEAD code | guard=call steps=0
 c2_rescue_cvar.rb:3 call /: none (pure)

@@ -166,10 +166,13 @@ PROGRAMS = [
       def bump; @x = 9; end
       def run(o) = [@x, 1 << o]
       def plain(n) = [@x, 1 << n]
+      def shift(o) = 1 << o
+      def via(o) = [@x, shift(o)]
     end
     k = K.new
     p k.run(O.new(k))
     p k.plain(2)
+    p K.new.via(O.new(k))
   RUBY
   ["c2_rescue_cvar.rb", <<~'RUBY'],
     class C
