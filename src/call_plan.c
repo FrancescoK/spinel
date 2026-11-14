@@ -10293,23 +10293,30 @@ static int ver_stmt_runs_no_code(const NodeTable *nt, int st) {
    write carries that write */
 static void ver_copy_writes(Compiler *c, const int *par, VerCellsAt *cells, VerWrite **wp, int *nwp) {
   const NodeTable *nt = c->nt;
-  int nw0 = *nwp, *of = nw0 ? calloc((size_t)nt->count + 1, sizeof(int)) : NULL;
+  int nw0 = *nwp, *of = nw0 ? calloc((size_t)nt->count + 1, sizeof(int)) : NULL, *nx = nw0 ? calloc((size_t)nw0, sizeof(int)) : NULL;
   if (!nw0) return;
-  if (!of) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
-  for (int k = 0; k < nw0; k++) if ((*wp)[k].node >= 0 && (*wp)[k].body) of[(*wp)[k].node] = k + 1;
+  if (!of || !nx) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  /* (a body def may have two writes, its version cell's and its visibility cell's: of[] holds the first, nx[]
+     the next of the same node, and a clone takes each, once per cell) */
+  for (int k = nw0 - 1; k >= 0; k--)
+    if ((*wp)[k].node >= 0 && (*wp)[k].body) { nx[k] = of[(*wp)[k].node]; of[(*wp)[k].node] = k + 1; }
   NT_FOREACH_KIND(nt, NK_DefNode, d) {
     int o = d, k = 0, st;
     for (int depth = 0; depth < 64 && !k; depth++) {
       if ((o = nt_clone_source(nt, o)) < 0 || o >= nt->count) break;
       k = of[o];
     }
-    if (!k || (st = ver_write_stmt(nt, par, d)) < 0 || par[st] < 0 || !ver_cell_once(cells, d, (*wp)[k - 1].cell)) continue;
-    VerWrite x = (*wp)[k - 1];
-    x.list = par[st]; x.stmt = st; x.node = d;
-    x.after = !ver_stmt_runs_no_code(nt, st);
-    ver_write_add(wp, nwp, x);
+    if (!k || (st = ver_write_stmt(nt, par, d)) < 0 || par[st] < 0) continue;
+    for (int j = k; j; j = nx[j - 1]) {
+      VerWrite x = (*wp)[j - 1];
+      if (!ver_cell_once(cells, d, x.vis ? -2 - x.cell : x.cell)) continue;
+      x.list = par[st]; x.stmt = st; x.node = d;
+      x.after = !ver_stmt_runs_no_code(nt, st);
+      ver_write_add(wp, nwp, x);
+    }
   }
   free(of);
+  free(nx);
 }
 /* Does the C write scope s out: reached, or a proc-form clone (emission
    writes the live ones, proc_form_live; all of them count here) */
