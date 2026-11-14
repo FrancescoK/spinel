@@ -1113,6 +1113,18 @@ static int prog_local_may_hold(LoadSrc *s, int site, const char *name, int depth
   }
   return !written || prog_param_in_scope(s->c, par, site, name) ? s->le : 0;
 }
+/* Is local `name`, read at node site, written in its scope by anything but the target node `except` (a handler's
+   binding: `rescue => e; e = LoadError.new(...); raise e` re-raises what the write made, not what it caught) */
+static int prog_local_rebound(LoadSrc *s, int site, const char *name, int except) {
+  const NodeTable *nt = s->c->nt;
+  const int *par = comp_parent_map(s->c);
+  int scope = prog_def_scope(nt, par, site);
+  for (int w = comp_lvw_first(s->c, name); w >= 0; w = comp_lvw_next(s->c, w)) {
+    const char *wn = nt_str(nt, w, "name");
+    if (w != except && wn && sp_streq(wn, name) && prog_def_scope(nt, par, w) == scope) return 1;
+  }
+  return 0;
+}
 /* May raise node n, with argument node a (-1: none) that no constant names, re-raise a LoadError that a handler it
    stands in caught: a bare `raise`, or the variable that handler binds (`rescue ... => e; raise e`), in a clause
    that may catch one; a bare `raise` with no handler around it (an ensure's, a method's: `$!`) is taken to. In a
@@ -1135,7 +1147,7 @@ static int prog_raise_reraises(LoadSrc *s, int n, int a) {
   if (nt_kind(nt, a) != NK_LocalVariableReadNode) return s->le;
   int ref = rc >= 0 ? nt_ref(nt, rc, "reference") : -1;
   const char *an = nt_str(nt, a, "name"), *bn = ref >= 0 ? nt_str(nt, ref, "name") : NULL;
-  if (an && bn && sp_streq(an, bn)) return !s->bodies && prog_rescue_may_catch_load(s->c, rc);
+  if (an && bn && sp_streq(an, bn) && !prog_local_rebound(s, a, an, ref)) return !s->bodies && prog_rescue_may_catch_load(s->c, rc);
   return prog_local_may_hold(s, a, an, 8);
 }
 static int prog_load_src(LoadSrc *s, int n) {
@@ -1168,9 +1180,11 @@ static int prog_load_src(LoadSrc *s, int n) {
       const char *cn = ac ? prog_raise_class(nt, av[0]) : NULL;
       int ref = ac ? prog_raise_ref(nt, av[0]) : -1;
       /* (a constant path with a parent names no class by its leaf alone: it counts where the program names
-         LoadError, as a named class does, qualified spellings included, prog_names_load_error) */
+         LoadError, as a named class does, qualified spellings included, prog_names_load_error, or where the
+         source gives its leaf a value no constant spells, as a bare constant's: `Errors::Saved = e`) */
+      const char *qn = ref >= 0 && !cn ? nt_str(nt, ref, "name") : NULL;
       if (ak != NK_StringNode && ak != NK_InterpolatedStringNode &&
-          ((ref < 0 && prog_raise_reraises(s, n, ac ? av[0] : -1)) || (ref >= 0 && !cn && s->le) ||
+          ((ref < 0 && prog_raise_reraises(s, n, ac ? av[0] : -1)) || (ref >= 0 && !cn && (s->le || (qn && elab_source_const_opaque(s->c, qn)))) ||
            (cn && (elab_source_const_opaque(s->c, cn) ||
                    (s->le && !(is_builtin_exception_name(cn) && !is_load_error_name(cn) && !elab_source_writes_const(s->c, cn, 0))))))) return 1;
     }
