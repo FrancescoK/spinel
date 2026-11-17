@@ -4095,7 +4095,9 @@ int cplan_own_allocate(Compiler *c, int call, int ci) {
   /* a super that reaches a parent's own allocate has that target, when
      that method itself answers (its own supers checked the same way) */
   int pc = c->scopes[mi].class_id >= 0 ? comp_super_parent(c, c->scopes[mi].class_id, 1) : -1;
-  int parent_own = pc >= 0 && cplan_own_allocate(c, call, pc);
+  /* (the parent's own allocate is the table's, as a super reaches it from the class that defines the method:
+     asked at the call, a pinned child's scope answers for the parent too, and the question would not end) */
+  int parent_own = pc >= 0 && cplan_own_allocate(c, -1, pc);
   int n = 0, sup = 0, *ids = nt_subtree_ids(nt, &d, 1, &n);
   for (int i = 0; i < n && !sup; i++)
     sup = (nt_kind(nt, ids[i]) == NK_SuperNode || nt_kind(nt, ids[i]) == NK_ForwardingSuperNode) &&
