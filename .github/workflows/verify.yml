@@ -1,0 +1,57 @@
+name: Compare linkers on Linux Clang
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/measure-lld-linux-clang-20261120]
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    env:
+      CC: sccache clang
+      LANG: en_US.UTF-8
+      LC_ALL: en_US.UTF-8
+      SCCACHE_STARTUP_TIMEOUT: "30"
+      SCCACHE_IDLE_TIMEOUT: "0"
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: mozilla-actions/sccache-action@v0.0.10
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "4.0"
+      - name: Build Spinel
+        run: |
+          sccache --start-server
+          make deps
+          make -j"$(getconf _NPROCESSORS_ONLN)" all
+      - name: Compare the full PR test step with cold and warm caches
+        env:
+          TEST_TARGET: test
+          TEST_SHARD: 1/1
+        run: bash tools/lld-comparison.sh "$RUNNER_TEMP/lld-comparison"
+      - name: Record measurements
+        if: always()
+        run: |
+          measurements="$RUNNER_TEMP/lld-comparison/measurements"
+          if [ -f "$measurements/summary.md" ]; then
+            {
+              cat "$measurements/settings.txt"
+              printf '\n'
+              cat "$measurements/summary.md"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+          sccache --show-stats
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linker-comparison
+          path: ${{ runner.temp }}/lld-comparison/measurements
+          retention-days: 7
