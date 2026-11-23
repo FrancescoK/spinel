@@ -797,7 +797,13 @@ static SP_NOINLINE SP_COLD void sp_raise_frozen_array_v(sp_RbVal v) {
    inspect answer "main". The runtime global roots mark sp_main_obj, and
    the ordinary Object scan marks its instance variable table. */
 extern void *sp_main_obj;
-sp_RbVal sp_main_self(void);
+sp_RbVal sp_main_self_make(void);   /* sp_poly_cold.c: main's Object, made on first use */
+/* main's self, boxed: a load once main exists, so a call from the top level hands a top-level def its receiver without
+   a call into the runtime */
+static inline sp_RbVal sp_main_self(void) {
+  void *m = SP_ATOMIC_LOAD(&sp_main_obj, __ATOMIC_ACQUIRE);
+  return m ? sp_box_obj(m, SP_BUILTIN_OBJECT) : sp_main_self_make();
+}
 
 /* sp_PolyArray: a growable array of boxed values. The first
    SP_POLYARR_INLINE elements live in the object itself: an array that never

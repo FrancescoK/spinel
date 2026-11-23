@@ -316,17 +316,23 @@ static inline sp_BoundMethod *sp_bm_set_self_class(sp_BoundMethod *m, sp_Class k
   return m;
 }
 static inline sp_Class sp_bm_self_class(const sp_BoundMethod *m) { sp_Class k = { m->self_cls, (const char *)m->self }; return k; }
+/* The receiver a held Method carries (sp_BoundMethod.held) and whether two
+   holders carry one value: the same tag and class and the same payload word,
+   which is an immediate's value or an object's identity. */
+static inline sp_RbVal sp_bm_held_recv(void *holder) { return sp_PolyArray_get_m((sp_PolyArray *)holder, 0); }
 /* The Method's receiver as a boxed value, for a target that takes self boxed
-   (a reopening of Object): by what the self slot holds. */
+   (a reopening of Object, a top-level def that reads self): a held Method's
+   receiver is its boxed element, else by what the self slot holds. */
 static inline sp_RbVal sp_bm_self_boxed(const sp_BoundMethod *m) {
+  if (m->held) return sp_bm_held_recv(m->self);
   switch (m->self_kind) {
-    case SP_BM_SELF_OBJ:  return sp_box_nullable_obj_dyn(m->self, 0);
+    case SP_BM_SELF_OBJ:  return !m->self ? sp_box_nil() : m->self_cls ? sp_box_obj(m->self, (int)m->self_cls) : sp_box_nullable_obj_dyn(m->self, 0);
     case SP_BM_SELF_STR:  return sp_box_str_new((const char *)m->self);
-    case SP_BM_SELF_BOOL: return sp_box_bool((sp_bool)(uintptr_t)m->self);
+    case SP_BM_SELF_BOOL: return sp_box_bool(m->self != NULL);
     case SP_BM_SELF_SYM:  return sp_box_sym((sp_sym)(uintptr_t)m->self);
     case SP_BM_SELF_MAIN: return sp_main_self();
     case SP_BM_SELF_CLASS: return sp_box_class(sp_bm_self_class(m));
-    default:              return sp_box_int((sp_int)(uintptr_t)m->self);
+    default:              return sp_box_int((sp_int)(intptr_t)m->self);
   }
 }
 /* Mark a statically-built instance_method/#unbind result as an UnboundMethod,
@@ -339,27 +345,13 @@ static inline sp_BoundMethod *sp_bm_set_held(sp_BoundMethod *m) { if (m) m->held
 static inline sp_BoundMethod *sp_bm_set_self_cls(sp_BoundMethod *m, sp_int cls) { if (m) m->self_cls = cls; return m; }
 static inline sp_BoundMethod *sp_bm_set_ident(sp_BoundMethod *m, const char *ident) { if (m) m->ident = ident; return m; }
 static inline sp_BoundMethod *sp_bm_set_group(sp_BoundMethod *m, const char *aliases, sp_int hkey) { if (m) { m->aliases = aliases; m->hkey = hkey; } return m; }
-/* The receiver a held Method carries (sp_BoundMethod.held) and whether two
-   holders carry one value: the same tag and class and the same payload word,
-   which is an immediate's value or an object's identity. */
-static inline sp_RbVal sp_bm_held_recv(void *holder) { return sp_PolyArray_get_m((sp_PolyArray *)holder, 0); }
 /* Method#receiver on a Method read back out of a container: a held
    receiver is its holder's element, a Boolean, Symbol, String or main self
    is the value its kind says, and so is an Integer (SP_BM_SELF_INT). Any
    other self-less Method (a top level def's, a class value's, nil's) answers
    nil, as before. */
 static inline sp_RbVal sp_bm_receiver(const sp_BoundMethod *m) {
-  if (m->held) return sp_bm_held_recv(m->self);
-  switch (m->self_kind) {
-    case SP_BM_SELF_OBJ:  return !m->self ? sp_box_nil() : m->self_cls ? sp_box_obj(m->self, (int)m->self_cls) : sp_box_nullable_obj_dyn(m->self, 0);
-    case SP_BM_SELF_STR:  return sp_box_str_new((const char *)m->self);
-    case SP_BM_SELF_BOOL: return sp_box_bool(m->self != NULL);
-    case SP_BM_SELF_SYM:  return sp_box_sym((sp_sym)(uintptr_t)m->self);
-    case SP_BM_SELF_MAIN: return sp_main_self();
-    case SP_BM_SELF_INT:  return sp_box_int((sp_int)(intptr_t)m->self);
-    case SP_BM_SELF_CLASS: return sp_box_class(sp_bm_self_class(m));
-    default:              return sp_box_nil();
-  }
+  return m->self_kind == SP_BM_SELF_NONE && !m->held ? sp_box_nil() : sp_bm_self_boxed(m);
 }
 static inline sp_bool sp_bm_recv_same(sp_RbVal x, sp_RbVal y) {
   if (x.tag != y.tag || x.cls_id != y.cls_id) return 0;
@@ -396,7 +388,7 @@ static inline sp_bool sp_bm_cross_same(const sp_BoundMethod *h, const sp_BoundMe
     if (!found) return 0;
   }
   /* (a typed receiver's class id is not known at run time, so an object is told
-     by its pointer alone: sp_bm_self_boxed leaves cls_id unset) */
+     by its pointer alone: a Method bound with no self_cls leaves cls_id unset) */
   sp_RbVal x = sp_bm_held_recv(h->self), y = sp_bm_self_boxed(u);
   if (x.tag != y.tag) return 0;
   if (x.tag == SP_TAG_OBJ) return x.v.i == y.v.i;

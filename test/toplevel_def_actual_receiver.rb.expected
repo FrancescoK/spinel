@@ -1,0 +1,16 @@
+["Object", "Object"]
+["Receiver", "Receiver"]
+["Symbol", "Symbol"]
+"override"
+"root"
+:main
+7
+"Symbol"
+"child/Receiver"
+"Symbol"
+[:main, 2, 3]
+[:box, 2, 3]
+:main
+:box
+"Receiver"
+[:at, "Symbol"]

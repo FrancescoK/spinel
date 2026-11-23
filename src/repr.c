@@ -1089,9 +1089,11 @@ int repr_self_string_object(const Compiler *c, int scope) {
 
 /* Is self of instance method `scope` a boxed value (sp_RbVal)? It is in a
    reopening of Object, Numeric, Array or Hash: any value of the builtin, or
-   an instance of a program class below it, is the receiver. */
+   an instance of a program class below it, is the receiver. A top-level def
+   whose body can observe self is an Object method too: any value invokes it. */
 int repr_self_boxed(const Compiler *c, int scope) {
   if (scope < 0) return 0;
+  if (cplan_top_receiver((Compiler *)c, scope)) return 1;
   const Scope *s = &c->scopes[scope];
   if (s->is_cmethod || s->class_id < 0) return 0;
   static const int cores[] = { CORE_OBJECT, CORE_NUMERIC, CORE_ARRAY, CORE_HASH };

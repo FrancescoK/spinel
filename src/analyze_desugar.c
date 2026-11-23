@@ -336,11 +336,32 @@ int desugar_bare_class_self_calls(Compiler *c) {
     { "include?", 1 }, { "to_s", 0 }, { "inspect", 0 }, { "frozen?", 0 },
     { "itself", 0 }, { "constants", -1 },
   };
+  cplan_top_receiver_hold(c);
   NodeTable *nt = (NodeTable *)c->nt;
   int changed = 0;
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm) continue;
+    /* A top-level def runs with the object that received it. A bare call that asks self (cplan_bare_call_takes_self) is a
+       call on `self`: a program class's method of the name beside a top-level def of it, or a builtin's or Object's
+       method of self's class. A bare identifier keeps its vcall form (`guard_vcall`): where self lacks the method the
+       error is a NameError, as CRuby's. */
+    Scope *encl = comp_scope_of(c, id);
+    if (nt_ref(nt, id, "receiver") < 0 && encl && cplan_top_receiver(c, encl->idx) &&
+        cplan_bare_call_takes_self(c, nm) &&
+        ie_class_of(c, id) == -1 && self_class_body(c, id) < 0 && !cplan_builtin_call(c, id)) {
+      int sn = nt_new_node(nt, "SelfNode");
+      if (sn < 0) continue;
+      comp_grow_node_arrays(c);
+      c->nscope[sn] = c->nscope[id];
+      c->node_cbody[sn] = c->node_cbody[id];
+      nt_set_self_receiver(nt, id, sn);
+      nt_set_ignore_visibility(nt, id, 1);
+      if (call_target(c, id, -1, nm, CT_TOP, NULL) >= 0) nt_node_set_str(nt, id, "send_blind", "1");
+      if (nt_vcall(nt, id) && !comp_name_answered_any_side(c, nm, 1)) nt_node_set_int(nt, id, "guard_vcall", 1);
+      changed = 1;
+      continue;
+    }
     int want = -2;
     for (size_t k = 0; k < sizeof surf / sizeof surf[0]; k++)
       if (sp_streq(nm, surf[k].name)) { want = surf[k].argc; break; }
@@ -383,6 +404,7 @@ int desugar_bare_class_self_calls(Compiler *c) {
     nt_set_self_receiver(nt, id, sn);
     changed = 1;
   }
+  cplan_top_receiver_release(c);
   return changed;
 }
 
@@ -4320,7 +4342,40 @@ int desugar_masgn_to_ary(Compiler *c) {
    before, and only where the assignment's value is dropped. Where it is
    read, the right side is held in a temp the assignment destructures and
    read again as the answer. */
+/* A nested group with a receiver-bound ivar has to destructure onto
+   that receiver in the same left-to-right store sequence as a flat target. */
+/* The leaves of a nested target list in source order, the splats and the groups walked through: fn answers nonzero to stop. */
+typedef int (*MasgnLeafFn)(NodeTable *nt, int leaf, void *ctx);
+static int masgn_group_each(NodeTable *nt, int t, MasgnLeafFn fn, void *ctx) {
+  NodeKind k = nt_kind(nt, t);
+  if (k == NK_SplatNode) {
+    int v = nt_ref(nt, t, "expression");
+    return v >= 0 && masgn_group_each(nt, v, fn, ctx);
+  }
+  if (k != NK_MultiTargetNode) return fn(nt, t, ctx);
+  for (int part = 0; part < 3; part++) {   /* lefts, rest, rights */
+    if (part == 1) {
+      int rest = nt_ref(nt, t, "rest");
+      if (rest >= 0 && masgn_group_each(nt, rest, fn, ctx)) return 1;
+      continue;
+    }
+    const char *key = part ? "rights" : "lefts";
+    int n = 0;
+    nt_arr(nt, t, key, &n);
+    for (int i = 0; i < n; i++)
+      if (masgn_group_each(nt, nt_arr(nt, t, key, NULL)[i], fn, ctx)) return 1;
+  }
+  return 0;
+}
+static int masgn_leaf_ivar(NodeTable *nt, int leaf, void *ctx) {
+  (void)ctx;
+  return nt_kind(nt, leaf) == NK_InstanceVariableTargetNode && nt_int(nt, leaf, "biv_target", 0);
+}
+static int masgn_group_ivar(const NodeTable *nt, int t) {
+  return masgn_group_each((NodeTable *)nt, t, masgn_leaf_ivar, NULL);
+}
 static int masgn_class_setter_target(const NodeTable *nt, int t) {
+  if (masgn_group_ivar(nt, t)) return 1;
   if (nt_kind(nt, t) != NK_CallTargetNode) return 0;
   int r = nt_ref(nt, t, "receiver");
   NodeKind rk = r >= 0 ? nt_kind(nt, r) : NK_NONE;
@@ -4374,6 +4429,7 @@ static int masgn_late_target(Compiler *c, int mwid, int t) {
   case NK_LocalVariableTargetNode: case NK_InstanceVariableTargetNode:
   case NK_GlobalVariableTargetNode: case NK_ClassVariableTargetNode:
     return 1;
+  case NK_MultiTargetNode: return masgn_group_ivar(nt, t);
   case NK_CallTargetNode: {
     if (masgn_class_setter_target(nt, t)) return 1;
     return name_is_plain_setter(nt_str(nt, t, "name")) && masgn_late_operand(c, mwid, nt_ref(nt, t, "receiver"));
@@ -4388,11 +4444,44 @@ static int masgn_late_target(Compiler *c, int mwid, int t) {
   default: return 0;
   }
 }
+/* Read the receiver and indices of a nested target in source order,
+   before the right-hand side. The nested assignment then uses the temps. */
+typedef struct { Compiler *c; int id; int **pre; int *npre; } MasgnPre;
+static int masgn_leaf_pre_read(NodeTable *nt, int t, void *ctx) {
+  MasgnPre *m = ctx;
+  NodeKind k = nt_kind(nt, t);
+  if (k != NK_CallTargetNode && k != NK_IndexTargetNode) return 0;
+  int recv = nt_ref(nt, t, "receiver");
+  if (recv >= 0) nt_node_set_ref(nt, t, "receiver", masgn_pre_read(m->c, m->id, recv, m->pre, m->npre));
+  int args = nt_ref(nt, t, "arguments"), n = 0;
+  const int *av = args >= 0 ? nt_arr(nt, args, "arguments", &n) : NULL;
+  if (!n) return 0;
+  int *held = malloc(sizeof(int) * (size_t)n);
+  if (!held) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  memcpy(held, av, sizeof(int) * (size_t)n);
+  for (int i = 0; i < n; i++) held[i] = masgn_pre_read(m->c, m->id, held[i], m->pre, m->npre);
+  nt_node_set_arr(nt, args, "arguments", held, n);
+  free(held);
+  return 0;
+}
+static void masgn_group_pre_reads(Compiler *c, int id, int t, int **pre, int *npre) {
+  MasgnPre m = { c, id, pre, npre };
+  masgn_group_each((NodeTable *)c->nt, t, masgn_leaf_pre_read, &m);
+}
 /* The statement that writes target `t` from the temp read `rd`: the
    setter call, or the variable target turned into its write */
 static int masgn_late_write(Compiler *c, int id, int t, int rd, int **pre, int *npre) {
   NodeTable *nt = (NodeTable *)c->nt;
   NodeKind k = nt_kind(nt, t);
+  if (k == NK_InstanceVariableTargetNode && nt_int(nt, t, "biv_target", 0)) {
+    return biv_target_write(nt, t, rd);
+  }
+  if (k == NK_MultiTargetNode) {
+    masgn_group_pre_reads(c, id, t, pre, npre);
+    nt_node_set_type(nt, t, "MultiWriteNode");
+    nt_node_set_ref(nt, t, "value", rd);
+    return t;
+  }
   if (k == NK_CallTargetNode || k == NK_IndexTargetNode) {
     int recv = nt_ref(nt, t, "receiver");
     if (recv >= 0 && (recv = masgn_pre_read(c, id, recv, pre, npre)) < 0) return -1;
@@ -4436,6 +4525,7 @@ static int masgn_class_setters_movable(Compiler *c, int id) {
     if (i == n) {   /* `*r`: its target moves; a bare `*` or `a, =` has none */
       if (nt_kind(nt, t) != NK_SplatNode) continue;
       int e = nt_ref(nt, t, "expression");
+      if (e >= 0 && masgn_class_setter_target(nt, e)) seen = 1;
       if (e >= 0 && !masgn_late_target(c, id, e)) all = 0;
       continue;
     }
@@ -33609,6 +33699,23 @@ static void biv_self_call(NodeTable *nt, int id, const char *name, const char *i
   if (file) nt_node_set_int(nt, id, "node_file", file);
 }
 
+/* A receiver-bound ivar target after its assigned value is available. */
+int biv_target_write(NodeTable *nt, int t, int value) {
+  biv_self_call(nt, t, "instance_variable_set", nt_str(nt, t, "name"), value);
+  nt_mark_builtin_call(nt, t);
+  return t;
+}
+
+
+/* The scope of top-level DefNode d if it runs on a self that is not main (cplan_top_receiver), else -1. Its ivars are then
+   the receiver's. */
+static int biv_top_def_on_receiver(Compiler *c, const NodeTable *nt, int d) {
+  const char *nm = nt_str(nt, d, "name");
+  for (int t = nm ? an_scopes_named_first(c, nm) : -1; t >= 0; t = an_scopes_named_next(c, nm, t))
+    if (c->scopes[t].def_node == d) return cplan_top_receiver(c, t) ? t : -1;
+  return -1;
+}
+
 /* a literal of a kind that holds no ivars: the set on it only raises */
 static int biv_frozen_literal(const NodeTable *nt, int r) {
   NodeKind k = r >= 0 ? nt_kind(nt, r) : NK_SelfNode;
@@ -33646,6 +33753,11 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
   if (k == NK_CallNode && mode == BIV_TABLE && biv_is_self_or_implicit(nt, node) &&
       biv_is_reflective_set(nt, node))
     c->bivar_table = 1;
+  if (k == NK_InstanceVariableTargetNode && mode == BIV_OBJECT) {
+    nt_node_set_int(nt, node, "biv_target", 1);
+    c->bivar_table = 1;
+    return;
+  }
   if (k == NK_InstanceVariableTargetNode && biv_takes(nt_str(nt, node, "name")))
     unsupported_feature(c, node, "an instance variable of a builtin value as a multiple-assignment target: "
                                  "assign it on its own (`@a = x`)");
@@ -33705,7 +33817,10 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
     int v = nt_ref(nt, node, "value");
     if (mode == BIV_TABLE) { biv_self_call(nt, node, "__bivar_set", ivb, v); c->bivar_table = 1; }
     else biv_self_call(nt, node, "instance_variable_set", ivb, v);
-    if (mode == BIV_OBJECT) nt_mark_builtin_call(nt, node);
+    if (mode == BIV_OBJECT) {
+      c->bivar_table = 1;
+      nt_mark_builtin_call(nt, node);
+    }
   }
 }
 
@@ -34098,6 +34213,35 @@ int desugar_builtin_ivars(Compiler *c) {
   changed |= biv_subclasses(c, nt, n0);
   biv_hosts_free(&hosts);
   if (changed) comp_grow_node_arrays(c);
+  return changed;
+}
+
+/* A top-level def that runs on a self that is not main (cplan_top_receiver) is an Object instance method: its ivar belongs to
+   the receiver, main included, and uses the same layout dispatcher as an ivar in a reopening of Object. Asked once the
+   scopes exist, as the call plan answers it. */
+int desugar_top_def_ivars(Compiler *c) {
+  cplan_top_receiver_hold(c);
+  NodeTable *nt = (NodeTable *)c->nt;
+  int n0 = nt->count, changed = 0;
+  int *parents = an_parent_map(nt);
+  if (!parents) { cplan_top_receiver_release(c); return 0; }
+  for (int d = 0; d < n0; d++) {
+    if (nt_kind(nt, d) != NK_DefNode || nt_ref(nt, d, "receiver") >= 0) continue;
+    int at = parents[d];
+    while (at >= 0 && nt_kind(nt, at) != NK_ProgramNode &&
+           !class_def_opens_frame(nt, at) && nt_kind(nt, at) != NK_DefNode &&
+           nt_kind(nt, at) != NK_SingletonClassNode) at = parents[at];
+    int ts = at >= 0 && nt_kind(nt, at) == NK_ProgramNode ? biv_top_def_on_receiver(c, nt, d) : -1;
+    if (ts >= 0) {
+      int before = nt->count;
+      biv_def(c, nt, d, BIV_OBJECT);
+      comp_grow_node_arrays(c);
+      for (int j = before; j < nt->count; j++) c->nscope[j] = ts;   /* (the nodes the rewrite made stand in the def's scope) */
+      changed |= nt->count != before;
+    }
+  }
+  free(parents);
+  cplan_top_receiver_release(c);
   return changed;
 }
 

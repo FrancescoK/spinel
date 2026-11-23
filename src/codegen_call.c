@@ -8399,7 +8399,7 @@ const char *emit_method_thunk(Compiler *c, int mi, int recv_bound, int self_cls,
   }
   if (!g_bmt_name[key]) {
     Scope *tm = &c->scopes[mi];
-    int shift = (recv_bound && tm->class_id < 0 && !tm->is_cmethod) ? 1 : 0;
+    int shift = recv_bound && method_wrapper_takes_receiver(c, mi);   /* (a wrapper's first parameter is its receiver; a top-level def's self rides apart, boxed) */
     int ok = 0, tmin = 0, tmax = 0;
     char nm[48]; snprintf(nm, sizeof nm, "_bmt_%d_%d", mi, recv_bound ? 1 : 0);
     if (!cmethod_takes_self_cls(c, tm) && tm->body >= 0 && tm->name && !tm->cs_synth)
@@ -12759,14 +12759,20 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   int args = nt_ref(nt, id, "arguments");
   int hold = reopen_call_leaves_self_default(c, id, mi);
   if (repr_self_handle(c, mi)) hold = 1;
-  if (!hold) return emit_reopen_recv_in_order(c, id, mi, recv, boxed, box_fn, at, b);
+  if (!hold) {
+    if (recv >= 0) return emit_reopen_recv_in_order(c, id, mi, recv, boxed, box_fn, at, b);
+    emit_call_self_boxed(c, id, b);
+    emit_args_filled(c, mi, args, ", ", b);
+    return 0;
+  }
   TyKind rt = repr_self_handle(c, mi) ? TY_STRBUF : boxed ? TY_POLY : comp_ntype(c, recv);
   int t = ++g_tmp;
   char self[32]; snprintf(self, sizeof self, "_t%d", t);
   /* The receiver's own prelude (an element read of a literal) goes ahead of
      this statement, so it is rendered before the statement starts. */
   Buf rx; memset(&rx, 0, sizeof rx);
-  emit_reopen_recv(c, mi, recv, boxed, box_fn, &rx);
+  if (recv >= 0) emit_reopen_recv(c, mi, recv, boxed, box_fn, &rx);
+  else emit_call_self_boxed(c, id, &rx);
   emit_indent(g_pre, g_indent);
   buf_printf(g_pre, "%s _t%d = %s;\n", boxed ? "sp_RbVal" : c_type_name(rt), t, rx.p ? rx.p : "");
   free(rx.p);
@@ -32453,8 +32459,32 @@ static int emit_call_fetch_default_first(Compiler *c, int id, Buf *b) {
   view_unbind(sv);
   return 1;
 }
+/* A bare identifier of a top-level def that takes its receiver, which desugar gave `self` (guard_vcall): where self has no
+   method of the name the error is CRuby's NameError, not the explicit receiver's NoMethodError. The call itself is emitted
+   as it is, after the test. */
+static int emit_top_vcall_guard(Compiler *c, int id, Buf *b) {
+  const NodeTable *nt = c->nt;
+  if (id + 1 == g_arm.vcall_guard || !nt_int(nt, id, "guard_vcall", 0)) return 0;   /* (vcall_guard: the call whose test is written, id + 1) */
+  const Scope *s = comp_scope_of(c, id);
+  const char *nm = nt_str(nt, id, "name");
+  if (!s || !nm || !repr_self_boxed(c, (int)(s - c->scopes))) return 0;
+  int t = ++g_tmp;
+  Buf sb; memset(&sb, 0, sizeof sb);
+  emit_call_self_boxed(c, id, &sb);
+  buf_printf(b, "({ sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d); if (!sp_poly_responds_builtin(_t%d, \"%s\")) "
+                "sp_raise_cls(\"NameError\", sp_stage_recv_msg(sp_sprintf(\"undefined local variable or method '%s' for %%s\", "
+                "sp_nomethod_recv_desc(_t%d)), _t%d)); ", t, sb.p ? sb.p : "sp_main_self()", t, t, nm, nm, t, t);
+  free(sb.p);
+  int sv_guard = g_arm.vcall_guard;
+  g_arm.vcall_guard = id + 1;
+  emit_call(c, id, b);
+  g_arm.vcall_guard = sv_guard;
+  buf_puts(b, "; })");
+  return 1;
+}
 void emit_call(Compiler *c, int id, Buf *b) {
   if (emit_call_fetch_default_first(c, id, b)) return;
+  if (emit_top_vcall_guard(c, id, b)) return;
   if (emit_call_env_box_read(c, id, b)) return;
   if (sp_streq(nt_str(c->nt, id, "name"), "===") &&
       emit_undefined_const_test(c, nt_ref(c->nt, id, "receiver"), repr_of(c, id).as_ty, b)) return;
@@ -34284,12 +34314,12 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
            the syntactic receiver: a bare `method(:m)` in an instance
            method names no receiver but binds the enclosing self, so its
            ivar-reading default still has to read `_m->self`. A class
-           method and a top-level def have no self to read. */
-        if (tm->class_id >= 0 && !tm->is_cmethod) {
+           method has no self to read; a top-level def that reads self takes it boxed. */
+        if (method_takes_bound_self(c, (int)(tm - c->scopes))) {
           if (repr_self_boxed(c, (int)(tm - c->scopes))) snprintf(sb, sizeof sb, "sp_bm_self_boxed(_m)");
           else snprintf(sb, sizeof sb, "((sp_%s *)_m->self)", c->classes[tm->class_id].c_name);
           g_self = sb;
-          g_self_deref = comp_ty_value_obj(c, ty_object(tm->class_id)) ? "." : "->";
+          g_self_deref = tm->class_id >= 0 && comp_ty_value_obj(c, ty_object(tm->class_id)) ? "." : "->";
           g_emitting_class_id = tm->class_id;
         }
         emit_arg_or_default(c, tm, k, -1, &dexpr);
@@ -35225,6 +35255,23 @@ int method_node_recv_class(Compiler *c, int recv, int dflt) {
   return ci >= 0 ? ci : dflt;
 }
 
+/* Does a Method of `target` carry the receiver it runs on, as the target's
+   leading C argument: an instance method, or a top-level def that reads self
+   (Object's private method, which any receiver invokes)? */
+int method_takes_bound_self(Compiler *c, int target) {
+  const Scope *tm = &c->scopes[target];
+  return (tm->class_id >= 0 && !tm->is_cmethod) || repr_self_boxed(c, target);
+}
+
+/* Is the self of the scope call id stands in no object pointer: a top-level
+   def's boxed self, or a builtin's reopening's value? */
+int method_self_not_object(Compiler *c, int id) {
+  const Scope *s = comp_scope_of(c, id);
+  if (!s || s->is_cmethod) return 0;
+  if (s->class_id < 0) return repr_self_boxed(c, (int)(s - c->scopes));
+  return is_builtin_reopen(c->classes[s->class_id].name);
+}
+
 /* `m.call(args)` on a Method bound to a statically known target that takes
    its receiver as self (an instance method, or a class method named through
    its class). The arguments bind to the target's parameters exactly as a
@@ -35235,7 +35282,7 @@ int method_node_recv_class(Compiler *c, int recv, int dflt) {
    Method's self; the Method is evaluated first, ahead of the arguments. */
 void emit_bound_method_call(Compiler *c, int id, int recv, int target, Buf *b) {
   Scope *tm = &c->scopes[target];
-  int self_ful = tm->class_id >= 0 && !tm->is_cmethod;
+  int self_ful = method_takes_bound_self(c, target);
   int tr = ++g_tmp;
   Buf rb; memset(&rb, 0, sizeof rb);
   emit_expr(c, recv, &rb);
@@ -36775,7 +36822,7 @@ static int reopen_mixed_later(Compiler *c, int id, int mi) {
   int om = c->scopes[mi].origin_module_ci - 1;
   return om >= 0 && elab_mixed_at(c, c->scopes[mi].class_id, 0, om, elab_point_of(c, id)) == ELAB_NO;
 }
-/* The explicit receiver of a call to a top-level def, which takes no self:
+/* The explicit receiver when the top-level def cannot observe self:
    it runs for its effect, as a statement ahead of the arguments, which are
    held in the frame ahead of the call (in an expression it would run in the
    order the C compiler picked, after them), and not at all where it has no
@@ -36814,10 +36861,10 @@ void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv
   }
   Buf oc; memset(&oc, 0, sizeof oc);
   if (g_plan_check) ucall_observe(c, id, pf, c->scopes[pf].class_id, 0);
-  /* a top-level def takes no self: its receiver runs for its effect, ahead of the arguments */
-  int top = c->scopes[pf].class_id < 0;
+  int bound_top = cplan_top_receiver(c, pf);
+  int top = c->scopes[pf].class_id < 0 && !bound_top;
   if (top) emit_top_recv_effect(c, nt_ref(nt, id, "receiver"));
-  buf_puts(&oc, mc_method(c, &c->scopes[pf]));
+  buf_puts(&oc, mc_receiver_method(c, &c->scopes[pf]));
   int open = 0;
   if (top) {
     buf_puts(&oc, "(");
@@ -36833,7 +36880,7 @@ void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv
   else {
     /* Defaults are callee code, with the held receiver as self. */
     int ci = c->scopes[pf].class_id;
-    int boxed = ci != comp_core_class(c, CORE_STRING) && !reopen_pf_raw_self(c, ci);
+    int boxed = bound_top || (ci != comp_core_class(c, CORE_STRING) && !reopen_pf_raw_self(c, ci));
     buf_puts(&oc, "(");
     open = emit_reopen_recv_args(c, id, pf, nt_ref(nt, id, "receiver"), boxed, box_fn, 0, &oc);
   }

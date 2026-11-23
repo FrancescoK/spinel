@@ -1,0 +1,43 @@
+["xDesc", true]
+"Desc"
+["aDesc", "bDesc"]
+"Desc"
+["Integer", "NilClass", "Symbol", "Float"]
+["Array", "Hash", "Desc"]
+[true, true]
+"Object"
+Object
+[6, 6]
+[2, 3, 1]
+:sym
+[["Desc", false], "xdesc"]
+"Integer"
+"Symbol"
+"String"
+"NilClass"
+"Desc"
+"Float"
+"Integer"
+"Symbol"
+"String"
+"NilClass"
+"Desc"
+"Float"
+true
+[true, 7]
+"NilClass"
+[[1, "Desc"], ["s", "Desc"]]
+[:a, "Integer"]
+["Object", "NilClass", "Integer", "String", "Float"]
+[Integer, 1]
+[String, 2]
+LocalJumpError
+[:lje, 1]
+:noblk
+:noblk
+:noblk
+:noblk
+[:lje, 4]
+[:lje, 4]
+[[:lje, 7], [:lje, 7], [:lje, 7]]
+[[:lje, 1], [:lje, 2]]

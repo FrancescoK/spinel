@@ -14293,11 +14293,18 @@ static int bind_case_eqq_subjects(Compiler *c, int *changed, int *any) {
   return ch;
 }
 /* The top-level def the call plan binds call id to as a reopening of no class (a public def
-   reached with an explicit receiver), -1 where it binds none or the call is a builtin's */
-static int plan_top_def_target(Compiler *c, int id) {
+   reached with an explicit receiver), or as Object's private method a send or a bare call on
+   self reaches (UC_SEND_BLIND), -1 where it binds none or the call is a builtin's. With
+   sends_only, only the latter: a call by name on a poly receiver runs the methods of its
+   candidate classes, never the plan's public def, where a send reaches Object's private def
+   from a receiver of any class -- the def itself where no candidate class has the name, or
+   the arm a switch over the classes that do falls back to (send_fallback). */
+static int plan_top_def_target(Compiler *c, int id, int sends_only) {
   if (cplan_builtin_call(c, id)) return -1;
   const CallPlan tp = cplan_user_fresh(c, id);
-  return tp.mi >= 0 && tp.via == UC_REOPEN && tp.dispatch == CP_DIRECT && c->scopes[tp.mi].class_id < 0 && !c->scopes[tp.mi].is_cmethod ? tp.mi : -1;
+  if (sends_only && tp.send_fallback >= 0) return tp.send_fallback;
+  return tp.mi >= 0 && ((tp.via == UC_REOPEN && !sends_only) || tp.via == UC_SEND_BLIND) && tp.dispatch == CP_DIRECT &&
+         c->scopes[tp.mi].class_id < 0 && !c->scopes[tp.mi].is_cmethod ? tp.mi : -1;
 }
 
 /* `slot OP= val` reaching class k's operator: its parameter takes val's
@@ -14995,7 +15002,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
           else {
             int cmi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
             /* ...a class method the class lacks leaves the call to a public top-level def (`C.probe(x)`) */
-            if (cmi < 0) cmi = plan_top_def_target(c, id);
+            if (cmi < 0) cmi = plan_top_def_target(c, id, 0);
             changed |= bind_call_params(c, id, cmi);
           }
           continue;
@@ -15150,7 +15157,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
         if (oci3 >= 0 && oci3 != cid3) mi3 = call_target(c, id, oci3, name, CT_OWN, NULL);
       }
       /* ...or a top-level def the plan binds to the call (`C.new.m` for a public `def m`) */
-      if (mi3 < 0) mi3 = plan_top_def_target(c, id);
+      if (mi3 < 0) mi3 = plan_top_def_target(c, id, 0);
       changed |= bound_name != name && is_eq_op(name) ? bind_delegated_params(c, id, mi3)
                                                      : bind_call_params(c, id, mi3);
       /* Also propagate to descendant overrides: codegen will emit a cls_id
@@ -15228,6 +15235,8 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
         }
         c->range_unheld = 0;
       }
+      /* ...and Object's private top-level def a send reaches on any of them */
+      changed |= bind_call_params(c, id, plan_top_def_target(c, id, 1));
     }
     /* A builtin receiver's own reopening takes this call's arguments too,
        including non-Symbol keys that widen its keyword-rest hash. */
@@ -15251,7 +15260,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
       int omb = ocb >= 0 ? call_target(c, id, ocb, name, 0, NULL) : -1;
       if (omb >= 0 && !c->scopes[omb].is_cmethod) changed |= bind_call_params(c, id, omb);
       /* ...or a top-level def the plan binds to the call */
-      else if (omb < 0) changed |= bind_call_params(c, id, plan_top_def_target(c, id));
+      else if (omb < 0) changed |= bind_call_params(c, id, plan_top_def_target(c, id, 0));
     }
   }
   /* `case x when m` with m a Method calls m with x, as `m === x` does */
@@ -19262,6 +19271,8 @@ int desugar_block_destructure_params_at(Compiler *c, LowerCtx *lc, int id) {
 static int dfi_single_write(NodeTable *nt, int tgt, int rd) {
   const char *ty = nt_type(nt, tgt);
   NodeKind k = nt_kind(nt, tgt);
+  if (k == NK_InstanceVariableTargetNode && nt_int(nt, tgt, "biv_target", 0))
+    return biv_target_write(nt, tgt, rd);
   if (!ty) return -1;
   static const char *const vars[][2] = {
     {"GlobalVariableTargetNode", "GlobalVariableWriteNode"},

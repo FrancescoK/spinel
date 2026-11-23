@@ -2010,8 +2010,10 @@ typedef struct {
   /* the cells of the later prepends whose copies a guard entry chooses
      (Scope.mixin_guarded, ver_prepend_cell_name): 1 .. n_prepend_cells */
   int n_prepend_cells;
-  unsigned char *top_self_marks;      /* per scope: its top-level def reads self (call_plan.c, cplan_top_name_reads_self) */
+  unsigned char *top_self_marks;      /* per scope: its top-level def reads self (call_plan.c, cplan_top_receiver) */
   unsigned long top_self_stamp;
+  int top_self_n;                     /* the scope count the answer was made for */
+  int top_self_hold;                  /* a desugar pass holds the answer for its length (cplan_top_receiver_hold) */
   /* the version entries (call_plan.c, ver_entries_build): one method per
      (class, side, name, parameter count) for the calls whose version is
      known only at run time, or by guard (VER_ENTRY_*, call_plan.h), for
@@ -2778,8 +2780,9 @@ int        comp_name_answered(Compiler *c, const char *name, int is_cm);
 /* Does any class or module of the program answer `name` on either side: an
    instance method or a singleton one (a def self.x, class << self,
    module_function, define_singleton_method, extend), an attribute (a
-   singleton one too: class << self; attr_reader), or a native class's binding? */
-int        comp_name_answered_any_side(Compiler *c, const char *name);
+   singleton one too: class << self; attr_reader), or a native class's binding? With `classes_only`, a def of the
+   top level (Object's method, which every chain finds) does not count: only a scope of a class or module. */
+int        comp_name_answered_any_side(Compiler *c, const char *name, int classes_only);
 /* The scope class cls's chain finds for `name` as one of the name's
    responders, or -1 where it is not one: its class side with CT_CMETHOD, its
    own table only with CT_OWN (an override), the top-level functions for

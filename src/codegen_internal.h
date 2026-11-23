@@ -882,6 +882,9 @@ extern const char *g_proc_return_home;
 int cmethod_takes_self_cls(Compiler *c, const Scope *s);
 /* self, boxed, in method scope s of class s->class_id: a builtin's reopening holds it as the builtin's own value */
 void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b);
+void emit_call_self_boxed(Compiler *c, int id, Buf *b);
+int method_takes_bound_self(Compiler *c, int target);
+int method_self_not_object(Compiler *c, int id);
 const char *emit_cmethod_self_cls_arg(Compiler *c, int mi, int recv_cls, const char *recv_val, Buf *b);
 /* (cls: the class value the call is on, its receiving class: emit_cmethod_self_cls_arg) */
 int emit_class_cmethod_eqq(Compiler *c, int ci, const char *subj, TyKind pt, int node, int boxed, const char *cls, Buf *b);
@@ -2224,6 +2227,7 @@ const char *mc_top(Compiler *c, const char *name);
 /* A method's C function, spelled from the method (codegen_util.c) */
 const char *mc_method(Compiler *c, const Scope *s);
 int mc_version_unkept(const Scope *s);
+const char *mc_receiver_method(Compiler *c, const Scope *s);
 /* The next of the eight names mc_method's answers live in, set to the
    formatted text: valid for the next seven spellings */
 const char *mc_ring_setf(Compiler *c, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
@@ -2862,7 +2866,7 @@ typedef struct DsendFrame { int id, depth; const struct DsendFrame *up; } DsendF
 typedef struct MasgnBack { int mw, n; const int *tv; } MasgnBack;
 struct SwitchRtId;
 typedef struct { int pd_skip, prbd_skip, builtin_arm, send_split, each_inline, each_dispatch, gap_watch; int *gap_hit; const char *arm_cls;
-                 const DsendFrame *dsend; int count_arm; struct SwitchRtId *rt_switch; const MasgnBack *masgn_back; } ArmCtx;
+                 const DsendFrame *dsend; int count_arm, vcall_guard; struct SwitchRtId *rt_switch; const MasgnBack *masgn_back; } ArmCtx;
 extern ArmCtx g_arm;
 #define g_pd_skip (g_arm.pd_skip)
 #define g_prbd_skip (g_arm.prbd_skip)

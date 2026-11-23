@@ -100,6 +100,7 @@ int method_name_implicitly_invoked(const char *nm);
 int local_all_writes_empty_hash(Compiler *c, Scope *sc, const char *name);
 int local_all_writes_empty_hash_or_new(Compiler *c, Scope *sc, const char *name);
 int method_call_param_shift(Compiler *c, int mn, int mi);
+int method_block_one_body(Compiler *c, int mi);   /* analyze_util.c: its &blk is a real proc of one function for every call */
 void mark_path_builders(Compiler *c);   /* analyze_desugar.c */
 
 extern int g_inc_did_clone;
@@ -1112,6 +1113,7 @@ int desugar_hash_iter_with_index(Compiler *c);
 int desugar_array_op_to_ary(Compiler *c);
 int desugar_masgn_to_ary(Compiler *c);
 int desugar_masgn_class_setters(Compiler *c);
+int biv_target_write(NodeTable *nt, int tgt, int value);
 /* Does multiple assignment (or nested target list) id destructure into a
    nested target list? */
 int masgn_nests(const NodeTable *nt, int id);
@@ -1244,6 +1246,7 @@ int desugar_body_ivars(Compiler *c);
 int desugar_const_ivar_access(Compiler *c);
 int desugar_class_eval_ivars(Compiler *c);
 int desugar_builtin_ivars(Compiler *c);
+int desugar_top_def_ivars(Compiler *c);
 int desugar_send_aliases(Compiler *c);
 int desugar_ext_forwarders(Compiler *c);
 const char *const *elab_prov_qualified_leaves(int *n);

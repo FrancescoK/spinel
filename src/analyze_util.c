@@ -3870,6 +3870,12 @@ static int yvt_callee_index_scan(Compiler *c, int cid) {
     else if (cn) {
       const CallPlan p = cplan_user_fresh(c, cid);
       if (p.mi >= 0 && p.via == UC_REOPEN && c->scopes[p.mi].yields) rmi = p.mi;
+      /* ...and a send of a top-level def that takes its receiver: asked of the tree and the def table alone, as the
+         binding above is, for the plan's answer moves with the receiver's type (send_blind_recv_owns) */
+      else if (nt_str(nt, cid, "send_blind")) {
+        int tm = call_target(c, cid, -1, cn, CT_TOP, NULL);
+        if (tm >= 0 && cplan_top_receiver(c, tm)) rmi = tm;
+      }
     }
   }
   return rmi;
@@ -5023,6 +5029,12 @@ int method_hands_block_tail(Compiler *c, int mi) {
   if (mi < 0 || mi >= c->nscopes) return 0;
   return super_hands_block_tail(c, scope_body_last(c, mi), mi, 0);
 }
+/* Is the &blk of method mi a real proc of one function that serves every call, not spliced per call site? A top-level def
+   that takes its receiver is: it runs on receivers of every class, as a reopening of Object's does. One with a `super`, or
+   that hands its block to instance_exec, has no function form and stays spliced (an_phase_block_inline). */
+int method_block_one_body(Compiler *c, int mi) {
+  return cplan_top_receiver(c, mi) && !scope_calls_super(c, mi) && !comp_trampoline_kind(c, mi);
+}
 TyKind method_call_ret(Compiler *c, int mi, int call_id) {
   IMEMO_DEP_SCOPE(mi);   /* (the method's value is read here) */
   int last = scope_body_last(c, mi);
@@ -5055,7 +5067,9 @@ TyKind method_call_ret(Compiler *c, int mi, int call_id) {
      block as a value (`@last = block; block.call`): nothing splices the
      block, the call site passes a proc and reads what the one function
      returns, which sites with blocks of different types box */
-  if (!is_yield && c->scopes[mi].blk_param_value_use && is_blk_param_call(c, last, mi))
+  /* (so does a def that is one body for every receiver and block: method_block_one_body) */
+  if (!is_yield && (c->scopes[mi].blk_param_value_use || method_block_one_body(c, mi)) &&
+      is_blk_param_call(c, last, mi))
     return c->scopes[mi].ret;
   /* A yield-tailed inlined method, or a tail that calls the &block param:
      the block is spliced per call site, so use that site's block body type. */
@@ -5731,6 +5745,14 @@ int is_method_obj_call(Compiler *c, int node) {
    chain it took (-1 for main's or none) and its side (1: the class
    methods), as an alias's owner is asked (method_obj_alias_owner) and a
    Method of a copy renders the class (method_obj_from_class). */
+/* The top-level def `sym` names, for a receiver whose own chain has none:
+   Object's private method, which every receiver's Method binds. A builtin
+   value's own method of the name comes first, so it is left to that. */
+static int method_obj_top_def(Compiler *c, int node, const char *sym) {
+  if (builtin_name_below_object(sym)) return -1;
+  int top = call_target(c, node, -1, sym, CT_CAPTURE | CT_TOP, NULL);
+  return top >= 0 && cplan_top_receiver(c, top) ? top : -1;
+}
 static int method_obj_lookup(Compiler *c, int node, int *cls, int *sg) {
   const NodeTable *nt = c->nt;
   int k = -1, side = 0;
@@ -5833,12 +5855,15 @@ static int method_obj_lookup(Compiler *c, int node, int *cls, int *sg) {
     k = class_ivar_static_ci(c, recv), side = 1;
     if (k >= 0 && call_target(c, node, k, sym, CT_CAPTURE | CT_CMETHOD, NULL) >= 0) goto found;
   }
-  return -1;
+  /* A top-level def is Object's private method, which every receiver's Method
+     binds: a builtin value's own method of the name comes first */
+  return method_obj_top_def(c, node, sym);
 found:
   if (k < 0) return -1;
   if (cls) *cls = k;
   if (sg) *sg = side;
   int mi = call_target(c, node, k, sym, CT_CAPTURE | (side ? CT_CMETHOD : 0), NULL);
+  if (mi < 0 && (mi = method_obj_top_def(c, node, sym)) >= 0) return mi;
   return mi >= 0 || side ? mi : cplan_capture_missing(c, node);
 }
 
@@ -6342,11 +6367,16 @@ int proc_to_proc_method_nodes(Compiler *c, int recv, int **out) {
    call args map to params[1..]. A real instance/class method keeps self
    implicit (params are the declared ones) and shifts by 0. A target without
    a first parameter has no receiver slot to shift past. */
+int method_wrapper_takes_receiver(Compiler *c, int mi) {
+  if (mi < 0) return 0;
+  const Scope *m = &c->scopes[mi];
+  /* (a top-level def that takes its receiver takes it apart from its parameters, boxed: cplan_top_receiver) */
+  return m->class_id < 0 && !m->is_cmethod && m->nparams > 0 && m->pnames && !cplan_top_receiver(c, mi);
+}
 int method_call_param_shift(Compiler *c, int mn, int mi) {
   if (mn < 0 || mi < 0) return 0;
   if (nt_ref(c->nt, mn, "receiver") < 0) return 0;
-  Scope *m = &c->scopes[mi];
-  return (m->class_id < 0 && !m->is_cmethod && m->nparams > 0 && m->pnames) ? 1 : 0;
+  return method_wrapper_takes_receiver(c, mi);
 }
 
 static int scope_has_return_scan(Compiler *c, int scope_idx) {
@@ -6415,6 +6445,8 @@ int call_user_yield_mi(Compiler *c, int id) {
     int ci = cname ? const_node_class_index(c, recv) : self_class_static_ci(c, recv);
     if (ci >= 0) mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
     else if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
+    /* a send of a top-level def the receiver's class does not own: Object's private method, spliced as the inliner does */
+    if (mi < 0 && nt_str(nt, id, "send_blind")) mi = call_target(c, id, -1, name, CT_TOP, NULL);
   }
   if (mi < 0) return -1;
   Scope *m = &c->scopes[mi];

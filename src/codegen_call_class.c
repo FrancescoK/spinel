@@ -6065,7 +6065,7 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 }
 
 /* The self of the call id runs in, boxed: the class a class body's or a class method's self is, main at the top
-   level (and in a top-level def, which runs on main here), else the instance of the method's class, as the
+   level (a top-level def that takes its receiver holds it as `self`), else the instance of the method's class, as the
    method holds it (a builtin's reopening included: emit_reopen_self_boxed) */
 void emit_call_self_boxed(Compiler *c, int id, Buf *b) {
   const Scope *s = comp_scope_of(c, id);
@@ -6074,7 +6074,10 @@ void emit_call_self_boxed(Compiler *c, int id, Buf *b) {
   const char *cls = body >= 0 ? NULL : s && s->is_cmethod ? scope_self_cls_text(c, s, cb, sizeof cb) : NULL;
   if (body >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", body);
   else if (cls) buf_printf(b, "sp_box_class(%s)", cls);
-  else if (s && s->class_id >= 0 && !s->is_cmethod && !self_is_main_raw(c, id)) emit_reopen_self_boxed(c, (Scope *)s, b);
+  /* inside an instance_eval/exec splice self is the rebound receiver */
+  else if (g_ie_class_id >= 0) emit_boxed_text(c, ty_object(g_ie_class_id), g_self, b);
+  else if (s && ((s->class_id >= 0 && !s->is_cmethod && !self_is_main_raw(c, id)) || cplan_top_receiver(c, s->idx)))
+    emit_reopen_self_boxed(c, (Scope *)s, b);
   else buf_puts(b, "sp_main_self()");
 }
 
@@ -6791,7 +6794,7 @@ int emit_root_reopen_call(Compiler *c, int id, Buf *b, const NodeTable *nt, int 
 static int emit_root_reopen_call_plain(Compiler *c, int id, Buf *b, const NodeTable *nt, int recv, int ci, int mi) {
   if (emit_reopen_block_call(c, id, recv, mi, NULL, b)) return 1;
   if (g_plan_check) ucall_observe(c, id, mi, ci, 0);
-  /* a top-level def takes no self: the receiver runs for its effect, then the call */
+  /* A root def whose body observes self takes the actual receiver. */
   int top = c->scopes[mi].class_id < 0;
   if (!top && ci == comp_core_class(c, CORE_NILCLASS)) {
     /* (self is the `int self` the bool reopens take) */
@@ -6817,7 +6820,7 @@ static int emit_root_reopen_call_plain(Compiler *c, int id, Buf *b, const NodeTa
   if (void3) buf_puts(b, "(");
   Buf call = {0};
   if (top) {
-    emit_top_recv_effect(c, recv);
+    if (!cplan_top_receiver(c, mi)) emit_top_recv_effect(c, recv);
     emit_method_call(c, id, &call);
   }
   else {

@@ -169,7 +169,7 @@ typedef struct {
    or Numeric or NilClass ahead of it), one that answers every receiver the
    lookup reaches it for (cplan_root_reopen)? A top-level def the lookup
    finds open to an explicit receiver is one: Object's method from where it
-   runs, which takes no self. The kinds of reopening below that, a builtin
+   runs. The kinds of reopening below that, a builtin
    class's own, bind by the receiver's type. */
 int cplan_root_reopen_owner(Compiler *c, const CallPlan *p);
 /* Is call id's plan p a root reopening's binding (cplan_root_reopen) that answers the call ahead
@@ -193,6 +193,19 @@ int cplan_reopen_binding(CallPlan p);
    a yield's block value included, is the call's ahead of the builtin's own
    lowering of the name. */
 int cplan_reopen_target(Compiler *c, CallPlan p);
+/* Is `scope` a top-level def of the program, not a lowering's own helper? */
+int cplan_top_method(const Compiler *c, int scope);
+/* Does the top-level def `scope` take the receiver it runs on, boxed: its body can observe self and some call runs it on a
+   self that is not main? */
+int cplan_top_receiver(Compiler *c, int scope);
+/* The answer held for a desugar pass that makes nodes (cplan_top_receiver) and released at its end. */
+void cplan_top_receiver_hold(Compiler *c);
+void cplan_top_receiver_release(Compiler *c);
+/* Does a receiverless call of `name` in a top-level def ask the def's self (`self.name` where it runs on another object)? */
+int cplan_bare_call_takes_self(Compiler *c, const char *name);
+/* Is scope s a top-level def of the program (not a method of a class, a
+   class method, or a version entry)? */
+int cplan_is_top_def_scope(const Compiler *c, int s);
 /* Does any scope define an instance method `name` every object answers: the
    top level's, or Object's, Kernel's or BasicObject's own? The name-level
    twin of cplan_root_reopen, for the desugars that run before types exist

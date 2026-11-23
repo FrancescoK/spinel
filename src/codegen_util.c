@@ -7200,6 +7200,9 @@ static char *mc_version_name(const Scope *s) {
 int mc_version_unkept(const Scope *s) {
   return s->replaced && !s->reachable && !s->version_n && !s->main_n && !s->entry && !s->c_name;
 }
+const char *mc_receiver_method(Compiler *c, const Scope *s) {
+  return cplan_top_receiver(c, s->idx) ? mc_ring_setf(c, "sp_0root_%s", mc_method(c, s) + 3) : mc_method(c, s);
+}
 const char *mc_method(Compiler *c, const Scope *s) {
   /* a call that names one would run the wrong version without a word */
   if (mc_version_unkept(s)) {

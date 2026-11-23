@@ -4403,7 +4403,7 @@ static int lr_cside_word_absent(Compiler *c, int id, int cls) {
   while (lr_word_name(nt, id, nd, 1)) nd++;
   while (lr_word_name(nt, id, nl, 0)) nl++;
   return nm && nd == nl && cls >= 0 && cls < c->nclasses && !an_user_defines_method(c, nm) &&
-         !comp_name_answered_any_side(c, nm) && !cplan_class_builtin_has(c, cls, nm);
+         !comp_name_answered_any_side(c, nm, 0) && !cplan_class_builtin_has(c, cls, nm);
 }
 /* (asked of the tree, as lr_body_holds asks its target: a word the record keeps unplaced runs on that class too,
    and answers its names. One that takes a def answers only as the def's version, the record's kept answer,

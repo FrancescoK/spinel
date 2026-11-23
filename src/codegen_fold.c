@@ -307,9 +307,15 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
   /* a top-level alias resolves to the target's scope: emit ITS symbol, since
      the alias has no function of its own (#3730) */
   if (m) nd_callee(c, id, mi, -1, 0);
-  if (m) buf_printf(b, "%s(", mc_method(c, m));
+  int bound = m && cplan_top_receiver(c, mi);
+  int recv = nt_ref(nt, id, "receiver"), open = 0;
+  if (bound) {
+    size_t at = b->len;
+    buf_printf(b, "%s(", mc_receiver_method(c, m));
+    open = emit_reopen_recv_args(c, id, mi, recv, 1, NULL, at, b);
+  } else if (m) buf_printf(b, "%s(", mc_method(c, m));
   else buf_printf(b, "sp_%s(", mc_top(c, name));
-  emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
+  if (!bound) emit_args_filled(c, mi, nt_ref(nt, id, "arguments"), "", b);
   /* pass &block as sp_Proc * when the callee has a blk_param and isn't inlined */
   if (m && m->blk_param && m->blk_param[0] && !m->yields) {
     /* A forwarded `&blk` can't be materialized directly by emit_proc_literal;
@@ -321,7 +327,7 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
     /* ...or, inside a body inlined for a caller that handed it a real
        proc (`fw(&pr)`), to that proc: it passed NULL */
     const char *fwd = forwarded_real_proc(blk0, blk_node);
-    int wrote_args = m->nparams > 0;
+    int wrote_args = bound || m->nparams > 0;
     if (wrote_args) buf_puts(b, ", ");
     if (blk_node >= 0) {
       buf_printf(b, "_t%d", emit_blk_proc_tmp(c, blk_node));
@@ -331,7 +337,7 @@ void emit_method_call(Compiler *c, int id, Buf *b) {
       buf_puts(b, "NULL");
     }
   }
-  buf_puts(b, ")");
+  buf_puts(b, open ? "); })" : ")");
 }
 
 /* The walk being bound reads a typed Integer-valued hash whose values may

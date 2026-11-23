@@ -23,7 +23,7 @@
 #include "spinel_rt.h"
 
 /* Top-level self uses Object's allocation and ivar scan. */
-sp_RbVal sp_main_self(void) {
+sp_RbVal sp_main_self_make(void) {
   void *m = SP_ATOMIC_LOAD(&sp_main_obj, __ATOMIC_ACQUIRE);
   if (!m) {
     void *fresh = sp_Object_new();

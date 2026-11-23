@@ -6190,7 +6190,7 @@ int self_is_main(Compiler *c, int node) {
 }
 int self_is_main_raw(Compiler *c, int node) {
   Scope *s = comp_scope_of(c, node);
-  return s && s->class_id < 0 && an_ie_class_id < 0 && ie_class_of(c, node) == -1 &&
+  return s && s->class_id < 0 && !cplan_top_receiver(c, s->idx) && an_ie_class_id < 0 && ie_class_of(c, node) == -1 &&
          self_class_body(c, node) < 0;
 }
 
@@ -17185,6 +17185,9 @@ static int desugar_to_enum(Compiler *c) {
         scope_set_ret_pin_guard(es, id);
       }
       nt_node_set_str(nt, id, "name", hname);
+      /* (a top-level method's generator is a plain top-level helper, called as the bare call it was before the
+         bare-call rewrite gave it an explicit self) */
+      if (toplevel && recv >= 0) nt_node_set_ref(nt, id, "receiver", -1);
       int empty = nt_new_node(nt, "ArgumentsNode");
       { /* the method symbol goes; the arguments after it stay, for the helper */
         int ac2 = 0; const int *av2 = nt_arr(nt, nt_ref(nt, id, "arguments"), "arguments", &ac2);
@@ -52434,7 +52437,9 @@ static void an_phase_block_inline(Compiler *c) {
          (yields=0) function form -- &blk as a materialized sp_Proc * param, the
          self-call forwarding it -- compiles to plain C recursion and already
          works for the explicit-return shape above. */
-      if (!has_ret && !scope_calls_itself(c, mi)) inline_cand[mi] = 1;
+      /* (a def that is one body for every receiver and block is no splice: method_block_one_body) */
+      if (!has_ret && !scope_calls_itself(c, mi) &&
+          !method_block_one_body(c, mi)) inline_cand[mi] = 1;
     }
   }
   /* A forwarder may only be inlined when every method it hands the block to is
@@ -52840,7 +52845,6 @@ static void an_pass_note(const char *name, double t0, int changed) {
    A pass that comes to read types leaves this list; `make shadow-check` runs
    the shadow schedule and fails on a violation by one of these. */
 static const char *const an_tree_only_passes[] = {
-  "desugar_bare_class_self_calls",
   "desugar_bare_object_reopen_calls",
   "desugar_binding_lvget",
   "desugar_block_capture_wrap",
@@ -53047,6 +53051,7 @@ static void an_phase_infer_fixpoint(Compiler *c) {
     ch |= AN_PASS("desugar_missing_method_obj", desugar_missing_method_obj(c));       /* respond_to_missing? recv.method(:sym) -> method_missing wrapper */
     ch |= AN_PASS("desugar_class_body_bare_new", desugar_class_body_bare_new(c));      /* class body `new(x)` -> `Klass.new(x)` */
     ch |= AN_PASS("desugar_bare_class_self_calls", desugar_bare_class_self_calls(c));    /* cmethod `const_get(:K)` -> `self.const_get(:K)` */
+    ch |= AN_PASS("desugar_top_def_ivars", desugar_top_def_ivars(c));    /* def m = @x run on another self -> self.instance_variable_get(:@x) */
     ch |= AN_PASS("desugar_ie_bare_object_calls", desugar_ie_bare_object_calls(c));     /* instance_eval { is_a?(K) } -> self.is_a?(K) */
     ch |= AN_PASS("desugar_main_singleton_calls", desugar_main_singleton_calls(c));  /* `to_s` on main: its singleton's, the builtin's */
     ch |= AN_PASS("desugar_bare_object_reopen_calls", desugar_bare_object_reopen_calls(c));  /* Object reopened: `helper` -> `self.helper` */

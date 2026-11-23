@@ -858,18 +858,29 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
                c->classes[c->scopes[t2].class_id].name);
     return 1;
   }
-  if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0]))) {
+  /* a target that takes its self boxed (a top-level def, Object's private method) binds any obj, as a held box */
+  int held = t2 >= 0 && repr_self_boxed(c, t2) && c->scopes[t2].class_id < 0;
+  if (t2 >= 0 && (held || ty_is_object(repr_of(c, argv[0]).as_ty))) {
     /* The constructor allocates: hold the fresh `obj` (`...bind(C.new)`)
        in a rooted C temporary across it, or the only reference can be
        swept. Same shape as the `.method` and `.to_proc` captures. */
     int bt = ++g_tmp;
-    buf_printf(b, "({ void *_t%d = (void *)(", bt);
-    emit_expr(c, argv[0], b);
+    if (held) {
+      buf_printf(b, "({ sp_RbVal _tb%d = ", bt);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_tb%d); void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d); "
+                    "sp_PolyArray_push((sp_PolyArray *)_t%d, _tb%d); ", bt, bt, bt, bt, bt);
+    }
+    else {
+      buf_printf(b, "({ void *_t%d = (void *)(", bt);
+      emit_expr(c, argv[0], b);
+      buf_printf(b, "); SP_GC_ROOT(_t%d); ", bt);
+    }
     const char *pp = proc_params_arg(method_proc_params(c, t2));
-    buf_printf(b, "); SP_GC_ROOT(_t%d); ", bt);
     if (pp) buf_puts(b, "sp_bm_set_proc_params(");
+    if (held) buf_puts(b, "sp_bm_set_held(");
     buf_printf(b, "sp_bm_set_thunk(sp_bm_set_abi(sp_bound_method_new_d(_t%d, SP_BM_SELF_OBJ, (sp_int)(uintptr_t)&", bt);
-    buf_puts(b, mc_method(c, &c->scopes[t2]));
+    buf_puts(b, mc_receiver_method(c, &c->scopes[t2]));
     buf_puts(b, ", ");
     emit_str_literal(b, method_sym_arg(c, mn2));
     { int ar; if (method_scope_arity(c, t2, &ar)) buf_printf(b, ", (sp_int)%d", ar); else buf_puts(b, ", (sp_int)-1"); }
@@ -882,6 +893,7 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
       int _tmin = 0, _tmax = 0;
       const char *_th = emit_method_thunk(c, t2, 1, -1, &_tmin, &_tmax);
       emit_bm_abi_args(b, "1", _ab, _s, _fx, _rs, _ab ? _rt : _prt, _pa, _pf, _th, _tmin, _tmax); }
+    if (held) buf_puts(b, ")");
     if (pp) buf_printf(b, ", %s)", pp);
     buf_puts(b, "; })");
     return 1;
@@ -919,7 +931,8 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
 
 /* <method>.to_proc wraps the bound method in a trampoline Proc. When the
    target method is statically known, emit a per-site trampoline that calls
-   it with its real C signature (a top-level method has no self parameter;
+   it with its real C signature (a top-level method that reads no self has no self parameter,
+   one that takes its receiver takes it boxed;
    an object-bound one is invoked through a typed fn cast) and publishes the
    result boxed in _sp_proc_poly_ret -- the universal first-class-proc
    return ABI a later `.call` reads back. Falls back to the generic runtime
@@ -1610,10 +1623,10 @@ int emit_call_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
        the enclosing self: it is receiverless in syntax only, so it must take
        the object-bound arm (which passes _t->self and the fn cast) rather than
        the self-less direct call, which dropped self and did not compile. A
-       top-level def and a class method stay self-less, but for a capture
-       closed to its call (CallPlan.closed), which must run: its NameError. */
-    int target_selfless = target_recvless && !plan.closed &&
-        !(target >= 0 && c->scopes[target].class_id >= 0 && !c->scopes[target].is_cmethod);
+       top-level def that reads self takes its receiver and a class method
+       stays self-less, but for a capture closed to its call
+       (CallPlan.closed), which must run: its NameError. */
+    int target_selfless = target_recvless && !plan.closed && !(target >= 0 && method_takes_bound_self(c, target));
     if (target >= 0 && target_selfless) {
       /* A top-level target is called the way its name would be: the ordinary
          argument lowering binds the site's arguments to the target's
@@ -2352,6 +2365,16 @@ static void emit_missing_guard(Compiler *c, int id, int mi, int q, int tmp, cons
 
 /* A public capture rejects a real hidden method before any
    respond_to_missing? handling for a name the receiver lacks. */
+/* Does the receiver bound to a Method ride the raw self slot, by a kind that boxes it back (an object or
+   builtin pointer, a String, a Symbol, an Integer, a Boolean, nil)? A boxed value, a Float and the other
+   values that are no pointer ride a held box instead. */
+static int self_rides_slot(Compiler *c, int recv) {
+  Repr r = repr_of(c, recv);
+  TyKind t = r.as_ty;
+  if (r.kind == RK_BOXED || t == TY_CLASS) return 0;
+  if (t == TY_STRING || t == TY_STRBUF || t == TY_BOOL || t == TY_SYMBOL || t == TY_INT || t == TY_NIL) return 1;
+  return needs_root(t) && r.kind != RK_VOBJ;
+}
 static void emit_guarded_public_capture(Compiler *c, int id, const char *sym, int cls, int boxed_receiver, Buf *b) {
   if (!c->n_prepend_cells || !nt_int(c->nt, id, "public_capture", 0)) return;
   int key = 0;
@@ -2545,8 +2568,11 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
        failing the build. A poly `<recv>.method` never bound a real target
        (the emitted fn was 0), so this only moves the failure from the C
        compiler to a clean runtime error. */
-    int bam_poly = mi >= 0 && c->scopes[mi].def_node >= 0 &&
-                   nt_int(nt, c->scopes[mi].def_node, "bam_poly", 0);
+    /* (a boxed receiver of a top-level def that reads self rides the held box the same way: the Method hands
+       the def that receiver, boxed) */
+    int bam_poly = (mi >= 0 && c->scopes[mi].def_node >= 0 &&
+                    nt_int(nt, c->scopes[mi].def_node, "bam_poly", 0)) ||
+                   (mi >= 0 && recv >= 0 && repr_self_boxed(c, mi) && !self_rides_slot(c, recv));
     if (recv >= 0 && !captured_name && !bam_poly && repr_of(c, recv).kind == RK_BOXED) {
       buf_puts(b, "({ sp_RbVal _rpm = ");
       emit_expr(c, recv, b);
@@ -2573,8 +2599,7 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
     /* a method_missing Method (cplan_capture_missing) binds its receiver
        after its respond_to_missing? test */
     int mmq = cplan_missing_guard(c, mi);
-    int self_bound = (recv < 0 && mi >= 0 && c->scopes[mi].class_id >= 0 &&
-                      !c->scopes[mi].is_cmethod);
+    int self_bound = recv < 0 && mi >= 0 && method_takes_bound_self(c, mi);
     /* Whether this Method's target can ride the legacy sp_int poly-call ABI.
        A typed-array adapter (mi < 0, bop below) is legacy in non-promote
        mode; an unresolved builtin (no callable address) must not claim it.
@@ -2588,6 +2613,7 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
        receiverless Kernel wrapper. Persisted on the Method (#4395) because the
        raw `self != NULL` test cannot recover it later. */
     int recv_bound = recv >= 0 ? (repr_of(c, recv).as_ty != TY_CLASS) : (self_bound ? 1 : 0);
+    if (mi >= 0 && repr_self_boxed(c, mi)) recv_bound = 1;   /* (a top-level def that reads self takes its receiver, boxed) */
     int mi_legacy = 0;
     char mi_sig[8 * 64 + 1]; mi_sig[0] = 0;
     int mi_fixed = 0, mi_rest = 0, mi_ret = 0, mi_poly = 0, mi_pfixed = 0, mi_pret = 0;
@@ -2614,13 +2640,14 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
        self -- the class value is not a heap pointer, so pass NULL. */
     const char *self_kind = "SP_BM_SELF_NONE";
     int self_is_str = 0, self_rooted = 0;
-    int self_receiver = (recv >= 0 && repr_of(c, recv).as_ty != TY_CLASS);
+    int self_receiver = (recv >= 0 && (repr_of(c, recv).as_ty != TY_CLASS || (mi >= 0 && cplan_top_receiver(c, mi))));
     int self_tmp = 0;
     int tbr = 0;
     /* a builtin receiver bound by its pointer (a String handle, an Array, a
        Hash) has no class id in its first field: the Method keeps the box's,
        which #receiver read back out of a container boxes it by */
     TyKind self_box_ty = TY_UNKNOWN;
+    int self_bare_held = recv < 0 && self_bound && repr_self_boxed(c, mi) && method_self_not_object(c, id);
     if (self_receiver && bam_poly) {
       /* the receiver rides the self slot inside a one-element PolyArray,
          which the synthesized wrapper reads back as __bam_r[0] */
@@ -2648,6 +2675,18 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
       }
       buf_printf(b, "void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
                     " sp_PolyArray_push((sp_PolyArray *)_t%d, _t%d); ", self_tmp, self_tmp, self_tmp, tbr);
+    }
+    else if (self_bare_held) {
+      /* a bare method(:m) of a top-level def that reads self, in a method whose own self is no object pointer (a
+         top-level def's boxed self, a builtin's reopening): the boxed self rides a held box, as a receiver does */
+      tbr = ++g_tmp;
+      self_tmp = ++g_tmp;
+      self_kind = "SP_BM_SELF_OBJ";
+      self_rooted = 1;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tbr);
+      emit_call_self_boxed(c, id, b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d);"
+                    " sp_PolyArray_push((sp_PolyArray *)_t%d, _t%d); ", tbr, self_tmp, self_tmp, self_tmp, tbr);
     }
     else if (self_receiver &&
              (captured_name ||
@@ -2737,7 +2776,7 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
     }
     /* (the holder a boxed receiver rides in is new on every call: the Method
        says so, and == / hash read the receiver inside it) */
-    int held = self_receiver && bam_poly;
+    int held = (self_receiver && bam_poly) || self_bare_held;
     /* a held or builtin Method also carries the number every spelling of its
        name shares, and a typed one its owner's alias group, which a held
        Method finds its own written name in (sp_bm_set_group) */
@@ -2756,6 +2795,11 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
     else if (recv >= 0 && repr_of(c, recv).as_ty == TY_RANGE && repr_of(c, recv).kind != RK_BOXED) {
       buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void *)NULL)");
     }
+    /* (a nil is the NULL a nil object pointer holds, bound by the object kind that boxes it back as nil) */
+    else if (recv >= 0 && repr_of(c, recv).as_ty == TY_NIL) {
+      buf_puts(b, "((void)("); emit_expr(c, recv, b); buf_puts(b, "), (void *)NULL)");
+      self_kind = "SP_BM_SELF_OBJ";
+    }
     else if (recv >= 0) { buf_puts(b, "(void *)("); emit_expr(c, recv, b); buf_puts(b, ")"); }
     /* (on main, Object's method binds main: ML_OBJECT, method_obj_lookup) */
     else if (self_bound && self_is_main_raw(c, id)) { buf_puts(b, "sp_main_self().v.p"); self_kind = "SP_BM_SELF_MAIN"; }
@@ -2763,7 +2807,7 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
     else buf_puts(b, "NULL");
     buf_printf(b, ", %s, ", self_kind);
     if (mi_unemitted) buf_puts(b, "(sp_int)0");
-    else if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); buf_puts(b, mc_method(c, &c->scopes[mi])); }
+    else if (mi >= 0) { buf_puts(b, "(sp_int)(uintptr_t)&"); buf_puts(b, mc_receiver_method(c, &c->scopes[mi])); }
     else {
       /* `<typed_array>.method(:op)`: lower through a per-(type, op) adapter
          matching the Method dispatch ABI (optcarrot's
@@ -3752,7 +3796,8 @@ static int split_arm_key(Compiler *c, const PolyPlan *arms, int k, int surface) 
 int emit_send_blind(Compiler *c, int id, Buf *b) {
   if (nt_str(c->nt, id, "send_blind")) {
     const CallPlan plan = cplan_user(c, id);
-    if (plan.via == UC_SEND_BLIND) { emit_method_call(c, id, b); return 1; }
+    /* (a yielding def has no function: the call is spliced where it stands) */
+    if (plan.via == UC_SEND_BLIND && !c->scopes[plan.mi].yields) { emit_method_call(c, id, b); return 1; }
     int smi = plan.send_fallback;
     if (smi >= 0) {
       int srcv = nt_ref(c->nt, id, "receiver");

@@ -2723,11 +2723,16 @@ int comp_name_answered(Compiler *c, const char *name, int is_cm) {
 }
 
 /* See compiler.h. */
-int comp_name_answered_any_side(Compiler *c, const char *name) {
+int comp_name_answered_any_side(Compiler *c, const char *name, int classes_only) {
   char wbase[256]; wbase[0] = '\0';
   int is_wr = setter_base_name(name, wbase, sizeof wbase);
-  if (comp_name_answered(c, name, 0) || comp_name_answered(c, name, 1) || comp_name_reader_any(c, name) ||
-      (is_wr && comp_name_writer_any(c, wbase))) return 1;
+  int ans = 0;
+  if (classes_only) {   /* (the top level's defs are Object's methods, which every chain finds: a scope of a class or module) */
+    for (int t = an_scopes_named_first(c, name); t >= 0 && !ans; t = an_scopes_named_next(c, name, t))
+      ans = c->scopes[t].class_id >= 0;
+  }
+  else ans = comp_name_answered(c, name, 0) || comp_name_answered(c, name, 1);
+  if (ans || comp_name_reader_any(c, name) || (is_wr && comp_name_writer_any(c, wbase))) return 1;
   for (int k = 0; k < c->nclasses; k++) {
     ClassInfo *ci = &c->classes[k];
     /* (a native class's methods are its declared bindings, not scopes; a singleton accessor is a static

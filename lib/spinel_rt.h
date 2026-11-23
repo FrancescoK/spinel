@@ -6306,10 +6306,11 @@ static int sp_nomethod_kernel_private(const char *m) {
 #undef X
   return 0;
 }
-/* How a NoMethodError's text names its receiver v: nil, true, false, "class
-   X" / "module X", or "an instance of X". */
+/* How a NoMethodError's text names its receiver v: nil, true, false, main,
+   "class X" / "module X", or "an instance of X". */
 SP_COLD static const char *sp_nomethod_recv_desc(sp_RbVal v) {
-  return (v.tag == SP_TAG_NIL) ? "nil"
+  return (v.tag == SP_TAG_OBJ && v.v.p && v.v.p == sp_main_obj) ? "main"   /* (a top-level def's self, boxed) */
+       : (v.tag == SP_TAG_NIL) ? "nil"
        : (v.tag == SP_TAG_BOOL) ? (v.v.i ? "true" : "false")
        : (v.tag == SP_TAG_CLASS)
          ? sp_sprintf("%s %s", strcmp(sp_poly_class_name(v), "Module") ? "class" : "module",
@@ -14870,6 +14871,7 @@ static inline sp_bool sp_poly_frozen(sp_RbVal v) {
   /* a Range is frozen, whatever its kind */
   if (v.tag == SP_TAG_OBJ && (v.cls_id == SP_BUILTIN_RANGE || v.cls_id == SP_BUILTIN_FLOAT_RANGE || v.cls_id == SP_BUILTIN_STR_RANGE)) return TRUE;
   if (v.tag == SP_TAG_OBJ) return sp_gc_is_frozen(v.v.p) || (v.v.p && sp_poly_array_frozen(v));
+  if (v.tag == SP_TAG_CLASS) return sp_class_frozen_id(v.cls_id);   /* a class or module is frozen only where the program froze it */
   return TRUE;
 }
 /* The instance variables of a builtin value (lib/sp_gc.c's map, which does

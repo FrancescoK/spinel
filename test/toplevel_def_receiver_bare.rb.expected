@@ -1,0 +1,14 @@
+["5", ":s", true, true, "main", false]
+[false, true, true, true]
+[2, 1, 3]
+[true, true]
+[NameError, "undefined local variable or method 'size' for main"]
+[NameError, "undefined local variable or method 'size' for an instance of C"]
+[[Array, 7], [Integer, 7], [NilClass, 7], [Symbol, 7]]
+[[Hash, 7], [Float, 7], [String, 7]]
+[Array, 1]
+[[Array, 7], [Array, 9]]
+[5, :s, "q", nil]
+C
+6
+Object

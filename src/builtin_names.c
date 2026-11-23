@@ -2228,11 +2228,14 @@ int is_kernel_module_function(const char *m) {
 }
 
 /* Is m one of Kernel's module functions that never consults self (the ones
-   is_kernel_module_function lists, but `binding`, which captures it, and the
-   ones IO answers itself, which the names table does not list: a File as
-   self writes to the file) */
+   is_kernel_module_function lists, but `binding`, which captures it)? The
+   output functions (`puts`, `print`, `printf`, `gets`) count: Kernel's write
+   to $stdout whatever self is, and a class of the program that defines the
+   name answers a bare call from its own instance (comp_name_answered_any_side with classes_only).
+   Only an IO as self, which a top-level def reaches through a send to a File,
+   would write to itself. */
 int kernel_function_ignores_self(const char *m) {
-  static const char *const SELF[] = { "binding", "puts", "print", "printf", "gets", NULL };
+  static const char *const SELF[] = { "binding", NULL };
   return is_kernel_module_function(m) && !builtin_name_in(m, SELF);
 }
 

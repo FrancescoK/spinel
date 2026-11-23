@@ -9187,9 +9187,9 @@ static int infer_send_blind(Compiler *c, int id, int recv, const char *name, TyK
   const NodeTable *nt = c->nt;
   /* A retargeted `x.send(:m)` depends on the program's method ancestry and
      yielding scopes, not just the builtin receiver and argument kinds. */
-  if (nt_str(nt, id, "send_blind") && recv >= 0 && nt_ref(nt, id, "block") < 0) {
+  if (nt_str(nt, id, "send_blind") && recv >= 0) {
     int smi = call_target(c, id, -1, name, CT_TOP, NULL);
-    if (smi >= 0 && !(smi < c->nscopes && c->scopes[smi].yields)) {
+    if (smi >= 0) {
       TyKind srt = infer_type(c, recv);
       if (!send_blind_recv_owns(c, id, recv, srt, name)) { *out = an_user_call(c, id, smi, UC_SEND_BLIND, -1); return 1; }
       /* a boxed receiver answers by its class, the dispatch or the

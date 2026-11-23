@@ -1734,6 +1734,7 @@ int bam_struct_member(Compiler *c, int mi);                 /* is it a Struct me
 int method_expr_is_unbound(Compiler *c, int recv);    /* instance_method with no #bind crossed */
 int proc_to_proc_method_nodes(Compiler *c, int recv, int **out); /* the method(:sym) nodes behind <method>.to_proc */
 int method_call_param_shift(Compiler *c, int mn, int mi); /* 1 when self carries param[0] (__bam wrapper) */
+int method_wrapper_takes_receiver(Compiler *c, int mi); /* the target's first parameter is its receiver (a __bam wrapper), not a top-level def's boxed self */
 
 /* Can a call ever arrive at an instance method of class/module `ci`? Only
    through a value that is one, so a class nobody instantiates -- and that no

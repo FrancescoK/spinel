@@ -611,6 +611,14 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
       t->recv_class = g_inline_recv_class;
       t->mi = call_target(c, id, t->recv_class, name, 0, NULL);
     }
+    /* a send of a top-level def the receiver's class does not own: Object's private method, which takes the
+       receiver boxed, neither as its class's pointer nor as a class method's class (where a class a boxed receiver
+       can be owns the name, the dispatch over them binds each arm, as the plan does) */
+    if (nt_str(nt, id, "send_blind") &&
+        (t->mi >= 0 ? cplan_is_top_def_scope(c, t->mi) : !send_blind_recv_owns(c, id, recv, rt, name))) {
+      if (t->mi < 0) t->mi = call_target(c, id, -1, name, CT_TOP, NULL);
+      t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0;
+    }
   }
 }
 
@@ -687,6 +695,8 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     }
     return 0;
   }
+  /* a send of a top-level def the receiver's class does not own */
+  if (p.via == UC_SEND_BLIND) { t->mi = p.mi; return 1; }
   NodeKind rk = nt_kind(nt, recv);
   const char *cname = ((rk == NK_ConstantReadNode ||
                                rk == NK_ConstantPathNode))
@@ -1087,7 +1097,18 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      on the way out. */
   const char *saved_recv_expr = g_inline_recv_expr;
   int saved_recv_cls = g_inline_recv_class;
-  if (recv >= 0 && recv_class >= 0) {
+  if (cplan_top_receiver(c, mi)) {
+    int st = ++g_tmp;
+    Buf value = {0};
+    if (recv >= 0) emit_boxed(c, recv, &value);
+    else emit_call_self_boxed(c, id, &value);
+    emit_indent(b, indent + 1);
+    buf_printf(b, "sp_RbVal _t%d = %s; SP_GC_ROOT_RBVAL(_t%d);\n", st, value.p, st);
+    free(value.p);
+    snprintf(selfbuf, sizeof selfbuf, "_t%d", st);
+    recv_self_deref = "";
+  }
+  else if (recv >= 0 && recv_class >= 0) {
     int self_is_val = c->classes[recv_class].is_value_type;
     int st = ++g_tmp;
     emit_indent(b, indent + 1);
@@ -3895,6 +3916,9 @@ int call_targets_yielding_method(Compiler *c, int id) {
     int ci = cn ? const_node_class_index(c, recv) : rk == NK_SelfNode ? class_body_self_ci(c, recv) : -1;
     if (ci >= 0) mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
     else if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
+    /* (a send of a top-level def the receiver does not own, as the plan binds it: UC_SEND_BLIND) */
+    if (mi < 0 && nt_str(nt, id, "send_blind") && !send_blind_recv_owns(c, id, recv, rt, name))
+      mi = call_target(c, id, -1, name, CT_TOP, NULL);
   }
   if (served && it.mi != mi)
     fprintf(stderr, "plan-check: cplan-conflict: yielding-target node %d %s: plan %d, lookup %d\n",

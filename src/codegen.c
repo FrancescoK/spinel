@@ -422,7 +422,7 @@ static int poll_pure_shape(Compiler *c, int si) {
   if (s->rest_idx >= 0 || s->kwrest_idx >= 0 || s->nrequired != s->nparams) return 0;
   if (s->ret != TY_INT && s->ret != TY_FLOAT && s->ret != TY_BOOL) return 0;
   if (method_is_void(s) || sp_streq(s->name, "initialize")) return 0;   /* the wrapper returns the value */
-  if (scope_has_begin(c, si) || cmethod_takes_self_cls(c, s)) return 0;
+  if (scope_has_begin(c, si) || cmethod_takes_self_cls(c, s) || cplan_top_receiver(c, si)) return 0;
   if (s->class_id >= 0 && !s->is_cmethod) {
     const ClassInfo *ci = &c->classes[s->class_id];
     if (ci->is_value_type || ci->is_struct || ci->is_native_class) return 0;
@@ -6411,7 +6411,7 @@ const char *method_ret_zero(Compiler *c, const Scope *s) {
 }
 
 typedef enum { METHOD_ENTRY, ROOT_CONTEXT_BODY, ROOT_CONTEXT_ENTRY } MethodSignature;
-static void method_signature(Compiler *c, Scope *s, Buf *b, MethodSignature form, Buf *args) {
+static void method_signature(Compiler *c, Scope *s, Buf *b, MethodSignature form, Buf *args, int receiver) {
   note_method_file(c, s);
   /* In a debug build, give instance/class methods external linkage so
      -rdynamic exposes sp_<Class>_<method> to backtrace_symbols and the
@@ -6438,10 +6438,15 @@ static void method_signature(Compiler *c, Scope *s, Buf *b, MethodSignature form
                     : (method_inline_hint(c, s) ? "inline " : "");
   if (method_is_void(s)) { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); buf_puts(b, "void "); }
   else { buf_puts(b, stor); buf_puts(b, ihint); buf_puts(b, unused); emit_method_ret_ctype(c, s, b); buf_puts(b, " "); }
-  const char *cn = mc_method(c, s);
+  const char *cn = receiver ? mc_receiver_method(c, s) : mc_method(c, s);
   if (form == ROOT_CONTEXT_BODY) buf_printf(b, "sp_0roots_%s(sp_gc_root_ctx _sp_roots", cn + 3);
   else buf_printf(b, "%s(", cn);
   int wrote = form == ROOT_CONTEXT_BODY;
+  if (receiver) {
+    if (wrote++) buf_puts(b, ", ");
+    buf_puts(b, "sp_RbVal self");
+    if (args) buf_puts(args, ", self");
+  }
   if (cmethod_takes_self_cls(c, s)) {
     if (wrote++) buf_puts(b, ", ");
     buf_puts(b, "sp_Class _sp_cls");
@@ -6514,7 +6519,21 @@ static void method_signature(Compiler *c, Scope *s, Buf *b, MethodSignature form
 }
 
 void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
-  method_signature(c, s, b, METHOD_ENTRY, NULL);
+  method_signature(c, s, b, METHOD_ENTRY, NULL, cplan_top_receiver(c, s->idx));
+}
+
+/* The bare main entry binds the distinguished main object. All other
+   receiver-bound calls use the method body with its explicit self. */
+static void emit_top_main_entry(Compiler *c, Scope *s, Buf *b) {
+  method_signature(c, s, b, METHOD_ENTRY, NULL, 0);
+  buf_printf(b, " { %s%s(sp_main_self()", method_is_void(s) ? "" : "return ", mc_receiver_method(c, s));
+  for (int i = 0; i < s->nparams; i++) {
+    char parameter[160];
+    sg_param_cname(c, s, i, parameter, sizeof parameter);
+    buf_printf(b, ", %s", parameter);
+  }
+  if (s->blk_param && s->blk_param[0] && !s->yields) buf_printf(b, ", lv_%s", s->blk_param);
+  buf_puts(b, "); }\n");
 }
 
 /* CS_SYNTH_* markers (mirror of analyze_scope.c). */
@@ -8386,6 +8405,10 @@ static void gc_wb_insert_seg(Compiler *c, Buf *b, size_t fn_off) {
    interpolation hands a new String (`"a#{i}".two`). A typed class's
    receiver comes from a call or a variable. */
 static const char *method_self_root(Compiler *c, Scope *s) {
+  if (cplan_top_receiver(c, s->idx)) {   /* (rooted as a reopening of Object's self is: where the body may allocate) */
+    int tb = s->def_node >= 0 ? nt_ref(c->nt, s->def_node, "body") : -1;
+    return tb >= 0 && subtree_may_allocate(c, tb) ? "SP_GC_ROOT_RBVAL" : NULL;
+  }
   if (s->class_id < 0 || s->is_cmethod || s->def_node < 0) return NULL;
   const char *cn = c->classes[s->class_id].c_name;
   const char *m = is_boxed_self_class_name(cn) ? "SP_GC_ROOT_RBVAL" : is_string_class_name(cn) ? "SP_GC_ROOT_STR" : NULL;
@@ -8405,7 +8428,7 @@ static void rbs_cont_body_cname(Compiler *c, Scope *s, char *out, size_t cap) {
   snprintf(out, cap, "sp_0rbs_body_%d", (int)(s - c->scopes));
 }
 static void emit_rbs_cont_ret_body_sig(Compiler *c, Scope *s, const char *sig, Buf *b) {
-  const char *cn = mc_method(c, s);
+  const char *cn = mc_receiver_method(c, s);
   const char *at = strstr(sig, cn);
   if (!at) { buf_puts(b, sig); return; }
   char bn[48];
@@ -8413,7 +8436,7 @@ static void emit_rbs_cont_ret_body_sig(Compiler *c, Scope *s, const char *sig, B
   buf_printf(b, "%.*s%s%s", (int)(at - sig), sig, bn, at + strlen(cn));
 }
 static void emit_rbs_cont_ret_wrapper(Compiler *c, Scope *s, const char *sig, Buf *b) {
-  const char *cn = mc_method(c, s);
+  const char *cn = mc_receiver_method(c, s);
   const char *open = strstr(sig, cn);
   open = open ? strchr(open + strlen(cn), '(') : NULL;
   const char *close = open ? strrchr(open, ')') : NULL;
@@ -8472,12 +8495,14 @@ static unsigned char *root_context_loop_callees(Compiler *c) {
    the two addresses across repeated calls, even with split compilation. */
 static void wrap_root_context(Compiler *c, Scope *s, Buf *b, size_t sig_off, size_t sig_end) {
   Buf inner = {0}, args = {0};
-  method_signature(c, s, &inner, ROOT_CONTEXT_BODY, NULL);
+  int receiver = cplan_top_receiver(c, s->idx);
+  method_signature(c, s, &inner, ROOT_CONTEXT_BODY, NULL, receiver);
   buf_erase(b, sig_off, sig_end - sig_off);
   buf_insert_at(b, sig_off, inner.p);
-  method_signature(c, s, b, ROOT_CONTEXT_ENTRY, &args);
+  method_signature(c, s, b, ROOT_CONTEXT_ENTRY, &args, receiver);
   buf_printf(b, " {\n  %ssp_0roots_%s(sp_gc_current_roots()%s);\n}\n",
-             method_is_void(s) ? "" : "return ", mc_method(c, s) + 3, args.p ? args.p : "");
+             method_is_void(s) ? "" : "return ",
+             (receiver ? mc_receiver_method(c, s) : mc_method(c, s)) + 3, args.p ? args.p : "");
   free(args.p); free(inner.p);
 }
 
@@ -10032,7 +10057,8 @@ static void emit_fiber_new_here(Compiler *c, int id, Buf *b, int as_gen, int siz
       if (dv >= 0) uses_self = fiber_body_uses_self(c, dv);
     }
   }
-  if (encl && encl->class_id >= 0 && !encl->is_cmethod && uses_self) {
+  if (encl && cplan_top_receiver(c, encl->idx) && uses_self) cap_self = self_boxed = 1;
+  else if (encl && encl->class_id >= 0 && !encl->is_cmethod && uses_self) {
     cap_self = 1;
     cap_self_class = c->classes[encl->class_id].c_name;
     { const char *rcn = c->classes[encl->class_id].name;
@@ -10559,6 +10585,7 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   if (ty_k == NK_SuperNode || ty_k == NK_ForwardingSuperNode) return 1;
   if (ty_k == NK_CallNode && nt_ref(c->nt, id, "receiver") < 0) {
     const char *nm = nt_str(c->nt, id, "name");
+    if (cplan_top_receiver(c, cplan_user(c, id).mi)) return 1;
     if (nm && call_target(c, id, class_id, nm, 0, NULL) >= 0) return 1;
     /* a top-level def or Object's method a subclass overrides is a switch
        on self's class (cplan_self_root_override) */
@@ -10591,6 +10618,11 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
   for (int i = 0; i < na; i++) { int n = 0; const int *ids = nt_arr_at(c->nt, id, i, &n);
     for (int k = 0; k < n; k++) if (proc_body_uses_self(c, ids[k], class_id)) return 1; }
   return 0;
+}
+
+/* Defaults belong to the proc too and capture the same lexical receiver. */
+static int proc_captures_receiver(Compiler *c, int body, int create, int cls) {
+  return proc_body_uses_self(c, body, cls) || proc_body_uses_self(c, proc_params_node(c, create), cls);
 }
 
 /* Does node `id` (a method body subtree) store the &block param `bp` into an
@@ -11695,13 +11727,10 @@ else if (orecv >= 0 && onm) {
   int ie_body = ie_class_of(c, body);
   int ie_mark = ie_body == ie_class_of(c, create) && ie_own_class_of(c, body) != ie_body ? -1 : ie_body;
   if (ie_mark < -1) unsupported(c, create, "proc run by instance_eval on more than one class");
-  int ie_cls = ie_mark >= 0 && (proc_body_uses_self(c, body, ie_mark) ||
-                                proc_body_uses_self(c, proc_params_node(c, create), ie_mark)) ? ie_mark : -1;
+  int ie_cls = ie_mark >= 0 && proc_captures_receiver(c, body, create, ie_mark) ? ie_mark : -1;
   int rself = ie_mark < 0 && body >= 0 ? (int)nt_int(nt, body, "ie_rself_lit", 0) : 0, sv_rself_on = g_ie_rself_on;
   int scls = g_ie_class_id >= 0 ? g_ie_class_id : bs && !bs->is_cmethod ? bs->class_id : -1;
-  int cap_self = ie_cls < 0 && scls >= 0 &&
-                 (proc_body_uses_self(c, body, scls) ||
-                  proc_body_uses_self(c, proc_params_node(c, create), scls));
+  int cap_self = ie_cls < 0 && scls >= 0 && proc_captures_receiver(c, body, create, scls);
   int ie_fb = ie_cls >= 0 && scls >= 0 && is_descendant(c, scls, ie_cls) &&
               !c->classes[scls].is_value_type && !is_boxed_self_class_name(c->classes[scls].name);
   /* A class method that takes the receiving class as a leading parameter has
@@ -11711,10 +11740,12 @@ else if (orecv >= 0 && onm) {
      struct, the way instance self is carried (#3797). */
   int cap_cls = ie_cls < 0 && bs && bs->is_cmethod &&
                 cmethod_takes_self_cls(c, bs);
-  int self_is_value = cap_self && c->classes[scls].is_value_type;
+  int bound_top = bs && cplan_top_receiver(c, bs->idx) && ie_cls < 0 && proc_captures_receiver(c, body, create, -1);
+  cap_self |= bound_top;
+  int self_is_value = cap_self && scls >= 0 && c->classes[scls].is_value_type;
   /* an Object / Array / Hash / Numeric reopening holds self boxed (its
      methods take `sp_RbVal self`): captured as the boxed value */
-  int self_boxed = cap_self && !self_is_value && is_boxed_self_class_name(c->classes[scls].name);
+  int self_boxed = bound_top || (cap_self && !self_is_value && is_boxed_self_class_name(c->classes[scls].name));
   /* A runtime-self body's fallback self (sp_ie_rself's, for a call no
      instance_exec rebinds) is its maker's self, boxed: a text of the
      maker's C scope where it names that self (a block instance_eval or
@@ -11728,7 +11759,7 @@ else if (orecv >= 0 && onm) {
     g_ie_rself_on = sv_on;
   }
   int rself_boxed = rself_src.p && g_self && (sv_rself_on || text_names_ident(rself_src.p, g_self));
-  const char *self_cls = cap_self ? c->classes[scls].c_name : NULL;
+  const char *self_cls = cap_self && scls >= 0 ? c->classes[scls].c_name : NULL;
 
   /* parameter metadata for Proc#parameters: every parameter kind in signature
      order. Positionals (leading + post) are :req for a lambda and :opt for a
@@ -17648,6 +17679,7 @@ static int struct_super_handle_arg(Compiler *c, int v, Buf *b) {
    super into Object's (boxed-self) method hands on. */
 void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b) {
   if (s->is_cmethod) { emit_boxed_text(c, TY_CLASS, g_self, b); return; }
+  if (cplan_top_receiver(c, (int)(s - c->scopes))) { buf_puts(b, g_self); return; }
   if (repr_self_handle(c, (int)(s - c->scopes))) { emit_boxed_text(c, TY_STRBUF, g_self, b); return; }
   int cls = s->class_id;
   const char *cn = cls >= 0 ? c->classes[cls].c_name : NULL;
@@ -18679,10 +18711,13 @@ static void emit_super_value(Compiler *c, int id, Buf *b) {
                uname, scn, raise_tail_value_c(c, repr_of(c, id).as_ty));
     return;
   }
-  /* a top-level def (Object's private method) is a function with no self to pass */
-  int toplevel = defcls < 0;
-  if (toplevel)
-    buf_printf(b, "%s(", mc_method(c, &c->scopes[mi]));
+  /* A receiver-sensitive top-level def is Object's method. */
+  int bound_top = defcls < 0 && cplan_top_receiver(c, mi);
+  int toplevel = defcls < 0 && !bound_top;
+  if (toplevel || bound_top) {
+    buf_printf(b, "%s(", mc_receiver_method(c, &c->scopes[mi]));
+    if (bound_top) emit_reopen_self_boxed(c, s, b);
+  }
   else if (repr_self_boxed(c, mi)) {
     /* Object's methods take self boxed: any value can be the receiver. So
        do an Array, Hash or Numeric reopening's (emit_method_signature),
@@ -22028,8 +22063,8 @@ static void reject_binding(Compiler *c) {
 }
 
 /* A receiverless call in a top-level def to a name main has a singleton method
-   for: the def has no self of its own here, and which method the call finds
-   depends on the object the def runs on (the plan's CRF_TOP_SELF). A def
+   for: which method the call finds depends on the object the def runs on, and
+   a bare call stays bare, so it finds main's (the plan's CRF_TOP_SELF). A def
    nothing names is not emitted, so its calls are not refused. */
 static void reject_top_self(Compiler *c) {
   NT_FOREACH_KIND(c->nt, NK_CallNode, id) {
@@ -25683,6 +25718,7 @@ char *codegen_program(const NodeTable *nt) {
   char *order_text = g_dump_order ? order_dump(c) : NULL;
   if (g_check_traits) exit(ty_traits_check(c) ? 1 : 0);
   g_scopes_settled = 1;   /* scope_is_shadowed may answer from its table now */
+  cplan_top_receiver_hold(c);   /* the tree is settled for it: one walk, not one per emitted node */
   mc_number_versions(c);
   mc_resolve_clashes(c);   /* two methods spelling one C name get two */
   /* From here on a yield reads the type of the block spliced at THIS site,
@@ -25928,7 +25964,7 @@ char *codegen_program(const NodeTable *nt) {
   /* A proc form is named only by a poly dispatch, which is emitted later, so
      the reachability pass cannot see it. Emit it and let the C compiler drop
      it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
+  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (cplan_top_receiver(c, s)) emit_top_main_entry(c, &c->scopes[s], &b); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
 
   emit_cext_dispatch(c, &b);
   emit_user_exc_dispatch(c, &b);

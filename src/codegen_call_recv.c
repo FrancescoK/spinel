@@ -18299,6 +18299,13 @@ void emit_ivar_set_by_name(Compiler *c, int k, const char *obj, const char *syv,
   buf_printf(b, "%ssp_bivar_set(%s, %s, %s); }", any ? " else " : "", boxv, syv, val);
 }
 
+static void emit_toplevel_slot_store(Compiler *c, int iv, const char *sym, const char *val, Buf *b) {
+  int home = c->toplevel_class;
+  TyKind type = c->classes[home].ivar_types[iv];
+  buf_printf(b, "civ_Toplevel_%s = ", iv_c(sym + 1));
+  if (civ_is_oint(c, home, iv)) buf_printf(b, "%s(%s)", oint_unbox(type), val);
+  else emit_ivar_slot_value(c, type, val, b);
+}
 /* the same for main's ivars, in the top-level statics; a name main's
    literal writes never use goes to its Object table */
 static void emit_toplevel_ivar_set_by_name(Compiler *c, int tv, const char *syv, const char *val, Buf *b) {
@@ -18309,10 +18316,8 @@ static void emit_toplevel_ivar_set_by_name(Compiler *c, int tv, const char *syv,
   for (int iv = 0; iv < ci->nivars; iv++) {
     const char *sym = ci->ivars[iv];
     if (!sym || sym[0] != '@' || !comp_ivar_on(ci, iv, IVS_CLASS)) continue;
-    TyKind mt = ci->ivar_types[iv];
-    buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) civ_Toplevel_%s = ", any ? "else " : "", sym, iv_c(sym + 1));
-    if (civ_is_oint(c, main_ci, iv)) buf_printf(b, "%s(%s)", oint_unbox(mt), val);
-    else emit_ivar_slot_value(c, mt, val, b);
+    buf_printf(b, "%sif (strcmp(_n, \"%s\") == 0) ", any ? "else " : "", sym);
+    emit_toplevel_slot_store(c, iv, sym, val, b);
     buf_puts(b, "; ");
     any = 1;
   }
@@ -18576,9 +18581,17 @@ static int emit_poly_ivar_call(Compiler *c, int id, Buf *b, const NodeTable *nt,
         free(obj);
         buf_puts(b, " break;");
       }
-      /* a bare Object keeps its ivars in a table of its own */
-      buf_printf(b, " case SP_BUILTIN_OBJECT: sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;",
-                 tv, sym, tv);
+      /* main shares its named slots with the top-level variable reads. */
+      int home = c->toplevel_class;
+      int iv = home >= 0 ? comp_class_ivar_index(&c->classes[home], sym) : -1;
+      buf_puts(b, " case SP_BUILTIN_OBJECT: ");
+      if (iv >= 0) {
+        char value[32]; snprintf(value, sizeof value, "_ivs%d", tv);
+        buf_printf(b, "if (_t%d.v.p == sp_main_obj) ", tv);
+        emit_toplevel_slot_store(c, iv, sym, value, b);
+        buf_puts(b, "; else ");
+      }
+      buf_printf(b, "sp_Object_ivar_set((sp_Object *)_t%d.v.p, sp_sym_intern(\"%s\"), _ivs%d); break;", tv, sym, tv);
       /* a builtin value: the runtime's map, or FrozenError (emit_bivar_arm) */
       char bst[320];
       snprintf(bst, sizeof bst, "sp_bivar_set(_t%d, sp_sym_intern(\"%s\"), _ivs%d)", tv, sym, tv);
