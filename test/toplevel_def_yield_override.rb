@@ -267,3 +267,19 @@ class OyS6 < OyR6; end
   p [OyR6.new.ubc(OyR6.new, a), OyR6.new.ubc(OyS6.new, a), OyQ6.new.ubc(OyQ6.new, a), OyR6.new.ubk(OyR6.new, a)]
   [OyR6.new, OyS6.new, OyQ6.new, 6].each { |o| p [OyQ6.new.ubc(o, a), (OyR6.new.ubc(o, a) rescue [:err, $!.class])] }
 end
+
+# ... and of a top-level def that reads no self: the Method binds any
+# object without passing it, and the subclass's arm still runs its own
+def oy25(s) = [:top, s]
+class OyT7
+  def ubm(o) = method(:oy25).unbind.bind(o).call("m")
+  def ubc(o) = method(:oy25).unbind.bind_call(o, "c")
+  def ub(o) = method(:oy25).unbind.bind(o)
+end
+class OyU7 < OyT7; def oy25(s) = [:u, s]; end
+p OyU7.new.ubm(OyU7.new), OyT7.new.ubm(OyU7.new), OyU7.new.ubc(OyU7.new), OyT7.new.ubc(OyU7.new)
+[OyU7.new, OyT7.new, 7, nil, "s"].each do |o|
+  p [OyT7.new.ubm(o), OyT7.new.ubc(o), OyT7.new.ub(o).call("k"), (OyU7.new.ubc(o) rescue [:err, $!.class])]
+end
+m = OyT7.new.ub(OyT7.new)
+p m.call("one"), m.owner
