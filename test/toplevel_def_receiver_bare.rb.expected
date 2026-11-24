@@ -22,3 +22,6 @@ Object
 [SupG, 9]
 "main"
 [Object, 1]
+[:y, [:top, SupY, 200]]
+[:z, [:top, SupZ, 2]]
+[:ym, [:top, SupYC, [4, SupYC]]]

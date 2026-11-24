@@ -78,3 +78,22 @@ o = SupC.new
 p o.me_sup, o.who_sup(3), o.blk, SupD.new.me_sup
 p SupE.new.who_sup(5), SupE.new.iv_sup, SupF.new.who_sup(7), SupG.new.who_sup(9)
 p me_sup.inspect, who_sup
+
+# a super into a top-level def that yields and reads self runs it on the
+# method's self too: with a block of its own, forwarding the method's
+# block, and from a module
+def yd_sup(x) = [:top, self.class, yield(x)]
+class SupY
+  def yd_sup(x) = [:y, super(x + 1) { |v| v * 100 }]
+end
+class SupZ
+  def yd_sup(x) = [:z, super]
+  def go = yd_sup(1) { |v| v + 1 }
+end
+module SupYM
+  def yd_sup(x) = [:ym, super(x) { |v| [v, self.class] }]
+end
+class SupYC
+  include SupYM
+end
+p SupY.new.yd_sup(1), SupZ.new.go, SupYC.new.yd_sup(4)

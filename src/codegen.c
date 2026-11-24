@@ -17445,6 +17445,28 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   }
   if (is_forwarding) zsuper_end(&z);
   inl_dflt_leave(sv_dflt);
+  /* a top-level def that takes its receiver (cplan_top_receiver) reads self
+     boxed, as its function does: bound once to this method's self, after
+     the arguments, which are this method's code */
+  const char *sv_self = g_self, *sv_self_deref = g_self_deref;
+  const char *sv_ysf = g_yield_self_fallback, *sv_ysdf = g_yield_self_deref_fallback;
+  const char *sv_ysf2 = g_yield_self_fallback2, *sv_ysdf2 = g_yield_self_deref_fallback2;
+  char bself[32];
+  if (cplan_top_receiver(c, mi)) {
+    /* (the super's literal block is this method's code, run on its self, as
+       an inlined call keeps it: the block one level out keeps its own) */
+    if (block != saved_block) {
+      g_yield_self_fallback2 = sv_ysf; g_yield_self_deref_fallback2 = sv_ysdf;
+      g_yield_self_fallback = g_self; g_yield_self_deref_fallback = g_self_deref;
+    }
+    int st = ++g_tmp;
+    emit_indent(b, din);
+    buf_printf(b, "sp_RbVal _t%d = ", st);
+    emit_reopen_self_boxed(c, s, b);
+    buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d);\n", st);
+    snprintf(bself, sizeof bself, "_t%d", st);
+    g_self = bself; g_self_deref = "";
+  }
 
   const char *sv_prl = g_method_pr_label, *sv_prv = g_method_pr_var;
   TyKind sv_prt = g_ret_type;
@@ -17510,6 +17532,9 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (as_expr) { emit_indent(b, indent); buf_puts(b, "})"); }
   else { emit_indent(b, indent); buf_puts(b, "}\n"); }
 
+  g_self = sv_self; g_self_deref = sv_self_deref;
+  g_yield_self_fallback = sv_ysf; g_yield_self_deref_fallback = sv_ysdf;
+  g_yield_self_fallback2 = sv_ysf2; g_yield_self_deref_fallback2 = sv_ysdf2;
   g_nren = saved_nren;
   g_block_id = saved_block;
   g_block_nren = saved_bnren;
@@ -18726,6 +18751,10 @@ static void emit_super_value(Compiler *c, int id, Buf *b) {
   int bound_top = defcls < 0 && cplan_top_receiver(c, mi);
   int toplevel = defcls < 0 && !bound_top;
   if (toplevel || bound_top) {
+    /* (a yielding one, which has no function of its own, by its proc form:
+       the block goes to it as a proc) */
+    int pf = c->scopes[mi].yields ? scope_proc_form_of(c, mi) : -1;
+    if (pf >= 0) mi = pf;
     buf_printf(b, "%s(", mc_receiver_method(c, &c->scopes[mi]));
     if (bound_top) emit_reopen_self_boxed(c, s, b);
   }
