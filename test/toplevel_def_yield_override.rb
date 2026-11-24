@@ -115,3 +115,13 @@ class OyG3; def oy10(x) = [:x, super]; end
 class OyH3 < OyG3; def oy10(x, &b) = [:y, super(x, &b)]; end
 class OyI3 < OyH3; def oy10(x) = [:z, super(x) { |v| v * 7 }]; end
 p OyH3.new.oy10(1) { |v| v + 1 }, OyI3.new.oy10(1) { 0 }
+
+# a def that takes its block as &b, which a subclass overrides with a
+# yielding method and with one of its own &b, called bare and by send
+def oy11(x, &b) = [:top, self.class, b ? b.call(x) : :nob]
+class OyA2
+  def go = [oy11(1) { |v| v + 1 }, oy11(2), send(:oy11, 3) { |v| v * 2 }]
+end
+class OyB2 < OyA2; def oy11(x) = [:b, block_given? ? yield(x) : :nob]; end
+class OyC2 < OyA2; def oy11(x, &b) = [:c, b&.call(x)]; end
+[OyA2, OyB2, OyC2].each { |k| p k.new.go }

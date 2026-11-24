@@ -61,3 +61,6 @@ ensure 3
 [:w, 3, [], {k: 9}, 103]
 [:y, [:x, [:top, OyH3, 2]]]
 [:z, [:y, [:x, [:top, OyI3, 7]]]]
+[[:top, OyA2, 2], [:top, OyA2, :nob], [:top, OyA2, 6]]
+[[:b, 2], [:b, :nob], [:b, 6]]
+[[:c, 2], [:c, nil], [:c, 6]]

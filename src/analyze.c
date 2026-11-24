@@ -35923,9 +35923,10 @@ static char *pf_top_receiver_versions(Compiler *c, int n0) {
 /* The yielding methods a switch on self's class whose default arm is a
    top-level def or Object's method (cplan_plan_root_switch) runs, marked in a
    table of the n0 scopes there are (the caller frees it): the default and
-   each descendant's arm. The switch calls them by their proc forms, with
-   the call's block or with none, as no arm is spliced where the call
-   stands. */
+   each descendant's arm, whichever of them yields (a default that takes its
+   block as `&b` has its one function already). The switch calls them by
+   their proc forms, with the call's block or with none, as no arm is
+   spliced where the call stands. */
 static char *pf_root_switch_arms(Compiler *c, int n0) {
   const NodeTable *nt = c->nt;
   char *mark = calloc(n0 > 0 ? (size_t)n0 : 1, 1);
@@ -35935,8 +35936,8 @@ static char *pf_root_switch_arms(Compiler *c, int n0) {
     int recv = nt_ref(nt, id, "receiver");
     if (!name || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
     const CallPlan p = cplan_user_fresh(c, id);
-    if (p.mi < 0 || p.mi >= n0 || !c->scopes[p.mi].yields || !cplan_plan_root_switch(c, &p)) continue;
-    mark[p.mi] = 1;
+    if (p.mi < 0 || p.mi >= n0 || !cplan_plan_root_switch(c, &p)) continue;
+    if (c->scopes[p.mi].yields) mark[p.mi] = 1;
     int nd = 0;
     const int *ds = comp_descendants(c, p.owner_ci, &nd);
     for (int i = 0; i < nd; i++) {
