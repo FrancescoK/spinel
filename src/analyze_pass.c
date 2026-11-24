@@ -17055,8 +17055,10 @@ static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int dept
   if (root < 0 || root >= nt->count || depth > 200) return;
   NodeKind k = nt_kind(nt, root);
   if (k == NK_ClassNode || k == NK_ModuleNode || k == NK_DefNode) return;
+  int skip = -1;   /* (the literal block of a call that runs it on a self of its own: that self's, not this receiver's) */
   if (k == NK_CallNode) {
     const char *nm = nt_str(nt, root, "name");
+    if (is_block_self_call(NULL, nm)) skip = nt_ref(nt, root, "block");
     if (nm && nt_ref(nt, root, "receiver") < 0 && !ie_kernel_global(nm)) {
       int rd = nt_new_node(nt, "LocalVariableReadNode");
       if (rd < 0) return;
@@ -17079,7 +17081,7 @@ static void ie_subtree_retarget(Compiler *c, int root, const char *tmp, int dept
       nd = &nt->nodes[root];
       nd->r[i].ref = rd; nt_parents_moved(nt, root, ch, rd);
     }
-    else ie_subtree_retarget(c, ch, tmp, depth + 1);
+    else if (ch != skip) ie_subtree_retarget(c, ch, tmp, depth + 1);
     nd = &nt->nodes[root];
   }
   for (int i = 0; i < nd->na; i++) {
