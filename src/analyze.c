@@ -56478,6 +56478,15 @@ static void an_presence_node(Compiler *c, int site, int v, int how) {
     return;
   }
   TyKind t = comp_ntype(c, v);
+  /* a boxed yield's value is its blocks': the tail of each literal block
+     that can reach the method's yield, as typed there (the walk of a
+     boxed value does not follow a yield to its blocks) */
+  if (k == NK_YieldNode && t == TY_POLY) {
+    Scope *ys = comp_scope_of(c, v);
+    int tl[64], n = ys ? yield_block_tails(c, (int)(ys - c->scopes), tl, 64) : 0;
+    for (int i = 0; i < n; i++) an_presence_node(c, site, tl[i], how);
+    if (n > 0) return;
+  }
   int elems = t == TY_POLY_ARRAY || (ty_is_hash(t) && ty_hash_val(t) == TY_POLY);
   if (t != TY_POLY && !elems) { an_presence_type(c, site, t, how, 0); return; }
   char *set = calloc((size_t)(c->nclasses > 0 ? c->nclasses : 1), 1);

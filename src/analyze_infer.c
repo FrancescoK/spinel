@@ -11429,7 +11429,12 @@ static int infer_yield_node(Compiler *c, int id, const NodeTable *nt, NodeKind n
         if (wn && sp_streq(wn, "merge") && recv >= 0 && ac == 1 &&
             ty_is_hash(infer_type(c, recv)) && value_arm_is(nt, av[0], id) &&
             yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; }
-        if (!wn || !call_may_reach_user_method(c, w, wn)) break;
+        /* Kernel#p's value is its argument: the call takes the first
+           site's type as a parameter would, and the other site's value
+           was converted to it (`def tw = p(yield)` with a Float block, then
+           an Array one, raised TypeError) */
+        int passes = recv < 0 && is_inspect_print(wn) && ac == 1 && !an_bare_call_class_owned(c, w);
+        if (!wn || !(passes || call_may_reach_user_method(c, w, wn))) break;
         for (int e = 0; e < ac; e++)
           if (value_arm_is(nt, av[e], id)) { if (yvd_once(c, ymi, &dv)) { *out = TY_POLY; return 1; } break; }
         break;

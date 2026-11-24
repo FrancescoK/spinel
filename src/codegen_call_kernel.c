@@ -1078,7 +1078,10 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
     return 1;
   }
   if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
-    TyKind at = repr_of(c, argv[0]).as_ty;
+    /* a call typed poly answers its box: a yield's operand is this
+       splice's block's value (yield_site_type), which a call typed over
+       every site's does not unbox to */
+    TyKind at = repr_of(c, id).as_ty == TY_POLY ? TY_POLY : repr_of(c, argv[0]).as_ty;
     int t = ++g_tmp;
     buf_puts(b, "({ "); t = hold_operand(c, argv[0], TY_POLY, 1, t, 1, " ", b);
     if (emit_io_frozen(c))
