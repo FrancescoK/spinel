@@ -237,3 +237,19 @@ class OyE5 < OyD5; def oy22(x) = [:e, x]; end
 class OyF5 < String; def ub = method(:oy22).unbind.bind(self).call(3); end
 class OyG5 < OyF5; def oy22(x) = [:g, x]; end
 p OyA5.new.ub, OyB5.new.ub, OyC5.new.ub, OyD5.new.ub, OyE5.new.ub, OyF5.new("f").ub, OyG5.new("g").ub
+
+# the Method unbound and bound to a boxed object: an instance of the owner,
+# of a subclass, of another class, nil, a scalar, a Class, an exception and builtin subclasses
+def oy23(x) = [:top, self.class, x]
+class OyI5; def ubo(o) = method(:oy23).unbind.bind(o).call(1); end
+class OyJ5 < OyI5; def oy23(x) = [:j, x, self.class]; end
+class OyK5 < OyJ5; end
+class OyL5 < StandardError; end
+class OyM5 < Array; end
+class OyN5 < String; end
+[OyJ5.new, OyK5.new, OyI5.new, nil, 4, OyJ5, OyL5.new("l"), OyM5.new, OyN5.new("n")].each do |o|
+  p [(OyJ5.new.ubo(o) rescue [:err, $!.class]), OyI5.new.ubo(o)]
+end
+class OyO5 < StandardError; def ubo(o) = method(:oy23).unbind.bind(o).call(2); end
+class OyP5 < OyO5; def oy23(x) = [:p, x, message]; end
+[OyP5.new("p"), OyO5.new("o"), 5].each { |o| p((OyP5.new("q").ubo(o) rescue [:err, $!.class])) }
