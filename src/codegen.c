@@ -4554,9 +4554,7 @@ void emit_scope_decls_ends(Compiler *c, Scope *s, Buf *b, size_t *ends) {
 int scope_is_initialize(const Scope *s) {
   if (s->class_id < 0 || !s->name) return 0;
   const char *u = comp_scope_user_name(s);
-  size_t n = strlen(u);
-  if (n > 3 && strcmp(u + n - 3, "#pf") == 0) n -= 3;
-  return n == 10 && strncmp(u, "initialize", 10) == 0;
+  return comp_name_len_sans_pf(u) == 10 && strncmp(u, "initialize", 10) == 0;
 }
 
 int method_is_void(Scope *s) {

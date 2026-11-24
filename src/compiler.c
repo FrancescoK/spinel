@@ -6629,6 +6629,12 @@ void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix) {
 const char *comp_scope_user_name(const Scope *s) {
   return s->shadow_user ? s->shadow_user : s->name;
 }
+/* The length of method name n without a proc-form clone's "#pf" mark (make_yield_proc_forms): the clone's name is its
+   def's with the mark */
+size_t comp_name_len_sans_pf(const char *n) {
+  size_t l = strlen(n);
+  return l > 3 && strcmp(n + l - 3, "#pf") == 0 ? l - 3 : l;
+}
 
 /* Is scope s an instance method of a class or module the top level includes
    or extends? */

@@ -3031,6 +3031,8 @@ void comp_shadow_name(Compiler *c, int ci, const char *name, char *out, size_t s
 void comp_scope_set_shadow(Compiler *c, int si, int kind, const char *user);
 void comp_scope_copy_shadow(Compiler *c, int dst, int src, const char *suffix);
 const char *comp_scope_user_name(const Scope *s);
+/* The length of method name n without a proc-form clone's "#pf" mark */
+size_t comp_name_len_sans_pf(const char *n);
 /* Scope s now carries a name it may not have carried (a rename, a shadow
    user name): the unfrozen lookups' index of scopes by name enters it
    under it (smx, compiler.c). Every write of a scope's name calls it. */

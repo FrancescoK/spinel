@@ -3525,9 +3525,7 @@ static int yvt_may_reach(Compiler *c, int ii, int mi) {
 /* A method name's key in YvtIndex.sup_key: its hash, a proc-form clone's
    "#pf" left off (a clone's super asks for the plain name); never 0 */
 static unsigned yvt_name_key(const char *name) {
-  size_t n = strlen(name);
-  if (n > 3 && strcmp(name + n - 3, "#pf") == 0) n -= 3;
-  return sp_strnhash(name, (unsigned)n) | 1;
+  return sp_strnhash(name, (unsigned)comp_name_len_sans_pf(name)) | 1;
 }
 /* The key of the name the super in method scope cs asks for, 0 when a
    method of any other name may be what it reaches: a name some alias

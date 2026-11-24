@@ -686,9 +686,9 @@ int cplan_top_method(const Compiler *c, int scope) {
       nt_int(c->nt, c->scopes[scope].def_node, "cext_stub", 0)) return 0;
   const char *nm = c->scopes[scope].name;
   char own[256];
-  size_t nl = nm ? strlen(nm) : 0;
-  if (nl > 3 && nl < sizeof own && !strcmp(nm + nl - 3, "#pf")) {   /* (a proc form, `m#pf`, is its def's) */
-    memcpy(own, nm, nl - 3); own[nl - 3] = '\0'; nm = own;
+  size_t nl = nm ? comp_name_len_sans_pf(nm) : 0;
+  if (nm && nm[nl] && nl < sizeof own) {   /* (a proc form, `m#pf`, is its def's) */
+    memcpy(own, nm, nl); own[nl] = '\0'; nm = own;
   }
   return !name_is_synth_method((Compiler *)c, nm);
 }
