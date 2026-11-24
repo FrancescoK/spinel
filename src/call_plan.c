@@ -4578,8 +4578,7 @@ static int cplan_to_ary_candidate(Compiler *c, int id, int op, const PolyCand *p
   int k = pc->cls, mi = comp_implicit_to_ary_mi(c, id, op, k);
   if (pc->native || mi < 0 || mi != pc->mi || c->scopes[mi].nparams != 0) return -1;
   if (k == cplan_to_ary_string_class(c)) return mi;
-  const ClassInfo *ci = &c->classes[k];
-  return ci->instantiated || (early && ci->ctor_reachable) ? mi : -1;
+  return (early ? comp_class_may_exist(c, k) : c->classes[k].instantiated) ? mi : -1;
 }
 /* See call_plan.h. A class whose to_ary the plan answers none for (a call
    that may run before any version exists) keeps the object, as CRuby's

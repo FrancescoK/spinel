@@ -2512,6 +2512,11 @@ int        comp_class_index(Compiler *c, const char *name);   /* -1 if none */
 /* The first-created class for a CORE_* slot, -1 if no class has been made
    or the slot is negative. */
 int        comp_core_class(const Compiler *c, int k);   /* CORE_* or a negative slot; -1 if none */
+/* Can an instance of class k exist (compute_instantiated's census)? While
+   the type fixpoint runs only the early pass has looked, which sets
+   ctor_reachable and leaves instantiated unset; after it both hold the
+   late answer. */
+int        comp_class_may_exist(const Compiler *c, int k);
 int        comp_builtin_class_named(Compiler *c, const char *name);   /* by core slot, else by name */
 /* The classes whose def_node is node, lowest index first: a builder write
    makes several. -1 if none (or node < 0). */

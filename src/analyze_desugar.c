@@ -20817,7 +20817,7 @@ static int enum_owner_chain(Compiler *c, const char *rn, const char *nm, int blk
    would read the object through them, where it answers none of the
    Enumerable methods. */
 static int class_lacks_enumerable(Compiler *c, int id, int k) {
-  if (!(c->classes[k].instantiated || c->classes[k].ctor_reachable) || comp_class_is_module(c, &c->classes[k])) return 0;
+  if (!comp_class_may_exist(c, k) || comp_class_is_module(c, &c->classes[k])) return 0;
   if (call_target(c, id, k, METHOD_MISSING_NAME, CT_METHODS, NULL) >= 0) return 0;
   if (call_target(c, id, k, "each", CT_METHODS, NULL) < 0 && call_target(c, id, k, "to_a", CT_METHODS, NULL) < 0) return 0;
   return !comp_enum_behind(c, k);
@@ -21939,7 +21939,7 @@ int desugar_builtin_enum_calls(Compiler *c) {
           else {
             int ck = k - nenums;
             ClassInfo *ci = &c->classes[ck];
-            if (ci->is_native_class || comp_class_is_module(c, ci) || !(ci->instantiated || ci->ctor_reachable) ||
+            if (ci->is_native_class || comp_class_is_module(c, ci) || !comp_class_may_exist(c, ck) ||
                 !comp_enum_behind(c, ck)) continue;
             int zero = 0;
             ia = enum_is_a_chain(c, rn, &ck, &zero, 1);

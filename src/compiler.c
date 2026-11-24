@@ -1557,6 +1557,10 @@ void comp_class_set_def(Compiler *c, int k, int node) {
 int comp_core_class(const Compiler *c, int k) {
   return k < 0 ? -1 : c->core_cls[k];
 }
+/* See compiler.h. */
+int comp_class_may_exist(const Compiler *c, int k) {
+  return c->classes[k].instantiated || c->classes[k].ctor_reachable;
+}
 /* The class of a builtin's name, through its core slot; a name no slot
    has is looked up by name as before (#10793) */
 int comp_builtin_class_named(Compiler *c, const char *name) {
