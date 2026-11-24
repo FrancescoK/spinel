@@ -19553,16 +19553,11 @@ static void bi_self_to_local(NodeTable *nt, BiRoots *br, int lo, int hi, const c
      are pre-order, so a block's subtree is one range; a block passed as a
      value (`instance_exec(&pr)`) may be any proc of the body, so then every
      such call stays. */
-  static const char *const rebinds[] = { "instance_eval", "instance_exec", "class_eval", "class_exec",
-                                         "module_eval", "module_exec", "define_method", NULL };
   unsigned char *rebound = own && hi >= lo ? (unsigned char *)calloc((size_t)(hi - lo + 1), 1) : NULL;
   int keep_all = 0;
   for (int id = lo; rebound && id <= hi; id++) {
     if (nt_kind(nt, id) != NK_CallNode || nt_ref(nt, id, "block") < 0 || !nt_str(nt, id, "name")) continue;
-    const char *cn = nt_str(nt, id, "name");
-    int k = 0;
-    while (rebinds[k] && !sp_streq(cn, rebinds[k])) k++;
-    if (!rebinds[k]) continue;
+    if (!is_block_self_call(NULL, nt_str(nt, id, "name"))) continue;
     int blk = nt_ref(nt, id, "block");
     if (nt_kind(nt, blk) != NK_BlockNode) { keep_all = 1; break; }
     int bhi = fwd_subtree_max(nt, blk);
