@@ -14418,9 +14418,8 @@ static int bind_method_held_args(Compiler *c, int id, int mn, int tmi, const int
     if (p.self_arms > 0 && p.dispatch == CP_SWITCH) n = cplan_method_held(c, &p, &to);
   }
   for (int k = -1; k < n; k++) {
-    int h = k < 0 ? tmi : to[k], seen = h < 0 || (k >= 0 && h == tmi);
-    for (int j = 0; j < k && !seen; j++) seen = to[j] == h;
-    if (seen) continue;
+    int h = k < 0 ? tmi : to[k];
+    if (h < 0 || (k >= 0 && h == tmi)) continue;
     int shift = argv ? 0 : method_call_param_shift(c, mn, h);
     if (argv) changed |= bind_args_params(c, id, h, argv, argc);
     else if (shift) changed |= bind_call_args_shifted(c, id, h, shift);

@@ -3221,8 +3221,14 @@ static int emit_capture_self_switch(Compiler *c, int id, Buf *b, const NodeTable
   }
   for (int i = 0; ok && i <= n; i++) {
     if (i < n) {
+      /* (one arm per method, under the cases of every class reaching it) */
+      int seen = 0;
+      for (int j = 0; j < i && !seen; j++) seen = arms[j] == arms[i];
+      if (seen) continue;
+      for (int j = i; j < n; j++)
+        if (arms[j] == arms[i]) buf_printf(b, "case %d: ", cls[j]);
       int t = scope_proc_form_of(c, arms[i]);
-      buf_printf(b, "case %d: _t%d = ", cls[i], tr);
+      buf_printf(b, "_t%d = ", tr);
       ok = emit_method_obj_target(c, id, b, nt, name, -1, argc, argv, t >= 0 ? t : arms[i], NULL);
     }
     else {

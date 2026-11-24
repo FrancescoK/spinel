@@ -15717,10 +15717,13 @@ int cplan_method_held(Compiler *c, const CallPlan *p, int **out) {
   int *o = malloc(sizeof *o * (size_t)(na + 2 * (VER_MAX_ARMS + 1)));
   if (!o) cplan_oom();
   *out = o;
-  na = cplan_self_arm_list(c, p, o, NULL);
-  for (int k = 0; k < na; k++) {
-    int pf = scope_proc_form_of(c, o[k]);
-    if (pf >= 0) o[k] = pf;
+  /* (each method once: the classes that inherit one override reach it alike) */
+  int nl = cplan_self_arm_list(c, p, o, NULL);
+  na = 0;
+  for (int k = 0; k < nl; k++) {
+    int pf = scope_proc_form_of(c, o[k]), h = pf >= 0 ? pf : o[k], seen = 0;
+    for (int j = 0; j < na && !seen; j++) seen = o[j] == h;
+    if (!seen) o[na++] = h;
   }
   /* (then the default arm's: the target's versions, where it switches over them, else the target) */
   if (na > 0 && p->self_default != CP_SWITCH) { o[na] = e; return na + 1; }

@@ -771,7 +771,7 @@ enum { CPLAN_ARM_NONE = -1 };
 int cplan_method_arms(Compiler *c, int e, int cap, int *out, int *tests);
 /* ...those of them a Method of plan p (cplan_method_call, CP_SWITCH) holds,
    in *out (malloc'd, the caller frees it): its self-class arms
-   (CallPlan.self_arms), then all but CPLAN_ARM_NONE's of its target p->mi
+   (CallPlan.self_arms), each method once, then all but CPLAN_ARM_NONE's of its target p->mi
    where that switches over its versions (that target itself where no
    other is left), else p->mi */
 int cplan_method_held(Compiler *c, const CallPlan *p, int **out);
