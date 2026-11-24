@@ -107,3 +107,11 @@ class OyV
 end
 class OyW < OyV; def oy9(x, *r, **kw) = [:w, x, r, kw, yield(x)]; end
 [OyV.new, OyW.new].each { |r| p r.nest, r.fwd { |q| q + 100 } }
+
+# a super chain two and three levels up into a yielding def, from a method
+# called by a super below it and from one that forwards its &b
+def oy10(x) = [:top, self.class, yield(x)]
+class OyG3; def oy10(x) = [:x, super]; end
+class OyH3 < OyG3; def oy10(x, &b) = [:y, super(x, &b)]; end
+class OyI3 < OyH3; def oy10(x) = [:z, super(x) { |v| v * 7 }]; end
+p OyH3.new.oy10(1) { |v| v + 1 }, OyI3.new.oy10(1) { 0 }

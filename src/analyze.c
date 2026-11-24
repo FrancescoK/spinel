@@ -35883,6 +35883,10 @@ static int pf_scope_named(Compiler *c, const Scope *src, const char *name) {
   if (src->class_id < 0) return comp_method_index(c, name);
   return (src->is_cmethod ? comp_cmethod_in_class : comp_method_in_class)(c, src->class_id, name);
 }
+/* The yielding top-level defs called as functions outside a switch on
+   self's class, marked in a table of the n0 scopes there are (the caller
+   frees it): by a call on an explicit receiver the plan answers as a
+   reopening's, or by a super whose chain ends at one. */
 static char *pf_top_receiver_versions(Compiler *c, int n0) {
   const NodeTable *nt = c->nt;
   char *mark = calloc(n0 > 0 ? (size_t)n0 : 1, 1);
@@ -35903,6 +35907,16 @@ static char *pf_top_receiver_versions(Compiler *c, int n0) {
     const CallPlan p = cplan_user_fresh(c, id);
     if (p.mi >= 0 && p.mi < n0 && cplan_root_reopen_call(c, id, &p) && c->scopes[p.mi].class_id < 0) mark[p.mi] = 1;
   }
+  /* and a super whose chain ends at one: its method may run as a function
+     (called from below, or with a forwarded block), and the super then
+     calls the def, which has no function but its proc form */
+  static const int supers[] = { NK_SuperNode, NK_ForwardingSuperNode };
+  for (int k = 0; k < 2; k++)
+    NT_FOREACH_KIND(nt, supers[k], id) {
+      const Scope *ss = comp_scope_of(c, id);
+      int mi = ss && ss->class_id >= 0 && ss->name ? cplan_super_target(c, id, ss, NULL) : -1;
+      if (mi >= 0 && mi < n0 && c->scopes[mi].class_id < 0 && c->scopes[mi].yields) mark[mi] = 1;
+    }
   anh_free(&yielding);
   return mark;
 }
