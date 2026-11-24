@@ -4286,8 +4286,11 @@ TyKind yield_value_type(Compiler *c, int mi) {
        call site, so its internal block type is the first concrete block. A
        non-inlined method (an escaping &block called via the proc ABI) has one
        body, so its block value type must unify ALL call sites (string + int
-       block -> poly). */
-    if ((c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) && !g_yvt_unify_all) { result = bt; break; }
+       block -> poly). A site whose block is not typed yet is no concrete
+       one: a block that calls the method again (`try { try { 1 } }`)
+       answers what the inner call does, which this answer decides, and
+       taken first it left the yield, and the method, with no type. */
+    if ((c->scopes[mi].yields || c->scopes[mi].is_lowered_yield) && !g_yvt_unify_all && bt != TY_UNKNOWN) { result = bt; break; }
     result = ty_unify(result, bt);
   }
   /* A proc form forwarding its block (`def self.f(a, &) = g(a, &)` called
