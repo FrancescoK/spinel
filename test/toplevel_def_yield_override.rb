@@ -253,3 +253,17 @@ end
 class OyO5 < StandardError; def ubo(o) = method(:oy23).unbind.bind(o).call(2); end
 class OyP5 < OyO5; def oy23(x) = [:p, x, message]; end
 [OyP5.new("p"), OyO5.new("o"), 5].each { |o| p((OyP5.new("q").ubo(o) rescue [:err, $!.class])) }
+
+# bind_call of such a Method hands its arguments to whichever method it
+# binds: a String, nil, an Array or a Float, on a typed and a boxed object
+def oy24(s) = [:top, self.class, s]
+class OyQ6
+  def ubc(o, a) = method(:oy24).unbind.bind_call(o, a)
+  def ubk(o, a) = method(:oy24).unbind.bind(o).call(a)
+end
+class OyR6 < OyQ6; def oy24(s) = [:r, s, s.class]; end
+class OyS6 < OyR6; end
+["s", nil, [1, 2], 2.5].each do |a|
+  p [OyR6.new.ubc(OyR6.new, a), OyR6.new.ubc(OyS6.new, a), OyQ6.new.ubc(OyQ6.new, a), OyR6.new.ubk(OyR6.new, a)]
+  [OyR6.new, OyS6.new, OyQ6.new, 6].each { |o| p [OyQ6.new.ubc(o, a), (OyR6.new.ubc(o, a) rescue [:err, $!.class])] }
+end
