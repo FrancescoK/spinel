@@ -1052,11 +1052,11 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
      argument as the value (statement position has its own emitter). The
      value is boxed once, printed through the poly inspect (which consults
      the user-object hook), and unboxed back to the static type. */
-  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && nt_ref(nt, id, "block") < 0 &&
-      nt_argv_has_splat(nt, argv, argc)) return emit_p_splat_value(c, name, argc, argv, b);
+  int p_value = recv < 0 && bop_kernel_answers_args(name, argc, nt_ref(nt, id, "block") >= 0) && !bare_call_class_owned(c, id);
+  if (p_value && nt_argv_has_splat(nt, argv, argc)) return emit_p_splat_value(c, name, argc, argv, b);
   /* p(a, b, ...) as a value: prints each argument's inspect, returns the
      argument array. */
-  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc >= 2 && nt_ref(nt, id, "block") < 0) {
+  if (p_value && argc >= 2) {
     int t = ++g_tmp;
     buf_printf(b, "({ sp_PolyArray *_t%d = sp_PolyArray_new(); SP_GC_ROOT(_t%d); ", t, t);
     for (int k = 0; k < argc; k++) {
@@ -1077,7 +1077,7 @@ int emit_call_kernel_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, cons
                t, t, t, t, p_inspect_fn(c, name), t, t, sp_streq(name, "p") ? "fflush(stdout); " : "", t);
     return 1;
   }
-  if (recv < 0 && !bare_call_class_owned(c, id) && (is_inspect_print(name)) && argc == 1 && nt_ref(nt, id, "block") < 0) {
+  if (p_value && argc == 1) {
     /* a call typed poly answers its box: a yield's operand is this
        splice's block's value (yield_site_type), which a call typed over
        every site's does not unbox to */

@@ -3355,6 +3355,10 @@ int bop_name_kwless(const char *name) { return bop_name_rows(name, 0); }
 int bop_name_keywords(const char *name) { return bop_name_rows(name, 1); }
 
 /* See builtin_ops.h. */
+int bop_kernel_answers_args(const char *name, int argc, int has_block) {
+  return !has_block && argc >= 1 && is_inspect_print(name) && bop_share_kernel(name, 0) == BSH_ARGS;
+}
+/* See builtin_ops.h. */
 int bop_kernel_answers(const char *name, int argc, int has_block) {
   if (!name) return 0;
   if (argc >= 0) {

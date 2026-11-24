@@ -540,6 +540,10 @@ int bop_class_answers(const char *name, int argc, int has_block);
    Kernel method the program's own def of the name stands in front of
    (respond_to_missing?)? A negative argc asks for the name at any count. */
 int bop_kernel_answers(const char *name, int argc, int has_block);
+/* Does Kernel's `name`, called with argc arguments (a splat among them counted as one) and a block when has_block, print
+   them and answer its one argument, or the Array of several (p and pp, BSH_ARGS)? With a block it is no such call. The
+   caller asks first whether a class of the program owns the bare name (an_bare_call_class_owned, bare_call_class_owned). */
+int bop_kernel_answers_args(const char *name, int argc, int has_block);
 
 /* bop_find, with arg_of(ud, i) answering argument i's kind for the rows
    that guard it. It is called at most once per argument, and only when
