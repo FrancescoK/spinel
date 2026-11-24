@@ -67,4 +67,8 @@ ys = ARGV.empty? ? "yr".to_sym : :size
 p "a".send(ys) { 1 }
 p "a".send(:yr) { :b }
 kn = ARGV.empty? ? "k".to_sym : :size
-begin; p ["a"].map(&kn); rescue NoMethodError => e; p e.class; end
+begin; p ["a"].map(&kn); rescue NoMethodError => e; p e.message; end
+begin; p nil.public_send(kn); rescue NoMethodError => e; p e.message; end
+public def pk = [:pub, self.class]
+pn = ARGV.empty? ? "pk".to_sym : :size
+p [5.public_send(pn), [:s].map(&pn)]

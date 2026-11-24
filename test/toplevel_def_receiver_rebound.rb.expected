@@ -16,4 +16,6 @@ NameError
 NameError
 1
 :b
-NoMethodError
+"private method 'k' called for an instance of String"
+"private method 'k' called for nil"
+[[:pub, Integer], [[:pub, Symbol]]]

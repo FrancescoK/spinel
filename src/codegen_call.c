@@ -5119,8 +5119,11 @@ static void emit_dynamic_send_arm(Compiler *c, int arm, int t, int mo, int *seen
   if (at == TY_UNKNOWN || at == TY_VOID) {
     /* did not resolve on this receiver/arity; a method of the program the
        arm reached is kept, whatever its body's value: one that always
-       raises (an Array operator given a nil operand) has no type */
-    if (cplan_user(c, arm).mi < 0) return;
+       raises (an Array operator given a nil operand) has no type, and so
+       is one the plan closes to the call (a public_send of a top-level
+       def's name), which raises CRuby's private-method NoMethodError */
+    int cvis;
+    if (cplan_user(c, arm).mi < 0 && cplan_root_closed(c, arm, &cvis) < 0) return;
     at = TY_NIL;
   }
   if (mo && method_obj_target_mi(c, arm) < 0) return;
