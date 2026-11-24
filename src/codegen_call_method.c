@@ -841,24 +841,43 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
-/* The test that node obj's object, held in pointer _t<bt> as the struct its
-   Repr names, is an instance of instance method target's owner or of a
-   subclass of it, else CRuby's TypeError: by the class id the object
-   carries, read as a dispatch on it reads it (emit_obj_dispatch_key). */
-static void emit_bind_owner_test(Compiler *c, int target, int obj, int bt, Buf *b) {
-  int cid = c->scopes[target].class_id, oc = ty_object_class(repr_of(c, obj).as_ty);
-  char st[64];
-  snprintf(st, sizeof st, "((sp_%s *)_t%d)", c->classes[oc].c_name, bt);
-  buf_printf(b, "if (!_t%d || !({ int _bc%d = ", bt, bt);
-  emit_obj_dispatch_key(c, oc, st, b);
+/* The end of an owner test whose class key is in _bc<bt>: whether it is
+   instance method target's owner or a subclass of it, else CRuby's
+   TypeError. */
+static void emit_bind_owner_classes(Compiler *c, int target, int bt, Buf *b) {
+  int cid = c->scopes[target].class_id;
   buf_puts(b, "; 0");
   for (int k = 0; k < c->nclasses; k++)
     if (class_isa_user(c, k, cid)) buf_printf(b, " || _bc%d == %d", bt, k);
   buf_printf(b, "; })) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", c->classes[cid].name);
 }
+/* The test that node obj's object, held in pointer _t<bt> as the struct its
+   Repr names, is an instance of instance method target's owner or of a
+   subclass of it: by the class id the object carries, read as a dispatch
+   on it reads it (emit_obj_dispatch_key). */
+static void emit_bind_owner_test(Compiler *c, int target, int obj, int bt, Buf *b) {
+  int oc = ty_object_class(repr_of(c, obj).as_ty);
+  char st[64];
+  snprintf(st, sizeof st, "((sp_%s *)_t%d)", c->classes[oc].c_name, bt);
+  buf_printf(b, "if (!_t%d || !({ int _bc%d = ", bt, bt);
+  emit_obj_dispatch_key(c, oc, st, b);
+  emit_bind_owner_classes(c, target, bt, b);
+}
+/* ...and the test of a boxed obj, the value in _t<tv>, whose object, if it
+   passes, the arm binds as _t<bt>: by the key a poly dispatch on the box
+   reads (emit_poly_dispatch_key), a non-object and a Class value kept off
+   every class's key and, for an exception owner, an exception keyed by its
+   own class (an exception is no instance of another owner). */
+static void emit_bind_owner_test_boxed(Compiler *c, int target, int tv, int bt, Buf *b) {
+  buf_printf(b, "if (!({ int _bc%d = ", bt);
+  emit_poly_dispatch_key(c, tv, 1, 0, class_is_exc_subclass(c, c->scopes[target].class_id), b);
+  emit_bind_owner_classes(c, target, bt, b);
+  buf_printf(b, "void *_t%d = _t%d.v.p; ", bt, tv);
+}
 
-/* UnboundMethod#bind(obj): the same target with obj as self. */
-static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2) {
+/* UnboundMethod#bind(obj): the same target with obj as self; sw, an arm of
+   the plan's switch over what the UnboundMethod holds. */
+static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2, int sw) {
   const NodeTable *nt = c->nt;
   int recv = x->recv;
   int argc;
@@ -882,7 +901,10 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
   }
   /* a target that takes its self boxed (a top-level def, Object's private method) binds any obj, as a held box */
   int held = t2 >= 0 && repr_self_boxed(c, t2) && c->scopes[t2].class_id < 0;
-  if (t2 >= 0 && (held || ty_is_object(repr_of(c, argv[0]).as_ty))) {
+  /* a boxed obj meeting an arm of a class's own method binds the object
+     its box holds, tested where it runs */
+  int boxed = sw && t2 >= 0 && !held && c->scopes[t2].class_id >= 0 && repr_of(c, argv[0]).as_ty == TY_POLY;
+  if (t2 >= 0 && (held || boxed || ty_is_object(repr_of(c, argv[0]).as_ty))) {
     /* The constructor allocates: hold the fresh `obj` (`...bind(C.new)`)
        in a rooted C temporary across it, or the only reference can be
        swept. Same shape as the `.method` and `.to_proc` captures. */
@@ -895,6 +917,13 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
       else emit_boxed(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_tb%d); void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d); "
                     "sp_PolyArray_push((sp_PolyArray *)_t%d, _tb%d); ", bt, bt, bt, bt, bt);
+    }
+    else if (boxed) {
+      int tv = ++g_tmp;
+      buf_printf(b, "({ sp_RbVal _t%d = ", tv);
+      emit_boxed(c, argv[0], b);
+      buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
+      emit_bind_owner_test_boxed(c, t2, tv, bt, b);
     }
     else {
       buf_printf(b, "({ void *_t%d = (void *)(", bt);
@@ -932,7 +961,7 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
 int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
   CallPlan plan = cplan_method_call(c, x->id);
   int mi = plan.mi;
-  if (plan.dispatch != CP_SWITCH) return emit_method_bind_target(c, x, b, mi);
+  if (plan.dispatch != CP_SWITCH) return emit_method_bind_target(c, x, b, mi, 0);
   size_t start = b->len;
   int argc, *to, n = cplan_method_held(c, &plan, &to);
   const int *argv = call_args(c->nt, x->id, &argc);
@@ -943,7 +972,7 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
   vr = view_bind_temp(argv[0], rr);
   for (int i = 0; i < n; i++) {
     if (i < n - 1) buf_printf(b, "_t%d->fn == (sp_int)(uintptr_t)&%s ? ", tr, mc_method(c, &c->scopes[to[i]]));
-    if (!emit_method_bind_target(c, x, b, to[i])) {
+    if (!emit_method_bind_target(c, x, b, to[i], 1)) {
       if (vr >= 0) view_unbind(vr);
       buf_erase(b, start, b->len - start);
       free(to);
