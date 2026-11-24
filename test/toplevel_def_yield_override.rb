@@ -283,3 +283,22 @@ p OyU7.new.ubm(OyU7.new), OyT7.new.ubm(OyU7.new), OyU7.new.ubc(OyU7.new), OyT7.n
 end
 m = OyT7.new.ub(OyT7.new)
 p m.call("one"), m.owner
+
+# ... where the override is an included module's yielding method: the
+# Method's owner, name and parameters are the module's, and it binds the
+# including class's objects, typed and boxed, by bind and bind_call
+def oy26(x) = yield(x)
+module OyM8; def oy26(x) = [:m, yield(x), self.class]; end
+class OyV8
+  def mk = method(:oy26)
+  def rb(o) = method(:oy26).unbind.bind(o).call(1) { |v| v + 1 }
+  def rc(o) = method(:oy26).unbind.bind_call(o, 2) { |v| v * 3 }
+end
+class OyW8 < OyV8; include OyM8; end
+class OyX8 < OyW8; end
+[OyW8.new.mk, OyX8.new.mk, OyW8.new.method(:oy26), OyV8.new.mk].each do |m|
+  p [m.call(5) { |v| v * 2 }, m.owner, m.name, m.arity, m.parameters]
+end
+p OyW8.new.method(:oy26).inspect.sub(/ \S+:\d+>/, ">")
+p OyW8.new.rb(OyW8.new), OyW8.new.rb(OyX8.new), OyX8.new.rc(OyX8.new), OyV8.new.rb(OyW8.new)
+[OyW8.new, OyX8.new].each { |o| p [OyW8.new.rc(o), OyX8.new.rb(o)] }

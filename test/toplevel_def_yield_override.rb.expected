@@ -175,3 +175,14 @@ Object
 [[:top, "m"], [:top, "c"], [:top, "k"], [:err, TypeError]]
 [:top, "one"]
 Object
+[[:m, 10, OyW8], OyM8, :oy26, 1, [[:req, :x]]]
+[[:m, 10, OyX8], OyM8, :oy26, 1, [[:req, :x]]]
+[[:m, 10, OyW8], OyM8, :oy26, 1, [[:req, :x]]]
+[10, Object, :oy26, 1, [[:req, :x]]]
+"#<Method: OyW8(OyM8)#oy26(x)>"
+[:m, 2, OyW8]
+[:m, 2, OyX8]
+[:m, 6, OyX8]
+2
+[[:m, 6, OyW8], [:m, 2, OyW8]]
+[[:m, 6, OyX8], [:m, 2, OyX8]]
