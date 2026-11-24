@@ -3726,7 +3726,12 @@ static int emit_constant_value(Compiler *c, int id, Buf *b, Buf *checks, const N
         buf_puts(b, "\"");
         emit_c_escaped_n(b, pmsg, strlen(pmsg));
         buf_puts(b, "\"");
-        const_raise_close(b);
+        /* the dead value in the read's own form: one that has no type of
+           its own (the constant is never read) is a box, which a block's
+           value spliced into a boxed yield takes as it is */
+        Repr pr = repr_of(c, id);
+        if (pr.kind == RK_BOXED || pr.as_ty == TY_UNKNOWN) buf_puts(b, "), sp_box_nil())");
+        else const_raise_close(b);
         return 1;
       }
     }

@@ -1,0 +1,4 @@
+1
+"s"
+[NameError, "private constant P::A referenced"]
+:rescued
