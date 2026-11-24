@@ -203,3 +203,37 @@ end
 class OyR4 < OyQ4; def oy19(x) = [:r, x]; end
 p OyQ4.new.b1, OyR4.new.b1, OyQ4.new.b4
 p((OyR4.new.b4 rescue [:err, $!.class, $!.message]))
+
+# a subclass with its own method but no instance takes no arm: the Method's readers
+def oy20(x) = [:top, self.class, x]
+class OyS4
+  def own = method(:oy20).owner
+  def uown = method(:oy20).unbind.owner
+  def line = method(:oy20).source_location[1] - __LINE__
+  def ub = method(:oy20).unbind.bind(self).call(1)
+  def ubo(o) = method(:oy20).unbind.bind(o).call(2)
+end
+class OyT4 < OyS4; def oy20(x) = [:t, x]; end
+class OyU4 < StandardError; def own = method(:oy20).owner; def cl = method(:oy20).call(3); end
+class OyV4 < OyU4; def oy20(x) = [:v, x]; end
+o = OyS4.new
+p o.own, o.uown, o.line, o.ub, o.ubo(OyS4.new), OyU4.new.own, OyU4.new.cl
+
+# ... and one made only by allocate, dup or an anonymous subclass's new takes its arm
+def oy21(x) = [:top, self.class, x]
+class OyW4; def cl = method(:oy21).call(1); def own = method(:oy21).owner; def bare = oy21(2); end
+class OyX4 < OyW4; def oy21(x) = [:x, x]; end
+class OyY4 < OyW4; def oy21(x) = [:y, x]; end
+class OyZ4 < OyW4; def oy21(x) = [:z, x]; end
+[OyW4.new, OyX4.allocate, OyY4.allocate.dup, Class.new(OyZ4).new].each { |r| p [r.cl, r.own, r.bare] }
+
+# the Method unbound and bound to self in an exception or builtin subclass's method
+def oy22(x) = [:top, self.class, x]
+class OyA5 < StandardError; def ub = method(:oy22).unbind.bind(self).call(1); end
+class OyB5 < OyA5; def oy22(x) = [:b, x]; end
+class OyC5 < OyA5; end
+class OyD5 < Array; def ub = method(:oy22).unbind.bind(self).call(2); end
+class OyE5 < OyD5; def oy22(x) = [:e, x]; end
+class OyF5 < String; def ub = method(:oy22).unbind.bind(self).call(3); end
+class OyG5 < OyF5; def oy22(x) = [:g, x]; end
+p OyA5.new.ub, OyB5.new.ub, OyC5.new.ub, OyD5.new.ub, OyE5.new.ub, OyF5.new("f").ub, OyG5.new("g").ub

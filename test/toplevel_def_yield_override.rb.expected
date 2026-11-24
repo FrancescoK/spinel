@@ -114,3 +114,21 @@ Proc
 [:r, 1]
 [:top, OyQ4, 4]
 [:err, TypeError, "bind argument must be an instance of OyR4"]
+Object
+Object
+-4
+[:top, OyS4, 1]
+[:top, OyS4, 2]
+Object
+[:top, OyU4, 3]
+[[:top, OyW4, 1], Object, [:top, OyW4, 2]]
+[[:x, 1], OyX4, [:x, 2]]
+[[:y, 1], OyY4, [:y, 2]]
+[[:z, 1], OyZ4, [:z, 2]]
+[:top, OyA5, 1]
+[:b, 1]
+[:top, OyC5, 1]
+[:top, OyD5, 2]
+[:e, 2]
+[:top, OyF5, 3]
+[:g, 3]
