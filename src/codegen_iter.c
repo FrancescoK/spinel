@@ -308,6 +308,15 @@ static int takes_class_dispatch(Compiler *c, int call, int mi, int disp_cls, con
          dispatch_impl_count(c, call, disp_cls, name) > 1;
 }
 
+/* See codegen_internal.h. */
+int call_takes_root_switch(Compiler *c, int id) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  if (g_ie_class_id >= 0 || (recv >= 0 && nt_kind(c->nt, recv) != NK_SelfNode)) return 0;
+  Scope *encl = comp_scope_of(c, id);
+  int cls = encl ? encl->class_id : -1;
+  return cls >= 0 && (g_emitting_class_id < 0 || is_descendant(c, g_emitting_class_id, cls)) && cplan_root_switch(c, id, cls);
+}
+
 /* A block-driving call emit_inline_call_x leaves to the cls_id switch: the
    plain call it falls back to calls the proc-form clones, so it is no call to
    refuse. */
@@ -315,6 +324,7 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
+  if (call_takes_root_switch(c, id)) return 1;
   int recv = nt_ref(nt, id, "receiver");
   int cls = -1;
   if (recv < 0) {
@@ -804,7 +814,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
     if (g_emitting_class_id >= 0 && disp_cls >= 0 && is_descendant(c, g_emitting_class_id, disp_cls))
       disp_cls = g_emitting_class_id;
   }
-  if (takes_class_dispatch(c, id, mi, disp_cls, name)) return 0;
+  if (takes_class_dispatch(c, id, mi, disp_cls, name) || call_takes_root_switch(c, id)) return 0;
   /* a private or protected method refuses an outside receiver before its body
      is spliced in, as the plain call does */
   {

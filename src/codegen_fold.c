@@ -257,6 +257,21 @@ static int emit_blk_proc_tmp(Compiler *c, int blk_node) {
   return blk_tmp;
 }
 
+/* The block a call passes as the sp_Proc * temp a `&blk` parameter or a
+   proc form takes: a forwarded `&blk` resolved to the block it names
+   (resolve_forwarded_block), or the real proc an inline was handed in its
+   place (forwarded_real_proc); -1 for none. */
+static int emit_call_blk_tmp(Compiler *c, int blk0) {
+  int blk_node = resolve_forwarded_block(c, blk0);
+  const char *fwd = forwarded_real_proc(blk0, blk_node);
+  if (blk_node >= 0) return emit_blk_proc_tmp(c, blk_node);
+  if (!fwd) return -1;
+  int t = ++g_tmp;
+  emit_indent(g_pre, g_indent);
+  buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", t, fwd, t);
+  return t;
+}
+
 /* `, <proc>` after a call's receiver and arguments, when its callee `m`
    takes its block as a proc parameter: the block the call site gives, or
    NULL. A callee that yields takes none. */
@@ -13615,16 +13630,17 @@ static int disp_no_self(Compiler *c, int k);
 static void emit_dispatch_per_arm(Compiler *c, int cid, int miss_id, const char *name, const char *selfptr,
                                   int argsNode, int blk_node, int mi, int defcls,
                                   TyKind ret, TyKind disp_ret, Buf *b) {
-  int want_blk = 0;
+  /* (the default arm's method takes the block too: a top-level def's or
+     Object's, which no class's chain here holds) */
+  int dmi = mi >= 0 && dispatch_arm_scope(c, mi) >= 0 ? dispatch_arm_scope(c, mi) : mi;
+  int want_blk = dmi >= 0 && arm_takes_blk(&c->scopes[dmi]);
   for (int k = 0; k < c->nclasses && !want_blk; k++) {
     if (!is_descendant(c, k, cid) || disp_no_self(c, k)) continue;
     MethodLookup ml = { .def_class = -1 };
     int kmi = dispatch_arm_scope(c, call_target(c, g_nd_call_id, k, name, 0, &ml));
     if (kmi >= 0 && arm_takes_blk(&c->scopes[kmi])) want_blk = 1;
   }
-  int blk_tmp = -1;
-  if (want_blk) blk_node = resolve_forwarded_block(c, blk_node);
-  if (want_blk && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
+  int blk_tmp = want_blk ? emit_call_blk_tmp(c, blk_node) : -1;
   int rtmp = ++g_tmp;
   buf_puts(b, "({ ");
   if (g_disp_ro) buf_puts(b, oint_ctype(disp_ret)); else emit_ctype(c, disp_ret, b);
@@ -13648,7 +13664,6 @@ static void emit_dispatch_per_arm(Compiler *c, int cid, int miss_id, const char 
   arm_texts_flush(at, nat, b);
   free(at);
   buf_puts(b, " default: ");
-  int dmi = mi >= 0 && dispatch_arm_scope(c, mi) >= 0 ? dispatch_arm_scope(c, mi) : mi;
   int oci = comp_core_class(c, CORE_OBJECT);
   int root = dmi >= 0 && cid != oci && (c->scopes[dmi].class_id < 0 || c->scopes[dmi].class_id == oci);
   if (root) {
@@ -14508,17 +14523,7 @@ else {
      When the call site has no block, blk_tmp stays -1 and we pass NULL. */
   int blk_tmp = -1;
   int needs_blk_arg = m && m->blk_param && m->blk_param[0] && !m->yields;
-  if (needs_blk_arg) {
-    int blk0 = blk_node;
-    blk_node = resolve_forwarded_block(c, blk0);
-    const char *fwd = forwarded_real_proc(blk0, blk_node);
-    if (blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
-    else if (fwd) {
-      blk_tmp = ++g_tmp;
-      emit_indent(g_pre, g_indent);
-      buf_printf(g_pre, "sp_Proc *_t%d = %s; SP_GC_ROOT(_t%d);\n", blk_tmp, fwd, blk_tmp);
-    }
-  }
+  if (needs_blk_arg) blk_tmp = emit_call_blk_tmp(c, blk_node);
 
   if (!virtual) {
     /* A yielding method the inliner left to this call (a default that reads
@@ -14527,7 +14532,7 @@ else {
        calls it. The plain name was never emitted. */
     int pf_d = m && m->yields ? scope_proc_form_of(c, mi) : -1;
     Scope *callee = pf_d >= 0 ? &c->scopes[pf_d] : m;
-    if (pf_d >= 0 && blk_node >= 0) blk_tmp = emit_blk_proc_tmp(c, blk_node);
+    if (pf_d >= 0) blk_tmp = emit_call_blk_tmp(c, blk_node);
     /* the clone answers boxed, whatever this call's type: its value goes
        through the conversion a switch arm's takes (emit_disp_arm_assign) */
     Buf pf_call; memset(&pf_call, 0, sizeof pf_call);

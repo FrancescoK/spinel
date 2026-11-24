@@ -35906,6 +35906,32 @@ static char *pf_top_receiver_versions(Compiler *c, int n0) {
   anh_free(&yielding);
   return mark;
 }
+/* The yielding methods a switch on self's class whose default arm is a
+   top-level def or Object's method (cplan_plan_root_switch) runs, marked in a
+   table of the n0 scopes there are (the caller frees it): the default and
+   each descendant's arm. The switch calls them by their proc forms, with
+   the call's block or with none, as no arm is spliced where the call
+   stands. */
+static char *pf_root_switch_arms(Compiler *c, int n0) {
+  const NodeTable *nt = c->nt;
+  char *mark = calloc(n0 > 0 ? (size_t)n0 : 1, 1);
+  if (!mark) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
+  NT_FOREACH_KIND(nt, NK_CallNode, id) {
+    const char *name = nt_str(nt, id, "name");
+    int recv = nt_ref(nt, id, "receiver");
+    if (!name || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) continue;
+    const CallPlan p = cplan_user_fresh(c, id);
+    if (p.mi < 0 || p.mi >= n0 || !c->scopes[p.mi].yields || !cplan_plan_root_switch(c, &p)) continue;
+    mark[p.mi] = 1;
+    int nd = 0;
+    const int *ds = comp_descendants(c, p.owner_ci, &nd);
+    for (int i = 0; i < nd; i++) {
+      int kmi = call_target(c, id, ds[i], name, 0, NULL);
+      if (kmi >= 0 && kmi < n0 && c->scopes[kmi].yields) mark[kmi] = 1;
+    }
+  }
+  return mark;
+}
 /* The initialize versions that run by a proc form of their own, marked in
    a table of the n0 scopes there are (the caller frees it): a version some
    construction may run in place of the table's (cplan_new_initializers),
@@ -35943,6 +35969,7 @@ int make_yield_proc_forms(Compiler *c) {
   mark_ctor_cycles(c);
   char *init_versions = pf_init_versions(c, n0);
   char *top_recv = pf_top_receiver_versions(c, n0);
+  char *root_arms = pf_root_switch_arms(c, n0);
   for (int next = 1; next < c->nscopes; next++) {
     int s = next;
     Scope *src = &c->scopes[s];
@@ -35962,12 +35989,13 @@ int make_yield_proc_forms(Compiler *c) {
     /* reachability is decided after this pass, so do not consult it: an
        unused clone is a static function the C compiler drops. */
     if (!src->yields) continue;
-    /* a top-level method is cloned only for a Method object of it, or a
-       call on an explicit receiver that the plan binds it for (version s
-       too, which the table's last one is not) */
-    int top_bound = s < n0 && top_recv[s];
+    /* a top-level method is cloned only for a Method object of it, a call
+       on an explicit receiver that the plan binds it for, or an arm of a
+       switch on self's class (pf_root_switch_arms), version s too, which
+       the table's last one is not */
+    int plan_bound = s < n0 && (top_recv[s] || root_arms[s]);
     if (src->class_id < 0) {
-      if (src->is_cmethod || !src->name || !(top_bound || pf_method_obj(c, src->name))) continue;
+      if (src->is_cmethod || !src->name || !(plan_bound || pf_method_obj(c, src->name))) continue;
     }
     /* a by-value or Struct constructor is built by its own emitter, which
        does not run the clone (ctor_init_proc_form) */
@@ -36000,7 +36028,7 @@ int make_yield_proc_forms(Compiler *c) {
     /* an initialize version a construction runs by a proc form of its own
        (pf_init_versions) */
     int init_version = s < n0 && init_versions[s] && pf_scope_named(c, src, src->name) != s;
-    if (src->class_id >= 0 && !shadow_clone && !exc_init && !display && !exc_text && !hook && !init_version && !pf_wanted(c, bsym ? bsym : comp_scope_user_name(src), src) &&
+    if (src->class_id >= 0 && !plan_bound && !shadow_clone && !exc_init && !display && !exc_text && !hook && !init_version && !pf_wanted(c, bsym ? bsym : comp_scope_user_name(src), src) &&
         !pf_in_class_dispatch(c, src) && !(src->ctor_cycle && ctor_graph_init(c, s)))
       continue;
     /* A method the program reopens has two definitions in the scope table
@@ -36009,7 +36037,7 @@ int make_yield_proc_forms(Compiler *c) {
        package's transport where every other call site ran the program's
        stub in front of it (#4502). An initialize version is not called by
        its name: the sites the plan answers it at call its clone. */
-    if (pf_scope_named(c, src, src->name) != s && !init_version && !top_bound) {
+    if (pf_scope_named(c, src, src->name) != s && !init_version && !plan_bound) {
       src->pf_by_name = 1;
       continue;
     }
@@ -36096,6 +36124,7 @@ int make_yield_proc_forms(Compiler *c) {
   }
   free(init_versions);
   free(top_recv);
+  free(root_arms);
   mtab_leave(c);
   return made;
 }

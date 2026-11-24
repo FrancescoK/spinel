@@ -7099,6 +7099,10 @@ static int infer_receiverless_call(Compiler *c, int id, const NodeTable *nt, con
       if (mi < 0 && !self->is_cmethod) {
         int oc = comp_core_class(c, CORE_OBJECT);
         int omi = oc >= 0 && oc != self->class_id ? call_target(c, id, oc, name, 0, NULL) : -1;
+        /* (so is a top-level def a descendant overrides, with a block or
+           without: the switch's default arm) */
+        int tmi = omi < 0 ? call_target(c, id, -1, name, CT_TOP, NULL) : -1;
+        if (tmi >= 0 && cplan_self_root_override(c, id, self->class_id, tmi)) omi = tmi;
         if (omi >= 0 && cplan_self_root_override(c, id, self->class_id, omi)) {
           *out = dispatch_ret_over(c, self->class_id, name, 0, omi, an_user_call(c, id, omi, UC_INST, self->class_id), id);
           return 1;

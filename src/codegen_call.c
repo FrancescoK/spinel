@@ -20040,6 +20040,9 @@ int brk_wrapper_light(Compiler *c, int id) {
   /* a builtin class's reopened yielding method is called through its proc
      form with the block as a proc, whose break is a throw */
   if (call_reaches_reopen_pf(c, id)) return 0;
+  /* so are the arms of the plan's switch on self's class whose default is
+     a top-level def or Object's method (call_takes_root_switch) */
+  if (call_takes_root_switch(c, id)) return 0;
   if (call_user_yield_mi(c, id) >= 0) {
     /* an inlined yielding method splices this block at its yields; the proc
        and lowered forms call it as a proc, whose break is a throw */
@@ -37510,8 +37513,7 @@ static void emit_call_body_ordinary(Compiler *c, int id, Buf *b) {
       if (!shad0 && g_ie_class_id < 0 && ecls0 < 0 && comp_cbody_call_mi(c, id, bn0) >= 0) shad0 = 1;
       /* a descendant of self's class overrides the def: the dispatch on
          self's class below, the def its default (cplan_self_root_override) */
-      if (!shad0 && g_ie_class_id < 0 && (g_emitting_class_id < 0 || g_emitting_class_id == ecls0) &&
-          cplan_root_switch(c, id, ecls0)) shad0 = 1;
+      if (!shad0 && call_takes_root_switch(c, id)) shad0 = 1;
       if (!shad0) { emit_method_call(c, id, b); return; }
     }
   }

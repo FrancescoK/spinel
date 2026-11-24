@@ -2702,6 +2702,15 @@ int emit_reinit_init_text_ex(Compiler *c, int im, const char *self, const char *
    1 when it cannot tell. */
 int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
+/* Does bare or `self.` call id run its plan's switch on self's class whose
+   default arm is a top-level def or Object's method (cplan_root_switch)?
+   The arms are called, the yielding ones by their proc forms with the
+   call's block or with none: no body is spliced where the call stands.
+   Not inside an instance_eval splice, nor where the method is emitted for
+   a class that is not its own or a subclass of it (an include's copy),
+   whose self is not the switch's; spliced on a subclass's self, the call
+   switches on its own class all the same (emit_call_implicit_self_arms). */
+int call_takes_root_switch(Compiler *c, int id);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 /* emit_dispatch for call `id` (mi its method on dispatch_cid), boxed where
    the call is typed boxed and the dispatch answers a narrower type */

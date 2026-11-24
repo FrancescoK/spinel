@@ -211,7 +211,7 @@ int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi) {
   const NodeTable *nt = c->nt;
   if (id < 0 || scls < 0 || scls >= c->nclasses || root_mi < 0 || root_mi >= c->nscopes) return 0;
   int recv = nt_kind(nt, id) == NK_CallNode ? nt_ref(nt, id, "receiver") : -1;
-  if (nt_kind(nt, id) != NK_CallNode || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) || nt_ref(nt, id, "block") >= 0) return 0;
+  if (nt_kind(nt, id) != NK_CallNode || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
   const char *name = nt_str(nt, id, "name");
   if (!name || cplan_builtin_call(c, id) || nt_int(nt, id, "kernel_recv", 0)) return 0;
   Scope *self = comp_scope_of(c, id);
@@ -222,7 +222,7 @@ int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi) {
      captures self, proc_body_uses_self) */
   Scope *rm = &c->scopes[root_mi];
   int oci = comp_core_class(c, CORE_OBJECT);
-  if (rm->yields || rm->is_cmethod || (rm->class_id >= 0 && rm->class_id != oci) || scls == oci) return 0;
+  if (rm->is_cmethod || (rm->class_id >= 0 && rm->class_id != oci) || scls == oci) return 0;
   /* the chain of scls itself answers first */
   MethodLookup oml = { .def_class = -1 };
   int own = call_target(c, id, scls, name, 0, &oml);
@@ -235,7 +235,6 @@ int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi) {
     if (call_attr_target(c, -1, k, name, CT_ATTR, NULL)) return 0;
     int kmi = call_target(c, id, k, name, 0, NULL);
     if (kmi < 0 || kmi == root_mi) continue;
-    if (c->scopes[kmi].yields) return 0;
     /* (an arm whose super reaches a top-level def keeps the old path in a
        block: that super is not resolved yet, and the plain call raises
        NoMethodError for it already) */
@@ -247,8 +246,13 @@ int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi) {
 
 int cplan_root_switch(Compiler *c, int id, int scls) {
   const CallPlan p = cplan_user(c, id);
-  if (p.mi < 0 || p.via != UC_INST || !p.chain || p.owner_ci != scls || scls < 0) return 0;
-  int rc = c->scopes[p.mi].class_id, oci = comp_core_class(c, CORE_OBJECT);
+  return p.owner_ci == scls && cplan_plan_root_switch(c, &p);
+}
+/* See call_plan.h. */
+int cplan_plan_root_switch(Compiler *c, const CallPlan *p) {
+  int scls = p->owner_ci;
+  if (p->mi < 0 || p->via != UC_INST || !p->chain || scls < 0) return 0;
+  int rc = c->scopes[p->mi].class_id, oci = comp_core_class(c, CORE_OBJECT);
   return rc < 0 || (rc == oci && scls != oci);
 }
 

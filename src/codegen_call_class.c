@@ -6118,8 +6118,7 @@ int emit_call_class_method_arms(Compiler *c, int id, Buf *b, const NodeTable *nt
     /* (so does a class or module body's own class method, comp_cbody_call_mi) */
     if (!shadowed && g_ie_class_id < 0 && ecls < 0 && comp_cbody_call_mi(c, id, name) >= 0) shadowed = 1;
     /* a descendant of self's class overrides the def (cplan_self_root_override) */
-    if (!shadowed && g_ie_class_id < 0 && (g_emitting_class_id < 0 || g_emitting_class_id == ecls) &&
-        cplan_root_switch(c, id, ecls)) shadowed = 1;
+    if (!shadowed && call_takes_root_switch(c, id)) shadowed = 1;
     if (!shadowed) { emit_method_call(c, id, b); return 1; }
   }
   /* bare call to a sibling class method (inside def self.foo, calling bar()) */
@@ -7078,6 +7077,12 @@ int emit_call_implicit_self_arms(Compiler *c, int id, Buf *b, const NodeTable *n
        overrides are found correctly. */
     int dispatch_cid = (g_ie_class_id >= 0) ? g_ie_class_id
                      : (g_emitting_class_id >= 0) ? g_emitting_class_id : self->class_id;
+    /* (the plan's switch on self's class whose default arm is a top-level
+       def or Object's method is on the class the call is written in, also
+       where that method is spliced on a subclass's self: the switch's arms
+       below the subclass are the ones its self can reach,
+       call_takes_root_switch) */
+    if (call_takes_root_switch(c, id)) dispatch_cid = self->class_id;
     /* in a class method self is the class: its instances' methods are not
        its own, only one Object or Module gives every class */
     if (dispatch_cid >= 0 && self->is_cmethod && g_ie_class_id < 0 &&
