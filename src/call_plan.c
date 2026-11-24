@@ -212,7 +212,8 @@ static int call_in_block(Compiler *c, int id) {
    cplan_self_arm_list): each descendant's own method of the name, out
    and cls (at most max, out NULL to count, cls NULL for none) the method
    and its class; 0 where no descendant has one, or one keeps the old
-   path. */
+   path. A descendant no instance of which can exist (comp_class_may_exist)
+   takes no arm: self is never one, and its method is not emitted. */
 static int root_override_arms(Compiler *c, int id, const Scope *self, const char *name, int root_mi, int *out, int *cls, int max) {
   int scls = self->class_id;
   if (scls < 0 || scls >= c->nclasses || root_mi < 0 || root_mi >= c->nscopes) return 0;
@@ -231,7 +232,7 @@ static int root_override_arms(Compiler *c, int id, const Scope *self, const char
   const int *ds = comp_descendants(c, scls, &nd);
   for (int i = 0; i < nd; i++) {
     int k = ds[i];
-    if (k == scls) continue;
+    if (k == scls || !comp_class_may_exist(c, k)) continue;
     if (call_attr_target(c, -1, k, name, CT_ATTR, NULL)) return 0;
     int kmi = call_target(c, id, k, name, 0, NULL);
     if (kmi < 0 || kmi == root_mi) continue;
