@@ -672,6 +672,13 @@ int repr_hash_is(Repr r, TyKind key, TyKind val) {
   return r.key != TY_UNKNOWN && r.key == key && r.val == val;
 }
 
+/* A value type's object, or an Array, Hash, String or Time subclass
+   instance's (ary_root), starts with no class id of its own
+   (repr_obj_box_stamped, an exception's aside) */
+static int class_box_stamped(const Compiler *c, int cid) {
+  return c->classes[cid].is_value_type || c->classes[cid].ary_root > 0;
+}
+
 /* Two facts of a stored type that depend on its class, found together so the
    class's parent walk (class_is_exc_subclass) runs once. *exc: the type is
    the builtin Exception or a user object of a class below an exception, an
@@ -685,10 +692,9 @@ static int repr_class_facts(const Compiler *c, TyKind t, int *exc) {
   if (cid < 0 || cid >= c->nclasses) return 0;
   *exc = class_is_exc_subclass((Compiler *)c, cid);
   /* an exception's object starts with its class name, not a class id, so
-     it is boxed with the static id (emit_boxed) */
-  if (c->classes[cid].is_value_type || *exc) return 0;
-  /* an Array subclass instance is boxed as its Array (arysub_box_id) */
-  if (c->classes[cid].ary_root > 0) return 0;
+     it is boxed with the static id (emit_boxed); an Array subclass instance
+     is boxed as its Array (arysub_box_id) */
+  if (*exc || class_box_stamped(c, cid)) return 0;
   /* (once the analysis is done, from a table of the classes some class
      inherits from: asked of every stored value, the scan of every class
      grew with the square of the program) */
@@ -716,6 +722,13 @@ static int repr_class_facts(const Compiler *c, TyKind t, int *exc) {
 int repr_dyn_cls(const Compiler *c, TyKind t) {
   int exc;
   return repr_class_facts(c, t, &exc);
+}
+
+/* See repr.h. */
+int repr_obj_box_stamped(const Compiler *c, TyKind t) {
+  if (!ty_is_object(t)) return 0;
+  int cid = ty_object_class(t);
+  return cid >= 0 && cid < c->nclasses && (class_box_stamped(c, cid) || class_is_exc_subclass((Compiler *)c, cid));
 }
 
 /* sets Repr.dyn_cls and Repr.exc for a value stored as type t */

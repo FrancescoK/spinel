@@ -221,6 +221,11 @@ int repr_nil_scalar(const Compiler *c, int node, TyKind t);
    (sp_box_nullable_obj_dyn)? Its class has a subclass, and it is neither a
    value type nor an exception, whose object starts with its class name. */
 int repr_dyn_cls(const Compiler *c, TyKind t);
+/* Does a user object of kind t start with no class id of its own, so its
+   box takes the id the box stamps (emit_boxed): a value type, an exception
+   (its object starts with its class name), or an instance of a subclass of
+   Array, Hash, String or Time (boxed as that builtin, arysub_box_id)? */
+int repr_obj_box_stamped(const Compiler *c, TyKind t);
 /* the flag readers that decide it (old names: box_nullable_arg, the local
    arm of call_returns_nullable_int) */
 int repr_box_nullable_arg(Compiler *c, int v);

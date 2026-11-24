@@ -2260,6 +2260,10 @@ int emit_forwarded_proc_arg(Compiler *c, int blk_node, Buf *b);
 const char *forwarded_real_proc(int blk0, int blk);
 int emit_block_arg_proc(Compiler *c, int fe, Buf *b);
 void emit_obj_dispatch_key(Compiler *c, int cid, const char *selfptr, Buf *b);
+/* Self of class cid boxed: a user exception as the sp_Exception it is (a
+   subclass's instance answers its own class, by its name), another object
+   with the class its header carries. */
+void emit_obj_self_box(Compiler *c, int cid, const char *selfptr, Buf *b);
 int struct_kwarg_value(Compiler *c, int kwh, const char *name);
 /* Value-equality family: operands in the same nonzero family compare by value;
    different nonzero families are never == (Ruby does no cross-type coercion,

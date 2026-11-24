@@ -17734,6 +17734,8 @@ void emit_reopen_self_boxed(Compiler *c, Scope *s, Buf *b) {
   else if (repr_self_boxed(c, (int)(s - c->scopes))) buf_puts(b, g_self);
   else if (sp_streq(cn, "Range")) emit_boxed_text(c, TY_RANGE, g_self, b);
   else if (sp_streq(cn, "Time"))  emit_boxed_text(c, TY_TIME, g_self, b);
+  /* (an exception as the sp_Exception it is: a subclass's instance answers its own class) */
+  else if (class_is_exc_subclass(c, cls)) emit_obj_self_box(c, cls, g_self, b);
   else emit_boxed_text(c, ty_object(cls), g_self, b);
 }
 

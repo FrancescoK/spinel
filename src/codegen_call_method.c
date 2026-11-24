@@ -2652,7 +2652,11 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
        Hash) has no class id in its first field: the Method keeps the box's,
        which #receiver read back out of a container boxes it by */
     TyKind self_box_ty = TY_UNKNOWN;
-    int self_bare_held = recv < 0 && self_bound && repr_self_boxed(c, mi) && method_self_not_object(c, id);
+    /* (so is a self whose object starts with no class id of its own, an exception or an Array or String subclass
+       instance, repr_obj_box_stamped: its box is the one the bare call makes) */
+    const Scope *sbs = comp_scope_of(c, id);
+    int self_stamped = sbs && !sbs->is_cmethod && sbs->class_id >= 0 && repr_obj_box_stamped(c, ty_object(sbs->class_id));
+    int self_bare_held = recv < 0 && self_bound && repr_self_boxed(c, mi) && (method_self_not_object(c, id) || self_stamped);
     if (self_receiver && bam_poly) {
       /* the receiver rides the self slot inside a one-element PolyArray,
          which the synthesized wrapper reads back as __bam_r[0] */
@@ -2683,7 +2687,8 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
     }
     else if (self_bare_held) {
       /* a bare method(:m) of a top-level def that reads self, in a method whose own self is no object pointer (a
-         top-level def's boxed self, a builtin's reopening): the boxed self rides a held box, as a receiver does */
+         top-level def's boxed self, a builtin's reopening) or no object that starts with its class id (an
+         exception, an Array or String subclass instance): the boxed self rides a held box, as a receiver does */
       tbr = ++g_tmp;
       self_tmp = ++g_tmp;
       self_kind = "SP_BM_SELF_OBJ";
@@ -3154,7 +3159,11 @@ static int emit_capture_self_switch(Compiler *c, int id, Buf *b, const NodeTable
   int n = arms && cls ? cplan_self_arm_list(c, plan, arms, cls) : 0, ok = n > 0;
   size_t start = b->len;
   int tr = ++g_tmp;
-  if (ok) buf_printf(b, "({ sp_BoundMethod *_t%d; switch ((%s)->cls_id) { ", tr, g_self);
+  if (ok) {
+    buf_printf(b, "({ sp_BoundMethod *_t%d; switch (", tr);
+    emit_obj_dispatch_key(c, self->class_id, g_self, b);   /* (an exception's by its class name) */
+    buf_puts(b, ") { ");
+  }
   for (int i = 0; ok && i <= n; i++) {
     if (i < n) {
       int t = scope_proc_form_of(c, arms[i]);

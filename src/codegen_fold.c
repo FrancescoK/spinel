@@ -13411,7 +13411,6 @@ static void emit_disp_arm_assign(Compiler *c, const Scope *s, const char *call, 
    arm runs a top-level def or Object's method (cplan_self_root_override),
    else -1: such a method takes no self, or self boxed. */
 static int g_root_arm_cid = -1;
-static void emit_obj_self_box(Compiler *c, int cid, const char *selfptr, Buf *b);
 static void emit_dispatch_arm_text(Compiler *c, int kd, int kmi, const char *selfptr,
                                    int argsNode, int blk_tmp, Buf *apre, Buf *call) {
   Scope *s = &c->scopes[kmi];
@@ -13538,9 +13537,8 @@ int emit_arm_args_text(Compiler *c, int mi, const char *armself, const char *con
   return 1;
 }
 
-/* Self of class cid boxed: a user exception as the sp_Exception it is,
-   another object with the class its header carries. */
-static void emit_obj_self_box(Compiler *c, int cid, const char *selfptr, Buf *b) {
+/* See codegen_internal.h. */
+void emit_obj_self_box(Compiler *c, int cid, const char *selfptr, Buf *b) {
   if (cid >= 0 && class_is_exc_subclass(c, cid)) buf_printf(b, "sp_box_obj((void *)(%s), SP_BUILTIN_EXCEPTION)", selfptr);
   else buf_printf(b, "sp_box_obj((void *)(%s), (%s)->cls_id)", selfptr, selfptr);
 }
