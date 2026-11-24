@@ -36893,7 +36893,7 @@ void emit_reopen_pf_call(Compiler *c, int id, int pf, int cblk, const char *recv
   Buf oc; memset(&oc, 0, sizeof oc);
   if (g_plan_check) ucall_observe(c, id, pf, c->scopes[pf].class_id, 0);
   int bound_top = cplan_top_receiver(c, pf);
-  int top = c->scopes[pf].class_id < 0 && !bound_top;
+  int top = cplan_top_method(c, pf) && !bound_top;
   if (top) emit_top_recv_effect(c, nt_ref(nt, id, "receiver"));
   buf_puts(&oc, mc_receiver_method(c, &c->scopes[pf]));
   int open = 0;
