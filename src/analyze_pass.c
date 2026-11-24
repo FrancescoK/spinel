@@ -14402,6 +14402,34 @@ static int bind_boxed_args_to_captures(Compiler *c, int id, int **caps, int **ct
   return changed;
 }
 
+/* A call on a Method of capture mn (`.call`, `bind_call`) calls whichever
+   method it holds, so each takes the arguments: its target tmi, and where
+   the capture switches on self's class (CallPlan.self_arms) the methods the
+   plan lists for that switch (cplan_method_held), the arms a subclass's
+   self binds. argv and argc are the arguments after any the call itself
+   takes (bind_call's receiver); NULL binds the call's own, shifted where
+   the method takes its receiver as a parameter (method_call_param_shift).
+   Bound to tmi alone, an arm's parameters stayed untyped, emitted as
+   Integers, and a String the call passed raised TypeError. */
+static int bind_method_held_args(Compiler *c, int id, int mn, int tmi, const int *argv, int argc) {
+  int *to = NULL, n = 0, changed = 0;
+  if (is_method_object_maker(nt_str(c->nt, mn, "name"))) {
+    const CallPlan p = cplan_method_call(c, mn);
+    if (p.self_arms > 0 && p.dispatch == CP_SWITCH) n = cplan_method_held(c, &p, &to);
+  }
+  for (int k = -1; k < n; k++) {
+    int h = k < 0 ? tmi : to[k], seen = h < 0 || (k >= 0 && h == tmi);
+    for (int j = 0; j < k && !seen; j++) seen = to[j] == h;
+    if (seen) continue;
+    int shift = argv ? 0 : method_call_param_shift(c, mn, h);
+    if (argv) changed |= bind_args_params(c, id, h, argv, argc);
+    else if (shift) changed |= bind_call_args_shifted(c, id, h, shift);
+    else changed |= bind_call_params(c, id, h);
+  }
+  free(to);
+  return changed;
+}
+
 /* Do the nmn nodes method_recv_nodes answered for `recv` name every Method
    it may hold: the one the expression names, or one for each write of the
    local? A write that names none (a factory's result) may hold any captured
@@ -14665,16 +14693,13 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
                               sp_streq(name, "===")) &&
         infer_type(c, recv) == TY_METHOD) {
       /* a local re-written to several Methods calls whichever it holds:
-         each target takes the arguments */
+         each target takes the arguments, and so does each method a
+         target's capture may hold (bind_method_held_args) */
       int *mns;
       int nmn = method_recv_nodes(c, recv, &mns);
       for (int j = 0; j < nmn; j++) {
-        int mn = mns[j];
-        int tmi = method_obj_target_mi(c, mn);
-        if (tmi < 0) continue;
-        int shift = method_call_param_shift(c, mn, tmi);
-        if (shift) changed |= bind_call_args_shifted(c, id, tmi, shift);
-        else changed |= bind_call_params(c, id, tmi);
+        int tmi = method_obj_target_mi(c, mns[j]);
+        if (tmi >= 0) changed |= bind_method_held_args(c, id, mns[j], tmi, NULL, 0);
       }
       free(mns);
       if (!method_recv_all_named(c, recv, nmn)) changed |= bind_boxed_args_to_captures(c, id, &caps, &ctmi, &ncaps);
@@ -14687,7 +14712,8 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
       changed |= bind_boxed_args_to_captures(c, id, &caps, &ctmi, &ncaps);
 
     /* <unbound>.bind_call(obj, args...): the args after the receiver bind to
-       the target's params, same as <method>.call -- without this the target's
+       the params of each method it may hold, same as <method>.call
+       (bind_method_held_args) -- without this the target's
        params (and so its return) stay untyped and the method emits void,
        breaking the value use (#3246). */
     if (recv >= 0 && name && sp_streq(name, "bind_call") &&
@@ -14697,7 +14723,7 @@ static int infer_param_types_ex(Compiler *c, int settle, const NodeTypes *before
       if (tmi >= 0) {
         int bargs = nt_ref(nt, id, "arguments");
         int ban = 0; const int *bav = bargs >= 0 ? nt_arr(nt, bargs, "arguments", &ban) : NULL;
-        if (ban > 0) changed |= bind_args_params(c, id, tmi, bav + 1, ban - 1);
+        if (ban > 0) changed |= bind_method_held_args(c, id, mn, tmi, bav + 1, ban - 1);
         continue;
       }
     }
