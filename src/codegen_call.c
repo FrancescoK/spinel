@@ -24596,6 +24596,25 @@ static void emit_vis_msg_boxed(int vis, const char *vnm, int tv, const char *arg
   if (args) buf_printf(b, "SP_GC_ROOT_STR(_t%d); sp_stage_args_msg(_t%d, %s); })", tm, tm, args);
   else buf_printf(b, "_t%d; })", tm);
 }
+/* The text naming the receiver boxed in _t<tv>, of class ci, after head
+   ("private method 'm' called for "), when ci is the class that carries
+   the receiver's own singleton methods (def obj.m): CRuby names such an
+   object by its default to_s, "#<Object:0x...>", not as an instance of
+   cname. Emits the statements that build it into a rooted C variable,
+   in the scope of the raise's operands (staging the call's arguments
+   allocates), and answers the variable's number; 0 where ci is no such
+   class. */
+static int singleton_recv_text(Compiler *c, int ci, const char *head, const char *cname, int tv, Buf *b) {
+  if (ci < 0 || ci >= c->nclasses || !c->classes[ci].is_singleton_of) return 0;
+  int t = ++g_tmp;
+  buf_printf(b, "const char *_t%d = sp_sprintf(\"%%s#<%%s:0x%%016llx>\", \"", t);
+  emit_c_escaped(b, head);
+  buf_puts(b, "\", \"");
+  emit_c_escaped(b, cname);
+  buf_printf(b, "\", (unsigned long long)(uintptr_t)_t%d.v.p); SP_GC_ROOT_STR(_t%d); ", tv, t);
+  return t;
+}
+
 static int emit_vis_refusal_x(Compiler *c, int id, Buf *b, int guard);
 static void emit_raise_placeholder(Compiler *c, int id, Buf *b);
 /* Does a reopened builtin class or module (`class Proc; def top`, `module
@@ -24832,9 +24851,12 @@ static int emit_object_reopen_vis_refusal(Compiler *c, int id, int vrecv, TyKind
   }
   else {
     char head[200]; snprintf(head, sizeof head, "%s method '%s' called for an instance of ", kind, vnm);
+    char shead[200]; snprintf(shead, sizeof shead, "%s method '%s' called for ", kind, vnm);
+    int ts = named ? 0 : singleton_recv_text(c, vcid, shead, cname, tv, b);
     buf_puts(b, staged ? "sp_stage_recv_args_msg(" : "sp_stage_recv_msg(");
     if (named)
       buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for %s\")[1])", kind, vnm, cname);
+    else if (ts) buf_printf(b, "_t%d", ts);
     else if (!(vcid >= 0 && anon_class_text(c, vcid, NULL, head, b)))
       buf_printf(b, "(&(\"\\xff\" \"%s method '%s' called for an instance of %s\")[1])", kind, vnm, cname);
     buf_printf(b, ", _t%d%s%s)", tv, staged ? ", " : "", staged ? args.p : "");

@@ -72,3 +72,26 @@ begin; p nil.public_send(kn); rescue NoMethodError => e; p e.message; end
 public def pk = [:pub, self.class]
 pn = ARGV.empty? ? "pk".to_sym : :size
 p [5.public_send(pn), [:s].map(&pn)]
+so = Object.new
+def so.q = 2
+begin; so.public_send(:k); rescue NoMethodError => e; p e.message.sub(/0x\h+/, "0x"); end
+
+def rh = [:rh, self.class]
+def rv(v) = [self.class, v]
+class RN
+  def go = [nil.instance_eval { rh }, 5.instance_eval { rh }, "s".instance_exec(2) { |x| [rh, rv(x)] }]
+  def go2 = nil.instance_eval { [1].map { rh } }
+  def self.cg = [nil.instance_eval { rh }, 5.instance_exec(1) { |x| [rh, x] }, "s".instance_eval { rv(3) }]
+  class << self
+    def sc = nil.instance_eval { rh }
+  end
+end
+p RN.new.go, RN.new.go2, RN.cg, RN.sc
+p [nil, 1, "t"].map { |v| v.instance_eval { rh } }
+# a bare call in a block run on another receiver asks that receiver's chain, not the enclosing class's own method
+class RO
+  def rh = :own
+  def go = [1.instance_eval { rh }, :s.instance_exec(1) { |x| [rh, x] }, [1].instance_eval { rh }, 2.5.instance_eval { rh }, instance_eval { rh }]
+  define_method(:dm) { rh }
+end
+p RO.new.go, RO.new.dm

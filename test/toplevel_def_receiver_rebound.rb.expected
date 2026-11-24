@@ -19,3 +19,11 @@ NameError
 "private method 'k' called for an instance of String"
 "private method 'k' called for nil"
 [[:pub, Integer], [[:pub, Symbol]]]
+"private method 'k' called for #<Object:0x>"
+[[:rh, NilClass], [:rh, Integer], [[:rh, String], [String, 2]]]
+[[:rh, NilClass]]
+[[:rh, NilClass], [[:rh, Integer], 1], [String, 3]]
+[:rh, NilClass]
+[[:rh, NilClass], [:rh, Integer], [:rh, String]]
+[[:rh, Integer], [[:rh, Symbol], 1], [:rh, Array], [:rh, Float], :own]
+:own
