@@ -899,8 +899,14 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2,
                c->classes[c->scopes[t2].class_id].name);
     return 1;
   }
-  /* a target that takes its self boxed (a top-level def, Object's private method) binds any obj, as a held box */
-  int held = t2 >= 0 && repr_self_boxed(c, t2) && c->scopes[t2].class_id < 0;
+  /* a target that takes its self boxed (a top-level def, Object's private method) binds any obj, as a held box,
+     and so does a top-level def that reads no self an obj that is no object: its receiver, which the call
+     does not pass (rb: the receiver slot of its C signature, as the Method maker reads it). A bound
+     receiver's Method wrapper is no method of Object (cplan_top_method): its receiver is its first
+     parameter, which the bind passes. */
+  int top = t2 >= 0 && cplan_top_method(c, t2);
+  int held = top && (repr_self_boxed(c, t2) || !ty_is_object(repr_of(c, argv[0]).as_ty));
+  int rb = !top || repr_self_boxed(c, t2);
   /* a boxed obj meeting an arm of a class's own method binds the object
      its box holds, tested where it runs */
   int boxed = sw && t2 >= 0 && !held && c->scopes[t2].class_id >= 0 && repr_of(c, argv[0]).as_ty == TY_POLY;
@@ -943,11 +949,11 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2,
     emit_method_desc_args(c, mn2, t2, -1, method_sym_arg(c, mn2), 0, 0, b);
     buf_puts(b, ")");
     { char _s[8 * 64 + 1]; int _fx = 0, _rs = 0, _rt = 0, _pf = 0, _prt = 0;
-      int _ab = method_legacy_int_abi(c, t2, 1, _s, sizeof _s, &_fx, &_rs, &_rt);
-      int _pa = method_poly_abi(c, t2, 1, &_pf, &_prt);
+      int _ab = method_legacy_int_abi(c, t2, rb, _s, sizeof _s, &_fx, &_rs, &_rt);
+      int _pa = method_poly_abi(c, t2, rb, &_pf, &_prt);
       int _tmin = 0, _tmax = 0;
-      const char *_th = emit_method_thunk(c, t2, 1, -1, &_tmin, &_tmax);
-      emit_bm_abi_args(b, "1", _ab, _s, _fx, _rs, _ab ? _rt : _prt, _pa, _pf, _th, _tmin, _tmax); }
+      const char *_th = emit_method_thunk(c, t2, rb, -1, &_tmin, &_tmax);
+      emit_bm_abi_args(b, rb ? "1" : "0", _ab, _s, _fx, _rs, _ab ? _rt : _prt, _pa, _pf, _th, _tmin, _tmax); }
     if (held) buf_puts(b, ")");
     if (pp) buf_printf(b, ", %s)", pp);
     buf_puts(b, "; })");

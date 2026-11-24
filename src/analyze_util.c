@@ -6300,6 +6300,15 @@ int comp_scope_boxed_recv_wrapper(const Compiler *c, int mi) {
   return dn >= 0 && nt_int(c->nt, dn, "bam_poly", 0) != 0;
 }
 
+/* Is scope mi a bound receiver's Method wrapper (`o.method(:m)` on a builtin or
+   boxed o, an accessor's, desugar_builtin_method_obj's, marked bam_site): it
+   calls m on its first parameter, the receiver? A Kernel function's wrapper
+   (`method(:puts)`) takes no receiver and is none. */
+int comp_scope_recv_wrapper(const Compiler *c, int mi) {
+  int dn = mi >= 0 && mi < c->nscopes ? c->scopes[mi].def_node : -1;
+  return dn >= 0 && nt_int(c->nt, dn, "bam_site", 0) != 0;
+}
+
 /* Is method mi a builtin's wrapper whose bind site stamps no owner: one
    (bam_sym) for which no fact names the class or module that defines the
    builtin (bam_owner)? */

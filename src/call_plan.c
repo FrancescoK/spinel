@@ -582,6 +582,33 @@ static void cplan_top_mark_super(Compiler *c, const int *canon, unsigned char *n
   int mi = s ? cplan_super_target(c, id, s, NULL) : -1;
   if (mi >= 0 && mi < c->nscopes && cplan_is_top_def_scope(c, mi)) nmn[canon[mi]] = 1;
 }
+/* The names of the `method(:m)` and `instance_method(:m)` calls an unbind's receiver is followed back to
+   (method_walk), for cplan_top_mark_unbound. A maker whose name the program defines is no Kernel call the walk can
+   name a target of, nor is a super_method: the walk stops there. */
+typedef struct { const char **sym; int n, cap; } TopUnbound;
+static int cplan_top_unbound_leaf(Compiler *c, int node, void *ctx) {
+  TopUnbound *u = ctx;
+  const char *nm = nt_str(c->nt, node, "name");
+  if (is_super_method_name(nm) || an_scopes_named_first(c, nm) >= 0) return 0;
+  if (u->n == u->cap && !(u->sym = realloc(u->sym, sizeof(char *) * (size_t)(u->cap = u->cap ? 2 * u->cap : 4)))) {
+    fprintf(stderr, "spinel: out of memory\n"); exit(1);
+  }
+  u->sym[u->n++] = method_sym_arg(c, node);
+  return 1;
+}
+/* (two Methods a local's writes reach are each marked by name: nothing needs them to be one) */
+static int cplan_top_unbound_join(Compiler *c, int a, int b, void *ctx) { (void)c; (void)a; (void)b; (void)ctx; return 1; }
+/* Mark, in nmn, the top-level defs an unbind of the Method expression recv names: an UnboundMethod binds its def to
+   any object, so a `method(:m)` an unbind is followed back to runs `m` on a self that is not main's. Answers 0 where
+   the walk cannot follow recv to the calls that made it. */
+static int cplan_top_mark_unbound(Compiler *c, const int *canon, unsigned char *nmn, int recv) {
+  TopUnbound u = { 0 };
+  MethodWalk mw = { .leaf = cplan_top_unbound_leaf, .join = cplan_top_unbound_join, .ctx = &u };
+  int ok = method_walk(c, recv, &mw) >= 0;
+  for (int i = 0; ok && i < u.n; i++) cplan_top_mark_named(c, canon, nmn, u.sym[i]);
+  free(u.sym);
+  return ok;
+}
 static void cplan_top_self_marks(Compiler *c) {
   const NodeTable *nt = c->nt;
   unsigned long stamp = (unsigned long)nt->count * 1000003ul ^ (unsigned long)c->nscopes * 31ul ^ (unsigned long)nt->edits ^ (unsigned long)nt->version * 7ul;
@@ -638,6 +665,11 @@ static void cplan_top_self_marks(Compiler *c) {
      `&:m` name the def through a Symbol or String; a super that reaches it. A name that is not literal reaches every
      def. */
   int dyn = 0, anypub = 0;
+  /* an unbind's Method names its def as one run on another self (cplan_top_mark_unbound); where the walk cannot follow
+     one, any `method(:m)` may be it (an `instance_method(:m)` has a receiver of its own) */
+  int unbinds = 0;
+  NT_FOREACH_KIND(nt, NK_CallNode, id)
+    if (is_unbind_name(nt_str(nt, id, "name")) && !cplan_top_mark_unbound(c, canon, nmn, nt_ref(nt, id, "receiver"))) unbinds = 1;
   int *parents = an_parent_map(nt);
   unsigned char *oth = calloc((size_t)c->nscopes + 1, 1), *pub = calloc((size_t)c->nscopes + 1, 1);
   if (!oth || !pub) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
@@ -674,7 +706,7 @@ static void cplan_top_self_marks(Compiler *c) {
        reaches a def only where the def may be public (oth) */
     if (other && cplan_call_enforces_vis(c, id)) cplan_top_mark_named(c, canon, oth, nm);
     else if (other || (site && !cplan_self_call_stops_short_in(c, parents, id, nm))) refl[0] = nm;
-    if (other || site) {
+    if (other || site || (unbinds && is_bound_method_maker(nm))) {
       if (is_method_name_reflection(nm)) {
         int aa = nt_ref(nt, id, "arguments"), an = 0;
         const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
@@ -724,13 +756,14 @@ static void cplan_top_self_marks(Compiler *c) {
 /* A top-level def may run on any object. Its C entry takes a boxed receiver where its body, or a method it
    calls, can observe self and some call runs it on a self that is not main (cplan_top_self_marks); one that
    runs only on main, or observes nothing, binds main as it always did. A lowering's own helper or wrapper
-   (`__bam_r`, `__bind m`) is no method of Object: its receiver is its first parameter. So is a C extension's
+   (`__bind m`, and a bound receiver's Method wrapper, comp_scope_recv_wrapper, whose first parameter `__bam_r`
+   is the receiver) is no method of Object: its receiver is its first parameter. So is a C extension's
    dispatch stub (`__cext_dispatch_N`, marked `cext_stub`), which the extension's C calls with its receiver as the
    first argument. */
 int cplan_top_method(const Compiler *c, int scope) {
   if (!cplan_is_top_def_scope(c, scope) || c->scopes[scope].def_node < 0 ||
       nt_kind(c->nt, c->scopes[scope].def_node) != NK_DefNode ||
-      nt_int(c->nt, c->scopes[scope].def_node, "cext_stub", 0)) return 0;
+      nt_int(c->nt, c->scopes[scope].def_node, "cext_stub", 0) || comp_scope_recv_wrapper(c, scope)) return 0;
   const char *nm = c->scopes[scope].name;
   char own[256];
   size_t nl = nm ? comp_name_len_sans_pf(nm) : 0;
