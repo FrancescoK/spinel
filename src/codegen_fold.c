@@ -13403,13 +13403,15 @@ static void emit_dispatch_arm_text(Compiler *c, int kd, int kmi, const char *sel
   if (g_root_arm_cid >= 0) {
     Buf *sv_pre = g_pre; int sv_ind = g_indent;
     g_pre = apre; g_indent = 0;
-    buf_printf(call, "%s(", mc_method(c, s));
-    if (s->class_id >= 0) emit_obj_self_box(c, g_root_arm_cid, selfptr, call);
-    emit_args_filled(c, kmi, argsNode, s->class_id >= 0 ? ", " : "", call);
+    /* (Object's method, and a top-level def that takes its receiver, cplan_top_receiver, take self boxed) */
+    int boxed = s->class_id >= 0 || cplan_top_receiver(c, kmi);
+    buf_printf(call, "%s(", mc_receiver_method(c, s));
+    if (boxed) emit_obj_self_box(c, g_root_arm_cid, selfptr, call);
+    emit_args_filled(c, kmi, argsNode, boxed ? ", " : "", call);
     g_pre = sv_pre; g_indent = sv_ind;
     if (arm_takes_blk(s)) {
-      if (blk_tmp >= 0) buf_printf(call, "%s_t%d", s->class_id >= 0 || s->nparams ? ", " : "", blk_tmp);
-      else buf_puts(call, s->class_id >= 0 || s->nparams ? ", NULL" : "NULL");
+      if (blk_tmp >= 0) buf_printf(call, "%s_t%d", boxed || s->nparams ? ", " : "", blk_tmp);
+      else buf_puts(call, boxed || s->nparams ? ", NULL" : "NULL");
     }
     buf_puts(call, ")");
     return;

@@ -362,6 +362,37 @@ int desugar_bare_class_self_calls(Compiler *c) {
       changed = 1;
       continue;
     }
+    /* A bare call of a top-level def that takes its receiver, where self is not main's (a method of a class, a block an
+       instance_eval or class_eval runs on its receiver): a call on `self`, which the lowerings that drop the block (a
+       class_eval spliced in place, an instance_eval on a temp) and an inlined method then give the receiver it had. */
+    {
+      int rv = nt_ref(nt, id, "receiver");
+      /* (in a builtin's reopened method the receiverless call already reads that method's `__self`) */
+      int reopen_self = rv >= 0 && nt_kind(nt, rv) == NK_LocalVariableReadNode && is_reopen_self_name(nt_str(nt, rv, "name"));
+      int t = (rv < 0 || reopen_self) && !nt_str(nt, id, "send_blind") && !cplan_builtin_call(c, id) &&
+              !kernel_function_ignores_self(nm) && !is_method_ref_name(nm) && !is_send_family(nm) &&
+              !is_instance_eval_family(nm) && (reopen_self || cplan_site_self(c, id, NULL) != SITE_SELF_TOP) &&
+              !(rv < 0 && cplan_self_call_stops_short(c, id, nm))
+              ? call_target(c, id, -1, nm, CT_TOP, NULL) : -1;
+      /* (where a descendant of self's class overrides the def, the call stays bare: the plan switches on self's
+         class, the def its default arm, which hands it self, cplan_self_root_override) */
+      Scope *ss = rv < 0 ? comp_scope_of(c, id) : NULL;
+      if (t >= 0 && cplan_top_receiver(c, t) && self_class_body(c, id) < 0 &&
+          !(ss && cplan_self_root_override(c, id, ss->class_id, t))) {
+        if (rv < 0) {
+          int sn = nt_new_node(nt, "SelfNode");
+          if (sn < 0) continue;
+          comp_grow_node_arrays(c);
+          c->nscope[sn] = c->nscope[id];
+          c->node_cbody[sn] = c->node_cbody[id];
+          nt_set_self_receiver(nt, id, sn);
+        }
+        nt_set_ignore_visibility(nt, id, 1);
+        nt_node_set_str(nt, id, "send_blind", "1");
+        changed = 1;
+        continue;
+      }
+    }
     int want = -2;
     for (size_t k = 0; k < sizeof surf / sizeof surf[0]; k++)
       if (sp_streq(nm, surf[k].name)) { want = surf[k].argc; break; }

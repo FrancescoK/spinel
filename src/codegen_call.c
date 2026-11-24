@@ -12759,6 +12759,9 @@ int emit_reopen_recv_args(Compiler *c, int id, int mi, int recv, int boxed, cons
   int args = nt_ref(nt, id, "arguments");
   int hold = reopen_call_leaves_self_default(c, id, mi);
   if (repr_self_handle(c, mi)) hold = 1;
+  /* a `self` that spells a receiverless call (nt_set_self_receiver) is the call's own self, which a splice may have
+     rebound (emit_call_self_boxed) */
+  if (recv >= 0 && boxed && !box_fn && !hold && nt_kind(nt, recv) == NK_SelfNode && nt_ignore_visibility(nt, id)) recv = -1;
   if (!hold) {
     if (recv >= 0) return emit_reopen_recv_in_order(c, id, mi, recv, boxed, box_fn, at, b);
     emit_call_self_boxed(c, id, b);

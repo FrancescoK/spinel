@@ -206,6 +206,18 @@ int cplan_bare_call_takes_self(Compiler *c, const char *name);
 /* Is scope s a top-level def of the program (not a method of a class, a
    class method, or a version entry)? */
 int cplan_is_top_def_scope(const Compiler *c, int s);
+/* What self is at call `id`: the plan's one answer, read from the tree alone, so it holds before inference and through a
+   lowering that drops the block (an instance_eval or class_eval spliced in place), which asks it first and gives the call
+   the self it had. SITE_SELF_REBOUND: a literal block an instance_eval, instance_exec, class_eval, define_method or a
+   class builder (is_block_self_call) runs holds the call (*by, when given: that call; -1 otherwise); SITE_SELF_SCOPE: a
+   method of a class or module, or a class method, whose receiver it is; SITE_SELF_TOP: the top level's self, main, or a
+   top-level def's own. */
+typedef enum { SITE_SELF_TOP, SITE_SELF_SCOPE, SITE_SELF_REBOUND } SiteSelf;
+SiteSelf cplan_site_self(Compiler *c, int id, int *by);
+/* Does a receiverless call of `nm` (or one on `self`) at call `id`, in a method or class method of a class or module, end
+   at a method of self's own chain below Object, so that no top-level def (Object's private method) is reached from it?
+   0 where the call's self is not that method's (SITE_SELF_SCOPE): a block an instance_eval or a class_eval runs. */
+int cplan_self_call_stops_short(Compiler *c, int id, const char *nm);
 /* Does any scope define an instance method `name` every object answers: the
    top level's, or Object's, Kernel's or BasicObject's own? The name-level
    twin of cplan_root_reopen, for the desugars that run before types exist

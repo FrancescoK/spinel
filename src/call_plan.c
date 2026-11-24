@@ -459,19 +459,46 @@ int cplan_bare_call_takes_self(Compiler *c, const char *nm) {
   if (call_target(c, -1, -1, nm, CT_TOP, NULL) >= 0) return 0;
   return builtin_name_below_object(nm) || is_object_method_name(nm);
 }
-/* Does call `id` stand in a block that runs on a self of its own: a literal block of an instance_eval, class_eval,
-   define_method or `new` (Class.new, Struct.new) call, up to the def or the program that holds it? Read from the tree alone,
-   so the answer holds before inference. */
-static int cplan_rebound_self_block(const NodeTable *nt, const int *parents, int id) {
-  if (!parents) return 0;
+/* The call whose literal block runs call `id` on a self of its own: an instance_eval, class_eval, define_method or a
+   class builder's (Class.new, Struct.new, Data.define: is_block_self_call), the nearest up to the def or the program that
+   holds it; -1 for none. Another `new`'s block (Array.new, Thread.new) runs on the caller's self. `parents` is the node
+   table's parent map. */
+static int cplan_site_rebinder(const NodeTable *nt, const int *parents, int id) {
+  if (!parents) return -1;
   for (int p = parents[id]; p >= 0 && nt_kind(nt, p) != NK_DefNode && nt_kind(nt, p) != NK_ProgramNode; p = parents[p]) {
     if (nt_kind(nt, p) != NK_BlockNode || parents[p] < 0 || nt_kind(nt, parents[p]) != NK_CallNode) continue;
-    const char *bn = nt_str(nt, parents[p], "name");
-    if (bn && (is_instance_eval_family(bn) || is_class_eval_family(bn) || is_define_method_name(bn) ||
-               is_define_singleton_method_name(bn) || is_new_name(bn)))
-      return 1;
+    int rv = nt_ref(nt, parents[p], "receiver");
+    const char *rn = rv >= 0 && nt_kind(nt, rv) == NK_ConstantReadNode ? nt_str(nt, rv, "name") : NULL;
+    if (is_block_self_call(rn, nt_str(nt, parents[p], "name"))) return parents[p];
   }
-  return 0;
+  return -1;
+}
+static SiteSelf cplan_site_self_in(const Compiler *c, const NodeTable *nt, const int *parents, int id, int *by) {
+  int rb = cplan_site_rebinder(nt, parents, id);
+  if (by) *by = rb;
+  if (rb >= 0) return SITE_SELF_REBOUND;
+  const Scope *es = id < c->node_cap ? comp_scope_of((Compiler *)c, id) : NULL;
+  return es && (es->class_id >= 0 || es->is_cmethod) ? SITE_SELF_SCOPE : SITE_SELF_TOP;
+}
+SiteSelf cplan_site_self(Compiler *c, int id, int *by) {
+  return cplan_site_self_in(c, c->nt, nt_parents((NodeTable *)c->nt), id, by);
+}
+/* cplan_self_call_stops_short over the node parents `parents`: a call whose self is not the method's own (a block
+   that rebinds it) is no call on that chain */
+static int cplan_self_call_stops_short_in(Compiler *c, const int *parents, int id, const char *nm) {
+  const Scope *es = id >= 0 && id < c->node_cap ? comp_scope_of(c, id) : NULL;
+  if (!es || cplan_site_self_in(c, c->nt, parents, id, NULL) != SITE_SELF_SCOPE || es->class_id < 0 || es->class_id >= c->nclasses || es->def_node < 0 || nt_kind(c->nt, es->def_node) != NK_DefNode)
+    return 0;
+  int t = call_target(c, id, es->class_id, nm, es->is_cmethod ? CT_CMETHOD : 0, NULL);
+  if (t < 0 || t >= c->nscopes || cplan_is_top_def_scope(c, t)) return 0;
+  int oc = c->scopes[t].class_id, obj = comp_core_class(c, CORE_OBJECT);
+  /* (Object's own methods, Kernel's and BasicObject's, and a module Object includes come at or after Object's) */
+  if (oc < 0 || oc == obj || oc == comp_core_class(c, CORE_KERNEL) || oc == comp_core_class(c, CORE_BASIC_OBJECT)) return 0;
+  return obj < 0 || !class_includes_module(c, obj, oc);
+}
+/* See call_plan.h. */
+int cplan_self_call_stops_short(Compiler *c, int id, const char *nm) {
+  return cplan_self_call_stops_short_in(c, nt_parents((NodeTable *)c->nt), id, nm);
 }
 /* May the body of top-level def s read self: a `self`, an instance variable,
    a super, or a call with no receiver whose lookup could end at a method of
@@ -490,6 +517,24 @@ static int cplan_rebound_self_block(const NodeTable *nt, const int *parents, int
    of the callee's name; the marks are then carried to the callers over the
    reversed edges with one worklist, so the cost is linear in the nodes. They
    are asked again only for another tree. */
+/* Mark, in mk, every top-level def of `nm` (its canonical scope), or the def an alias of the name stands for */
+static void cplan_top_mark_named(Compiler *c, const int *canon, unsigned char *mk, const char *nm) {
+  int found = 0;
+  for (int t = an_scopes_named_first(c, nm); t >= 0; t = an_scopes_named_next(c, nm, t))
+    if (cplan_is_top_def_scope(c, t)) { found = 1; mk[canon[t]] = 1; }
+  if (!found) {
+    int tm = call_target(c, -1, -1, nm, CT_TOP, NULL);   /* (an alias of a def) */
+    if (tm >= 0 && cplan_is_top_def_scope(c, tm)) mk[canon[tm]] = 1;
+  }
+}
+/* Mark, in nmn, the top-level def super node id reaches (cplan_super_target) where it runs on a self that is not
+   main's: a method's super whose chain ends at Object's private method of the name */
+static void cplan_top_mark_super(Compiler *c, const int *canon, unsigned char *nmn, const int *parents, int id) {
+  if (id >= c->node_cap || cplan_site_self_in(c, c->nt, parents, id, NULL) == SITE_SELF_TOP) return;
+  const Scope *s = comp_scope_of(c, id);
+  int mi = s ? cplan_super_target(c, id, s, NULL) : -1;
+  if (mi >= 0 && mi < c->nscopes && cplan_is_top_def_scope(c, mi)) nmn[canon[mi]] = 1;
+}
 static void cplan_top_self_marks(Compiler *c) {
   const NodeTable *nt = c->nt;
   unsigned long stamp = (unsigned long)nt->count * 1000003ul ^ (unsigned long)c->nscopes * 31ul ^ (unsigned long)nt->edits ^ (unsigned long)nt->version * 7ul;
@@ -543,21 +588,46 @@ static void cplan_top_self_marks(Compiler *c) {
   }
   /* where a def runs on a self that is not main: a call whose own self is not (a method of a class or module, a
      class body, a block run on a rebound self) or one with another receiver; `x.method(:m)`, `x.send(:m)` and a
-     `&:m` name the def through a Symbol or String. A name that is not literal reaches every def. */
-  int dyn = 0;
+     `&:m` name the def through a Symbol or String; a super that reaches it. A name that is not literal reaches every
+     def. */
+  int dyn = 0, anypub = 0;
   int *parents = an_parent_map(nt);
+  unsigned char *oth = calloc((size_t)c->nscopes + 1, 1), *pub = calloc((size_t)c->nscopes + 1, 1);
+  if (!oth || !pub) { fprintf(stderr, "spinel: out of memory\n"); exit(1); }
   NT_FOREACH_KIND(nt, NK_CallNode, id) {
     const char *nm = nt_str(nt, id, "name");
     if (!nm || id >= c->node_cap) continue;
     int recv = nt_ref(nt, id, "receiver");
     int other = recv >= 0 && nt_kind(nt, recv) != NK_SelfNode;   /* (another receiver) */
-    const Scope *es = comp_scope_of(c, id);
-    int site = es && (es->class_id >= 0 || es->is_cmethod || cplan_rebound_self_block(nt, parents, id));
+    SiteSelf ss = cplan_site_self_in(c, nt, parents, id, NULL);
+    int site = ss != SITE_SELF_TOP;
     int blk = nt_ref(nt, id, "block");
     const char *refl[2] = { NULL, NULL };
     int dynamic = 0;
+    /* a visibility word that may make a def public (a `public` or `protected` naming it, a section, a computed name),
+       so that a call with another receiver reaches it */
+    int vskip = 0;
+    const char *vw = vis_word_call(nt, id, &vskip);
+    if (vw && (visibility_of_name(vw) == BVIS_PUBLIC || visibility_of_name(vw) == BVIS_PROTECTED)) {
+      int ac = 0;
+      const int *av = call_args(nt, id, &ac);
+      if (ac <= vskip) anypub = 1;
+      for (int i = vskip; i < ac; i++) {
+        int en = 1;
+        const int *ev = nt_kind(nt, av[i]) == NK_ArrayNode ? nt_arr(nt, av[i], "elements", &en) : &av[i];
+        for (int j = 0; j < en; j++) {
+          const char *pn = nt_kind(nt, ev[j]) == NK_DefNode ? nt_str(nt, ev[j], "name") : vis_arg_name(nt, ev[j]);
+          if (!pn) anypub = 1;
+          else cplan_top_mark_named(c, canon, pub, pn);
+        }
+      }
+    }
+    /* the call itself, on another receiver, or on self where self is not main's and its lookup does not end at a method
+       of self's own class or module (cplan_self_call_stops_short); a call with another receiver that keeps visibility
+       reaches a def only where the def may be public (oth) */
+    if (other && cplan_call_enforces_vis(c, id)) cplan_top_mark_named(c, canon, oth, nm);
+    else if (other || (site && !cplan_self_call_stops_short_in(c, parents, id, nm))) refl[0] = nm;
     if (other || site) {
-      refl[0] = nm;   /* (the call itself, bare in a method of a class or with a receiver) */
       if (is_method_name_reflection(nm)) {
         int aa = nt_ref(nt, id, "arguments"), an = 0;
         const int *av = aa >= 0 ? nt_arr(nt, aa, "arguments", &an) : NULL;
@@ -571,18 +641,14 @@ static void cplan_top_self_marks(Compiler *c) {
       if (ex >= 0 && nt_kind(nt, ex) == NK_SymbolNode) refl[1] = refl[1] ? refl[1] : nt_str(nt, ex, "value");
     }
     if (dynamic) dyn = 1;
-    for (int r = 0; r < 2; r++) {
-      if (!refl[r]) continue;
-      int found = 0;
-      for (int t = an_scopes_named_first(c, refl[r]); t >= 0; t = an_scopes_named_next(c, refl[r], t))
-        if (cplan_is_top_def_scope(c, t)) { found = 1; nmn[canon[t]] = 1; }
-      if (!found) {
-        int tm = call_target(c, -1, -1, refl[r], CT_TOP, NULL);   /* (an alias of a def) */
-        if (tm >= 0 && cplan_is_top_def_scope(c, tm)) nmn[canon[tm]] = 1;
-      }
-    }
+    for (int r = 0; r < 2; r++)
+      if (refl[r]) cplan_top_mark_named(c, canon, nmn, refl[r]);
   }
+  NT_FOREACH_KIND(nt, NK_SuperNode, id) cplan_top_mark_super(c, canon, nmn, parents, id);
+  NT_FOREACH_KIND(nt, NK_ForwardingSuperNode, id) cplan_top_mark_super(c, canon, nmn, parents, id);
   free(parents);
+  for (int s = 1; s < c->nscopes; s++) if (oth[s] && (pub[s] || anypub)) nmn[s] = 1;
+  free(oth); free(pub);
   if (dyn) for (int s = 1; s < c->nscopes; s++) if (cplan_is_top_def_scope(c, s)) nmn[canon[s]] = 1;
   /* a def that runs on another self calls the defs it names bare on that self: carried over the edges */
   for (int round = 1, again = 1; again && round <= c->nscopes + 1; round++) {
@@ -10876,26 +10942,6 @@ static int cplan_top_store_gap(Compiler *c, int id) {
   return t >= 0 && cplan_top_receiver(c, t) && c->top_self_marks[2 * (c->top_self_n + 1) + t];
 }
 
-/* A bare call of a top-level def that takes its receiver, in a block an instance_eval, instance_exec or class_eval runs on a
-   receiver that is no object of a program class (nil, a number, a String, a Class): that self is not handed to the def's boxed self, so the def would read main's or find no method. */
-static int cplan_top_eval_gap(Compiler *c, int id) {
-  NodeTable *nt = (NodeTable *)c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver");
-  if (nt_kind(nt, id) != NK_CallNode || !name || (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode)) return 0;
-  const int *parents = nt_parents(nt);
-  int ec = -1;
-  for (int p = parents[id]; p >= 0 && nt_kind(nt, p) != NK_DefNode && nt_kind(nt, p) != NK_ProgramNode; p = parents[p]) {
-    if (nt_kind(nt, p) != NK_BlockNode || parents[p] < 0 || nt_kind(nt, parents[p]) != NK_CallNode) continue;
-    const char *bn = nt_str(nt, parents[p], "name");
-    if (bn && (is_instance_eval_family(bn) || is_class_eval_family(bn))) { ec = parents[p]; break; }
-  }
-  if (ec < 0) return 0;
-  int er = nt_ref(nt, ec, "receiver");
-  if (er < 0 || ty_is_object(infer_type(c, er))) return 0;
-  int t = call_target(c, id, -1, name, CT_TOP, NULL);
-  return t >= 0 && cplan_top_receiver(c, t);
-}
 
 /* A receiverless call in a top-level `def` to a name main has a singleton method
    for (it stays bare: cplan_bare_call_takes_self gives it no self): CRuby's call finds main's
@@ -11625,12 +11671,6 @@ static void cplan_refuse_resolve(Compiler *c, int id, CallPlan *p, char *buf, si
     cplan_refuse_set(p, CRF_TOP_SELF, CR_FEATURE,
                      "a top-level method's self is not modelled: this call finds main's singleton method when the "
                      "method runs on main and Object's when it runs on another object", buf, cap);
-    return;
-  }
-  if (!what && cplan_top_eval_gap(c, id)) {
-    cplan_refuse_set(p, CRF_TOP_SELF, CR_FEATURE,
-                     "a top-level method called in an instance_eval or class_eval block whose receiver is no object of a "
-                     "program class: the method's self there is not modelled", buf, cap);
     return;
   }
   if (!what && cplan_top_store_gap(c, id)) {

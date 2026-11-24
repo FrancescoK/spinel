@@ -6070,11 +6070,16 @@ int emit_call_class_value_arms(Compiler *c, int id, Buf *b, const NodeTable *nt,
 void emit_call_self_boxed(Compiler *c, int id, Buf *b) {
   const Scope *s = comp_scope_of(c, id);
   char cb[48];
+  int by = -1, rebound = cplan_site_self(c, id, &by) == SITE_SELF_REBOUND;
   int body = self_class_body(c, id);
   const char *cls = body >= 0 ? NULL : s && s->is_cmethod ? scope_self_cls_text(c, s, cb, sizeof cb) : NULL;
-  if (body >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", body);
+  /* inside the splice of an instance_eval/exec on a value with no object layout (nil, a Class, a Module) self is the
+     boxed receiver that splice holds as g_self (g_ie_nil_ivars names its call), whatever scope holds the splice */
+  if (rebound && g_ie_nil_ivars && by + 1 == g_ie_nil_ivars) buf_puts(b, g_self);
+  /* ...and inside one on an object self is the rebound receiver */
+  else if (rebound && g_ie_class_id >= 0) emit_boxed_text(c, ty_object(g_ie_class_id), g_self, b);
+  else if (body >= 0) buf_printf(b, "sp_box_class(((sp_Class){%d}))", body);
   else if (cls) buf_printf(b, "sp_box_class(%s)", cls);
-  /* inside an instance_eval/exec splice self is the rebound receiver */
   else if (g_ie_class_id >= 0) emit_boxed_text(c, ty_object(g_ie_class_id), g_self, b);
   else if (s && ((s->class_id >= 0 && !s->is_cmethod && !self_is_main_raw(c, id)) || cplan_top_receiver(c, s->idx)))
     emit_reopen_self_boxed(c, (Scope *)s, b);

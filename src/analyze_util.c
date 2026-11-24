@@ -3870,12 +3870,13 @@ static int yvt_callee_index_scan(Compiler *c, int cid) {
     else if (cn) {
       const CallPlan p = cplan_user_fresh(c, cid);
       if (p.mi >= 0 && p.via == UC_REOPEN && c->scopes[p.mi].yields) rmi = p.mi;
-      /* ...and a send of a top-level def that takes its receiver: asked of the tree and the def table alone, as the
-         binding above is, for the plan's answer moves with the receiver's type (send_blind_recv_owns) */
-      else if (nt_str(nt, cid, "send_blind")) {
-        int tm = call_target(c, cid, -1, cn, CT_TOP, NULL);
-        if (tm >= 0 && cplan_top_receiver(c, tm)) rmi = tm;
-      }
+    }
+    /* ...and a send of a top-level def that takes its receiver, on any receiver whose own class lacks the name (a bare
+       call that desugar gave `self` among them): asked of the tree and the def table alone, as the binding above is, for
+       the plan's answer moves with the receiver's type (send_blind_recv_owns) */
+    if (rmi < 0 && cn && nt_str(nt, cid, "send_blind")) {
+      int tm = call_target(c, cid, -1, cn, CT_TOP, NULL);
+      if (tm >= 0) rmi = tm;
     }
   }
   return rmi;

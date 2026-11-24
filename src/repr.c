@@ -345,8 +345,11 @@ static int node_is_oint_asked(Compiler *c, int node) {
       mi = comp_builtin_kind_reopen_mi(c, node, rt, nm);
     /* ... or the one the plan binds to the call (a root class's, a poly
        receiver's included): its return form is the call's */
-    if (mi < 0 && !io_bi && r >= 0 && !ty_is_object(rt))
-      mi = cplan_reopen_target(c, cplan_user(c, node));
+    /* (on an object too where it is a top-level def the receiver's class lacks: UC_SEND_BLIND) */
+    if (mi < 0 && !io_bi && r >= 0) {
+      CallPlan up = cplan_user(c, node);
+      if (!ty_is_object(rt) || up.via == UC_SEND_BLIND) mi = cplan_reopen_target(c, up);
+    }
     /* a method whose return widened past the call's (a yielding method
        answering its block, typed per call site): the call's own analysis */
     if (mi >= 0 && (c->scopes[mi].ret == TY_POLY || c->scopes[mi].ret == TY_UNKNOWN)) return nullable_int_value(c, node);

@@ -45,3 +45,36 @@ end
 p C.new.go_bp
 p 5.send(:bp) { |s| s + 1 }
 p bp { |s| s.class }
+
+# a super whose chain ends at Object's private def runs it on the method's
+# self: in a subclass's chain, from a block, through a module, an ivar of
+# the receiver, a forwarding super
+def me_sup = self
+def who_sup(x = 1) = [self.class, x]
+def iv_sup = @iv
+class SupC
+  def me_sup = [:c, super.equal?(self)]
+  def who_sup(x) = [:c, super]
+  def blk = [1].map { |_| me_sup }
+end
+class SupD < SupC
+  def me_sup = [:d, super]
+end
+module SupM
+  def who_sup(x) = [:m, super(x + 1)]
+end
+class SupE
+  include SupM
+  def initialize = @iv = :e_iv
+  def iv_sup = [:e, super]
+end
+class SupF
+  def who_sup(*) = [:f, super]
+end
+class SupG
+  def who_sup(x) = [1].map { |_| super(x) }.first
+end
+o = SupC.new
+p o.me_sup, o.who_sup(3), o.blk, SupD.new.me_sup
+p SupE.new.who_sup(5), SupE.new.iv_sup, SupF.new.who_sup(7), SupG.new.who_sup(9)
+p me_sup.inspect, who_sup

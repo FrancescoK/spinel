@@ -12,3 +12,13 @@
 C
 6
 Object
+[:c, true]
+[:c, [SupC, 3]]
+[[:c, true]]
+[:d, [:c, true]]
+[:m, [SupE, 6]]
+[:e, :e_iv]
+[:f, [SupF, 7]]
+[SupG, 9]
+"main"
+[Object, 1]
