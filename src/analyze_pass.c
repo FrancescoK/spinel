@@ -21609,6 +21609,12 @@ static int infer_block_params_call_arms(Compiler *c, const NodeTable *nt, int id
           mi = rp.mi;
       }
       if (ty_is_object(rt0)) mi = call_target(c, id, ty_object_class(rt0), name, 0, NULL);
+      /* a send of a top-level def the receiver's class lacks (the `self.m` desugar gives a bare call of one that takes
+         its receiver): the plan's target, Object's private method, yields to the block as the bare call's did */
+      if (mi < 0 && nt_str(nt, id, "send_blind")) {
+        const CallPlan sp = cplan_user_fresh(c, id);
+        if (sp.via == UC_SEND_BLIND) mi = sp.mi;
+      }
       /* Class.new { |...| }: the yielding method is Class#initialize.
          A ConstantPATH receiver counts: `N::Conn` names a class as much as
          `Conn` does, and reading only the bare form left `mi` unresolved,
