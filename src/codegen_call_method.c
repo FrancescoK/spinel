@@ -843,37 +843,58 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
-/* The end of an owner test whose class key is in _bc<bt>: whether it is
-   instance method target's owner or a subclass of it, else CRuby's
-   TypeError. */
-static void emit_bind_owner_classes(Compiler *c, int target, int bt, Buf *b) {
+/* The raise of bind id whose obj is no instance of instance method
+   target's class: CRuby's TypeError, but for a module's method the class
+   holds a copy of (origin_module_ci), which CRuby binds to any object, a
+   NotImplementedError, warned, each named by the site's own call (`bind`
+   or `bind_call`): the copy is made for the class's objects. */
+static void emit_bind_owner_raise(Compiler *c, int id, int target, Buf *b) {
+  const Scope *fs = &c->scopes[method_fact_scope(c, target)];
+  const char *cn = c->classes[c->scopes[target].class_id].name;
+  if (fs->origin_module_ci <= 0 || fs->is_cmethod) {
+    buf_printf(b, "sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\")", cn);
+    return;
+  }
+  const char *op = nt_str(c->nt, id, "name");
+  char what[128];
+  snprintf(what, sizeof what, "UnboundMethod#%s of an included module's method to an object of another class", op);
+  warn_unrouted_call(c, id, what);
+  buf_printf(b, "sp_raise_cls(\"NotImplementedError\", \"spinel: UnboundMethod#%s of %s's method %s to an object that is no %s is not supported\")",
+             op, c->classes[fs->origin_module_ci - 1].name, comp_scope_user_name(fs), cn);
+}
+/* The end of bind id's owner test whose class key is in _bc<bt>: whether
+   it is instance method target's owner or a subclass of it, else its
+   raise (emit_bind_owner_raise). */
+static void emit_bind_owner_classes(Compiler *c, int id, int target, int bt, Buf *b) {
   int cid = c->scopes[target].class_id;
   buf_puts(b, "; 0");
   for (int k = 0; k < c->nclasses; k++)
     if (class_isa_user(c, k, cid)) buf_printf(b, " || _bc%d == %d", bt, k);
-  buf_printf(b, "; })) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", c->classes[cid].name);
+  buf_puts(b, "; })) ");
+  emit_bind_owner_raise(c, id, target, b);
+  buf_puts(b, "; ");
 }
 /* The test that node obj's object, held in pointer _t<bt> as the struct its
    Repr names, is an instance of instance method target's owner or of a
    subclass of it: by the class id the object carries, read as a dispatch
    on it reads it (emit_obj_dispatch_key). */
-static void emit_bind_owner_test(Compiler *c, int target, int obj, int bt, Buf *b) {
+static void emit_bind_owner_test(Compiler *c, int id, int target, int obj, int bt, Buf *b) {
   int oc = ty_object_class(repr_of(c, obj).as_ty);
   char st[64];
   snprintf(st, sizeof st, "((sp_%s *)_t%d)", c->classes[oc].c_name, bt);
   buf_printf(b, "if (!_t%d || !({ int _bc%d = ", bt, bt);
   emit_obj_dispatch_key(c, oc, st, b);
-  emit_bind_owner_classes(c, target, bt, b);
+  emit_bind_owner_classes(c, id, target, bt, b);
 }
 /* ...and the test of a boxed obj, the value in _t<tv>, whose object, if it
    passes, the arm binds as _t<bt>: by the key a poly dispatch on the box
    reads (emit_poly_dispatch_key), a non-object and a Class value kept off
    every class's key and, for an exception owner, an exception keyed by its
    own class (an exception is no instance of another owner). */
-static void emit_bind_owner_test_boxed(Compiler *c, int target, int tv, int bt, Buf *b) {
+static void emit_bind_owner_test_boxed(Compiler *c, int id, int target, int tv, int bt, Buf *b) {
   buf_printf(b, "if (!({ int _bc%d = ", bt);
   emit_poly_dispatch_key(c, tv, 1, 0, class_is_exc_subclass(c, c->scopes[target].class_id), b);
-  emit_bind_owner_classes(c, target, bt, b);
+  emit_bind_owner_classes(c, id, target, bt, b);
   buf_printf(b, "void *_t%d = _t%d.v.p; ", bt, tv);
 }
 
@@ -897,8 +918,9 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2,
        not the Method is ever called. It was bound and called as one. */
     buf_puts(b, "({ (void)(");
     emit_expr_for_effect(c, argv[0], b);
-    buf_printf(b, "); sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); (sp_BoundMethod *)NULL; })",
-               c->classes[c->scopes[t2].class_id].name);
+    buf_puts(b, "); ");
+    emit_bind_owner_raise(c, x->id, t2, b);
+    buf_puts(b, "; (sp_BoundMethod *)NULL; })");
     return 1;
   }
   /* a target that takes its self boxed (a top-level def, Object's private method) binds any obj, as a held box,
@@ -931,14 +953,14 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2,
       buf_printf(b, "({ sp_RbVal _t%d = ", tv);
       emit_boxed(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_t%d); ", tv);
-      emit_bind_owner_test_boxed(c, t2, tv, bt, b);
+      emit_bind_owner_test_boxed(c, x->id, t2, tv, bt, b);
     }
     else {
       buf_printf(b, "({ void *_t%d = (void *)(", bt);
       emit_expr(c, argv[0], b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); ", bt);
     }
-    if (run && bind_owner_mismatch(c, t2, ot)) emit_bind_owner_test(c, t2, argv[0], bt, b);
+    if (run && bind_owner_mismatch(c, t2, ot)) emit_bind_owner_test(c, x->id, t2, argv[0], bt, b);
     const char *pp = proc_params_arg(method_proc_params(c, t2));
     if (pp) buf_puts(b, "sp_bm_set_proc_params(");
     if (held) buf_puts(b, "sp_bm_set_held(");
