@@ -841,6 +841,21 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
+/* The test that obj, the object pointer _t<bt> of static kind ot, is an
+   instance of instance method target's owner or of a subclass of it, else
+   CRuby's TypeError: by the class id its box reads (repr_dyn_cls). */
+static void emit_bind_owner_test(Compiler *c, int target, TyKind ot, int bt, Buf *b) {
+  int cid = c->scopes[target].class_id;
+  char st[32];
+  snprintf(st, sizeof st, "_t%d", bt);
+  buf_printf(b, "if (!_t%d || !({ int _bc%d = (", bt, bt);
+  emit_boxed_text(c, ot, st, b);
+  buf_puts(b, ").cls_id; 0");
+  for (int k = 0; k < c->nclasses; k++)
+    if (class_isa_user(c, k, cid)) buf_printf(b, " || _bc%d == %d", bt, k);
+  buf_printf(b, "; })) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", c->classes[cid].name);
+}
+
 /* UnboundMethod#bind(obj): the same target with obj as self. */
 static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2) {
   const NodeTable *nt = c->nt;
@@ -848,8 +863,12 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
   int argc;
   const int *argv = call_args(nt, x->id, &argc);
   int mn2 = method_recv_node(c, recv);
-  if (t2 >= 0 && ty_is_object(comp_ntype(c, argv[0])) &&
-      bind_owner_mismatch(c, t2, comp_ntype(c, argv[0]))) {
+  TyKind ot = comp_ntype(c, argv[0]);
+  /* (obj of a class above the owner, whose box reads the class it carries,
+     may be an instance of the owner's: the bind tests it where it runs) */
+  int run = t2 >= 0 && ty_is_object(ot) && c->scopes[t2].class_id >= 0 &&
+            class_isa_user(c, c->scopes[t2].class_id, ty_object_class(ot)) && repr_dyn_cls(c, ot);
+  if (t2 >= 0 && ty_is_object(ot) && !run && bind_owner_mismatch(c, t2, ot)) {
     /* obj of another class: CRuby's TypeError, at bind time, whether or
        not the Method is ever called. It was bound and called as one. */
     buf_puts(b, "({ (void)(");
@@ -876,6 +895,7 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
       emit_expr(c, argv[0], b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); ", bt);
     }
+    if (run && bind_owner_mismatch(c, t2, ot)) emit_bind_owner_test(c, t2, ot, bt, b);
     const char *pp = proc_params_arg(method_proc_params(c, t2));
     if (pp) buf_puts(b, "sp_bm_set_proc_params(");
     if (held) buf_puts(b, "sp_bm_set_held(");
