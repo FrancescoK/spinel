@@ -605,7 +605,7 @@ static void emit_method_desc_args(Compiler *c, int mn, int mi, int from, const c
   const char *file = NULL;
   /* (a boxed receiver's wrapper stamps none, nor a builtin's no fact
      places: a read refuses them, method_recv_stamped) */
-  if ((dn >= 0 && nt_int(c->nt, dn, "bam_poly", 0)) || method_source_pos(c, mi, &file, &line) <= 0) {
+  if (comp_scope_boxed_recv_wrapper(c, mi) || method_source_pos(c, mi, &file, &line) <= 0) {
     buf_puts(b, ", NULL, (sp_int)0");
     return;
   }
@@ -1084,7 +1084,7 @@ static int emit_method_source_target(Compiler *c, const BopCtx *x, Buf *b, int t
   /* a boxed receiver's wrapper (bam_poly) has no position of its own: the
      method is the one the receiver's run-time class answers by the name,
      whose def gives the pair */
-  if (dn4 >= 0 && nt_int(nt, dn4, "bam_poly", 0)) {
+  if (comp_scope_boxed_recv_wrapper(c, tg4)) {
     const char *sym4 = bam_builtin_sym(c, tg4, NULL);
     int tm4 = ++g_tmp, tv4 = ++g_tmp, tr4 = ++g_tmp;
     buf_printf(b, "({ sp_BoundMethod *_t%d = ", tm4); emit_expr(c, recv, b);
@@ -1108,7 +1108,7 @@ static int emit_method_source_target(Compiler *c, const BopCtx *x, Buf *b, int t
       }
       else if (!entry) {
         int dm = arms4[i4].kind == CP_CARM_METHOD ? c->scopes[arms4[i4].mi].def_node : -1;
-        if (dm < 0 || nt_int(nt, dm, "bam_poly", 0)) continue;
+        if (dm < 0 || comp_scope_boxed_recv_wrapper(c, arms4[i4].mi)) continue;
         if (!method_source_pos(c, arms4[i4].mi, &fk, &lk)) fk = NULL;
       }
       buf_printf(b, "if (_t%d.tag == SP_TAG_OBJ && _t%d.cls_id == %d) { ", tv4, tv4, k);
@@ -1124,7 +1124,7 @@ static int emit_method_source_target(Compiler *c, const BopCtx *x, Buf *b, int t
         const int *t = &tests[2 * v];
         int dv = to[v] >= 0 ? c->scopes[to[v]].def_node : -1, lv = 0;
         const char *fv = NULL;
-        if (dv < 0 || nt_int(nt, dv, "bam_poly", 0) || !method_source_pos(c, to[v], &fv, &lv)) fv = NULL;
+        if (dv < 0 || comp_scope_boxed_recv_wrapper(c, to[v]) || !method_source_pos(c, to[v], &fv, &lv)) fv = NULL;
         if (t[0] >= 0 || t[1] >= 0) {
           buf_puts(b, "if (");
           emit_arm_cells_test(c, t, b);
@@ -1145,7 +1145,7 @@ static int emit_method_source_target(Compiler *c, const BopCtx *x, Buf *b, int t
     for (int s4 = 0; sym4 && s4 < c->nscopes && !own4; s4++) {
       Scope *sc = &c->scopes[s4];
       if (!sc->name || strcmp(sc->name, sym4) != 0 || sc->is_proc_form) continue;
-      if (sc->def_node < 0 || nt_int(nt, sc->def_node, "bam_poly", 0)) continue;
+      if (sc->def_node < 0 || comp_scope_boxed_recv_wrapper(c, s4)) continue;
       const char *fo;
       int lo;
       if (!method_source_pos(c, s4, &fo, &lo)) continue;
@@ -1476,8 +1476,7 @@ int emit_op_method_arity(Compiler *c, const BopCtx *x, Buf *b) {
   if (rd >= 0) { target = rd; is_bam = 0; }
   /* a boxed receiver's wrapper: the Method carries the arity its receiver's
      run-time class gave it */
-  if (is_bam && c->scopes[target].def_node >= 0 &&
-      nt_int(nt, c->scopes[target].def_node, "bam_poly", 0)) {
+  if (is_bam && comp_scope_boxed_recv_wrapper(c, target)) {
     buf_puts(b, "(");
     emit_expr(c, recv, b);
     buf_puts(b, ")->arity");
@@ -2630,8 +2629,7 @@ static int emit_method_obj_target(Compiler *c, int id, Buf *b, const NodeTable *
        compiler to a clean runtime error. */
     /* (a boxed receiver of a top-level def that reads self rides the held box the same way: the Method hands
        the def that receiver, boxed) */
-    int bam_poly = (mi >= 0 && c->scopes[mi].def_node >= 0 &&
-                    nt_int(nt, c->scopes[mi].def_node, "bam_poly", 0)) ||
+    int bam_poly = comp_scope_boxed_recv_wrapper(c, mi) ||
                    (mi >= 0 && recv >= 0 && repr_self_boxed(c, mi) && !self_rides_slot(c, recv));
     if (recv >= 0 && !captured_name && !bam_poly && repr_of(c, recv).kind == RK_BOXED) {
       buf_puts(b, "({ sp_RbVal _rpm = ");

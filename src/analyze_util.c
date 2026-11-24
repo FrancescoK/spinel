@@ -6269,11 +6269,20 @@ int method_recv_stamped(Compiler *c, int recv) {
     if (comp_scope_of(c, w) != sc || !wn || !vn || !sp_streq(wn, vn)) continue;
     int mi = method_write_target(c, w);
     int dn = mi >= 0 ? c->scopes[mi].def_node : -1;
-    if (dn < 0 || nt_int(nt, dn, "bam_poly", 0) ||
+    if (dn < 0 || comp_scope_boxed_recv_wrapper(c, mi) ||
         (nt_str(nt, dn, "bam_sym") && !nt_int(nt, dn, "bam_accessor", 0) && cplan_missing_guard(c, mi) < 0)) return 0;
     n++;
   }
   return n > 0;
+}
+
+/* Is scope mi a boxed receiver's Method wrapper (`o.method(:m)` on a boxed o,
+   desugar_builtin_method_obj's poly_self, marked bam_poly): it calls m on its
+   first parameter, a one-element holder of the receiver, by the receiver's
+   class where it runs? */
+int comp_scope_boxed_recv_wrapper(const Compiler *c, int mi) {
+  int dn = mi >= 0 && mi < c->nscopes ? c->scopes[mi].def_node : -1;
+  return dn >= 0 && nt_int(c->nt, dn, "bam_poly", 0) != 0;
 }
 
 /* Is method mi a builtin's wrapper whose bind site stamps no owner: one

@@ -45644,7 +45644,7 @@ static int splat_dispatch_on_length(Compiler *c, int id, const int *argv, int ar
       if (s->kwrest_idx >= 0) {
         const Scope *caller = comp_scope_of(c, id);
         if (s->entry == ENTRY_TABLE && s->class_id == comp_core_class(c, CORE_STRING) &&
-            is_string_boxed_reader(cnm) && caller && nt_int(nt, caller->def_node, "bam_poly", 0)) {
+            is_string_boxed_reader(cnm) && caller && comp_scope_boxed_recv_wrapper(c, caller->idx)) {
           /* The String entry gathers arbitrary counts. Keep that route
              for the other counts, and keep the fixed builtin arms for
              other receivers of the boxed Method wrapper. */

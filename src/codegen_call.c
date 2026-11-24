@@ -34090,7 +34090,7 @@ int emit_method_tramp_fn(Compiler *c, Scope *tm, int shift, const char *fname,
      wrapper for a different receiver. Give that wrapper the same boxed
      call path as the captured String methods. */
   int site = (int)nt_int(nt, tm->def_node, "bam_site", 0) - 1;
-  int fixed_boxed_wrapper = boxed_src && nt_int(nt, tm->def_node, "bam_poly", 0) &&
+  int fixed_boxed_wrapper = boxed_src && comp_scope_boxed_recv_wrapper(c, (int)(tm - c->scopes)) &&
                            cplan_bam_string_guard(c, site, (int)(tm - c->scopes)) >= 0;
   int bind = !tm->cs_synth && (!bam_wrapper(tm) || tm->rest_idx >= 0 || fixed_boxed_wrapper);
   int nreq = 0, nfixed = 0;

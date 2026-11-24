@@ -2359,6 +2359,9 @@ int    comp_name_is_private_helper(Compiler *c, const char *m);
    private helper or another synthesized method? Reflection and a computed
    send's dispatch leave it out. See analyze_util.c. */
 int    name_is_synth_method(Compiler *c, const char *m);
+/* Is scope mi a boxed receiver's Method wrapper, whose first parameter holds
+   its receiver? See analyze_util.c. */
+int    comp_scope_boxed_recv_wrapper(const Compiler *c, int mi);
 int    comp_cbody_call_mi(Compiler *c, int call_node, const char *name);
 /* Does the receiver of a retargeted `recv.send(:name)` (send_blind), call
    `call`, answer name itself -- an instance's method or reader, a class
