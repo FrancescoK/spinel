@@ -841,16 +841,17 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
   return 0;
 }
 
-/* The test that obj, the object pointer _t<bt> of static kind ot, is an
-   instance of instance method target's owner or of a subclass of it, else
-   CRuby's TypeError: by the class id its box reads (repr_dyn_cls). */
-static void emit_bind_owner_test(Compiler *c, int target, TyKind ot, int bt, Buf *b) {
-  int cid = c->scopes[target].class_id;
-  char st[32];
-  snprintf(st, sizeof st, "_t%d", bt);
-  buf_printf(b, "if (!_t%d || !({ int _bc%d = (", bt, bt);
-  emit_boxed_text(c, ot, st, b);
-  buf_puts(b, ").cls_id; 0");
+/* The test that node obj's object, held in pointer _t<bt> as the struct its
+   Repr names, is an instance of instance method target's owner or of a
+   subclass of it, else CRuby's TypeError: by the class id the object
+   carries, read as a dispatch on it reads it (emit_obj_dispatch_key). */
+static void emit_bind_owner_test(Compiler *c, int target, int obj, int bt, Buf *b) {
+  int cid = c->scopes[target].class_id, oc = ty_object_class(repr_of(c, obj).as_ty);
+  char st[64];
+  snprintf(st, sizeof st, "((sp_%s *)_t%d)", c->classes[oc].c_name, bt);
+  buf_printf(b, "if (!_t%d || !({ int _bc%d = ", bt, bt);
+  emit_obj_dispatch_key(c, oc, st, b);
+  buf_puts(b, "; 0");
   for (int k = 0; k < c->nclasses; k++)
     if (class_isa_user(c, k, cid)) buf_printf(b, " || _bc%d == %d", bt, k);
   buf_printf(b, "; })) sp_raise_cls(\"TypeError\", \"bind argument must be an instance of %s\"); ", c->classes[cid].name);
@@ -864,10 +865,12 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
   const int *argv = call_args(nt, x->id, &argc);
   int mn2 = method_recv_node(c, recv);
   TyKind ot = comp_ntype(c, argv[0]);
-  /* (obj of a class above the owner, whose box reads the class it carries,
-     may be an instance of the owner's: the bind tests it where it runs) */
+  /* (obj of a class above the owner, which carries its class id in its
+     header or, a box-stamped one, where a dispatch reads it, may be an
+     instance of the owner's: the bind tests it where it runs) */
   int run = t2 >= 0 && ty_is_object(ot) && c->scopes[t2].class_id >= 0 &&
-            class_isa_user(c, c->scopes[t2].class_id, ty_object_class(ot)) && repr_dyn_cls(c, ot);
+            class_isa_user(c, c->scopes[t2].class_id, ty_object_class(ot)) &&
+            (repr_dyn_cls(c, ot) || repr_obj_box_stamped(c, ot));
   if (t2 >= 0 && ty_is_object(ot) && !run && bind_owner_mismatch(c, t2, ot)) {
     /* obj of another class: CRuby's TypeError, at bind time, whether or
        not the Method is ever called. It was bound and called as one. */
@@ -885,8 +888,11 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
        swept. Same shape as the `.method` and `.to_proc` captures. */
     int bt = ++g_tmp;
     if (held) {
+      /* (a `self` is boxed as the method holds it, its class's own box:
+         emit_call_self_boxed, as the Method maker binds it) */
       buf_printf(b, "({ sp_RbVal _tb%d = ", bt);
-      emit_boxed(c, argv[0], b);
+      if (nt_kind(nt, argv[0]) == NK_SelfNode) emit_call_self_boxed(c, argv[0], b);
+      else emit_boxed(c, argv[0], b);
       buf_printf(b, "; SP_GC_ROOT_RBVAL(_tb%d); void *_t%d = (void *)sp_PolyArray_new(); SP_GC_ROOT(_t%d); "
                     "sp_PolyArray_push((sp_PolyArray *)_t%d, _tb%d); ", bt, bt, bt, bt, bt);
     }
@@ -895,7 +901,7 @@ static int emit_method_bind_target(Compiler *c, const BopCtx *x, Buf *b, int t2)
       emit_expr(c, argv[0], b);
       buf_printf(b, "); SP_GC_ROOT(_t%d); ", bt);
     }
-    if (run && bind_owner_mismatch(c, t2, ot)) emit_bind_owner_test(c, t2, ot, bt, b);
+    if (run && bind_owner_mismatch(c, t2, ot)) emit_bind_owner_test(c, t2, argv[0], bt, b);
     const char *pp = proc_params_arg(method_proc_params(c, t2));
     if (pp) buf_puts(b, "sp_bm_set_proc_params(");
     if (held) buf_puts(b, "sp_bm_set_held(");
