@@ -713,6 +713,14 @@ void cplan_top_receiver_release(Compiler *c) {
     c->top_self_stamp = (unsigned long)nt->count * 1000003ul ^ (unsigned long)c->nscopes * 31ul ^ (unsigned long)nt->edits ^ (unsigned long)nt->version * 7ul;
 }
 int cplan_top_receiver(Compiler *c, int scope) {
+  /* a top-level def's version entry (ENTRY_DISPATCH) hands its receiver to the version it picks: it takes one where a
+     version of its name does */
+  const Scope *es = scope >= 1 && scope < c->nscopes ? &c->scopes[scope] : NULL;
+  if (es && es->entry == ENTRY_DISPATCH && es->class_id < 0 && !es->is_cmethod && es->name) {
+    for (int t = an_scopes_named_first(c, es->name); t >= 0; t = an_scopes_named_next(c, es->name, t))
+      if (t != scope && cplan_is_top_def_scope(c, t) && cplan_top_receiver(c, t)) return 1;
+    return 0;
+  }
   if (!cplan_is_top_def_scope(c, scope)) return 0;
   cplan_top_self_marks(c);
   /* (whether it is Object's method is read with the marks, cplan_top_method's answer made once per tree) */
@@ -8167,8 +8175,10 @@ static void ct_landing_classes(Compiler *c, int id, CtLanding at, const char *nm
     return;
   }
   int oc = comp_core_class(c, CORE_OBJECT);
-  if (at.kind == CTL_SELF || rk == NK_SelfNode) {
-    Scope *sc = comp_scope_of(c, id);
+  /* (a self held boxed, a top-level def's or an Object reopening's, may be any value: it lands as a boxed one does) */
+  int on_self = at.kind == CTL_SELF || rk == NK_SelfNode;
+  Scope *sc = on_self ? comp_scope_of(c, id) : NULL;
+  if (on_self && !(sc && repr_self_boxed(c, sc->idx))) {
     int self_cls = sc && sc->class_id >= 0 ? sc->class_id : c->node_cbody[id];
     ct_class_and_descendants(c, id, nm, -1, CT_TOP, fn, arg);
     /* (and what a module the top level includes brings, where the name has versions in Object's chain: the version
