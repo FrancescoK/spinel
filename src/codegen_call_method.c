@@ -3228,7 +3228,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     return 1;
   }
   if (is_method_object_maker(name) && plan.mi >= 0 && emit_capture_self_switch(c, id, b, nt, name, argc, argv, &plan)) return 1;
-  return emit_capture_target(c, id, b, nt, name, recv, argc, argv, plan);
+  return emit_capture_target(c, id, b, nt, name, recv, argc, argv, cplan_self_default(&plan));
 }
 
 /* The Method a capture makes of its plan's target: the target's own, or a
