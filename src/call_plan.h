@@ -163,6 +163,8 @@ typedef struct {
   unsigned char delegate_cut;   /* with delegate_undef: what the builtin answers before it calls the undefined delegate (BCUT_*, the delegate row's): the same object answers true (`==`, `===`) or false (`!=`), clamp's nil bounds and min above max answer as CRuby's */
   unsigned char delegate_undef; /* mi is -1 and delegate (`<=>` behind a Comparable operator, `==` behind `!=` and `===`, or the operator's own name where the record proves it undefined itself) is a method the record proves undefined where the call runs (cplan_implied_target's MLW_RECORD): the call raises CRuby's NoMethodError naming it */
   int vis_cell;             /* the history cell + 1 whose visibility cell guards the call (a top-level def's visibility only the run tells, cplan_root_top_def), 0 for none */
+  int self_arms;            /* a Method's (CP_SWITCH): the arms of the switch on self's class a bare or `self.` capture of a top-level def or Object's method makes it by, one per descendant that overrides the name (cplan_self_arm_list), 0 for none */
+  unsigned char self_default; /* with self_arms: the dispatch of that switch's default arm, the capture's target's own (CP_SWITCH over its versions, else CP_DIRECT: cplan_self_default) */
 } CallPlan;
 
 /* Is plan p a program's method on a root of the builtin classes (Object,
@@ -767,9 +769,12 @@ int cplan_target_runs(const Compiler *c, int t, int mi);
    made there, the capture raises CRuby's NameError */
 enum { CPLAN_ARM_NONE = -1 };
 int cplan_method_arms(Compiler *c, int e, int cap, int *out, int *tests);
-/* ...those of them a Method made there holds: all but CPLAN_ARM_NONE's
-   (entry e itself where no other is left) */
-int cplan_method_held(Compiler *c, int e, int cap, int *out);
+/* ...those of them a Method of plan p (cplan_method_call, CP_SWITCH) holds,
+   in *out (malloc'd, the caller frees it): its self-class arms
+   (CallPlan.self_arms), then all but CPLAN_ARM_NONE's of its target p->mi
+   where that switches over its versions (that target itself where no
+   other is left), else p->mi */
+int cplan_method_held(Compiler *c, const CallPlan *p, int **out);
 int cplan_bool_sides(Compiler *c, int id, int *tmi, int *fmi);
 void cplan_check_missing(Compiler *c, int id, int mi, int ci, const char *name, int cmeth, const char *site);
 /* The same plan resolved afresh and never kept, for a reader that runs in
@@ -1223,14 +1228,16 @@ int cplan_dispatch_form(Compiler *c, int call, int cid, const char *name, int ha
    the call's block as a proc or none, where its yield raises
    (pf_root_switch_arms, call_takes_root_switch). */
 int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi);
-/* The same switch for a bare `method(:name)` capture cap whose chain
-   answers a top-level def or Object's method: the descendants' own methods
-   a Method made on an instance of theirs binds (out, their classes in cls,
-   at most CPLAN_SELF_ARMS of them), 0 for none or more. The Method is made
-   by a switch on self's class (emit_capture_self_switch), and its readers
-   test what it holds (cplan_method_held). */
-enum { CPLAN_SELF_ARMS = VER_MAX_ARMS };
-int cplan_capture_self_arms(Compiler *c, int cap, int *out, int *cls);
+/* The same switch for a bare `method(:name)` or `self.method(:name)`
+   capture whose chain answers a top-level def or Object's method, read off
+   its plan p (CallPlan.self_arms): the descendants' own methods a Method
+   made on an instance of theirs binds, in out, their classes in cls (each
+   p->self_arms long). The Method is made by a switch on self's class
+   (emit_capture_self_switch), and its readers test what it holds
+   (cplan_method_held). */
+int cplan_self_arm_list(Compiler *c, const CallPlan *p, int *out, int *cls);
+/* The plan of that switch's default arm: p without its self-class arms. */
+CallPlan cplan_self_default(const CallPlan *p);
 /* Is call id's plan that switch on class scls (cplan_self_root_override),
    its default arm a top-level def or Object's method? Read off the plan. */
 int cplan_root_switch(Compiler *c, int id, int scls);

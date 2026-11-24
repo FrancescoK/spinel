@@ -908,7 +908,7 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
   int mi = plan.mi;
   if (plan.dispatch != CP_SWITCH) return emit_method_bind_target(c, x, b, mi);
   size_t start = b->len;
-  int argc, to[2 * (VER_MAX_ARMS + 1)], n = cplan_method_held(c, mi, plan.method_node, to);
+  int argc, *to, n = cplan_method_held(c, &plan, &to);
   const int *argv = call_args(c->nt, x->id, &argc);
   int tr = ++g_tmp, vr;
   buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, x->recv, b);
@@ -920,11 +920,13 @@ int emit_op_method_bind(Compiler *c, const BopCtx *x, Buf *b) {
     if (!emit_method_bind_target(c, x, b, to[i])) {
       if (vr >= 0) view_unbind(vr);
       buf_erase(b, start, b->len - start);
+      free(to);
       return 0;
     }
     if (i < n - 1) buf_puts(b, " : ");
   }
   view_unbind(vr);
+  free(to);
   buf_puts(b, "; })");
   return 1;
 }
@@ -1135,7 +1137,7 @@ int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b) {
   }
   if (plan.dispatch != CP_SWITCH) return emit_method_source_target(c, x, b, mi, plan.method_node);
   size_t start = b->len;
-  int to[2 * (VER_MAX_ARMS + 1)], n = cplan_method_held(c, mi, plan.method_node, to), tr = ++g_tmp;
+  int *to, n = cplan_method_held(c, &plan, &to), tr = ++g_tmp;
   buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, x->recv, b);
   buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
   int vr = view_bind_temp(x->recv, tr);
@@ -1144,11 +1146,13 @@ int emit_op_method_source_location(Compiler *c, const BopCtx *x, Buf *b) {
     if (!emit_method_source_target(c, x, b, to[i], plan.method_node)) {
       if (vr >= 0) view_unbind(vr);
       buf_erase(b, start, b->len - start);
+      free(to);
       return 0;
     }
     if (i < n - 1) buf_puts(b, " : ");
   }
   view_unbind(vr);
+  free(to);
   buf_puts(b, "; })");
   return 1;
 }
@@ -1223,7 +1227,7 @@ int emit_op_method_owner(Compiler *c, const BopCtx *x, Buf *b) {
   int unbound = mn >= 0 && is_instance_method_name(nt_str(nt, mn, "name"));
   if (plan.dispatch == CP_SWITCH) {
     if (cplan_bam_string_guard(c, mn, target) >= 0 && method_recv_owner_unknown(c, recv)) return 0;
-    int to[2 * (VER_MAX_ARMS + 1)], n = cplan_method_held(c, target, mn, to), tr = ++g_tmp;
+    int *to, n = cplan_method_held(c, &plan, &to), tr = ++g_tmp;
     buf_printf(b, "({ sp_BoundMethod *_t%d = ", tr); emit_expr(c, recv, b);
     buf_printf(b, "; SP_GC_ROOT(_t%d); ", tr);
     for (int i = 0; i < n; i++) {
@@ -1231,6 +1235,7 @@ int emit_op_method_owner(Compiler *c, const BopCtx *x, Buf *b) {
       emit_method_owner_class(c, mn, to[i], unbound, b);
       if (i < n - 1) buf_puts(b, " : ");
     }
+    free(to);
     buf_puts(b, "; })");
     return 1;
   }
@@ -3136,32 +3141,34 @@ void emit_unread_value(Compiler *c, int id, Buf *b) {
   else buf_puts(b, default_value_from_compiler(c, at));
 }
 
-/* A bare capture whose self's descendants override the top-level def or
-   Object's method it names (cplan_capture_self_arms): a switch on self's
-   class, each arm the Method of that class's own method, the default the
-   capture's target dflt. Not where self is another class's (an
-   instance_eval splice, an include's copy). */
-static int emit_capture_self_switch(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, int dflt) {
-  int arms[CPLAN_SELF_ARMS], cls[CPLAN_SELF_ARMS];
-  int n = cplan_capture_self_arms(c, id, arms, cls);
+static int emit_capture_target(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, CallPlan plan);
+/* A capture whose plan is a switch on self's class (CallPlan.self_arms):
+   each arm the Method of that class's own method, the default the
+   Method of the capture's target, over its versions where it has them
+   (cplan_self_default). Not where self is another class's (an
+   instance_eval splice, an include's copy: self_switch_emits_here). */
+static int emit_capture_self_switch(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, const CallPlan *plan) {
   Scope *self = comp_scope_of(c, id);
-  if (n <= 0 || g_ie_class_id >= 0 || !g_self ||
-      (g_emitting_class_id >= 0 && !is_descendant(c, g_emitting_class_id, self->class_id))) return 0;
+  if (plan->self_arms <= 0 || !g_self || !self || !self_switch_emits_here(c, self->class_id)) return 0;
+  int *arms = malloc(sizeof *arms * (size_t)plan->self_arms), *cls = malloc(sizeof *cls * (size_t)plan->self_arms);
+  int n = arms && cls ? cplan_self_arm_list(c, plan, arms, cls) : 0, ok = n > 0;
   size_t start = b->len;
   int tr = ++g_tmp;
-  buf_printf(b, "({ sp_BoundMethod *_t%d; switch ((%s)->cls_id) { ", tr, g_self);
-  for (int i = 0; i <= n; i++) {
-    int t = i < n ? scope_proc_form_of(c, arms[i]) : dflt;
-    if (i < n && t < 0) t = arms[i];
-    if (i < n) buf_printf(b, "case %d: ", cls[i]);
-    else buf_puts(b, "default: ");
-    buf_printf(b, "_t%d = ", tr);
-    if (!emit_method_obj_target(c, id, b, nt, name, -1, argc, argv, t, NULL)) {
-      buf_erase(b, start, b->len - start);
-      return 0;
+  if (ok) buf_printf(b, "({ sp_BoundMethod *_t%d; switch ((%s)->cls_id) { ", tr, g_self);
+  for (int i = 0; ok && i <= n; i++) {
+    if (i < n) {
+      int t = scope_proc_form_of(c, arms[i]);
+      buf_printf(b, "case %d: _t%d = ", cls[i], tr);
+      ok = emit_method_obj_target(c, id, b, nt, name, -1, argc, argv, t >= 0 ? t : arms[i], NULL);
+    }
+    else {
+      buf_printf(b, "default: _t%d = ", tr);
+      ok = emit_capture_target(c, id, b, nt, name, -1, argc, argv, cplan_self_default(plan));
     }
     buf_puts(b, "; break; ");
   }
+  free(arms); free(cls);
+  if (!ok) { buf_erase(b, start, b->len - start); return 0; }
   buf_printf(b, "} _t%d; })", tr);
   return 1;
 }
@@ -3191,7 +3198,13 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     buf_puts(b, "; })");
     return 1;
   }
-  if (is_method_object_maker(name) && plan.mi >= 0 && emit_capture_self_switch(c, id, b, nt, name, argc, argv, plan.mi)) return 1;
+  if (is_method_object_maker(name) && plan.mi >= 0 && emit_capture_self_switch(c, id, b, nt, name, argc, argv, &plan)) return 1;
+  return emit_capture_target(c, id, b, nt, name, recv, argc, argv, plan);
+}
+
+/* The Method a capture makes of its plan's target: the target's own, or a
+   switch over its versions' cells (cplan_method_arms) */
+static int emit_capture_target(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv, CallPlan plan) {
   int wrapper = is_method_object_maker(name) ? plan.mi : -1;
   int string_guard = cplan_bam_string_guard(c, id, wrapper);
   int mi = string_guard >= 0 ? string_guard : wrapper;

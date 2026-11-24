@@ -10615,11 +10615,15 @@ static int proc_body_uses_self(Compiler *c, int id, int class_id) {
     /* respond_to? in a class with subclasses asks self's own class at run
        time when the subclasses answer differently */
     if (nm && sp_streq(nm, "respond_to?") && class_id >= 0 && class_has_subclass(c, class_id)) return 1;
-    /* A bare Method capture binds the resolved instance method to self.
-       Enable this route only where returned Strings keep their handles. */
+    /* A bare Method capture binds its plan's target to self where that takes
+       its receiver (an instance method, a top-level def that reads self:
+       method_takes_bound_self), and so does the switch on self's class it
+       is made by where a descendant overrides a top-level def or Object's
+       method (CallPlan.self_arms). Enable this route only where returned
+       Strings keep their handles. */
     if (is_method_ref_name(nm)) {
-      int mi = method_obj_target_mi(c, id);
-      if (mi >= 0 && c->scopes[mi].class_id >= 0 && !c->scopes[mi].is_cmethod) return 1;
+      const CallPlan mp = cplan_method_call(c, id);
+      if (mp.self_arms > 0 || (mp.mi >= 0 && method_takes_bound_self(c, mp.mi))) return 1;
     }
   }
   int nr = nt_num_refs(c->nt, id);

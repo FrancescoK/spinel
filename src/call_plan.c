@@ -209,9 +209,10 @@ static int call_in_block(Compiler *c, int id) {
 }
 /* The arms of a switch on self's class whose default arm runs root_mi, for
    node id of name in instance method scope self (cplan_self_root_override,
-   cplan_capture_self_arms): each descendant's own method of the name, out
-   and cls (at most max, NULL to count) the method and its class; 0 where
-   no descendant has one, or one keeps the old path. */
+   cplan_self_arm_list): each descendant's own method of the name, out
+   and cls (at most max, out NULL to count, cls NULL for none) the method
+   and its class; 0 where no descendant has one, or one keeps the old
+   path. */
 static int root_override_arms(Compiler *c, int id, const Scope *self, const char *name, int root_mi, int *out, int *cls, int max) {
   int scls = self->class_id;
   if (scls < 0 || scls >= c->nclasses || root_mi < 0 || root_mi >= c->nscopes) return 0;
@@ -234,11 +235,13 @@ static int root_override_arms(Compiler *c, int id, const Scope *self, const char
     if (call_attr_target(c, -1, k, name, CT_ATTR, NULL)) return 0;
     int kmi = call_target(c, id, k, name, 0, NULL);
     if (kmi < 0 || kmi == root_mi) continue;
-    /* (an arm whose super reaches a top-level def keeps the old path in a
-       block: that super is not resolved yet, and the plain call raises
-       NoMethodError for it already) */
-    if (rm->class_id < 0 && scope_calls_super(c, kmi) && call_in_block(c, id)) return 0;
-    if (out && n < max) out[n] = kmi, cls[n] = k;
+    /* (an arm whose super reaches a top-level def keeps the old path for a
+       call in a block: that super is not resolved yet, and the plain call
+       raises NoMethodError for it already; a capture's arm is only bound,
+       its method emitted as any other) */
+    if (rm->class_id < 0 && scope_calls_super(c, kmi) && call_in_block(c, id) &&
+        !is_method_object_maker(nt_str(c->nt, id, "name"))) return 0;
+    if (out && n < max) { out[n] = kmi; if (cls) cls[n] = k; }
     n++;
   }
   return out && n > max ? 0 : n;
@@ -254,19 +257,31 @@ int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi) {
   if (!self || self->is_cmethod || self->class_id != scls || ie_class_of(c, id) >= 0) return 0;
   return root_override_arms(c, id, self, name, root_mi, NULL, NULL, 0) > 0;
 }
-/* See call_plan.h. */
-int cplan_capture_self_arms(Compiler *c, int cap, int *out, int *cls) {
+/* The switch of a capture cap of target root (CallPlan.self_arms): a bare
+   or `self.` `method(:sym)` in an instance method of a class, not one
+   instance_exec runs, whose target (a proc form's source) is a top-level
+   def or Object's method; out, cls and max as root_override_arms. */
+static int capture_self_arms(Compiler *c, int cap, int root, int *out, int *cls, int max) {
   const NodeTable *nt = c->nt;
-  if (cap < 0 || nt_kind(nt, cap) != NK_CallNode || nt_ref(nt, cap, "receiver") >= 0 ||
-      !is_method_object_maker(nt_str(nt, cap, "name"))) return 0;
+  if (cap < 0 || root < 0 || nt_kind(nt, cap) != NK_CallNode || !is_method_object_maker(nt_str(nt, cap, "name"))) return 0;
+  int recv = nt_ref(nt, cap, "receiver");
+  if (recv >= 0 && nt_kind(nt, recv) != NK_SelfNode) return 0;
   const char *sym = method_sym_arg(c, cap);
   Scope *self = comp_scope_of(c, cap);
   if (!sym || !self || self->is_cmethod || ie_class_of(c, cap) >= 0) return 0;
-  an_pure_read_begin();
-  int root = method_obj_target_mi(c, cap);
-  an_pure_read_end();
-  if (root >= 0 && c->scopes[root].is_proc_form) root = proc_form_source(c, root);
-  return root_override_arms(c, cap, self, sym, root, out, cls, CPLAN_SELF_ARMS);
+  if (c->scopes[root].is_proc_form) root = proc_form_source(c, root);
+  return root_override_arms(c, cap, self, sym, root, out, cls, max);
+}
+/* See call_plan.h. */
+int cplan_self_arm_list(Compiler *c, const CallPlan *p, int *out, int *cls) {
+  return p->self_arms > 0 ? capture_self_arms(c, p->method_node, p->mi, out, cls, p->self_arms) : 0;
+}
+/* See call_plan.h. */
+CallPlan cplan_self_default(const CallPlan *p) {
+  CallPlan d = *p;
+  if (d.self_arms > 0) d.dispatch = d.self_default;
+  d.self_arms = 0;
+  return d;
 }
 
 int cplan_root_switch(Compiler *c, int id, int scls) {
@@ -342,6 +357,8 @@ static void cplan_set(CallPlan *p, int mi, int owner, int via, int dispatch) {
   p->bpath = BSP_NONE;
   p->answers_receiver = 0;
   p->vis_cell = 0;
+  p->self_arms = 0;
+  p->self_default = CP_NONE;
 }
 
 /* The core id of the class a builtin receiver kind is reopened as, or -1. */
@@ -2361,9 +2378,12 @@ CallPlan cplan_method_call(Compiler *c, int id) {
   an_pure_read_end();
   if (mi >= 0) cplan_set(&p, mi, c->scopes[mi].class_id, c->scopes[mi].is_cmethod ? UC_CMETH : UC_INST, CP_DIRECT);
   if (mi >= 0 && (c->scopes[mi].entry || cplan_bam_string_guard(c, mn, mi) >= 0)) p.dispatch = CP_SWITCH;
-  /* (a bare capture whose self's descendants override what it names: the Method its self's class makes) */
-  int sa[CPLAN_SELF_ARMS], sc[CPLAN_SELF_ARMS];
-  if (mi >= 0 && cplan_capture_self_arms(c, mn, sa, sc) > 0) p.dispatch = CP_SWITCH;
+  /* (a bare capture whose self's descendants override what it names: the Method its self's class makes, the
+     target's own, over its versions, its default) */
+  if (mi >= 0 && (p.self_arms = capture_self_arms(c, mn, mi, NULL, NULL, 0)) > 0) {
+    p.self_default = p.dispatch;
+    p.dispatch = CP_SWITCH;
+  }
   /* (a reader on the capture itself: the capture's own, where it has no target) */
   int mk = capture ? id : mi < 0 && mn >= 0 && mn == recv ? mn : -1;
   p.absent = mk >= 0 ? (unsigned char)cplan_capture_absent(c, mk, mi) : 0;
@@ -15692,20 +15712,25 @@ int cplan_method_arms(Compiler *c, int e, int cap, int *out, int *tests) {
   return m;
 }
 /* See call_plan.h. */
-int cplan_method_held(Compiler *c, int e, int cap, int *out) {
-  int arms[CPLAN_SELF_ARMS], cls[CPLAN_SELF_ARMS];
-  int na = cplan_capture_self_arms(c, cap, arms, cls);
+int cplan_method_held(Compiler *c, const CallPlan *p, int **out) {
+  int e = p->mi, cap = p->method_node, na = p->self_arms > 0 ? p->self_arms : 0;
+  int *o = malloc(sizeof *o * (size_t)(na + 2 * (VER_MAX_ARMS + 1)));
+  if (!o) cplan_oom();
+  *out = o;
+  na = cplan_self_arm_list(c, p, o, NULL);
   for (int k = 0; k < na; k++) {
-    int pf = scope_proc_form_of(c, arms[k]);
-    out[k] = pf >= 0 ? pf : arms[k];
+    int pf = scope_proc_form_of(c, o[k]);
+    if (pf >= 0) o[k] = pf;
   }
-  if (na > 0) { out[na] = e; return na + 1; }
+  /* (then the default arm's: the target's versions, where it switches over them, else the target) */
+  if (na > 0 && p->self_default != CP_SWITCH) { o[na] = e; return na + 1; }
+  int *v = o + na;
   int guard = cplan_bam_string_guard(c, cap, e);
-  int n = cplan_method_arms(c, guard >= 0 ? guard : e, cap, out, NULL), m = 0;
+  int n = cplan_method_arms(c, guard >= 0 ? guard : e, cap, v, NULL), m = 0;
   for (int k = 0; k < n; k++)
-    if (out[k] != CPLAN_ARM_NONE) out[m++] = out[k];
-  if ((!m || guard >= 0) && m < 2 * (VER_MAX_ARMS + 1)) out[m++] = e;
-  return m;
+    if (v[k] != CPLAN_ARM_NONE) v[m++] = v[k];
+  if ((!m || guard >= 0) && m < 2 * (VER_MAX_ARMS + 1)) v[m++] = e;
+  return na + m;
 }
 typedef struct { int guard, cls, sg, mi, ar; const char *name; int from, face; } VerNeed;   /* (from: VerEntry.from; face: VerEntry.face) */
 /* The part of an ask that a class's chain decides, not the call: whether

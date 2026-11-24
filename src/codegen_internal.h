@@ -2711,6 +2711,11 @@ int block_call_takes_class_dispatch(Compiler *c, int id);
    whose self is not the switch's; spliced on a subclass's self, the call
    switches on its own class all the same (emit_call_implicit_self_arms). */
 int call_takes_root_switch(Compiler *c, int id);
+/* Is a switch on the class of self, an instance of class cls, emitted where
+   codegen stands: not inside an instance_eval splice, nor where the method
+   is emitted for a class that is not cls or a subclass of it? The call's
+   (call_takes_root_switch) and the Method's (CallPlan.self_arms). */
+int self_switch_emits_here(Compiler *c, int cls);
 void emit_dispatch(Compiler *c, int cid, const char *name, const char *selfptr, int argsNode, int blk_node, Buf *b);
 /* emit_dispatch for call `id` (mi its method on dispatch_cid), boxed where
    the call is typed boxed and the dispatch answers a narrower type */

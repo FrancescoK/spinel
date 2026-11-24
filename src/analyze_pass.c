@@ -23897,18 +23897,23 @@ static void cr_add_missing(Compiler *c, int m, char ***out, int *n, int *cap, in
   if (mq >= 0 && called) cr_add_name(out, n, cap, c->scopes[mw].name);
 }
 
-/* The methods capture m's Method may hold where its target is a version
-   entry (cplan_method_held): those the entry's arms call, which it
-   reaches itself, and the one an else arm that calls method_missing
-   stands for (cplan_method_arms), which it does not */
-static void cr_add_capture_arms(Compiler *c, int m, char ***out, int *n, int *cap) {
-  int mi = method_obj_target_mi(c, m), to[2 * (VER_MAX_ARMS + 1)];
-  if (mi < 0 || (c->scopes[mi].entry == ENTRY_NONE && cplan_bam_string_guard(c, m, mi) < 0)) return;
-  for (int k = 0, nh = cplan_method_held(c, mi, m, to); k < nh; k++) {
+/* The methods capture m's Method may hold where its plan is a switch
+   (cplan_method_held): those a version entry's arms call, which it reaches
+   itself, the one an else arm that calls method_missing stands for
+   (cplan_method_arms), which it does not, and the self-class arms'
+   (CallPlan.self_arms). Those last are marked for a Method only queried
+   too (cr_method_value_queried): its readers tell the arms apart by their
+   functions. */
+static void cr_add_capture_arms(Compiler *c, int m, char ***out, int *n, int *cap, int queried) {
+  const CallPlan p = cplan_method_call(c, m);
+  if (p.mi < 0 || p.dispatch != CP_SWITCH || (queried && !p.self_arms)) return;
+  int *to, nh = cplan_method_held(c, &p, &to);
+  for (int k = 0; k < nh; k++) {
     char mark[24];
     snprintf(mark, sizeof mark, "\x01%d", to[k]);
     cr_add_name(out, n, cap, mark);
   }
+  free(to);
 }
 
 /* The operands of a `method` call whose Method is only queried: the
@@ -23918,6 +23923,7 @@ static void cr_collect_method_operands(Compiler *c, const NodeTable *nt, int m,
                                        char ***out, int *n, int *cap, int instance_self) {
   cr_add_name(out, n, cap, nt_str(nt, m, "name"));   /* a program's own `method` */
   cr_add_missing(c, m, out, n, cap, 0);
+  cr_add_capture_arms(c, m, out, n, cap, 1);
   cr_collect_calls(c, nt, nt_ref(nt, m, "receiver"), out, n, cap, instance_self);
   int ma = nt_ref(nt, m, "arguments");
   if (ma >= 0) cr_collect_calls(c, nt, ma, out, n, cap, instance_self);
@@ -24421,7 +24427,7 @@ void cr_collect_calls(Compiler *c, const NodeTable *nt, int id,
         else if (ak == NK_StringNode) { msym = nt_str(nt, mav[0], "content"); if (!msym) msym = nt_str(nt, mav[0], "unescaped"); }
         if (msym) cr_add_name(out, n, cap, msym);
         cr_add_missing(c, id, out, n, cap, 1);
-        cr_add_capture_arms(c, id, out, n, cap);
+        cr_add_capture_arms(c, id, out, n, cap, 0);
         /* and an accessor's helper for a bind_call of it (desugar_bind_attr_helpers) */
         char hn[300];
         if (msym && sp_streq(nm, "instance_method") && snprintf(hn, sizeof hn, "__bind %s", msym) < (int)sizeof hn)

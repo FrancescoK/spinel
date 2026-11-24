@@ -309,12 +309,17 @@ static int takes_class_dispatch(Compiler *c, int call, int mi, int disp_cls, con
 }
 
 /* See codegen_internal.h. */
+int self_switch_emits_here(Compiler *c, int cls) {
+  return cls >= 0 && g_ie_class_id < 0 && (g_emitting_class_id < 0 || is_descendant(c, g_emitting_class_id, cls));
+}
+
+/* See codegen_internal.h. */
 int call_takes_root_switch(Compiler *c, int id) {
   int recv = nt_ref(c->nt, id, "receiver");
-  if (g_ie_class_id >= 0 || (recv >= 0 && nt_kind(c->nt, recv) != NK_SelfNode)) return 0;
+  if (recv >= 0 && nt_kind(c->nt, recv) != NK_SelfNode) return 0;
   Scope *encl = comp_scope_of(c, id);
   int cls = encl ? encl->class_id : -1;
-  return cls >= 0 && (g_emitting_class_id < 0 || is_descendant(c, g_emitting_class_id, cls)) && cplan_root_switch(c, id, cls);
+  return self_switch_emits_here(c, cls) && cplan_root_switch(c, id, cls);
 }
 
 /* A block-driving call emit_inline_call_x leaves to the cls_id switch: the
