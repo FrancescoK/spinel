@@ -29868,13 +29868,20 @@ static int narrow_params_from_arrays(Compiler *c) {
      parameter narrowed to sp_int from `Holder.new(@col[q])` does not compile.
      An alias is such a route too: a call by the alias's name finds no scope
      of that name below, so `alias on_b on_a` narrowed on_a's parameter to
-     the class its own callers pass, and `on_b(other)` was refused. */
+     the class its own callers pass, and `on_b(other)` was refused. A Method
+     is one too: `method(:app)` calls app from each `.call` and each element
+     an iterator hands it, and narrowing app's parameter to the Integer a
+     named call passes refused the String `[s].map(&method(:app))` gave it. */
   ANameHash supern; memset(&supern, 0, sizeof supern);
   for (int u = 0; u < nt->count; u++) {
     NodeKind sk = nt_kind(nt, u);
-    if (sk != NK_SuperNode && sk != NK_ForwardingSuperNode) continue;
-    Scope *ss = comp_scope_of(c, u);
-    if (ss && ss->name && !anh_has(&supern, ss->name)) anh_add(&supern, ss->name);
+    const char *rn = NULL;
+    if (sk == NK_SuperNode || sk == NK_ForwardingSuperNode) {
+      Scope *ss = comp_scope_of(c, u);
+      rn = ss ? ss->name : NULL;
+    }
+    else if (sk == NK_CallNode && is_method_obj_call(c, u)) rn = method_sym_arg(c, u);
+    if (rn && !anh_has(&supern, rn)) anh_add(&supern, rn);
   }
   for (int ci = 0; ci < c->nclasses; ci++) {
     ClassInfo *cls = &c->classes[ci];
