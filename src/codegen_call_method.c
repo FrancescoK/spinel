@@ -501,6 +501,7 @@ static int method_owner_singleton(Compiler *c, int mi, int unbound) {
    copy came from or mi's class; *sg 1 for that class's singleton */
 static int method_owner_ci(Compiler *c, int mn, int mi, int unbound, int *sg, const char **bname) {
   int h = mn >= 0 ? method_obj_alias_owner(c, mn, sg) : -1;
+  mi = method_fact_scope(c, mi);
   *bname = NULL;
   if (h >= 0) { *sg = *sg && !unbound; return h; }
   int rd = cplan_bam_reopen_target(c, mi);
@@ -595,6 +596,7 @@ static void emit_source_path_literal(Buf *b, const char *file) {
    nil). The bind site knows each; the run time reads them from the fields,
    never from the rendering. */
 static void emit_method_desc_args(Compiler *c, int mn, int mi, int from, const char *sym, int unbound, int tbr, Buf *b) {
+  mi = method_fact_scope(c, mi);
   emit_method_desc_literal(c, mn, mi, from, sym, unbound, b);
   buf_puts(b, ", ");
   if (tbr > 0) emit_method_params_by_recv(c, mi, sym, tbr, b);

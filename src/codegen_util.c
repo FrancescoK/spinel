@@ -7787,6 +7787,14 @@ int proc_form_source(Compiler *c, int s) {
   const Scope *pf = &c->scopes[s];
   return pf->is_proc_form ? pf->pf_source - 1 : -1;
 }
+/* The method whose facts a Method of method s answers (its owner, the
+   module a copy came from, its rendering and parameters): s, or for a proc
+   form the method it was cloned from, which holds them; the clone is only
+   the callable, its block a parameter of its own. */
+int method_fact_scope(Compiler *c, int s) {
+  int src = s >= 0 && s < c->nscopes ? proc_form_source(c, s) : -1;
+  return src >= 0 ? src : s;
+}
 /* Is `new` call `id`, which runs yielding initialize `initm`, a step of a
    cycle of constructors (mark_ctor_cycles)? Its own scope, or the method a
    clone holding it was made from, is on the same cycle as initm. */
