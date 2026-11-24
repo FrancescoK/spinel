@@ -1223,6 +1223,14 @@ int cplan_dispatch_form(Compiler *c, int call, int cid, const char *name, int ha
    the call's block as a proc or none, where its yield raises
    (pf_root_switch_arms, call_takes_root_switch). */
 int cplan_self_root_override(Compiler *c, int id, int scls, int root_mi);
+/* The same switch for a bare `method(:name)` capture cap whose chain
+   answers a top-level def or Object's method: the descendants' own methods
+   a Method made on an instance of theirs binds (out, their classes in cls,
+   at most CPLAN_SELF_ARMS of them), 0 for none or more. The Method is made
+   by a switch on self's class (emit_capture_self_switch), and its readers
+   test what it holds (cplan_method_held). */
+enum { CPLAN_SELF_ARMS = VER_MAX_ARMS };
+int cplan_capture_self_arms(Compiler *c, int cap, int *out, int *cls);
 /* Is call id's plan that switch on class scls (cplan_self_root_override),
    its default arm a top-level def or Object's method? Read off the plan. */
 int cplan_root_switch(Compiler *c, int id, int scls);

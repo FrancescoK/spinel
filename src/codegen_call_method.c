@@ -3136,6 +3136,36 @@ void emit_unread_value(Compiler *c, int id, Buf *b) {
   else buf_puts(b, default_value_from_compiler(c, at));
 }
 
+/* A bare capture whose self's descendants override the top-level def or
+   Object's method it names (cplan_capture_self_arms): a switch on self's
+   class, each arm the Method of that class's own method, the default the
+   capture's target dflt. Not where self is another class's (an
+   instance_eval splice, an include's copy). */
+static int emit_capture_self_switch(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int argc, const int *argv, int dflt) {
+  int arms[CPLAN_SELF_ARMS], cls[CPLAN_SELF_ARMS];
+  int n = cplan_capture_self_arms(c, id, arms, cls);
+  Scope *self = comp_scope_of(c, id);
+  if (n <= 0 || g_ie_class_id >= 0 || !g_self ||
+      (g_emitting_class_id >= 0 && !is_descendant(c, g_emitting_class_id, self->class_id))) return 0;
+  size_t start = b->len;
+  int tr = ++g_tmp;
+  buf_printf(b, "({ sp_BoundMethod *_t%d; switch ((%s)->cls_id) { ", tr, g_self);
+  for (int i = 0; i <= n; i++) {
+    int t = i < n ? scope_proc_form_of(c, arms[i]) : dflt;
+    if (i < n && t < 0) t = arms[i];
+    if (i < n) buf_printf(b, "case %d: ", cls[i]);
+    else buf_puts(b, "default: ");
+    buf_printf(b, "_t%d = ", tr);
+    if (!emit_method_obj_target(c, id, b, nt, name, -1, argc, argv, t, NULL)) {
+      buf_erase(b, start, b->len - start);
+      return 0;
+    }
+    buf_puts(b, "; break; ");
+  }
+  buf_printf(b, "} _t%d; })", tr);
+  return 1;
+}
+
 int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   refuse_from_plan(c, id, CRF_CAPTURE, "refuse-capture");
   CallPlan plan = cplan_method_call(c, id);
@@ -3161,6 +3191,7 @@ int emit_call_method_obj_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, 
     buf_puts(b, "; })");
     return 1;
   }
+  if (is_method_object_maker(name) && plan.mi >= 0 && emit_capture_self_switch(c, id, b, nt, name, argc, argv, plan.mi)) return 1;
   int wrapper = is_method_object_maker(name) ? plan.mi : -1;
   int string_guard = cplan_bam_string_guard(c, id, wrapper);
   int mi = string_guard >= 0 ? string_guard : wrapper;

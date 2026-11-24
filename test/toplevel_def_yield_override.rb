@@ -125,3 +125,17 @@ end
 class OyB2 < OyA2; def oy11(x) = [:b, block_given? ? yield(x) : :nob]; end
 class OyC2 < OyA2; def oy11(x, &b) = [:c, b&.call(x)]; end
 [OyA2, OyB2, OyC2].each { |k| p k.new.go }
+
+# a Method of the name, made in the superclass's method, binds the
+# subclass's own method on its instance
+def oy12(x = 0) = [:top, self.class, x, block_given? ? yield(x) : :nob]
+class OyD2
+  def go = [method(:oy12).call(1), method(:oy12).call(2) { |v| v + 1 }]
+  def held = method(:oy12)
+end
+class OyE2 < OyD2; def oy12(x = 0) = [:e, x, block_given? ? yield(x) : :nob]; end
+class OyF2 < OyE2; end
+[OyD2, OyE2, OyF2].each do |k|
+  m = k.new.held
+  p k.new.go, [m.call(5), m.arity, m.owner]
+end
