@@ -70,3 +70,47 @@ ensure 3
 [[:e, 5, :nob], -1, OyE2]
 [[:e, 1, :nob], [:e, 2, 3]]
 [[:e, 5, :nob], -1, OyE2]
+[:top, OyA4, 1]
+[:top, OyA4, 2]
+[[:top, OyA4, 3]]
+[:b, [:top, OyB4, 1]]
+[:b, [:top, OyB4, 2]]
+[[:b, [:top, OyB4, 3]]]
+[:c, 1]
+[:c, 2]
+[[:c, 3]]
+157
+159
+[:v1, OyF4, 1]
+[:g, 1]
+1
+-2
+Object
+OyG4
+[[:req, :x]]
+[[:req, :x], [:opt, :y]]
+[:v1, OyF4, 2]
+[:v2, OyF4, 2]
+[:g, 2]
+-2
+-2
+[[:req, :x], [:rest, :r]]
+[[:req, :x], [:opt, :y]]
+[:top, OyH4]
+Proc
+[:top, OyI4, 1]
+[:j, 1, 0]
+[:top, OyI4, 2]
+[:j, 2, 0]
+[:top, OyN4, 6]
+[:top, OyK4, 3]
+[:l, 3, "l"]
+[:top, OyM4, 3]
+[:top, OyM4, 4]
+[:top, OyM4, 5]
+[:top, OyO4, 1]
+[:p, 1]
+[:top, OyQ4, 1]
+[:r, 1]
+[:top, OyQ4, 4]
+[:err, TypeError, "bind argument must be an instance of OyR4"]

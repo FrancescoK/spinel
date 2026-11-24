@@ -139,3 +139,67 @@ class OyF2 < OyE2; end
   m = k.new.held
   p k.new.go, [m.call(5), m.arity, m.owner]
 end
+
+# the Method made in a lambda, in a proc that escapes and in a block, where
+# one arm's super reaches the def
+def oy13(x) = [:top, self.class, x]
+class OyA4
+  def keep(&b) = b
+  def inl = -> { method(:oy13) }.call.call(1)
+  def esc = keep { method(:oy13).call(2) }.call
+  def inb = [3].map { |v| method(:oy13).call(v) }
+end
+class OyB4 < OyA4; def oy13(x) = [:b, super]; end
+class OyC4 < OyA4; def oy13(x) = [:c, x]; end
+[OyA4, OyB4, OyC4].each { |k| o = k.new; p o.inl, o.esc, o.inb }
+
+# a Method only asked where its method is defined
+def oy14(x) = x
+class OyD4; def rd = method(:oy14).source_location[1]; end
+class OyE4 < OyD4; def oy14(x, y) = y; end
+p OyD4.new.rd, OyE4.new.rd
+
+# a redefined def: the Method keeps the version it was made of
+def oy15(x) = [:v1, self.class, x]
+class OyF4; def cap = method(:oy15); end
+class OyG4 < OyF4; def oy15(x, y = 0) = [:g, x]; end
+a1 = OyF4.new.cap
+b1 = OyG4.new.cap
+p a1.call(1), b1.call(1), a1.arity, b1.arity, a1.owner, b1.owner, a1.parameters, b1.parameters
+def oy15(x, *r) = [:v2, self.class, x]
+a2 = OyF4.new.cap
+b2 = OyG4.new.cap
+p a1.call(2), a2.call(2), b2.call(2), a2.arity, b2.arity, a2.parameters, b2.parameters
+
+# a Symbol's to_proc as the block, with no subclass
+def oy16(x) = [:top, self.class, yield(x)]
+class OyH4; def go = oy16(:s, &:to_proc); end
+r = OyH4.new.go
+p r[0, 2], r[2].class
+
+# the Method made in a method of an Array, String or exception subclass
+def oy17(x) = [:top, self.class, x]
+class OyI4 < Array; def cap = method(:oy17).call(1); def bare = oy17(2); end
+class OyJ4 < OyI4; def oy17(x) = [:j, x, size]; end
+class OyK4 < StandardError; def cap = method(:oy17).call(3); def bare = oy17(4); def snd = send(:oy17, 5); end
+class OyL4 < OyK4; def oy17(x) = [:l, x, message]; end
+class OyM4 < OyK4; end
+class OyN4 < String; def cap = method(:oy17).call(6); end
+p OyI4.new.cap, OyJ4.new.cap, OyI4.new.bare, OyJ4.new.bare, OyN4.new("n").cap
+p OyK4.new("k").cap, OyL4.new("l").cap, OyM4.new("m").cap, OyM4.new("m").bare, OyM4.new("m").snd
+
+# `self.method`, as the bare capture
+def oy18(x) = [:top, self.class, x]
+class OyO4; def cap = self.method(:oy18).call(1); end
+class OyP4 < OyO4; def oy18(x) = [:p, x]; end
+p OyO4.new.cap, OyP4.new.cap
+
+# the Method unbound and bound again, on self and on another instance
+def oy19(x) = [:top, self.class, x]
+class OyQ4
+  def b1 = method(:oy19).unbind.bind(self).call(1)
+  def b4 = method(:oy19).unbind.bind(OyQ4.new).call(4)
+end
+class OyR4 < OyQ4; def oy19(x) = [:r, x]; end
+p OyQ4.new.b1, OyR4.new.b1, OyQ4.new.b4
+p((OyR4.new.b4 rescue [:err, $!.class, $!.message]))
