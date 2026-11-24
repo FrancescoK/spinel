@@ -2013,6 +2013,7 @@ typedef struct {
   unsigned char *top_self_marks;      /* per scope: its top-level def reads self (call_plan.c, cplan_top_receiver) */
   unsigned long top_self_stamp;
   int top_self_n;                     /* the scope count the answer was made for */
+  int main_self_ready;                /* codegen makes main's self at start: a top-level def's entry loads it with no check */
   int top_self_hold;                  /* a desugar pass holds the answer for its length (cplan_top_receiver_hold) */
   /* the version entries (call_plan.c, ver_entries_build): one method per
      (class, side, name, parameter count) for the calls whose version is

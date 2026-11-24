@@ -805,6 +805,16 @@ static inline sp_RbVal sp_main_self(void) {
   return m ? sp_box_obj(m, SP_BUILTIN_OBJECT) : sp_main_self_make();
 }
 
+/* main's self, boxed, in a program that made it ahead of its code (codegen emits sp_main_self_make at the start of the
+   body): a plain load, with no check for its absence */
+static inline sp_RbVal sp_main_self_ready(void) { return sp_box_obj(sp_main_obj, SP_BUILTIN_OBJECT); }
+
+/* Is boxed v the top level's self? That one Object is a root of its own, so a frame that holds it for nothing else is not
+   pushed (a top-level def's body run on main) */
+static inline int sp_self_is_main(sp_RbVal v) {
+  return v.tag == SP_TAG_OBJ && v.v.p == sp_main_obj;   /* (made before any thread starts, or null: no match) */
+}
+
 /* sp_PolyArray: a growable array of boxed values. The first
    SP_POLYARR_INLINE elements live in the object itself: an array that never
    outgrows them has no payload, so no finalizer, so the sweep never touches

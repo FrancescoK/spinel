@@ -6526,7 +6526,8 @@ void emit_method_signature(Compiler *c, Scope *s, Buf *b) {
    receiver-bound calls use the method body with its explicit self. */
 static void emit_top_main_entry(Compiler *c, Scope *s, Buf *b) {
   method_signature(c, s, b, METHOD_ENTRY, NULL, 0);
-  buf_printf(b, " { %s%s(sp_main_self()", method_is_void(s) ? "" : "return ", mc_receiver_method(c, s));
+  buf_printf(b, " { %s%s(%s", method_is_void(s) ? "" : "return ", mc_receiver_method(c, s),
+             c->main_self_ready ? "sp_main_self_ready()" : "sp_main_self()");
   for (int i = 0; i < s->nparams; i++) {
     char parameter[160];
     sg_param_cname(c, s, i, parameter, sizeof parameter);
@@ -7097,7 +7098,7 @@ static void line_map_reanchor(Buf *b) {
 }
 
 enum { GC_NO_FRAME, GC_FRAME, GC_FRAME_WITH_CONTEXT };
-static int gc_frame_build_with_context(Compiler *c, Buf *b, size_t ins, const char *site, int context) {
+static int gc_frame_build_with_context(Compiler *c, Buf *b, size_t ins, const char *site, int context, int main_self_perm) {
   /* the frame is decided by the function's text: its marks go first */
   if (ins >= b->len) return 0;
   const char *p = b->p;
@@ -7109,7 +7110,7 @@ static int gc_frame_build_with_context(Compiler *c, Buf *b, size_t ins, const ch
   if (!any && !text_has_code(p, ins, end, "SP_GC_ROOT")) { free(ts.v); free(ts.h); return 0; }
 
   Buf nb; memset(&nb, 0, sizeof nb);
-  int depth = 1, wm = 0, peak = 0, np = 0;
+  int depth = 1, wm = 0, peak = 0, np = 0, self_seen = 0;
   int saved[FRAME_DEPTH_MAX];
   size_t i = ins;
   while (i < end) {
@@ -7140,6 +7141,11 @@ static int gc_frame_build_with_context(Compiler *c, Buf *b, size_t ins, const ch
           frame_convertible(frame_temp(&ts, p + m, tl, 0))) {
         if (nb.len && nb.p[nb.len-1] == ' ') nb.len--;
         i = m + tl + 2; continue;
+      }
+      /* a top-level def's self: main's is a root of its own, so a frame of its own is pushed for another receiver only */
+      if (depth == 1 && main_self_perm && !context && n == 16 && !strncmp(p + m, "self);", 6)) {
+        self_seen = 1;
+        i = m + 6; continue;
       }
       if (depth == 1) {
         size_t q = m; int pd = 1;
@@ -7180,26 +7186,33 @@ static int gc_frame_build_with_context(Compiler *c, Buf *b, size_t ins, const ch
     buf_putn(&nb, p + i, n); i = k;
   }
   free(ts.v); free(ts.h);
-  if (peak == 0 && np == 0) { free(nb.p); return 0; }
+  if (peak == 0 && np == 0 && !self_seen) { free(nb.p); return 0; }
   if (!decide_fn("root-frame", site, NULL)) { free(nb.p); return 0; }
   if (context && !decide_fn("root-context", site, NULL)) {
     free(nb.p);
-    return gc_frame_build_with_context(c, b, ins, site, 0);
+    return gc_frame_build_with_context(c, b, ins, site, 0, main_self_perm);
   }
   /* b is the whole program's text so far, the function its tail: the
      frame replaces the tail in place, not by copying the program */
   b->len = ins;
-  buf_puts(b, "    struct { sp_gc_frame_hdr h;");
-  if (peak) buf_printf(b, " sp_RbVal v[%d];", peak);
-  if (np) buf_printf(b, " void **p[%d];", np);
-  buf_printf(b, " } _gcf = {{%d, %d}}; %s;\n", peak, np,
-             context ? "SP_GC_ROOT_FRAME_CTX(_sp_roots, _gcf)" : "SP_GC_ROOT_FRAME(_gcf)");
+  if (self_seen)
+    /* (a copy in a value slot, filled only for another receiver: self's own address is never taken, so it stays in a
+       register on main's path) */
+    buf_puts(b, "    struct { sp_gc_frame_hdr h; sp_RbVal v[1]; } _gcs;"
+                " if (!sp_self_is_main(self)) { _gcs.h = (sp_gc_frame_hdr){1, 0}; _gcs.v[0] = self; SP_GC_ROOT_FRAME(_gcs); }\n");
+  if (peak || np) {
+    buf_puts(b, "    struct { sp_gc_frame_hdr h;");
+    if (peak) buf_printf(b, " sp_RbVal v[%d];", peak);
+    if (np) buf_printf(b, " void **p[%d];", np);
+    buf_printf(b, " } _gcf = {{%d, %d}}; %s;\n", peak, np,
+               context ? "SP_GC_ROOT_FRAME_CTX(_sp_roots, _gcf)" : "SP_GC_ROOT_FRAME(_gcf)");
+  }
   buf_putn(b, nb.p ? nb.p : "", nb.len);
   free(nb.p);
   return context ? GC_FRAME_WITH_CONTEXT : GC_FRAME;
 }
 static void gc_frame_build(Compiler *c, Buf *b, size_t ins, const char *site) {
-  gc_frame_build_with_context(c, b, ins, site, 0);
+  gc_frame_build_with_context(c, b, ins, site, 0, 0);
 }
 
 /* ---- splitting the top level ----
@@ -8835,7 +8848,7 @@ static void emit_method(Compiler *c, Scope *s, Buf *b, int loop_callee) {
   const char *site = decide_method_site(c, s);
   int context = loop_callee && !rh_wrap && !s->is_ext_entry && !poll_pure_wrapped(c, s->idx) && !method_inline_force(c, s) &&
                 !method_noinline_sjlj(c, s) && !fi_body_has_loop(c, s->body, 0);
-  int frame = g_no_root_frame ? GC_NO_FRAME : gc_frame_build_with_context(c, b, gc_save_off + gc_save_len, site, context);
+  int frame = g_no_root_frame ? GC_NO_FRAME : gc_frame_build_with_context(c, b, gc_save_off + gc_save_len, site, context, cplan_top_receiver(c, s->idx));
   if (frame == GC_FRAME_WITH_CONTEXT) {
     buf_erase(b, gc_save_off, gc_save_len);
     buf_insert_at(b, gc_save_off, "    SP_GC_SAVE_CTX(_sp_roots);\n");
@@ -25703,6 +25716,14 @@ static int class_gen_valeq(Compiler *c, int k) {
      honor it (#2884). */
   return mi >= 0 && c->scopes[mi].reachable && c->scopes[mi].ret == TY_BOOL;
 }
+/* Is scope s's function emitted: a method's, reachable or a live proc form (named only by a poly dispatch emitted later,
+   which the reachability pass cannot see: the C compiler drops it if no arm calls it, #3399), not the top level, a
+   yielding method (spliced) or a shadowed or copied-away one */
+static int scope_has_prototype(Compiler *c, int s) {
+  const Scope *sc = &c->scopes[s];
+  if (prog_is_top_scope(c, sc) || sc->yields || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) return 0;
+  return sc->reachable || (sc->is_proc_form && proc_form_live(c, s));
+}
 char *codegen_program(const NodeTable *nt) {
   char *isa_ext = NULL;  /* sp_poly_is_a's class-value arms, and where they go */
   size_t isa_ext_at = 0;
@@ -25960,11 +25981,20 @@ char *codegen_program(const NodeTable *nt) {
   }
   if (c->nclasses > 0) buf_puts(&b, "static const char *sp_obj_cls_name_rt(int cls_id) SP_COLD SP_NOINLINE;\n");
 
-  /* method prototypes (scope 0 is top-level) */
-  /* A proc form is named only by a poly dispatch, which is emitted later, so
-     the reachability pass cannot see it. Emit it and let the C compiler drop
-     it if no arm ends up calling it (#3399). */
-  for (int s = 1; s < c->nscopes; s++) { if (prog_is_top_scope(c, &c->scopes[s]) || c->scopes[s].yields || (!c->scopes[s].reachable && (!c->scopes[s].is_proc_form || !proc_form_live(c, s))) || scope_is_shadowed(c, s) || comp_scope_copied_away(c, s)) continue; emit_method_signature(c, &c->scopes[s], &b); buf_puts(&b, ";\n"); if (cplan_top_receiver(c, s)) emit_top_main_entry(c, &c->scopes[s], &b); if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b); }
+  /* method prototypes (scope 0 is top-level; scope_has_prototype) */
+  /* a program with a top-level def that takes its receiver makes main's self once, ahead of its code, so each call from main
+     loads it with no check for its absence (a def an extension calls may run before the body: the check stays) */
+  int any_top_recv = 0, ext_top_recv = 0;
+  for (int s = 1; s < c->nscopes; s++)
+    if (scope_has_prototype(c, s) && cplan_top_receiver(c, s)) { any_top_recv = 1; ext_top_recv |= c->scopes[s].is_ext_entry; }
+  c->main_self_ready = any_top_recv && !ext_top_recv;
+  for (int s = 1; s < c->nscopes; s++) {
+    if (!scope_has_prototype(c, s)) continue;
+    emit_method_signature(c, &c->scopes[s], &b);
+    buf_puts(&b, ";\n");
+    if (cplan_top_receiver(c, s)) emit_top_main_entry(c, &c->scopes[s], &b);
+    if (poll_pure_wrapped(c, s)) poll_pure_proto(c, s, &b);
+  }
 
   emit_cext_dispatch(c, &b);
   emit_user_exc_dispatch(c, &b);
@@ -26404,6 +26434,7 @@ char *codegen_program(const NodeTable *nt) {
   buf_puts(body, "    SP_GC_SAVE();\n");
   main_frame_ins = body->len;
   if (g_re_init_needed) buf_puts(body, "    sp_tu_init();\n");
+  if (c->main_self_ready) buf_puts(body, "    (void)sp_main_self_make();\n");
   emit_load_path_seed(c, body);
   /* Adopt the main thread and chain the scheduler's GC root hook. Placed after
      sp_tu_init so it chains whatever globals hook that installed. */

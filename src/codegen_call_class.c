@@ -6083,7 +6083,7 @@ void emit_call_self_boxed(Compiler *c, int id, Buf *b) {
   else if (g_ie_class_id >= 0) emit_boxed_text(c, ty_object(g_ie_class_id), g_self, b);
   else if (s && ((s->class_id >= 0 && !s->is_cmethod && !self_is_main_raw(c, id)) || cplan_top_receiver(c, s->idx)))
     emit_reopen_self_boxed(c, (Scope *)s, b);
-  else buf_puts(b, "sp_main_self()");
+  else buf_puts(b, c->main_self_ready ? "sp_main_self_ready()" : "sp_main_self()");
 }
 
 /* Does the receiver an instance_eval / instance_exec block runs on answer
