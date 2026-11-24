@@ -15871,8 +15871,10 @@ static void emit_inspect_class_row(Compiler *c, int i, MarRows *R, Buf *b) {
   if (ranked) buf_printf(b, "(int (*)(void *, int *))sp_%s_ivar_order };\n", ci->c_name);
   else buf_puts(b, "NULL };\n");
 }
+static int pp_sorts_any_ivars(Compiler *c);
 /* the walk over the rows, as the arm per class wrote it */
 static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_oarr, int any_computed, int any_kind, Buf *b) {
+  int pp = pp_sorts_any_ivars(c), ppc = pp && any_computed;
   buf_printf(b,
     "static int sp_insp_set(const sp_insp_iv *v, const char *o) {\n"
     "  switch (v->set) {\n"
@@ -15927,13 +15929,17 @@ static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_oa
        follow the declared ones (#8219): the builder's length tells whether
        one was shown before them */
     "  int64_t _hl = _s->len;\n"
-    "  if (d->ranked) {\n"
-    "    int _ixv[d->niv > 0 ? d->niv : 1]; int _ixn = d->order(p, _ixv);\n"
+    "%s"
+    "  if (d->ranked%s) {\n"
+    "    int _ixv[d->niv > 0 ? d->niv : 1]; int _ixn = %s;\n"
+    "%s"
     "    for (int k = 0; k < _ixn; k++) {\n"
     "      const sp_insp_iv *v = &d->ivs[_ixv[k]];\n"
-    "      sp_String_append(_s, k ? \", \" : \" \"); sp_String_append(_s, sp_insp_pool + v->name); sp_String_append(_s, \"=\");\n"
+    "%s"
+    "      sp_String_append(_s, %s ? \", \" : \" \"); sp_String_append(_s, sp_insp_pool + v->name); sp_String_append(_s, \"=\");\n"
     "      sp_String_append(_s, sp_insp_value(v, o));\n"
     "    }\n"
+    "%s"
     "  }\n"
     "  else {\n"
     "    int _ivsep = 0;\n"
@@ -15955,7 +15961,20 @@ static void emit_inspect_walk(Compiler *c, int any_anon, int any_obj, int any_oa
     "}\n",
     !any_anon ? "d->name" : cplan_rt_site(c, -1) ? "d->name ? d->name : ({ sp_int _k = sp_obj_rtclass_fn(sp_box_obj(p, cls_id)); sp_class_display((sp_Class){_k >= 0 ? _k : cls_id}); })"
                                                  : "d->name ? d->name : sp_class_display((sp_Class){cls_id})",
-    any_computed ? "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n" : "",
+    /* a pp lists the ivars it shows sorted by name (pp_sorts_ivars), those a computed instance_variable_set added
+       among them (ppc) */
+    ppc ? "  sp_PolyArray *_cp = sp_pp_printing && d->computed ? sp_bivar_sorted_pairs(o) : NULL; SP_GC_ROOT(_cp); sp_int _ci = 0;\n" : "",
+    pp ? " || sp_pp_printing" : "", pp ? "d->ranked ? d->order(p, _ixv) : 0" : "d->order(p, _ixv)",
+    pp ? "    if (!d->ranked) for (int jj = 0; jj < d->niv; jj++) if (!d->any1 || sp_insp_set(&d->ivs[jj], o)) _ixv[_ixn++] = jj;\n"
+         "    for (int k = 1; sp_pp_printing && k < _ixn; k++)\n"
+         "      for (int q = k; q > 0 && strcmp(sp_insp_pool + d->ivs[_ixv[q - 1]].name, sp_insp_pool + d->ivs[_ixv[q]].name) > 0; q--) {\n"
+         "        int _t = _ixv[q]; _ixv[q] = _ixv[q - 1]; _ixv[q - 1] = _t;\n"
+         "      }\n" : "",
+    ppc ? "      _ci = sp_bivar_pairs_into(_s, _cp, _ci, sp_insp_pool + v->name, _s->len > _hl);\n" : "",
+    ppc ? "_s->len > _hl" : "k",
+    ppc ? "    sp_bivar_pairs_into(_s, _cp, _ci, NULL, _s->len > _hl);\n" : "",
+    ppc ? "  if (d->computed && !_cp) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n"
+    : any_computed ? "  if (d->computed) sp_bivar_inspect_into(_s, (const void *)o, _s->len > _hl);\n" : "",
     c->nclasses > 0 ? c->nclasses : 1);
 }
 /* The name of a program class by its id, which a class value is asked for too
@@ -24863,15 +24882,41 @@ int record_pp_skips_inspect(Compiler *c, int site, int cid) {
   int mi = display_method_scope(c, site, cid, 1, NULL);
   return mi >= 0 && c->scopes[mi].reachable;
 }
-/* Does a pp print through sp_pp_inspect? It does where the program reopens
-   Array#inspect, or where it calls pp and has a Struct or Data class with
-   its own #inspect (record_pp_skips_inspect). Then the program's own
-   #inspect, #to_s and #message clear sp_pp_printing while they run. */
+/* Does pp list the ivars of an instance of class cid in another order than
+   p? CRuby's pp lists them sorted by name (instance_variables.sort, its
+   pretty_print_instance_variables), p in the order of their first
+   assignment (ivar_listing_order_new, or the rank kept at run time), and
+   the ones a computed instance_variable_set adds after the declared ones. */
+static int pp_sorts_ivars(Compiler *c, int cid) {
+  ClassInfo *ci = &c->classes[cid];
+  if (ci->is_struct || ci->is_data || ci->is_native_class) return 0;
+  if (ci->computed_ivar_set) return 1;
+  if (comp_inst_ivar_count(ci) < 2) return 0;
+  if (ivar_ranked(c, cid)) return 1;
+  int n, *ord = ivar_listing_order_new(c, cid, &n), out = 0;
+  for (int k = 1; k < n && !out; k++) out = strcmp(ci->ivars[ord[k - 1]], ci->ivars[ord[k]]) > 0;
+  free(ord);
+  return out;
+}
 int an_calls_named_first(Compiler *c, const char *name);   /* analyze_internal.h */
+/* Does the program call pp and have a class whose ivars pp lists in another
+   order than p (pp_sorts_ivars)? Then the inspect walk sorts the ivars it
+   shows by name while sp_pp_printing is set. */
+static int pp_sorts_any_ivars(Compiler *c) {
+  if (an_calls_named_first(c, "pp") < 0) return 0;
+  for (int i = 0; i < c->nclasses; i++)
+    if (pp_sorts_ivars(c, i)) return 1;
+  return 0;
+}
+/* Does a pp print through sp_pp_inspect? It does where the program reopens
+   Array#inspect, where it calls pp and has a Struct or Data class with its
+   own #inspect (record_pp_skips_inspect), or where pp sorts a class's ivars
+   (pp_sorts_any_ivars). Then the program's own #inspect, #to_s and #message
+   clear sp_pp_printing while they run. */
 int pp_prints_by_rt(Compiler *c) {
   static Compiler *at; static int ncls = -1, val;
   if (at == c && ncls == c->nclasses) return val;
-  at = c; ncls = c->nclasses; val = array_user_inspect_mi(c) >= 0;
+  at = c; ncls = c->nclasses; val = array_user_inspect_mi(c) >= 0 || pp_sorts_any_ivars(c);
   if (!val && an_calls_named_first(c, "pp") >= 0)
     for (int i = 0; i < c->nclasses && !val; i++) val = record_pp_skips_inspect(c, -1, i);
   return val;

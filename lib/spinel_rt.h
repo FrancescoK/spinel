@@ -14978,17 +14978,36 @@ static void sp_bivar_names_into(sp_PolyArray *a, const void *obj) {
   for (sp_int i = 0; i < t->len; i++) sp_PolyArray_push(a, sp_box_sym(t->order[i]));
   sp_ivtbl_tables_unlock();
 }
+/* Append the pairs of pr (sp_bivar_tbl_pairs) from pair index i whose names sort before `before` (all of them for
+   NULL), the first after ", " where sep says something was shown before it; the index of the next pair. pp merges
+   them so with the declared ivars, which it lists sorted by name (sp_bivar_sorted_pairs). */
+static sp_int sp_bivar_pairs_into(sp_String *s, sp_PolyArray *pr, sp_int i, const char *before, int sep) {
+  SP_GC_ROOT(s); SP_GC_ROOT(pr);
+  for (; pr && i + 1 < sp_PolyArray_length(pr); i += 2) {
+    const char *nm = sp_sym_to_s((sp_sym)sp_PolyArray_get(pr, i).v.i);
+    if (before && strcmp(nm, before) >= 0) break;
+    sp_String_append(s, sep ? ", " : " "); sep = 1;
+    sp_String_append(s, nm);
+    sp_String_append(s, "=");
+    sp_String_append(s, sp_poly_inspect(sp_PolyArray_get(pr, i + 1)));
+  }
+  return i;
+}
 static void sp_bivar_inspect_into(sp_String *s, const void *obj, int sep) {
   sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
   if (!t) return;
   SP_GC_ROOT(s); SP_GC_ROOT(t);
+  sp_bivar_pairs_into(s, sp_bivar_tbl_pairs(t), 0, NULL, sep);
+}
+/* The pairs of obj's table (sp_bivar_tbl_pairs) sorted by name, as pp lists them; NULL where it has none */
+static sp_PolyArray *sp_bivar_sorted_pairs(const void *obj) {
+  sp_SymPolyHash *t = obj ? (sp_SymPolyHash *)sp_ivtbl_get(obj) : NULL;
+  if (!t) return NULL;
   sp_PolyArray *pr = sp_bivar_tbl_pairs(t); SP_GC_ROOT(pr);
-  for (sp_int i = 0; i + 1 < sp_PolyArray_length(pr); i += 2) {
-    sp_String_append(s, sep || i ? ", " : " ");
-    sp_String_append(s, sp_sym_to_s((sp_sym)sp_PolyArray_get(pr, i).v.i));
-    sp_String_append(s, "=");
-    sp_String_append(s, sp_poly_inspect(sp_PolyArray_get(pr, i + 1)));
-  }
+  for (sp_int k = 2; k + 1 < pr->len; k += 2)
+    for (sp_int q = k; q > 0 && strcmp(sp_sym_to_s((sp_sym)pr->data[q - 2].v.i), sp_sym_to_s((sp_sym)pr->data[q].v.i)) > 0; q -= 2)
+      for (int h = 0; h < 2; h++) { sp_RbVal x = pr->data[q - 2 + h]; pr->data[q - 2 + h] = pr->data[q + h]; pr->data[q + h] = x; }
+  return pr;
 }
 static sp_RbVal sp_bivar_set(sp_RbVal o, sp_sym k, sp_RbVal v) {
   if (sp_poly_frozen(o) && o.tag != SP_TAG_CLASS) {
