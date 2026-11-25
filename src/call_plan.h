@@ -1201,8 +1201,26 @@ typedef struct {
   int cm_class, cm_self_id;
   int implicit_self;
 } CplanInline;
-typedef struct { int ie_class, arm_class, cbody, self_cbody, narrow; } CplanInlineCtx;
+typedef struct { int ie_class, arm_class, cbody, self_cbody, narrow, fresh; } CplanInlineCtx;
 CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x);
+/* The context the tree gives call id: its instance_exec self and the class
+   body it stands in (no poly arm, which only its emission knows), for a
+   reader that asks ahead of the emission. fresh: the plan is resolved
+   afresh, where the analysis asks with its types still moving. */
+CplanInlineCtx cplan_inline_tree_ctx(Compiler *c, int id, int fresh);
+/* The method a splice of call id takes from target t: t's, or where a
+   literal block meets a pure forwarder the method it forwards to (a literal
+   block cannot reach a real-function forwarder); -1 where it does not
+   yield, which no splice takes */
+int cplan_spliced_mi(Compiler *c, int id, const CplanInline *t, int fresh);
+/* Follow a chain of pure `...` forwarders (a method whose whole body is one
+   bare `target(...)` call, each read from its plan) from mi to the method
+   that yields or owns the &block; -1 where the chain ends elsewhere */
+int cplan_forwarded_mi(Compiler *c, int mi, int fresh);
+/* The method a splice of call id takes, read in the tree's context
+   (cplan_inline_tree_ctx): what the volatile analysis, the break wrapper,
+   the String readers and the analysis's array widening ask; -1 for none */
+int cplan_splice_mi(Compiler *c, int id, int fresh);
 /* Is the node codegen is at read as itself: no view, no instance_exec scope
    move or class, no inline splice? Only there may a memo per node answer
    (cplan_user). */

@@ -18849,7 +18849,7 @@ int narrow_empty_array_args_by_yield(Compiler *c) {
     if (!any_empty) continue;
     /* with a block: an inlinable yielding method; without: a receiverless
        call to a user method, whose own pushes are the evidence */
-    int mi = blk >= 0 ? call_user_yield_mi(c, id)
+    int mi = blk >= 0 ? cplan_splice_mi(c, id, 1)
            : (nt_ref(nt, id, "receiver") < 0 ? comp_self_call_mi(c, id, nt_str(nt, id, "name")) : -1);
     if (mi < 0) continue;
     Scope *m = &c->scopes[mi];

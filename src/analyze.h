@@ -1554,9 +1554,6 @@ int call_breaks(Compiler *c, int id);
 int an_poly_str_upto(Compiler *c, int id);   /* a boxed upto a String receiver may take */
 int an_int_step_range_chain(Compiler *c, int id); /* a blockless times/upto/downto kept as its Range */
 int an_blockless_tuples_kept(Compiler *c, int id); /* a blockless combination & co. kept as its Array */
-/* Scope of an inline-able yielding user method a block-bearing CallNode
-   resolves to (its literal block is spliced at yield sites), else -1. */
-int call_user_yield_mi(Compiler *c, int id);
 /* True if scope `scope_idx` contains an explicit `return`. */
 int scope_has_return(Compiler *c, int scope_idx);
 /* When set, the call_breaks override in infer_call is suppressed so the

@@ -2141,7 +2141,7 @@ static int strbuf_has_return(const NodeTable *nt, int n) {
 int strbuf_inline_mi(Compiler *c, int v) {
   const CallPlan p = cplan_user(c, v);
   if (p.via == UC_REOPEN && repr_self_handle(c, p.mi) && c->scopes[p.mi].yields) return p.mi;
-  return call_user_yield_mi(c, v);
+  return cplan_splice_mi(c, v, 0);
 }
 /* Does the last statement `last` of spliced method mi answer the value of
    the block its call is given: a `yield`, a call of the method's own block
@@ -2155,7 +2155,7 @@ int strbuf_tail_answers_block(Compiler *c, int mi, int last, int depth) {
   if (nt_kind(nt, last) == NK_YieldNode || is_blk_param_call(c, last, mi)) return 1;
   if (depth >= 4 || nt_kind(nt, last) != NK_CallNode || !call_forwards_own_block(c, last) ||
       cplan_user(c, last).dispatch == CP_SWITCH || cplan_user(c, last).dispatch == CP_PER_ARM) return 0;
-  int m2 = call_user_yield_mi(c, last), l2 = m2 > 0 ? scope_body_last(c, m2) : -1;
+  int m2 = cplan_splice_mi(c, last, 0), l2 = m2 > 0 ? scope_body_last(c, m2) : -1;
   int bl = block_given_tail_then_last(c, l2);
   return l2 >= 0 && !strbuf_has_return(nt, c->scopes[m2].body) &&
          strbuf_tail_answers_block(c, m2, bl >= 0 ? bl : l2, depth + 1);

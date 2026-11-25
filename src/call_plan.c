@@ -9583,7 +9583,7 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
     if (q.chain && q.via == UC_INST && q.owner_ci == x->arm_class) t.mi = q.mi;
     return t;
   }
-  else p = cplan_user(c, id);
+  else p = x->fresh ? cplan_user_fresh(c, id) : cplan_user(c, id);
   if (p.mi < 0) return t;
   if (recv < 0) {
     Scope *encl = comp_scope_of(c, id);
@@ -9655,6 +9655,51 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
     }
   }
   return t;
+}
+
+/* See call_plan.h. */
+CplanInlineCtx cplan_inline_tree_ctx(Compiler *c, int id, int fresh) {
+  int ie = ie_class_of(c, id), cb = self_class_body(c, id);
+  CplanInlineCtx x = { ie >= 0 ? ie : -1, -1, cb, cb, 0, fresh };
+  return x;
+}
+
+/* See call_plan.h. */
+int cplan_forwarded_mi(Compiler *c, int mi, int fresh) {
+  for (int depth = 0; mi >= 0 && depth <= 16; depth++) {
+    Scope *m = &c->scopes[mi];
+    if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
+    int body = m->body;
+    if (body < 0 || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
+    int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
+    if (n != 1) return -1;
+    int call = st[0];
+    if (nt_kind(c->nt, call) != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
+    int args = nt_ref(c->nt, call, "arguments");
+    int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
+    if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
+    CplanInlineCtx x = cplan_inline_tree_ctx(c, call, fresh);
+    mi = cplan_inline_target(c, call, &x).mi;
+  }
+  return -1;
+}
+
+/* See call_plan.h. */
+int cplan_spliced_mi(Compiler *c, int id, const CplanInline *t, int fresh) {
+  int mi = t->mi, blk = nt_ref(c->nt, id, "block");
+  if (mi >= 0 && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
+    int f = cplan_forwarded_mi(c, mi, fresh);
+    if (f >= 0) mi = f;
+  }
+  return mi >= 0 && c->scopes[mi].yields ? mi : -1;
+}
+
+/* See call_plan.h. */
+int cplan_splice_mi(Compiler *c, int id, int fresh) {
+  if (id < 0 || id >= c->node_cap || nt_kind(c->nt, id) != NK_CallNode || !nt_str(c->nt, id, "name")) return -1;
+  CplanInlineCtx x = cplan_inline_tree_ctx(c, id, fresh);
+  CplanInline t = cplan_inline_target(c, id, &x);
+  return cplan_spliced_mi(c, id, &t, fresh);
 }
 
 CallPlan cplan_user(Compiler *c, int id) {

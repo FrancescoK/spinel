@@ -3874,7 +3874,7 @@ static int is_rescuing_yield_call(Compiler *c, int id) {
   if (nt_kind(c->nt, id) != NK_CallNode) return 0;
   int blk = nt_ref(c->nt, id, "block");
   if (blk < 0 || nt_kind(c->nt, blk) != NK_BlockNode) return 0;
-  int mi = call_user_yield_mi(c, id);
+  int mi = cplan_splice_mi(c, id, 0);
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
   return !m->is_proc_form && !m->is_lowered_yield && scope_emits_setjmp(c, mi);

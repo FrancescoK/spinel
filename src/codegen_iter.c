@@ -57,32 +57,6 @@ static void hoist_loop_recv_as(Compiler *c, TyKind rt, Buf *rb, Buf *b, int inde
   buf_printf(rb, "_t%d", t);
 }
 
-/* Follow a chain of pure `...` forwarders (a method whose whole body is a
-   single `target(...)` call, no receiver) from `mi` to the method that
-   actually yields or owns the &block; return its index, else -1. A real-
-   function forwarder can't pass a literal block down to a yielding target,
-   so a block-bearing call is redirected straight to that final target. */
-static int pure_forwarding_target(Compiler *c, int mi, int depth) {
-  if (mi < 0 || depth > 16) return -1;
-  Scope *m = &c->scopes[mi];
-  if (m->yields || (m->blk_param && m->blk_param[0])) return mi;
-  int body = m->body;
-  if (body < 0 || nt_kind(c->nt, body) != NK_StatementsNode) return -1;
-  int n = 0; const int *st = nt_arr(c->nt, body, "body", &n);
-  if (n != 1) return -1;
-  int call = st[0];
-  NodeKind ck = nt_kind(c->nt, call);
-  if (ck != NK_CallNode || nt_ref(c->nt, call, "receiver") >= 0) return -1;
-  int args = nt_ref(c->nt, call, "arguments");
-  int ac = 0; const int *av = args >= 0 ? nt_arr(c->nt, args, "arguments", &ac) : NULL;
-  if (!nt_argv_only_forwarding(c->nt, av, ac)) return -1;
-  const char *tn = nt_str(c->nt, call, "name");
-  if (!tn) return -1;
-  int t = call_target(c, call, -1, tn, CT_TOP, NULL);
-  if (t < 0 && m->class_id >= 0) t = call_target(c, call, m->class_id, tn, 0, NULL);
-  return pure_forwarding_target(c, t, depth + 1);
-}
-
 /* Inline a call to a free-function yielding method `foo(args) { |bp| ... }`:
    declare the method's locals (renamed to avoid clashing with the call
    site), bind params to args, then emit the method body with yield
@@ -322,6 +296,15 @@ int call_takes_root_switch(Compiler *c, int id) {
   return self_switch_emits_here(c, cls) && cplan_root_switch(c, id, cls);
 }
 
+/* The context of a splice the node does not carry, from codegen's state:
+   the instance_exec self, a poly arm's receiver class, the class body being
+   emitted and the one self is at call id (cplan_inline_target) */
+static CplanInlineCtx inline_target_ctx(Compiler *c, int id, int narrow) {
+  CplanInlineCtx x = { g_ie_class_id, g_inline_recv_expr ? g_inline_recv_class : -1, g_class_body_id,
+                       emit_self_class_body(c, id), narrow, 0 };
+  return x;
+}
+
 /* A block-driving call emit_inline_call_x leaves to the cls_id switch: the
    plain call it falls back to calls the proc-form clones, so it is no call to
    refuse. */
@@ -342,7 +325,8 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
     if (!ty_is_object(rt)) return 0;
     cls = ty_object_class(rt);
   }
-  int mi = call_target(c, id, cls, name, 0, NULL);
+  CplanInlineCtx x = inline_target_ctx(c, id, 0);
+  int mi = cplan_inline_target(c, id, &x).mi;
   return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, id, mi, cls, name);
 }
 
@@ -526,32 +510,11 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   view_unbind(argov_saved);
 }
 
-/* The context of a splice the node does not carry, from codegen's state:
-   the instance_exec self, a poly arm's receiver class, the class body being
-   emitted and the one self is at call id (cplan_inline_target) */
-static CplanInlineCtx inline_target_ctx(Compiler *c, int id, int narrow) {
-  CplanInlineCtx x = { g_ie_class_id, g_inline_recv_expr ? g_inline_recv_class : -1, g_class_body_id,
-                       emit_self_class_body(c, id), narrow };
-  return x;
-}
 
 static void emit_inline_receiver(Compiler *c, int mi, int recv, Buf *b) {
   if (g_inline_recv_expr) buf_puts(b, g_inline_recv_expr);  /* pre-hoisted cast (#2448) */
   else if (repr_self_handle(c, mi)) emit_strbuf_handle_of(c, recv, b);
   else emit_expr(c, recv, b);
-}
-
-/* The method a splice of call id takes from target t: t's, or where a
-   literal block meets a pure forwarder the method it forwards to (a literal
-   block cannot reach a real-function forwarder); -1 where it does not
-   yield, which no splice takes */
-static int inline_target_spliced(Compiler *c, int id, const CplanInline *t) {
-  int mi = t->mi, blk = nt_ref(c->nt, id, "block");
-  if (mi >= 0 && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
-    int f = pure_forwarding_target(c, mi, 0);
-    if (f >= 0) mi = f;
-  }
-  return mi >= 0 && c->scopes[mi].yields ? mi : -1;
 }
 
 int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
@@ -573,7 +536,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int cm_self_id = it.cm_self_id, implicit_self = it.implicit_self;
   /* `fwd(args) { block }` where fwd just forwards `target(...)` splices
      `target` with this call's args + block */
-  int mi = inline_target_spliced(c, id, &it);
+  int mi = cplan_spliced_mi(c, id, &it, 0);
   if (mi < 0) return 0;
   Scope *m = &c->scopes[mi];
   if (reopen_self_defaults(c, mi) && !repr_self_handle(c, mi)) return 0;
@@ -3300,7 +3263,7 @@ int poly_block_dispatch_cands(Compiler *c, int id, int *cand, int max) {
     if (km < 0) continue;
     Scope *ks = &c->scopes[km];
     int consumes = ks->yields || (ks->blk_param && ks->blk_param[0]) ||
-                   pure_forwarding_target(c, km, 0) >= 0;
+                   cplan_forwarded_mi(c, km, 0) >= 0;
     if (!consumes) return 0;  /* a non-block method in the mix: not our shape */
     /* More classes than the switch takes: one left out would reach the
        default arm, which raises NoMethodError for a method it has. The

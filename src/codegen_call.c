@@ -20043,10 +20043,11 @@ int brk_wrapper_light(Compiler *c, int id) {
   /* so are the arms of the plan's switch on self's class whose default is
      a top-level def or Object's method (call_takes_root_switch) */
   if (call_takes_root_switch(c, id)) return 0;
-  if (call_user_yield_mi(c, id) >= 0) {
+  int smi = cplan_splice_mi(c, id, 0);
+  if (smi >= 0) {
     /* an inlined yielding method splices this block at its yields; the proc
        and lowered forms call it as a proc, whose break is a throw */
-    Scope *m = &c->scopes[call_user_yield_mi(c, id)];
+    Scope *m = &c->scopes[smi];
     if (m->is_proc_form || m->is_lowered_yield || !m->yields) return 0;
     return m->body >= 0 && brk_block_direct_only(c, nt, m->body, 0);
   }
@@ -20065,7 +20066,7 @@ int brk_wrapper_light(Compiler *c, int id) {
    user method (whose breaks are gotos by construction). */
 int brk_wrapper_surely_light(Compiler *c, int id) {
   if (!brk_wrapper_light(c, id)) return 0;
-  if (call_user_yield_mi(c, id) >= 0) return 1;
+  if (cplan_splice_mi(c, id, 0) >= 0) return 1;
   const char *nm = nt_str(c->nt, id, "name");
   static const char *const plain[] = {
     "each", "each_with_index", "each_with_object", "each_index", "each_key", "each_value",

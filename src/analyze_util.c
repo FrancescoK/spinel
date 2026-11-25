@@ -6455,40 +6455,6 @@ int scope_has_return(Compiler *c, int scope_idx) {
   return ans;
 }
 
-/* Resolve a block-bearing CallNode to an INLINE-ABLE yielding user method:
-   mirrors emit_inline_call_x's resolution (free function -> implicit-self
-   chain -> Cls class method -> object-receiver chain) and its
-   yields guard. -1 for anything else -- builtin iterators, `loop`,
-   `catch`, proc/lambda literals, and methods the inliner would refuse. */
-int call_user_yield_mi(Compiler *c, int id) {
-  const NodeTable *nt = c->nt;
-  const char *name = nt_str(nt, id, "name");
-  int recv = nt_ref(nt, id, "receiver");
-  if (!name) return -1;
-  int mi = -1;
-  if (recv < 0) mi = comp_self_call_mi(c, id, name);
-  else {
-    TyKind rt = infer_type(c, recv);
-    NodeKind rk = nt_kind(nt, recv);
-    /* a scoped receiver (NS::Base.transaction { }) resolves by its leaf name,
-       the key classes are indexed under */
-    const char *cname = ((rk == NK_ConstantReadNode ||
-                                 rk == NK_ConstantPathNode))
-                        ? key_name(c, recv) : NULL;
-    /* ... and `self.class.run { }` by the class self.class names, as the
-       inliner does (self_class_static_ci) */
-    int ci = cname ? const_node_class_index(c, recv) : self_class_static_ci(c, recv);
-    if (ci >= 0) mi = call_target(c, id, ci, name, CT_CMETHOD, NULL);
-    else if (ty_is_object(rt)) mi = call_target(c, id, ty_object_class(rt), name, 0, NULL);
-    /* a send of a top-level def the receiver's class does not own: Object's private method, spliced as the inliner does */
-    if (mi < 0 && nt_str(nt, id, "send_blind")) mi = call_target(c, id, -1, name, CT_TOP, NULL);
-  }
-  if (mi < 0) return -1;
-  Scope *m = &c->scopes[mi];
-  if (!m->yields) return -1;
-  return mi;
-}
-
 /* The RangeNode behind a TY_RANGE local-variable read, when the local has
    exactly one write anywhere in the program (a plain LocalVariableWriteNode
    in the read's own scope) and that write's value is a (possibly
