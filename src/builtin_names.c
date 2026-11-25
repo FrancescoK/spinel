@@ -84,6 +84,10 @@ int is_method_invoke(const char *n) {
 }
 
 int is_bind_call(const char *n) { return n && sp_streq(n, "bind_call"); }
+int is_unbind_name(const char *n) { return n && sp_streq(n, "unbind"); }
+int is_method_copy_name(const char *n) {
+  return n && (sp_streq(n, "dup") || is_clone_name(n) || is_unbind_name(n) || sp_streq(n, "bind"));
+}
 
 int is_kind_query(const char *n) {
   return sp_streq(n, "is_a?") || sp_streq(n, "kind_of?") || sp_streq(n, "instance_of?");

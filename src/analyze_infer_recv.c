@@ -1873,7 +1873,7 @@ int infer_poly_call(Compiler *c, int id, TyKind rt, TyKind *out) {
      (#3692). Guarded on the program building Method objects at all, since
      these names also belong to exceptions and procs. */
   if (recv >= 0 && rt == TY_POLY && argc == 0 && nt_ref(nt, id, "block") < 0 &&
-      (sp_streq(name, "unbind") || sp_streq(name, "receiver")) &&
+      (is_unbind_name(name) || sp_streq(name, "receiver")) &&
       an_program_builds_methods(c) && !an_user_recv_defines_method(c, name))
     { *out = TY_POLY; return 1; }
   /* Numeric#fdiv / Complex#fdiv on a boxed receiver: Complex when the

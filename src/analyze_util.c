@@ -6013,7 +6013,7 @@ int method_expr_is_unbound(Compiler *c, int recv) {
     const char *nm = nt_str(nt, recv, "name");
     if (nm && sp_streq(nm, "bind")) return 0;
     if (nm && sp_streq(nm, "instance_method") && method_sym_arg(c, recv) != NULL) return 1;
-    if (nm && sp_streq(nm, "unbind")) return 1;
+    if (is_unbind_name(nm)) return 1;
     if (nm && sp_streq(nm, "super_method"))
       return method_expr_is_unbound(c, nt_ref(nt, recv, "receiver"));
     return 0;
@@ -6101,15 +6101,10 @@ int method_recv_node(Compiler *c, int recv) {
   if (recv < 0) return -1;
   if (is_method_obj_call(c, recv)) return recv;
   /* UnboundMethod#bind(obj) re-binds the same target: see through it (#2676).
-     dup/clone of a method are identity copies: see through them too (#3247). */
-  if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
-      (sp_streq(nt_str(nt, recv, "name"), "bind") ||
-       sp_streq(nt_str(nt, recv, "name"), "dup") ||
-       sp_streq(nt_str(nt, recv, "name"), "clone") ||
-       /* #unbind names the same target with the receiver dropped, so the
-          UnboundMethod it answers resolves like the Method it came from
-          (#3658) */
-       sp_streq(nt_str(nt, recv, "name"), "unbind")))
+     dup/clone of a method are identity copies: see through them too (#3247).
+     #unbind names the same target with the receiver dropped, so the
+     UnboundMethod it answers resolves like the Method it came from (#3658) */
+  if (nt_kind(nt, recv) == NK_CallNode && is_method_copy_name(nt_str(nt, recv, "name")))
     return method_recv_node(c, nt_ref(nt, recv, "receiver"));
   /* a super_method call IS a method node: method_obj_target_mi resolves it
      through the parent chain, so hand it back as-is (#3247) */

@@ -2688,7 +2688,7 @@ int an_program_builds_methods(Compiler *c) {
     if (nt_kind(c->nt, id) != NK_CallNode) continue;
     const char *n = nt_str(c->nt, id, "name");
     if (n && (sp_streq(n, "method") || sp_streq(n, "instance_method") ||
-              sp_streq(n, "unbind"))) memo = 1;
+              is_unbind_name(n))) memo = 1;
   }
   return memo;
 }

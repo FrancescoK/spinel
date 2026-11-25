@@ -20,6 +20,8 @@ int is_class_ivar_accessor_name(const char *n);   /* __spinel_civget_x and its k
 int is_call_alias(const char *n);     /* call () []: a Proc/Method's invocation */
 int is_method_invoke(const char *n);  /* call () [] ===: Method invocation */
 int is_bind_call(const char *n);  /* bind_call: an UnboundMethod bound and called in one */
+int is_unbind_name(const char *n);  /* unbind: a Method's UnboundMethod, which binds to any object */
+int is_method_copy_name(const char *n);  /* dup clone unbind bind: a Method holding the target its receiver holds */
 int is_kind_query(const char *n);     /* is_a? kind_of? instance_of? */
 int is_instance_of_query(const char *n);   /* instance_of? */
 int is_case_eq(const char *n);        /* === */

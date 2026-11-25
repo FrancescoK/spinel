@@ -827,7 +827,7 @@ int emit_op_method_super_method(Compiler *c, const BopCtx *x, Buf *b) {
     /* a copy or a re-binding holds what its receiver holds (`m.dup`), as
        method_recv_node sees through it */
     for (const char *wn; nt_kind(nt, src) == NK_CallNode && (wn = nt_str(nt, src, "name")) &&
-         (sp_streq(wn, "dup") || sp_streq(wn, "clone") || sp_streq(wn, "unbind") || sp_streq(wn, "bind")) &&
+         is_method_copy_name(wn) &&
          nt_ref(nt, src, "receiver") >= 0; )
       src = nt_ref(nt, src, "receiver");
     int held = mnp < 0 ? method_recv_nodes(c, src, &mns) : 0;
@@ -3458,7 +3458,7 @@ int emit_call_poly_callable_arms(Compiler *c, int id, Buf *b, const NodeTable *n
         buf_printf(b, "sp_box_class(sp_bm_owner((sp_BoundMethod *)_t%d.v.p))", t);
 
 
-      else if (sp_streq(name, "unbind"))
+      else if (is_unbind_name(name))
         buf_printf(b, "sp_box_obj(sp_bm_unbind((sp_BoundMethod *)_t%d.v.p), SP_BUILTIN_METHOD)", t);
       else if (sp_streq(name, "receiver"))
         /* the object the Method bound: a reference self carries its own class

@@ -7600,7 +7600,7 @@ static int emit_poly_builtin_method(Compiler *c, int id, Buf *b) {
   }
   /* Method#unbind on a value read out of a container: the same target with the
      receiver dropped, marked so #class reports UnboundMethod (#3692). */
-  if (sp_streq(name, "unbind") && argc == 0) {
+  if (is_unbind_name(name) && argc == 0) {
     int tv = ++g_tmp;
     buf_printf(b, "({ sp_RbVal _t%d = ", tv); emit_expr(c, recv, b);
     /* sp_bm_unbind allocates and then reads m->desc/legacy_* off the source;
