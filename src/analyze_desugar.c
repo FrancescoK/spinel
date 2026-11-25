@@ -33779,7 +33779,11 @@ static void biv_rewrite(Compiler *c, NodeTable *nt, int node, int mode) {
   if (k == NK_CallNode && mode == BIV_TABLE && biv_is_self_or_implicit(nt, node) &&
       biv_is_reflective_set(nt, node))
     c->bivar_table = 1;
-  if (k == NK_InstanceVariableTargetNode && mode == BIV_OBJECT) {
+  /* a multiple-assignment target of a top-level def run on another self (desugar_top_def_ivars) writes through
+     instance_variable_set once the assignment is taken apart (biv_target_write); a module mixed into Object keeps
+     the refusal below, its method being emitted for the module's own self too */
+  const Scope *ts = k == NK_InstanceVariableTargetNode && node < c->node_cap ? comp_scope_of(c, node) : NULL;
+  if (ts && mode == BIV_OBJECT && cplan_is_top_def_scope(c, ts->idx)) {
     nt_node_set_int(nt, node, "biv_target", 1);
     c->bivar_table = 1;
     return;
