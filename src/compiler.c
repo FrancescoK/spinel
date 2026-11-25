@@ -6886,23 +6886,39 @@ int poly_string_read_p(const char *name) {
   return bop_name_has_reader(name, BOP_READ_STRING);
 }
 
-/* The class `self.class` at `recv` names when only one class can answer it:
-   an instance method of a class no other class inherits from. In a
-   superclass or a module it is whichever class the receiver has at run time.
-   -1 when recv is not `self.class` or names no single class. */
-int self_class_static_ci(Compiler *c, int recv) {
+/* `self.class` at recv: the class an instance_eval or instance_exec block
+   binds its self to (ie_class_of), -1 for none; -2 when recv is not
+   `self.class` or its self's class only the run time gives (a stored
+   block's self an instance_exec rebinds, a literal block's run on another
+   object of no one class) */
+static int self_class_recv_ie(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
-  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -1;
+  if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -2;
   const char *cn = nt_str(nt, recv, "name");
   int cr = nt_ref(nt, recv, "receiver");
-  if (!cn || !sp_streq(cn, "class") || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -1;
-  /* (not a self an instance_exec rebinds: a stored block's, whose class is
-     the receiver's at run time, not the method's it is written in) */
-  if (nt_int(nt, cr, "ie_rself", 0)) return -1;
-  /* (nor a literal block's an instance_eval or instance_exec runs on
-     another object: its self is that object, whose class the block gives) */
+  if (!cn || !is_class_query(cn) || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -2;
+  if (nt_int(nt, cr, "ie_rself", 0)) return -2;
   int ie = ie_class_of(c, cr);
-  if (ie < -1) return -1;
+  return ie < -1 ? -2 : ie;
+}
+
+/* See compiler.h. */
+int self_class_is_class(Compiler *c, int recv) {
+  if (self_class_recv_ie(c, recv) != -1) return 0;
+  Scope *s = comp_scope_of(c, recv);
+  /* (a module's self is a Module, and main's an Object) */
+  return s && s->is_cmethod && s->class_id >= 0 && !comp_class_is_module(c, &c->classes[s->class_id]);
+}
+
+/* The class `self.class` at `recv` names when only one class can answer it:
+   an instance method of a class no other class inherits from. In a
+   superclass or a module it is whichever class the receiver has at run time,
+   and in a class method it is the builtin Class (self_class_is_class), no
+   class of the program's, as the constant `Class` is none.
+   -1 when recv is not `self.class` or names no single class. */
+int self_class_static_ci(Compiler *c, int recv) {
+  int ie = self_class_recv_ie(c, recv);
+  if (ie < -1 || self_class_is_class(c, recv)) return -1;
   Scope *s = comp_scope_of(c, recv);
   int cid = ie >= 0 ? ie : s ? s->class_id : -1;
   if (cid < 0 || comp_class_is_module(c, &c->classes[cid])) return -1;

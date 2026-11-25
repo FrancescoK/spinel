@@ -3347,6 +3347,10 @@ int class_recv_is_dynamic(Compiler *c, int recv);
    writes: no type read (the census ahead of the type fixpoint) */
 int class_recv_may_be_dynamic(Compiler *c, int recv);
 int self_class_static_ci(Compiler *c, int recv);  /* self.class naming one class */
+/* Is recv `self.class` in a class's class method, where self is a class
+   object and its class the builtin Class, which the constant `Class` names
+   too? */
+int self_class_is_class(Compiler *c, int recv);
 int self_class_base_ci(Compiler *c, int recv);    /* self.class: the instance method's own class */
 int allocate_on_own_class(Compiler *c, int id);    /* allocate on the method's own class */
 

@@ -10927,6 +10927,17 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     why = "a Method of a class made at run time (`Class.new` evaluated more than once) is not "
           "supported; call the method on the class instead (see docs/limitations.md)";
 
+  /* `self.class.new` in a class method is Class.new on the builtin Class
+     (self_class_is_class), a class made where the method runs, which no
+     class builder of the program's takes */
+  if (!why && is_new_name(name) && self_class_is_class(c, recv)) {
+    why = "self.class.new in a class method is not supported by AOT compilation: it is "
+          "Class.new, a class made at run time, and the class graph, ancestor chain, and "
+          "method/ivar layout are baked at compile time. Declare the class with `class ... "
+          "end` instead (see docs/limitations.md)";
+    *lx = LX_BINDING;
+  }
+
   /* Structural mutation of a class through an explicit receiver: the same
      declarations INSIDE a `class` body (where they are receiverless) work.
      Object counts though a program that never reopens it has no class entry

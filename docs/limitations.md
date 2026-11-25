@@ -309,6 +309,9 @@ and as `#<Foo:0x... @a=1>` once a constant assignment names the class.
 At top level or in a class body outside a method, loop or block, omitting
 the block with a constant superclass is equivalent to an empty block. A local
 holding a class is still not a supported superclass expression.
+`self.class.new` in a class method, where self is a class and `self.class`
+is Class, is `Class.new` made where the method runs: it is refused at
+compile time, with or without a superclass or a block.
 
 Besides `Class.new(Constant)`, a superclass written as a call may be
 `Struct.new(...)`, `Data.define(...)`, or the `new` of a Struct subclass of
