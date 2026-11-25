@@ -296,10 +296,8 @@ int call_takes_root_switch(Compiler *c, int id) {
   return self_switch_emits_here(c, cls) && cplan_root_switch(c, id, cls);
 }
 
-/* The context of a splice the node does not carry, from codegen's state:
-   the instance_exec self, a poly arm's receiver class, the class body being
-   emitted and the one self is at call id (cplan_inline_target) */
-static CplanInlineCtx inline_target_ctx(Compiler *c, int id) {
+/* See codegen_internal.h. */
+CplanInlineCtx inline_target_ctx(Compiler *c, int id) {
   CplanInlineCtx x = { g_ie_class_id, g_inline_recv_expr ? g_inline_recv_class : -1, g_class_body_id,
                        emit_self_class_body(c, id), 0 };
   return x;

@@ -2707,6 +2707,11 @@ int emit_reinit_init_text_ex(Compiler *c, int im, const char *self, const char *
    1 when it cannot tell. */
 int subtree_may_write_ivar(Compiler *c, int id, const char *iv, int cls, int depth);
 int block_call_takes_class_dispatch(Compiler *c, int id);
+/* The context of a splice the node does not carry, from codegen's state:
+   the instance_exec self, a poly arm's receiver class, the class body being
+   emitted and the one self is at call id (cplan_inline_target, call_plan.h) */
+struct CplanInlineCtx;   /* (call_plan.h) */
+struct CplanInlineCtx inline_target_ctx(Compiler *c, int id);
 /* Does bare or `self.` call id run its plan's switch on self's class whose
    default arm is a top-level def or Object's method (cplan_root_switch)?
    The arms are called, the yielding ones by their proc forms with the

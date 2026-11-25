@@ -1200,7 +1200,7 @@ typedef struct {
   int cm_class, cm_self_id;
   int implicit_self;
 } CplanInline;
-typedef struct { int ie_class, arm_class, cbody, self_cbody, fresh; } CplanInlineCtx;
+typedef struct CplanInlineCtx { int ie_class, arm_class, cbody, self_cbody, fresh; } CplanInlineCtx;
 CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x);
 /* The context the tree gives call id: its instance_exec self and the class
    body it stands in (no poly arm, which only its emission knows), for a

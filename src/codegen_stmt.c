@@ -21250,17 +21250,16 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
     const char *ycn = nt_str(nt, id, "name");
     int yrecv = nt_ref(nt, id, "receiver");
     if (ycn && yrecv >= 0 && nt_ref(nt, id, "block") >= 0) {
-      TyKind yrt = comp_ntype(c, yrecv);
-      if (ty_is_object(yrt)) {
-        int ycid = ty_object_class(yrt);
-        int ymi = ycid >= 0 ? call_target(c, id, ycid, ycn, 0, NULL) : -1;
-        /* (a `&.` call goes on to its guard, which splices it) */
-        if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id) &&
-            !sn_guard_pending(c, id))
-          unsupported_feature(c, id,
-            "a block-driving call to a method that yields could not be inlined "
-            "(a yielding method has no standalone function to call)");
-      }
+      /* (the method the splice would have taken, as the plan answers it
+         where codegen stands; a `&.` call goes on to its guard, which
+         splices it) */
+      CplanInlineCtx x = inline_target_ctx(c, id);
+      int ymi = cplan_inline_target(c, id, &x).mi;
+      if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id) &&
+          !sn_guard_pending(c, id))
+        unsupported_feature(c, id,
+          "a block-driving call to a method that yields could not be inlined "
+          "(a yielding method has no standalone function to call)");
     }
   }
   if (emit_iteration_stmt(c, id, b, indent)) return 1;
