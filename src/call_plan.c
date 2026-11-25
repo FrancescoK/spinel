@@ -2021,14 +2021,15 @@ static void cplan_resolve_call(Compiler *c, int id, CallPlan *p) {
     int kmi = kci >= 0 ? call_target(c, id, kci, name, 0, NULL) : -1;
     if (kmi >= 0) { cplan_set(p, kmi, kci, UC_REOPEN, CP_DIRECT); return; }
   }
-  int sci = self_class_static_ci(c, recv);   /* `self.class` naming one class */
-  int bci = rk == NK_SelfNode ? class_body_self_ci(c, recv) : -1;   /* a class body's self */
-  if (sci >= 0 || bci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
-    int ci = sci >= 0 ? sci : bci >= 0 ? bci : const_node_class_index(c, recv);
+  /* `self.class` naming one class, or a class body's self (self_recv_class_ci) */
+  int sci = self_recv_class_ci(c, recv);
+  if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
+    int ci = sci >= 0 ? sci : const_node_class_index(c, recv);
     int mi = ci < 0 ? -1 : cplan_cmethod_target(c, id, ci, name, 0);
-    /* a package's native_func, which the constant calls in C directly; its
-       def is for the module reached as a value */
-    if (sci < 0 && comp_scope_native_twin(c, mi)) return;
+    /* a package's native_func, which a name of the module (a constant, a
+       class body's self) calls in C directly; its def is for the module
+       reached as a value (`self.class`, a call) */
+    if (rk != NK_CallNode && comp_scope_native_twin(c, mi)) return;
     if (mi >= 0) { cplan_set(p, mi, ci, UC_CMETH, CP_DIRECT); return; }
     /* a method the program adds to Class, on a builtin class constant */
     int rmi = class_reopen_cmethod(c, id, recv, name);
