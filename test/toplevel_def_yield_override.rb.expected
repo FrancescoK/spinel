@@ -192,3 +192,10 @@ Object
 [Symbol, 4]
 [OyK9, 7]
 [Class, 8]
+[OyK10, 1]
+[Integer, 2]
+[String, 3]
+[NilClass, 4]
+UnboundMethod
+Object
+Object

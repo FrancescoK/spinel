@@ -312,3 +312,21 @@ bm27 = u27.bind(5)
 p bm27.call(3), u27.bind("s").call(1), u27.bind(nil).call(2), oy27mk(:y).call(4)
 class OyK9; end
 p u27.bind(OyK9.new).call(7), method(:oy27).unbind.bind(OyK9).call(8)
+
+# ... followed back to the method(:m) that made it through copies and a
+# local's writes, beside a def no unbind reaches, which stays main's
+def oy28(a) = [self.class, a]
+def oy28n = self.class
+class OyK10; end
+d28 = method(:oy28).dup
+c28 = method(:oy28).clone
+e28 = c28
+f28 = method(:oy28)
+f28 = f28.dup
+g28 = method(:oy28)
+g28 = method(:oy28) if ARGV.empty?
+p d28.unbind.bind(OyK10.new).call(1)
+p e28.unbind.bind(2).call(2)
+p f28.unbind.bind("s").call(3)
+p g28.unbind.bind(nil).call(4)
+p 1.method(:succ).unbind.class, oy28n, method(:oy28n).call
