@@ -1506,6 +1506,24 @@ spinel: test/reject/merge_boxed_block_param_shapes.rb:9: a merge! conflict block
 spinel: test/reject/merge_boxed_block_param_shapes.rb:13: a merge! conflict block with a default, keyword, post-rest or fourth required parameter over a boxed Hash
 spinel: test/reject/merge_boxed_block_param_shapes.rb:17: a merge! conflict block with a default, keyword, post-rest or fourth required parameter over a boxed Hash
 spinel: 4 refusals, nothing written
+== test/reject/method_bind_poly_recv_builtin.rb [default] rc=1
+spinel: test/reject/method_bind_poly_recv_builtin.rb:5: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty50
+spinel: 1 refusal, nothing written
+== test/reject/method_bind_poly_recv_builtin.rb [promote] rc=1
+spinel: test/reject/method_bind_poly_recv_builtin.rb:5: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty50
+spinel: 1 refusal, nothing written
+== test/reject/method_bind_poly_recv_class_method.rb [default] rc=1
+spinel: test/reject/method_bind_poly_recv_class_method.rb:8: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty49
+spinel: 1 refusal, nothing written
+== test/reject/method_bind_poly_recv_class_method.rb [promote] rc=1
+spinel: test/reject/method_bind_poly_recv_class_method.rb:8: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty49
+spinel: 1 refusal, nothing written
+== test/reject/method_bind_poly_recv_own.rb [default] rc=1
+spinel: test/reject/method_bind_poly_recv_own.rb:7: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty50
+spinel: 1 refusal, nothing written
+== test/reject/method_bind_poly_recv_own.rb [promote] rc=1
+spinel: test/reject/method_bind_poly_recv_own.rb:7: unsupported call: node N (CallNode `bind`) recv=CallNode/ty45 argc=1 arg0ty50
+spinel: 1 refusal, nothing written
 == test/reject/method_called_reaches_its_target.rb [default] rc=1
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
 spinel: test/reject/method_called_reaches_its_target.rb:5: Class.new with a non-constant superclass is not supported; use a constant superclass (see docs/limitations.md)
