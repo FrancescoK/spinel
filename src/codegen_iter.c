@@ -526,9 +526,9 @@ void emit_inline_bind_params(Compiler *c, Scope *m, int args, const int *argv, i
   view_unbind(argov_saved);
 }
 
-/* The method a call with a block is spliced from, and the self it binds: the
-   inline's own lookup, which the plan stands in for (inline_target_plan) and
-   --plan-check keeps as the assertion. */
+/* The method a call with a block is spliced from, and the self it binds.
+   The call's plan decides them (inline_target_plan); inline_target_lookup is
+   --plan-check's assertion of that answer and decides nothing. */
 typedef struct {
   int mi;
   int recv_class;   /* the instance self is bound to */
@@ -643,10 +643,11 @@ static void inline_target_lookup(Compiler *c, int id, const char *name, int recv
    included module's; a class constant's class method (a Class reopen's for a
    builtin class); an instance receiver's own lookup. An instance_exec self
    and a poly arm's receiver class are read into the plan (cplan_user_in).
-   0 for a plan of another kind, which keeps the lookup. `narrow` is
-   call_targets_yielding_method's shorter echo: a constant receiver only, and
-   no Class reopen. */
-static int inline_target_plan(Compiler *c, int id, const char *name, int recv, int narrow,
+   None (mi -1) for a plan that binds no program method (a builtin's, a
+   native_func stub's) or a method of another form, which no splice takes:
+   the plan is the call's one answer. `narrow` is the yielding-target
+   question's form: a constant receiver only, and no Class reopen. */
+static void inline_target_plan(Compiler *c, int id, const char *name, int recv, int narrow,
                               InlineTarget *t) {
   const NodeTable *nt = c->nt;
   t->mi = -1; t->recv_class = -1; t->cm_class = -1; t->cm_self_id = 0; t->implicit_self = 0;
@@ -657,7 +658,7 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     p = cplan_user_in(c, id, g_ie_class_id, CPX_IE);
     if (p.chain && p.via == UC_INST && p.owner_ci == g_ie_class_id) {
       t->mi = p.mi; t->recv_class = g_ie_class_id;
-      return 1;
+      return;
     }
   }
   else if (recv >= 0 && !narrow && g_inline_recv_expr && g_inline_recv_class >= 0 &&
@@ -668,10 +669,10 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     CallPlan q = cplan_user_in(c, id, g_inline_recv_class, CPX_ARM);
     t->recv_class = g_inline_recv_class;
     if (q.chain && q.via == UC_INST && q.owner_ci == g_inline_recv_class) t->mi = q.mi;
-    return 1;
+    return;
   }
   else p = cplan_user(c, id);
-  if (p.mi < 0) return 0;
+  if (p.mi < 0) return;
   if (recv < 0) {
     Scope *encl = comp_scope_of(c, id);
     int ecls = encl ? encl->class_id : -1;
@@ -685,33 +686,33 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
          (cplan_self_root_override): the def is the free function the
          lookup names, Object's method no target of self's chain */
       int rcls = c->scopes[p.mi].class_id;
-      if (rcls < 0) { t->mi = p.mi; return 1; }
-      if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != ecls) return 0;
+      if (rcls < 0) { t->mi = p.mi; return; }
+      if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != ecls) return;
       t->mi = p.mi; t->implicit_self = 1;
-      return 1;
+      return;
     }
     if (ecls >= 0 && encl->is_cmethod && p.via == UC_CMETH && p.owner_ci == ecls &&
         c->scopes[p.mi].is_cmethod) {
       t->mi = p.mi;
-      return 1;
+      return;
     }
     if (ecls < 0 && g_class_body_id >= 0 && p.via == UC_CMETH && p.owner_ci == g_class_body_id &&
         emit_self_class_body(c, id) >= 0) {
       t->mi = p.mi; t->cm_class = g_class_body_id;
-      return 1;
+      return;
     }
-    if (top_ok && p.via == UC_TOP) { t->mi = p.mi; return 1; }
+    if (top_ok && p.via == UC_TOP) { t->mi = p.mi; return; }
     if (top_ok && p.via == UC_INCLUDED) {
       if (!scope_uses_ivars(c, p.mi)) {
         t->mi = p.mi;
         if (c->scopes[p.mi].is_cmethod) t->cm_class = c->scopes[p.mi].class_id;
       }
-      return 1;
+      return;
     }
-    return 0;
+    return;
   }
   /* a send of a top-level def the receiver's class does not own */
-  if (p.via == UC_SEND_BLIND) { t->mi = p.mi; return 1; }
+  if (p.via == UC_SEND_BLIND) { t->mi = p.mi; return; }
   NodeKind rk = nt_kind(nt, recv);
   const char *cname = ((rk == NK_ConstantReadNode ||
                                rk == NK_ConstantPathNode))
@@ -722,33 +723,45 @@ static int inline_target_plan(Compiler *c, int id, const char *name, int recv, i
     TyKind rt = comp_ntype(c, recv);
     if (p.via == UC_INST && p.chain && ty_is_object(rt) && p.owner_ci == ty_object_class(rt)) {
       t->mi = p.mi; t->recv_class = p.owner_ci;
-      return 1;
+      return;
     }
-    return 0;
+    return;
   }
   /* (the class the node names: an alias's too) */
   int ci = cname ? const_node_class_index(c, recv) : bci >= 0 ? bci : self_class_static_ci(c, recv);
   if (p.via == UC_CMETH && !p.by_name && (cname || ci >= 0)) {
-    if (ci >= 0 && p.owner_ci == ci) { t->mi = p.mi; t->cm_class = ci; return 1; }
+    if (ci >= 0 && p.owner_ci == ci) { t->mi = p.mi; t->cm_class = ci; return; }
     if (!narrow && cname && builtin_class_id(cname) && p.owner_ci == c->scopes[p.mi].class_id &&
         p.owner_ci != ci) {
       t->mi = p.mi; t->cm_class = p.owner_ci; t->cm_self_id = builtin_class_id(cname);
-      return 1;
+      return;
     }
-    return 0;
+    return;
   }
   if (ci < 0 && p.via == UC_INST && p.chain) {
     TyKind rt = comp_ntype(c, recv);
     /* Object's method as the default of a switch on self's class
        (cplan_self_root_override): no target of the receiver's chain */
     int rcls = c->scopes[p.mi].class_id;
-    if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != p.owner_ci) return 0;
+    if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != p.owner_ci) return;
     if (ty_is_object(rt) && p.owner_ci == ty_object_class(rt)) {
       t->mi = p.mi; t->recv_class = p.owner_ci;
-      return 1;
+      return;
     }
   }
-  return 0;
+}
+
+/* The method a splice of call id takes from target t: t's, or where a
+   literal block meets a pure forwarder the method it forwards to (a literal
+   block cannot reach a real-function forwarder); -1 where it does not
+   yield, which no splice takes */
+static int inline_target_spliced(Compiler *c, int id, const InlineTarget *t) {
+  int mi = t->mi, blk = nt_ref(c->nt, id, "block");
+  if (mi >= 0 && blk >= 0 && nt_kind(c->nt, blk) == NK_BlockNode) {
+    int f = pure_forwarding_target(c, mi, 0);
+    if (f >= 0) mi = f;
+  }
+  return mi >= 0 && c->scopes[mi].yields ? mi : -1;
 }
 
 static int inline_target_same(const InlineTarget *a, const InlineTarget *b) {
@@ -766,41 +779,28 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
      here on the non-nil receiver (g_sn_skip): spliced ahead of the guard,
      the body ran on a nil receiver, where the call answers nil */
   if (sn_guard_pending(c, id)) return 0;
-  /* the target is the call's plan where its form says the binding;
-     otherwise, and under --plan-check as the assertion, the lookup */
+  /* the target is the call's plan; under --plan-check the lookup asserts it:
+     the same target where the plan binds one, and none spliced where it binds
+     none */
   InlineTarget it;
-  int served = inline_target_plan(c, id, name, recv, 0, &it);
-  if (g_plan_check && served) cplan_served("inline-call");
-  if (g_plan_check || !served) {
+  inline_target_plan(c, id, name, recv, 0, &it);
+  if (g_plan_check) {
+    cplan_served("inline-call");
     InlineTarget ot;
     inline_target_lookup(c, id, name, recv, &ot);
-    if (!served) {
-      if (g_plan_check && ot.mi >= 0)
-        fprintf(stderr, "plan-check: cplan-fallback: inline-call node %d %s%s\n", id, name,
-                g_ie_class_id >= 0 ? " (instance_exec self)" : "");
-      it = ot;
-    }
-    else if (!inline_target_same(&it, &ot))
+    if (it.mi >= 0 ? !inline_target_same(&it, &ot) : inline_target_spliced(c, id, &ot) >= 0)
       fprintf(stderr, "plan-check: cplan-conflict: inline-call node %d %s: plan %d/%d/%d/%d/%d, "
               "lookup %d/%d/%d/%d/%d\n", id, name, it.mi, it.recv_class, it.cm_class,
               it.cm_self_id, it.implicit_self, ot.mi, ot.recv_class, ot.cm_class, ot.cm_self_id,
               ot.implicit_self);
   }
-  int mi = it.mi, recv_class = it.recv_class, cm_class = it.cm_class;
+  int recv_class = it.recv_class, cm_class = it.cm_class;
   int cm_self_id = it.cm_self_id, implicit_self = it.implicit_self;
+  /* `fwd(args) { block }` where fwd just forwards `target(...)` splices
+     `target` with this call's args + block */
+  int mi = inline_target_spliced(c, id, &it);
   if (mi < 0) return 0;
-  /* `fwd(args) { block }` where fwd just forwards `target(...)`: a literal
-     block can't reach a real-function forwarder, so retarget to `target`
-     with this call's args + block (target then splices the block normally). */
-  {
-    int blk0 = nt_ref(nt, id, "block");
-    if (blk0 >= 0 && nt_kind(nt, blk0) == NK_BlockNode) {
-      int t = pure_forwarding_target(c, mi, 0);
-      if (t >= 0) mi = t;
-    }
-  }
   Scope *m = &c->scopes[mi];
-  if (!m->yields) return 0;
   if (reopen_self_defaults(c, mi) && !repr_self_handle(c, mi)) return 0;
   /* A subclass overriding the method takes its own arm of the cls_id switch;
      splicing this body answered for every class with the base's method. The
@@ -3880,19 +3880,19 @@ int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
 }
 
 /* Does this call target a user method that yields (so it has no standalone C
-   function -- it is only ever inlined at its call sites)? A compact echo of
-   emit_inline_call_x's own method resolution. (#2948) */
+   function -- it is only ever inlined at its call sites)? The call's plan
+   answers it, as it answers emit_inline_call_x; under --plan-check the echo
+   below asserts it. (#2948) */
 int call_targets_yielding_method(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
   const char *name = nt_str(nt, id, "name");
   if (!name) return 0;
   int recv = nt_ref(nt, id, "receiver");
-  /* the call's plan where its form says the target (inline_target_plan);
-     otherwise, and under --plan-check as the assertion, the echo below */
   InlineTarget it;
-  int served = inline_target_plan(c, id, name, recv, 1, &it);
-  if (g_plan_check && served) cplan_served("yielding-target");
-  if (served && !g_plan_check) return it.mi >= 0 && c->scopes[it.mi].yields;
+  inline_target_plan(c, id, name, recv, 1, &it);
+  int yields = it.mi >= 0 && c->scopes[it.mi].yields;
+  if (!g_plan_check) return yields;
+  cplan_served("yielding-target");
   int mi = -1;
   if (recv < 0) {
     /* emit_inline_call_x's order: the instance_exec class, then the
@@ -3935,13 +3935,11 @@ int call_targets_yielding_method(Compiler *c, int id) {
     if (mi < 0 && nt_str(nt, id, "send_blind") && !send_blind_recv_owns(c, id, recv, rt, name))
       mi = call_target(c, id, -1, name, CT_TOP, NULL);
   }
-  if (served && it.mi != mi)
+  /* (the same target where the plan binds one, and no yielding one where it binds none) */
+  if (it.mi >= 0 ? it.mi != mi : mi >= 0 && c->scopes[mi].yields)
     fprintf(stderr, "plan-check: cplan-conflict: yielding-target node %d %s: plan %d, lookup %d\n",
             id, name, it.mi, mi);
-  if (!served && g_plan_check && mi >= 0)
-    fprintf(stderr, "plan-check: cplan-fallback: yielding-target node %d %s\n", id, name);
-  if (served) mi = it.mi;
-  return mi >= 0 && c->scopes[mi].yields;
+  return yields;
 }
 
 static int emit_inline_expr_held(Compiler *c, int id, Buf *b);
