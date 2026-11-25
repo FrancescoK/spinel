@@ -5731,8 +5731,7 @@ int is_method_obj_call(Compiler *c, int node) {
   const char *nm = nt_str(nt, node, "name");
   /* Module#instance_method builds the same object, unbound (NULL self); the
      Method machinery (name/arity/owner/call-after-bind) rides it (#2676) */
-  if (!nm || !(sp_streq(nm, "method") || sp_streq(nm, "instance_method")) || method_sym_arg(c, node) == NULL)
-    return 0;
+  if (!is_method_node_name(nm) || method_sym_arg(c, node) == NULL) return 0;
   /* a receiver whose class has a `method` of the program's own calls that
      (#10719); its super is the builtin, marked builtin_only
      (desugar_method_override_super) */
@@ -6094,34 +6093,29 @@ int local_takes_unwritten_value(Compiler *c, Scope *sc, const char *vn) {
   return !c->lvws_built;   /* (no index: nothing says the local has no such write) */
 }
 
-/* The `method(:sym)` node a Method-typed expression resolves to: either the
-   call itself (inline) or, for a local variable, its assignment in scope. */
-int method_recv_node(Compiler *c, int recv) {
+/* See analyze.h. */
+int method_walk(Compiler *c, int recv, MethodWalk *mw) {
   const NodeTable *nt = c->nt;
   if (recv < 0) return -1;
-  if (is_method_obj_call(c, recv)) return recv;
+  const char *nm = nt_kind(nt, recv) == NK_CallNode ? nt_str(nt, recv, "name") : NULL;
+  if (is_method_node_name(nm) && method_sym_arg(c, recv))
+    return mw->leaf(c, recv, mw->ctx) ? recv : -1;
   /* UnboundMethod#bind(obj) re-binds the same target: see through it (#2676).
      dup/clone of a method are identity copies: see through them too (#3247).
      #unbind names the same target with the receiver dropped, so the
      UnboundMethod it answers resolves like the Method it came from (#3658) */
-  if (nt_kind(nt, recv) == NK_CallNode && is_method_copy_name(nt_str(nt, recv, "name")))
-    return method_recv_node(c, nt_ref(nt, recv, "receiver"));
+  if (is_method_copy_name(nm)) return method_walk(c, nt_ref(nt, recv, "receiver"), mw);
   /* a super_method call IS a method node: method_obj_target_mi resolves it
      through the parent chain, so hand it back as-is (#3247) */
-  if (nt_kind(nt, recv) == NK_CallNode && nt_str(nt, recv, "name") &&
-      sp_streq(nt_str(nt, recv, "name"), "super_method") &&
-      method_recv_node(c, nt_ref(nt, recv, "receiver")) >= 0)
-    return recv;
+  if (is_super_method_name(nm))
+    return method_walk(c, nt_ref(nt, recv, "receiver"), mw) >= 0 && mw->leaf(c, recv, mw->ctx) ? recv : -1;
   NodeKind rk = nt_kind(nt, recv);
-  static int depth;
-  static const char *active_vn[32];
-  static Scope *active_sc[32];
-  if (rk == NK_LocalVariableReadNode && depth < 32) {
+  if (rk == NK_LocalVariableReadNode && mw->depth < METHOD_WALK_DEPTH) {
     const char *vn = nt_str(nt, recv, "name");
     Scope *sc = comp_scope_of(c, recv);
     /* a write reading the local it writes (`m = m.dup`) says nothing new */
-    for (int d = 0; d < depth; d++)
-      if (active_sc[d] == sc && vn && active_vn[d] && sp_streq(active_vn[d], vn)) return -2;
+    for (int d = 0; d < mw->depth; d++)
+      if (mw->active_sc[d] == sc && vn && mw->active_vn[d] && sp_streq(mw->active_vn[d], vn)) return -2;
     /* Every write must name the same method: the static binding (self-ful
        or self-less, the target's signature) is the one node's, and a local
        re-written to another Method (`m = A.new.method(:x); m = method(:top)`)
@@ -6138,14 +6132,14 @@ int method_recv_node(Compiler *c, int recv) {
       int val = nt_ref(nt, w, "value");
       /* resolve the written expression with the same rules as a direct
          receiver (sees through bind/dup/clone chains, super_method) */
-      active_vn[depth] = vn; active_sc[depth] = sc;
-      depth++;
-      int inner = method_recv_node(c, val);
-      depth--;
+      mw->active_vn[mw->depth] = vn; mw->active_sc[mw->depth] = sc;
+      mw->depth++;
+      int inner = method_walk(c, val, mw);
+      mw->depth--;
       if (inner == -2) continue;
       if (inner < 0) return -1;
       if (found < 0) found = inner;
-      else if (inner != found && !method_nodes_same_target(c, found, inner)) return -1;
+      else if (inner != found && !mw->join(c, found, inner, mw->ctx)) return -1;
     }
     /* ... and no other value may reach the local: `spare, m = 0, other`,
        `m &&= other` or a parameter's argument put another Method behind
@@ -6155,6 +6149,32 @@ int method_recv_node(Compiler *c, int recv) {
     return found;
   }
   return -1;
+}
+
+/* method_recv_node's questions of what the walk reaches: a `method(:sym)`
+   call that is Kernel's (is_method_obj_call), and two that bind one method
+   the same way (method_nodes_same_target) */
+static int mrn_leaf(Compiler *c, int node, void *ctx) {
+  (void)ctx;
+  return is_super_method_name(nt_str(c->nt, node, "name")) || is_method_obj_call(c, node);
+}
+static int mrn_join(Compiler *c, int a, int b, void *ctx) {
+  (void)ctx;
+  return method_nodes_same_target(c, a, b);
+}
+
+/* The `method(:sym)` node a Method-typed expression resolves to: either the
+   call itself (inline) or, for a local variable, its assignment in scope.
+   One walk serves the outermost call and every call its questions make, as
+   they may resolve another Method on the way: a local it is resolving reads
+   as -2 there too (Compiler.mrn_walk). */
+int method_recv_node(Compiler *c, int recv) {
+  if (c->mrn_walk) return method_walk(c, recv, c->mrn_walk);
+  MethodWalk mw = { .leaf = mrn_leaf, .join = mrn_join };
+  c->mrn_walk = &mw;
+  int r = method_walk(c, recv, &mw);
+  c->mrn_walk = NULL;
+  return r;
 }
 
 /* Append mn to the growing list method_recv_nodes answers. */

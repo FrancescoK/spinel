@@ -550,6 +550,7 @@ int is_capacity_keyword(const char *n);  /* capacity: Hash.new's and String.new'
 int is_native_share_decl(const char *n); /* native_share: a package's share declaration */
 int is_proc_new(const char *recv, const char *meth); /* Proc.new */
 int is_method_ref_name(const char *n);   /* method: Kernel#method */
+int is_method_node_name(const char *n);  /* method instance_method: the calls a Method's target is read from (method_sym_arg) */
 int is_method_handoff_name(const char *n); /* is_method_name_reflection less the define and ask names */
 int is_method_object_name(const char *n); /* method public_method instance_method: a Method of the name handed */
 int is_method_reader_name(const char *n); /* name arity owner parameters source_location inspect to_s == hash receiver: reads a Method, runs it not */

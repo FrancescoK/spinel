@@ -2137,6 +2137,7 @@ int is_proc_new(const char *recv, const char *meth) {
 }
 /* `method`: Kernel#method, the Method of the name it is handed */
 int is_method_ref_name(const char *n) { return n && sp_streq(n, "method"); }
+int is_method_node_name(const char *n) { return is_method_ref_name(n) || (n && sp_streq(n, "instance_method")); }
 /* a Method (or an UnboundMethod) of the name a call is handed: calling it
    runs that method, a writer included */
 int is_method_object_name(const char *n) {

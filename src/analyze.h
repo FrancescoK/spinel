@@ -1724,6 +1724,27 @@ const char *class_value_instance_method_sym(Compiler *c, int node); /* instance_
 int class_value_bind_call_target(Compiler *c, int cap, int ci, const char *sym, int *armless);
 int class_value_bind_call_gap(Compiler *c, int node);
 TyKind method_obj_adapter_ret(TyKind arr, const char *op); /* typed-array adapter Ruby return */
+/* A walk of what a Method-typed expression holds, back through copies and
+   re-bindings (dup clone unbind bind), a super_method and a local's writes,
+   to the `method(:sym)` or `instance_method(:sym)` node that made it. It
+   reads the tree alone, so a pass that may not read inferred types can run
+   it (cplan_top_self_marks); what it reaches it asks of its caller: leaf
+   accepts a node (a super_method's, or a maker's), join two that a local's
+   writes reach. It answers the node (the first write's), -1 where it ends
+   at a value it does not follow or a node not accepted, or -2 for a local
+   read inside its own write (`m = m.dup`), which says nothing new. A walk
+   keeps the locals it is resolving, so one MethodWalk is used for one
+   question at a time, or reentered on purpose (method_recv_node). */
+#define METHOD_WALK_DEPTH 32
+typedef struct MethodWalk {
+  int (*leaf)(Compiler *c, int node, void *ctx);
+  int (*join)(Compiler *c, int a, int b, void *ctx);
+  void *ctx;
+  int depth;
+  const char *active_vn[METHOD_WALK_DEPTH];
+  Scope *active_sc[METHOD_WALK_DEPTH];
+} MethodWalk;
+int method_walk(Compiler *c, int recv, MethodWalk *mw);
 int method_recv_node(Compiler *c, int recv);          /* the method(:sym) node behind a Method expr */
 int method_recv_nodes(Compiler *c, int recv, int **out); /* every one a re-written local may hold */
 int method_recv_stamped(Compiler *c, int recv);           /* ...each from a bind site that stamps its position */
