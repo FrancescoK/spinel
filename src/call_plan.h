@@ -1189,9 +1189,8 @@ CallPlan cplan_user_in(Compiler *c, int id, int self_ci, int flags);
    instance_exec self (ie_class), a poly arm's receiver class (arm_class),
    the class body being emitted (cbody), the class body self is at the call
    as codegen emits it (self_cbody, emit_self_class_body: none inside an
-   instance_eval splice), each -1 for none; narrow is the
-   yielding-target question's form, a constant receiver only and no Class
-   reopen. */
+   instance_eval splice), each -1 for none; fresh where the analysis asks
+   (cplan_inline_tree_ctx). */
 typedef struct {
   int mi;
   int recv_class;   /* the instance self is bound to */
@@ -1201,7 +1200,7 @@ typedef struct {
   int cm_class, cm_self_id;
   int implicit_self;
 } CplanInline;
-typedef struct { int ie_class, arm_class, cbody, self_cbody, narrow, fresh; } CplanInlineCtx;
+typedef struct { int ie_class, arm_class, cbody, self_cbody, fresh; } CplanInlineCtx;
 CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x);
 /* The context the tree gives call id: its instance_exec self and the class
    body it stands in (no poly arm, which only its emission knows), for a

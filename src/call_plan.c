@@ -9573,7 +9573,7 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
       return t;
     }
   }
-  else if (recv >= 0 && !x->narrow && x->arm_class >= 0 &&
+  else if (recv >= 0 && x->arm_class >= 0 &&
            !ty_is_object(comp_ntype(c, recv)) && self_class_static_ci(c, recv) < 0 &&
            !(nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
     /* a poly arm (#2448): self is pre-bound to a cast of the boxed receiver,
@@ -9623,21 +9623,12 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
   if (p.via == UC_SEND_BLIND) { t.mi = p.mi; return t; }
   NodeKind rk = nt_kind(nt, recv);
   const char *cname = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? key_name(c, recv) : NULL;
-  /* a class body's self is that class, as a constant naming it is */
-  int bci = rk == NK_SelfNode ? class_body_self_ci(c, recv) : -1;
-  if (x->narrow && !cname && bci < 0) {
-    TyKind rt = comp_ntype(c, recv);
-    if (p.via == UC_INST && p.chain && ty_is_object(rt) && p.owner_ci == ty_object_class(rt)) {
-      t.mi = p.mi; t.recv_class = p.owner_ci;
-    }
-    return t;
-  }
   /* the class the node names (an alias's too), or the one self.class names,
      or a class body's self, which is that class as a constant naming it is */
   int ci = cname ? const_node_class_index(c, recv) : self_recv_class_ci(c, recv);
   if (p.via == UC_CMETH && !p.by_name && (cname || ci >= 0)) {
     if (ci >= 0 && p.owner_ci == ci) { t.mi = p.mi; t.cm_class = ci; return t; }
-    if (!x->narrow && cname && builtin_class_id(cname) && p.owner_ci == c->scopes[p.mi].class_id &&
+    if (cname && builtin_class_id(cname) && p.owner_ci == c->scopes[p.mi].class_id &&
         p.owner_ci != ci) {
       t.mi = p.mi; t.cm_class = p.owner_ci; t.cm_self_id = builtin_class_id(cname);
       return t;
@@ -9661,7 +9652,7 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
 /* See call_plan.h. */
 CplanInlineCtx cplan_inline_tree_ctx(Compiler *c, int id, int fresh) {
   int ie = ie_class_of(c, id), cb = self_class_body(c, id);
-  CplanInlineCtx x = { ie >= 0 ? ie : -1, -1, cb, cb, 0, fresh };
+  CplanInlineCtx x = { ie >= 0 ? ie : -1, -1, cb, cb, fresh };
   return x;
 }
 

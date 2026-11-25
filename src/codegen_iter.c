@@ -299,9 +299,9 @@ int call_takes_root_switch(Compiler *c, int id) {
 /* The context of a splice the node does not carry, from codegen's state:
    the instance_exec self, a poly arm's receiver class, the class body being
    emitted and the one self is at call id (cplan_inline_target) */
-static CplanInlineCtx inline_target_ctx(Compiler *c, int id, int narrow) {
+static CplanInlineCtx inline_target_ctx(Compiler *c, int id) {
   CplanInlineCtx x = { g_ie_class_id, g_inline_recv_expr ? g_inline_recv_class : -1, g_class_body_id,
-                       emit_self_class_body(c, id), narrow, 0 };
+                       emit_self_class_body(c, id), 0 };
   return x;
 }
 
@@ -325,7 +325,7 @@ int block_call_takes_class_dispatch(Compiler *c, int id) {
     if (!ty_is_object(rt)) return 0;
     cls = ty_object_class(rt);
   }
-  CplanInlineCtx x = inline_target_ctx(c, id, 0);
+  CplanInlineCtx x = inline_target_ctx(c, id);
   int mi = cplan_inline_target(c, id, &x).mi;
   return mi >= 0 && c->scopes[mi].yields && takes_class_dispatch(c, id, mi, cls, name);
 }
@@ -529,7 +529,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   if (sn_guard_pending(c, id)) return 0;
   /* the target is the call's plan; --plan-check holds the binding spliced
      against it (ucall_observe below) */
-  CplanInlineCtx x = inline_target_ctx(c, id, 0);
+  CplanInlineCtx x = inline_target_ctx(c, id);
   CplanInline it = cplan_inline_target(c, id, &x);
   if (g_plan_check) cplan_served("inline-call");
   int recv_class = it.recv_class, cm_class = it.cm_class;
@@ -3622,7 +3622,7 @@ int emit_poly_recv_block_value(Compiler *c, int id, Buf *b) {
    answers it, as it answers emit_inline_call_x. (#2948) */
 int call_targets_yielding_method(Compiler *c, int id) {
   if (!nt_str(c->nt, id, "name")) return 0;
-  CplanInlineCtx x = inline_target_ctx(c, id, 1);
+  CplanInlineCtx x = inline_target_ctx(c, id);
   CplanInline it = cplan_inline_target(c, id, &x);
   if (g_plan_check) cplan_served("yielding-target");
   return it.mi >= 0 && c->scopes[it.mi].yields;
