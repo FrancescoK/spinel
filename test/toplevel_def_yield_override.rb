@@ -302,3 +302,13 @@ end
 p OyW8.new.method(:oy26).inspect.sub(/ \S+:\d+>/, ">")
 p OyW8.new.rb(OyW8.new), OyW8.new.rb(OyX8.new), OyX8.new.rc(OyX8.new), OyV8.new.rb(OyW8.new)
 [OyW8.new, OyX8.new].each { |o| p [OyW8.new.rc(o), OyX8.new.rb(o)] }
+
+# A Method of a top-level def that reads self, made on main and unbound,
+# binds to any object: kept, bound at once, or bound in a method
+def oy27(a) = [self.class, a]
+def oy27mk(x) = method(:oy27).unbind.bind(x)
+u27 = method(:oy27).unbind
+bm27 = u27.bind(5)
+p bm27.call(3), u27.bind("s").call(1), u27.bind(nil).call(2), oy27mk(:y).call(4)
+class OyK9; end
+p u27.bind(OyK9.new).call(7), method(:oy27).unbind.bind(OyK9).call(8)
