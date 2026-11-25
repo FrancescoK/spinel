@@ -9632,8 +9632,9 @@ CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
     }
     return t;
   }
-  /* (the class the node names: an alias's too) */
-  int ci = cname ? const_node_class_index(c, recv) : bci >= 0 ? bci : self_class_static_ci(c, recv);
+  /* the class the node names (an alias's too), or the one self.class names,
+     or a class body's self, which is that class as a constant naming it is */
+  int ci = cname ? const_node_class_index(c, recv) : self_recv_class_ci(c, recv);
   if (p.via == UC_CMETH && !p.by_name && (cname || ci >= 0)) {
     if (ci >= 0 && p.owner_ci == ci) { t.mi = p.mi; t.cm_class = ci; return t; }
     if (!x->narrow && cname && builtin_class_id(cname) && p.owner_ci == c->scopes[p.mi].class_id &&

@@ -6925,6 +6925,15 @@ int self_class_static_ci(Compiler *c, int recv) {
   return comp_class_is_leaf(c, cid) ? cid : -1;
 }
 
+/* The class a receiver standing for self's class names: `self.class`
+   naming one class (self_class_static_ci), or a class body's `self`
+   (class_body_self_ci); -1 for neither */
+int self_recv_class_ci(Compiler *c, int recv) {
+  int ci = self_class_static_ci(c, recv);
+  if (ci >= 0 || recv < 0 || nt_kind(c->nt, recv) != NK_SelfNode) return ci;
+  return class_body_self_ci(c, recv);
+}
+
 /* A `super` in a class's own `def self.allocate` that no class method
    `allocate` of the program above it answers reaches Class#allocate: an
    empty object of the receiving class, with no initialize. Codegen builds

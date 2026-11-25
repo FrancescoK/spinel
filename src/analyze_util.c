@@ -3809,73 +3809,29 @@ static int yvt_callee_index_scan(Compiler *c, int cid) {
   const NodeTable *nt = c->nt;
   const char *cn = nt_str(nt, cid, "name");
   int crecv = nt_ref(nt, cid, "receiver");
-  int rmi = -1;
-  if (crecv < 0) {
-    /* in an instance_eval / exec block, on the receiver it rebinds self to,
-       as the call plan resolves it */
-    int iec = cn ? ie_class_of(c, cid) : -1;
-    if (iec >= 0) rmi = call_target(c, cid, iec, cn, 0, NULL);
-    if (rmi < 0) rmi = comp_cbody_call_mi(c, cid, cn);
-    /* resolved as emission resolves it: a class method's own chain before
-       a top-level def of the same name */
-    if (rmi < 0 && cn) rmi = comp_self_call_mi(c, cid, cn);
-    if (rmi < 0) rmi = call_target(c, cid, -1, cn, CT_TOP, NULL);
-    if (rmi < 0) {
-      Scope *cs = comp_scope_of(c, cid);
-      if (cs->class_id >= 0) {
-        rmi = call_target(c, cid, cs->class_id, cn, 0, NULL);
-        /* an implicit-self call inside a class method resolves to a CLASS
-           method; its block/forward feeds that method's blk_ret too */
-        if (rmi < 0) rmi = call_target(c, cid, cs->class_id, cn, CT_CMETHOD, NULL);
-      }
-    }
-    /* a bare call to a method of a module included at the top level, as
-       infer_uncached resolves it: its block feeds that method's yield.
-       Missed here, T.twice's return was typed from no block at all, so
-       `n = twice { 2 }` under `include T` typed nil */
-    if (rmi < 0 && cn) rmi = call_target(c, cid, -1, cn, CT_INCLUDED, NULL);
+  /* `Klass.new { block }`: the block feeds the initialize the plan answers
+     the site with (cplan_hook_target), the version current there. A scoped
+     receiver (`NS::Klass`) resolves by its leaf name, the key classes are
+     indexed under. */
+  if (crecv >= 0 && is_new_name(cn) && nt_type(nt, crecv) &&
+      (nt_kind(nt, crecv) == NK_ConstantReadNode || nt_kind(nt, crecv) == NK_ConstantPathNode)) {
+    int nci = const_node_class_index(c, crecv);
+    if (nci >= 0) return cplan_hook_target(c, cid, nci, "initialize", NULL);
   }
-  else {
-    TyKind crt = infer_type(c, crecv);
-    if (ty_is_object(crt)) rmi = call_target(c, cid, ty_object_class(crt), cn, 0, NULL);
-    /* `Klass.new { block }`: the block feeds the initialize the plan
-       answers the site with (cplan_hook_target), the version current
-       there. A scoped receiver (`NS::Klass`) resolves by its leaf name,
-       the key classes are indexed under. */
-    else if (is_new_name(cn) && nt_type(nt, crecv) &&
-             (nt_kind(nt, crecv) == NK_ConstantReadNode ||
-              nt_kind(nt, crecv) == NK_ConstantPathNode)) {
-      int nci = const_node_class_index(c, crecv);
-      if (nci >= 0) rmi = cplan_hook_target(c, cid, nci, "initialize", NULL);
-    }
-    /* `Klass.m { block }` / `Mod.m { block }` / `NS::Klass.m { block }`: a
-       class/module self-method (singleton). Resolve the constant and look
-       up its singleton method so the block's value type flows back to m's
-       return type -- instance methods resolve via the ty_is_object arm
-       above (#1446). */
-    else if (nt_type(nt, crecv) &&
-             (nt_kind(nt, crecv) == NK_ConstantReadNode ||
-              nt_kind(nt, crecv) == NK_ConstantPathNode)) {
-      int nci = const_node_class_index(c, crecv);
-      if (nci >= 0) rmi = call_target(c, cid, nci, cn, CT_CMETHOD, NULL);
-    }
-    /* a yielding method the program defines on a builtin class, which the
-       plan binds to a call on a builtin value: its yield's block is this
-       call's. Asked of the binding alone, not whether the plan dispatches
-       directly: the dispatch moves as the receiver's type does, which no
-       owner of infer_type's memo follows, and a block value kept while it
-       was direct stood after it was not */
-    else if (cn) {
-      const CallPlan p = cplan_user_fresh(c, cid);
-      if (p.mi >= 0 && p.via == UC_REOPEN && c->scopes[p.mi].yields) rmi = p.mi;
-    }
-    /* ...and a send of a top-level def that takes its receiver, on any receiver whose own class lacks the name (a bare
-       call that desugar gave `self` among them): asked of the tree and the def table alone, as the binding above is, for
-       the plan's answer moves with the receiver's type (send_blind_recv_owns) */
-    if (rmi < 0 && cn && nt_str(nt, cid, "send_blind")) {
-      int tm = call_target(c, cid, -1, cn, CT_TOP, NULL);
-      if (tm >= 0) rmi = tm;
-    }
+  /* the method a splice of the site takes, which the plan answers for every
+     form it binds (cplan_inline_target), in the tree's context and afresh,
+     for the types are still moving */
+  CplanInlineCtx x = cplan_inline_tree_ctx(c, cid, 1);
+  int rmi = cplan_inline_target(c, cid, &x).mi;
+  /* a yielding method the program defines on a builtin class, which the
+     plan binds to a call on a builtin value: its yield's block is this
+     call's. Asked of the binding alone, not whether the plan dispatches
+     directly: the dispatch moves as the receiver's type does, which no
+     owner of infer_type's memo follows, and a block value kept while it
+     was direct stood after it was not */
+  if (rmi < 0 && crecv >= 0 && cn) {
+    const CallPlan p = cplan_user_fresh(c, cid);
+    if (p.mi >= 0 && p.via == UC_REOPEN && c->scopes[p.mi].yields) rmi = p.mi;
   }
   return rmi;
 }

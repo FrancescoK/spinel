@@ -7357,8 +7357,7 @@ static int infer_user_method_call(Compiler *c, int id, const NodeTable *nt, cons
      second site miscompiled through it). */
   if (recv >= 0) {
     NodeKind rk = nt_kind(nt, recv);
-    int sci = self_class_static_ci(c, recv);
-    if (sci < 0 && rk == NK_SelfNode) sci = class_body_self_ci(c, recv);   /* a class body's self */
+    int sci = self_recv_class_ci(c, recv);
     if (sci >= 0 || (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode)) {
       int ci = sci >= 0 ? sci : const_node_class_index(c, recv);
       if (ci >= 0) {
