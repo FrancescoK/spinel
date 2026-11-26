@@ -5365,9 +5365,11 @@ static int infer_builtin_cmethod_call(Compiler *c, int id, const NodeTable *nt, 
       if (sp_streq(name, "unpack_sockaddr_in") && argc == 1) { *out = TY_POLY_ARRAY; return 1; }
       if (sp_streq(name, "unpack_sockaddr_un") && argc == 1) { *out = TY_STRING; return 1; }
     }
-    /* a builtin class's own methods (IO.pipe, IO.select): its class-side rows */
-    if (rk == NK_ConstantReadNode) {
-      const BuiltinClassOp *cop = cplan_builtin_class_row(c, id, key_name(c, recv));
+    /* a builtin class's own methods (IO.pipe, IO.select, Class.new on
+       `self.class` in a class method): its class-side rows */
+    const char *rcls = cplan_class_rows_recv(c, recv);
+    if (rcls) {
+      const BuiltinClassOp *cop = cplan_builtin_class_row(c, id, rcls);
       if (cop && cop->op.result != TY_UNKNOWN) {
         if (an_bop_records(c, id)) c->bop_inf[id] = &cop->op;
         *out = an_bop_result(c, &cop->op, TY_CLASS, id, argc, argv);
@@ -6582,8 +6584,10 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
   if (anon_struct_ci_for_value(c, id) >= 0) { *out = TY_CLASS; return 1; }
 
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
-     Exception: self.class.new(...) resolves to the enclosing class statically. */
-  if (recv >= 0 && rt == TY_CLASS && sp_streq(name, "new") &&
+     Exception: self.class.new(...) resolves to the enclosing class statically,
+     and a Class.new the plan answers (cplan_class_new: `self.class.new` in a
+     class method) is Class's row (infer_builtin_cmethod_call). */
+  if (recv >= 0 && rt == TY_CLASS && is_new_name(name) && cplan_class_new(c, id, NULL) == CNEW_NONE &&
       nt_type(nt, recv) && ((nt_kind(nt, recv) != NK_ConstantReadNode &&
       nt_kind(nt, recv) != NK_ConstantPathNode) || class_recv_is_dynamic(c, recv))) {
     int _is_self_class = self_class_static_ci(c, recv) >= 0;

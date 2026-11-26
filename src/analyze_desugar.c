@@ -27787,13 +27787,61 @@ int desugar_body_singleton_class_meta_at(Compiler *c, LowerCtx *lc, int id) {
   return scm_rewrite_stmt(nt, id, lc->body, 1) != 0;
 }
 
+static int bsc_self_class(const NodeTable *nt, int n);
+/* Is node k one whose body is a scope of its own a def's self is read in:
+   a def, a class, module or singleton class body, the program? */
+static int cn_scope_node(NodeKind k) {
+  return k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode || k == NK_SingletonClassNode || k == NK_ProgramNode;
+}
+/* The nearest scope node (cn_scope_node) around node n, -1 for none */
+static int cn_scope_around(const NodeTable *nt, const int *parent, int n) {
+  int p = parent[n];
+  while (p >= 0 && !cn_scope_node(nt_kind(nt, p))) p = parent[p];
+  return p;
+}
+/* Is call id a `self.class.new` with no argument or one constant, where
+   self may be a class: in a def of a singleton (`def self.m`, `def B.m`, a
+   def of a `class << x`), in a module's def (a class extended with the
+   module calls it), or in a block outside any def (a
+   define_singleton_method body). A candidate site only, which the call
+   plan takes as Class.new where `self.class` is the builtin Class and
+   leaves as the call it is elsewhere (cplan_class_row_recv). A class's own
+   instance method and a top-level def are none: their self is never a
+   class there. A constant naming a builtin class is none either: the site
+   class of that superclass would be refused where it is declared
+   (refuse_builtin_subclass), whatever the plan answers the call. */
+static int cn_self_class_site(const NodeTable *nt, const int *parent, int id) {
+  int recv = nt_ref(nt, id, "receiver"), an = nt_ref(nt, id, "arguments"), ac = 0;
+  const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
+  NodeKind ak = ac == 1 ? nt_kind(nt, av[0]) : NK_NONE;
+  if (!is_new_name(nt_str(nt, id, "name")) || recv < 0 || !bsc_self_class(nt, recv) || ac > 1 ||
+      (ac == 1 && ((ak != NK_ConstantReadNode && ak != NK_ConstantPathNode) || builtin_class_id(nt_str(nt, av[0], "name")))))
+    return 0;
+  int d = cn_scope_around(nt, parent, id);
+  if (d < 0) return 0;
+  if (nt_kind(nt, d) != NK_DefNode) {
+    for (int p = parent[id]; p != d; p = parent[p])
+      if (nt_kind(nt, p) == NK_BlockNode || nt_kind(nt, p) == NK_LambdaNode) return 1;
+    return 0;
+  }
+  int o = cn_scope_around(nt, parent, d);
+  NodeKind ok = o >= 0 ? nt_kind(nt, o) : NK_NONE;
+  return nt_ref(nt, d, "receiver") >= 0 || ok == NK_SingletonClassNode || ok == NK_ModuleNode;
+}
+/* The class a class builder call's receiver names: a constant's name, or
+   Class for a `self.class.new` candidate site (cn_self_class_site); NULL
+   for any other call */
+static const char *cn_builder_recv(const NodeTable *nt, const int *parent, int id) {
+  int recv = nt_ref(nt, id, "receiver");
+  if (recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode) return nt_str(nt, recv, "name");
+  return cn_self_class_site(nt, parent, id) ? "Class" : NULL;
+}
 /* What a class builder (Class.new, Module.new) call makes that the program
    cannot have as a class (EB_*; EB_NONE for any other node): a class of a
-   superclass only the run time holds (`Class.new(base)`). */
-static int builder_refused_kind(const NodeTable *nt, int call) {
+   superclass only the run time holds (`Class.new(base)`). rn: the class its
+   receiver names (cn_builder_recv). */
+static int builder_refused_kind(const NodeTable *nt, int call, const char *rn) {
   if (call < 0 || nt_kind(nt, call) != NK_CallNode) return EB_NONE;
-  int recv = nt_ref(nt, call, "receiver");
-  const char *rn = recv >= 0 && nt_kind(nt, recv) == NK_ConstantReadNode ? nt_str(nt, recv, "name") : NULL;
   if (!is_class_new(rn, nt_str(nt, call, "name"))) return EB_NONE;
   int an = nt_ref(nt, call, "arguments"), ac = 0;
   const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
@@ -27880,10 +27928,10 @@ static int *cn_super_cores(Compiler *c, const int *parent, int n) {
   for (int id = 0; id < n; id++) {
     core[id] = -1;
     if (nt_kind(nt, id) != NK_CallNode) continue;
-    int recv = nt_ref(nt, id, "receiver"), an = nt_ref(nt, id, "arguments"), ac = 0;
+    int an = nt_ref(nt, id, "arguments"), ac = 0;
     const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
-    if (ac < 1 || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode ||
-        !is_class_new(nt_str(nt, recv, "name"), nt_str(nt, id, "name")) || !cn_rt_site_candidate(nt, parent, id)) continue;
+    if (ac < 1 || !is_class_new(cn_builder_recv(nt, parent, id), nt_str(nt, id, "name")) ||
+        !cn_rt_site_candidate(nt, parent, id)) continue;
     elab_class_ref_at(c, av[0], &core[id]);
   }
   return core;
@@ -28089,8 +28137,13 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
         continue;
       }
     }
-    if (!nm || recv < 0 || nt_kind(nt, recv) != NK_ConstantReadNode) continue;
-    const char *rn = nt_str(nt, recv, "name");
+    const char *rn = nm ? cn_builder_recv(nt, parent, id) : NULL;
+    if (!rn) continue;
+    /* A `self.class.new` site the call plan may not take as Class.new
+       (cn_self_class_site) keeps the call it is, its arguments and its
+       site class's superclass a copy of them: where the plan does not take
+       it, nothing here changed what it answers. */
+    int self_site = nt_kind(nt, recv) != NK_ConstantReadNode;
     /* (a Struct.new or Data.define evaluated more than once keeps one class
        for every evaluation: register_rt_sites) */
     if (is_record_class_builder(rn, nm)) {
@@ -28103,7 +28156,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     int an = nt_ref(nt, id, "arguments");
     int ac = 0; const int *av = an >= 0 ? nt_arr(nt, an, "arguments", &ac) : NULL;
     int super_node = (!is_module && ac >= 1) ? av[0] : -1;
-    int refused = builder_refused_kind(nt, id);
+    int refused = builder_refused_kind(nt, id, rn);
     if (refused && blk < 0 && ct_in_walk_loop_block(nt, parent, id)) continue;
     if (refused) {
       int par = parent[id];
@@ -28114,6 +28167,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
       continue;
     }
     if (super_node >= 0 && cn_names_module(nt, parent, id, super_node)) {
+      if (self_site) continue;
       cn_neutralize(nt, blk);
       cn_raise_module_super(nt, id, parent[id]);
       changed = 1;
@@ -28122,6 +28176,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
     if (blk >= 0 && nt_kind(nt, blk) != NK_BlockNode) continue;
     int omitted = blk < 0;
     int rt = cn_rt_site(nt, parent, super_core, id);
+    if (self_site && !rt) continue;
     /* An omitted block has the same empty class body as `{}`. */
     if (blk < 0) {
       if (ac > (is_module ? 0 : 1)) continue;
@@ -28170,6 +28225,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
        the surrounding locals stays a block */
     int reads_outer = cn_reads_outer_local(nt, body, 0) ||
                       cn_reads_outer_local(nt, nt_ref(nt, blk, "parameters"), 0);
+    if (self_site && reads_outer) continue;
     int capture_refusal = reads_outer && !defer_refusals_at(c, id);
     /* `Name = Class.new(...) do ... end`, `A::B = Module.new do ... end`:
        the write defines the class (class_def_builder) and keeps its block,
@@ -28200,7 +28256,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
       for (int k = 0; k < rn2 && at < 0; k++) if (cn_contains(nt, rs[k], id)) at = k;
       if (at < 0) continue;
       char name[64]; snprintf(name, sizeof name, "SpinelAnonClass%d", ++serial);
-      int cls = cn_make_class(nt, id, is_module, name, super_node, body);
+      int cls = cn_make_class(nt, id, is_module, name, self_site && super_node >= 0 ? nt_clone_subtree(nt, super_node) : super_node, body);
       if (cls < 0) continue;
       nt_node_set_int(nt, cls, "class_new_anonymous", rt ? 3 : 2);
       if (rt && omitted) nt_node_set_int(nt, cls, "rt_bare", 1);
@@ -28221,7 +28277,7 @@ int desugar_class_new_blocks(Compiler *c, HostStep *h) {
            itself where its family cannot have records) */
         elab_builder_note(c, id, omitted ? EB_RT_BARE : EB_RT_SITE, cls);
         nt_node_set_ref(nt, id, "block", -1);
-        nt_node_set_ref(nt, id, "arguments", -1);
+        if (!self_site) nt_node_set_ref(nt, id, "arguments", -1);
         if (!omitted) {
           if (!named) { program_def_names(nt, &defnames); named = 1; }
           cn_rt_body(nt, blk, body, name, &defnames);

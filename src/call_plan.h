@@ -571,6 +571,14 @@ const struct BuiltinOp *cplan_builtin_handle_row(Compiler *c, int id);
    what File.select runs). A Class.new or Module.new row is the call's
    only where the plan answers the call (cplan_class_new). */
 const BuiltinClassOp *cplan_builtin_class_row(Compiler *c, int id, const char *cls);
+/* The builtin class a call on recv names as its receiver: a constant's
+   name (a path's too, for the limits), or Class for `self.class` in a
+   class method (self_class_is_class), where its `new` is Class.new as the
+   constant's call is; NULL for any other receiver */
+const char *cplan_class_row_recv(Compiler *c, int recv);
+/* ...the one whose class-side rows (cplan_builtin_class_row) inference and
+   codegen read for the call: the same, but none for a path */
+const char *cplan_class_rows_recv(Compiler *c, int recv);
 /* Is program class ci the site class of classes made at run time
    (ClassInfo.rt_site): its instances carry the class each was made from,
    and a value of its class may be any of them? A site with no block is one
@@ -581,7 +589,9 @@ int cplan_rt_site(const Compiler *c, int ci);
 /* ...is ci or a class below it one (ClassInfo.rt_family)? */
 int cplan_rt_family(const Compiler *c, int ci);
 /* What a Class.new or Module.new evaluated more than once answers
-   (desugar_class_new_blocks noted it, EB_RT_SITE / EB_RT_BARE), and in
+   (desugar_class_new_blocks noted it, EB_RT_SITE / EB_RT_BARE; a
+   `self.class.new` only where cplan_class_row_recv takes it as Class.new),
+   and in
    *site (NULL: not asked) its site class: CNEW_RUNTIME, a class of its own
    at each evaluation; CNEW_STATIC, the site class itself, where its family
    or its block cannot have records (register_rt_sites) and the call has a
@@ -607,7 +617,7 @@ int cplan_class_value_may_be_rt(Compiler *c, int node);
    k holds, which may be made at run time, so the lookup is no use that runs
    the site class's method in that class's place (cplan_rt_class_method_object). */
 int cplan_bind_call_rt_owner(Compiler *c, int id);
-int cplan_class_new(const Compiler *c, int id, int *site);
+int cplan_class_new(Compiler *c, int id, int *site);
 /* Is node a statement of a site class's body, of a site whose classes are
    made at run time, that each evaluation runs on the class it makes
    (emit_op_class_new) and the body does not: the call of the block's

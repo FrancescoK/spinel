@@ -230,6 +230,7 @@ int is_object_copy(const char *n);   /* dup clone */
 int is_ivar_set_name(const char *n); /* instance_variable_set */
 int is_marshal_dump(const char *recv, const char *meth); /* Marshal.dump */
 int is_marshal_load(const char *recv, const char *meth); /* Marshal.load */
+const char *interp_only_namespace_why(const char *recv); /* the refusal of a call on ObjectSpace, TracePoint or Continuation; NULL for any other receiver */
 int is_object_loader(const char *recv, const char *meth, int argc); /* Marshal.load/restore, YAML/Psych.load family, JSON.load, JSON.parse with options, ObjectSpace._id2ref */
 int is_method_bind_name(const char *n); /* bind bind_call */
 int is_timeout_call(const char *recv, const char *meth); /* Timeout.timeout(sec, klass) */

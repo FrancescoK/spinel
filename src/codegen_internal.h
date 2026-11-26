@@ -2809,10 +2809,11 @@ int emit_builtin_op_tmp(Compiler *c, int id, int recv, TyKind rt, const char *na
    there; every other lookup reads stage 0 */
 int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *name,
                           int stage, Buf *b);
-/* Call id, named name, on builtin class cls (a constant receiver's name),
-   emitted through its class-side row (cplan_builtin_class_row): 0 when no
-   row of the class's singleton chain emits it */
-int emit_builtin_class_op(Compiler *c, int id, const char *cls, const char *name, Buf *b);
+/* Call id, named name, on the builtin class its receiver names
+   (cplan_class_rows_recv), emitted through its class-side row
+   (cplan_builtin_class_row): 0 when no row of the class's singleton chain
+   emits it */
+int emit_builtin_class_op(Compiler *c, int id, const char *name, Buf *b);
 
 /* #7483: a block's body typed again under one arm's type for its parameter
    (the caller set the parameter's slot to `kind`): each statement's

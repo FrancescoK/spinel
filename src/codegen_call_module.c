@@ -2128,7 +2128,7 @@ int emit_call_builtin_cmethod_arms(Compiler *c, int id, Buf *b, const NodeTable 
     }
     /* a builtin class's own methods (IO.pipe, IO.select, #2815): its
        class-side rows */
-    if (emit_builtin_class_op(c, id, tcn, name, b)) return 1;
+    if (emit_builtin_class_op(c, id, name, b)) return 1;
     /* Signal module queries (#2735) */
     if (tcn && sp_streq(tcn, "Signal") && sp_streq(name, "list") && argc == 0) {
       buf_puts(b, "sp_signal_list()"); return 1;

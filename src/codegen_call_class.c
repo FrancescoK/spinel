@@ -3673,6 +3673,9 @@ const unsigned char *g_poly_new_only = NULL;
 
 /* new and allocate on a Class value, a poly receiver, self's class or a constant */
 int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
+  /* a Class.new the plan answers (cplan_class_new), `self.class.new` in a
+     class method among them, is Class's row, not a class value's new */
+  if (cplan_class_new(c, id, NULL) != CNEW_NONE && emit_builtin_class_op(c, id, name, b)) return 1;
   if (emit_class_value_aref(c, id, b, recv, argc, argv)) return 1;
   /* .new WITH arguments on a Class value whose class is only known at run time.
      A local statically holding one class folds to that class and never gets

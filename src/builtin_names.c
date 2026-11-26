@@ -1036,6 +1036,25 @@ int is_marshal_load(const char *recv, const char *meth) {
   return recv && meth && sp_streq(meth, "load") && sp_streq(recv, "Marshal");
 }
 
+/* Why a call on recv, a namespace that exists only in an interpreter
+   (ObjectSpace, TracePoint, Continuation), is refused: every method on it
+   reports the same way. NULL for any other name. */
+const char *interp_only_namespace_why(const char *recv) {
+  if (!recv) return NULL;
+  if (sp_streq(recv, "ObjectSpace"))
+    return "ObjectSpace is not supported by AOT compilation: there is no class-keyed "
+           "allocation registry to walk -- the GC tracks bytes, not a live-object index "
+           "(see docs/limitations.md)";
+  if (sp_streq(recv, "TracePoint"))
+    return "TracePoint is not supported by AOT compilation: it requires an interpreter "
+           "loop to hook, and compiled code has no such loop (see docs/limitations.md)";
+  if (sp_streq(recv, "Continuation"))
+    return "Continuation is not supported by AOT compilation: multi-shot full-stack "
+           "capture has no flat-C analogue. Fiber covers the single-shot cases "
+           "(see docs/limitations.md)";
+  return NULL;
+}
+
 /* A core call that makes objects of whatever classes its data names (or
    finds any object): Marshal.load and restore, YAML's and Psych's load
    family, JSON.load, JSON.parse given options (create_additions),

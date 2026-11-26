@@ -798,7 +798,10 @@ int emit_builtin_op_stage(Compiler *c, int id, int recv, TyKind rt, const char *
 }
 
 /* See codegen_internal.h. */
-int emit_builtin_class_op(Compiler *c, int id, const char *cls, const char *name, Buf *b) {
+int emit_builtin_class_op(Compiler *c, int id, const char *name, Buf *b) {
+  int recv = nt_ref(c->nt, id, "receiver");
+  const char *cls = cplan_class_rows_recv(c, recv);
+  if (!cls) return 0;
   int argc;
   call_args(c->nt, id, &argc);
   const BuiltinClassOp *cop = cplan_builtin_class_row(c, id, cls);

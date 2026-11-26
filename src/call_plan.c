@@ -8528,12 +8528,23 @@ int cplan_builtin_display_operand(Compiler *c, int id) {
 }
 
 /* See call_plan.h. */
+const char *cplan_class_row_recv(Compiler *c, int recv) {
+  NodeKind rk = recv >= 0 ? nt_kind(c->nt, recv) : NK_NONE;
+  if (rk == NK_ConstantReadNode || rk == NK_ConstantPathNode) return key_name(c, recv);
+  return self_class_is_class(c, recv) ? "Class" : NULL;
+}
+/* See call_plan.h. */
+const char *cplan_class_rows_recv(Compiler *c, int recv) {
+  return recv >= 0 && nt_kind(c->nt, recv) == NK_ConstantPathNode ? NULL : cplan_class_row_recv(c, recv);
+}
+/* See call_plan.h. */
 const BuiltinClassOp *cplan_builtin_class_row(Compiler *c, int id, const char *cls) {
   const char *name = nt_str(c->nt, id, "name");
-  int argc = 0;
-  call_args(c->nt, id, &argc);
+  /* (a site's superclass is its site class's: desugar_class_new_blocks) */
+  int cnew = cplan_class_new(c, id, NULL), argc = 0;
+  if (cnew == CNEW_NONE) call_args(c->nt, id, &argc);
   const BuiltinClassOp *cop = bop_class_find(cls, name, argc, nt_ref(c->nt, id, "block") >= 0);
-  if (cop && cop->op.emit == BOPE_CLASS_NEW && cplan_class_new(c, id, NULL) == CNEW_NONE) return NULL;
+  if (cop && cop->op.emit == BOPE_CLASS_NEW && cnew == CNEW_NONE) return NULL;
   const char *a;
   for (int i = 0; cop && (a = builtin_ancestor_at(cls, i)); i++) {
     int ci = comp_class_index(c, a);
@@ -8641,9 +8652,12 @@ int cplan_rt_site_body(Compiler *c, int ci) {
         nt_int(c->nt, c->scopes[s].def_node, "rt_body_def", 0)) return s;
   return -1;
 }
-int cplan_class_new(const Compiler *c, int id, int *site) {
+int cplan_class_new(Compiler *c, int id, int *site) {
   int kind = elab_builder_kind(c, id), ci = -1;
-  if (kind == EB_RT_SITE || kind == EB_RT_BARE) ci = comp_class_of_def(c, elab_builder_site(c, id));
+  /* (a `self.class.new` site is one only where the call is on the builtin
+     Class: cplan_class_row_recv) */
+  if ((kind == EB_RT_SITE || kind == EB_RT_BARE) && cplan_class_row_recv(c, nt_ref(c->nt, id, "receiver")))
+    ci = comp_class_of_def(c, elab_builder_site(c, id));
   if (site) *site = ci;
   if (ci < 0) return CNEW_NONE;
   if (cplan_rt_site(c, ci)) return CNEW_RUNTIME;
@@ -10874,21 +10888,16 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
           "from. Call the method on the String directly, or wrap it in a block "
           "(`->(x) { s << x }`) (see docs/limitations.md)";
 
-  if (!why && rcn && const_node_class_index(c, recv) < 0) {
-    int cnew = is_class_new(rcn, name) || is_module_new(rcn, name) ? cplan_class_new(c, id, NULL) : CNEW_NONE;
+  /* (the class a class-side row would answer the call on: a constant's, or
+     the builtin Class `self.class` is in a class method) */
+  const char *bcn = cplan_class_row_recv(c, recv);
+  if (!why && bcn && const_node_class_index(c, recv) < 0) {
+    int cnew = is_class_new(bcn, name) || is_module_new(bcn, name) ? cplan_class_new(c, id, NULL) : CNEW_NONE;
     /* Namespaces that exist only in an interpreter. Keyed on the receiver, so
        every method on them reports the same way rather than one-by-one. */
-    if (sp_streq(rcn, "ObjectSpace"))
-      why = "ObjectSpace is not supported by AOT compilation: there is no class-keyed "
-            "allocation registry to walk -- the GC tracks bytes, not a live-object index "
-            "(see docs/limitations.md)";
-    else if (sp_streq(rcn, "TracePoint"))
-      why = "TracePoint is not supported by AOT compilation: it requires an interpreter "
-            "loop to hook, and compiled code has no such loop (see docs/limitations.md)";
-    else if (sp_streq(rcn, "Continuation"))
-      why = "Continuation is not supported by AOT compilation: multi-shot full-stack "
-            "capture has no flat-C analogue. Fiber covers the single-shot cases "
-            "(see docs/limitations.md)";
+    const char *ns_why = interp_only_namespace_why(bcn);
+    if (ns_why)
+      why = ns_why;
     /* a blockless one beside a repeated form that answers one class
        (Compiler.rt_identity_per_eval): its own classes would mix with it */
     else if (cnew == CNEW_MIXED)
@@ -10899,15 +10908,16 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
     /* `Class.new(parent)` evaluated more than once, of a superclass whose
        instances are laid out as a builtin's or whose chain has an
        `inherited` the program defines: one static class cannot be the
-       class each evaluation makes. */
-    else if (is_class_new(rcn, name) && (cplan_argc(nt, id) > 0 || cnew == CNEW_REFUSED))
+       class each evaluation makes. (A site's superclass is its site
+       class's.) */
+    else if (is_class_new(bcn, name) && ((cnew == CNEW_NONE && cplan_argc(nt, id) > 0) || cnew == CNEW_REFUSED))
       why = "Class.new(parent) is not supported by AOT compilation: the class "
             "graph, ancestor chain, and method/ivar layout are baked at compile time. "
             "Declare the class with `class ... end` instead (see docs/limitations.md)";
     /* a block the desugar leaves on the call (desugar_class_new_blocks):
        one that is not a block literal (`Class.new(&b)`, `Class.new(&:x)`),
        or a literal whose body it cannot lift into a class body */
-    else if (is_class_new(rcn, name) && nt_ref(nt, id, "block") >= 0)
+    else if (is_class_new(bcn, name) && nt_ref(nt, id, "block") >= 0)
       why = "Class.new with a block is not supported here by AOT compilation: the class "
             "graph, ancestor chain, and method/ivar layout are baked at compile time. "
             "Declare the class with `class ... end` instead (see docs/limitations.md)";

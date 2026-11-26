@@ -6890,7 +6890,10 @@ int poly_string_read_p(const char *name) {
    binds its self to (ie_class_of), -1 for none; -2 when recv is not
    `self.class` or its self's class only the run time gives (a stored
    block's self an instance_exec rebinds, a literal block's run on another
-   object of no one class) */
+   object of no one class), or, in a class method, where a `class` the
+   program defines on the class's singleton chain answers the call (`def
+   self.class`, one of `class << self`, an extended module's, a
+   superclass's) */
 static int self_class_recv_ie(Compiler *c, int recv) {
   const NodeTable *nt = c->nt;
   if (recv < 0 || nt_kind(nt, recv) != NK_CallNode) return -2;
@@ -6899,7 +6902,10 @@ static int self_class_recv_ie(Compiler *c, int recv) {
   if (!cn || !is_class_query(cn) || cr < 0 || nt_kind(nt, cr) != NK_SelfNode) return -2;
   if (nt_int(nt, cr, "ie_rself", 0)) return -2;
   int ie = ie_class_of(c, cr);
-  return ie < -1 ? -2 : ie;
+  if (ie < -1) return -2;
+  const Scope *s = ie < 0 ? comp_scope_of(c, recv) : NULL;
+  if (s && s->is_cmethod && s->class_id >= 0 && call_target(c, recv, s->class_id, cn, CT_CMETHOD, NULL) >= 0) return -2;
+  return ie;
 }
 
 /* See compiler.h. */
