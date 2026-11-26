@@ -5043,10 +5043,12 @@ static void cv_build(Compiler *c) {
   NT_FOREACH_KIND(nt, NK_ConstantPathNode, n) if (!nonval[n]) cv_mark_name(c, v, key_name(c, n));
   /* a Class.new evaluated more than once whose family keeps the one class
      the site makes answers that class itself, where no constant names it
-     (cplan_class_new) */
+     (cplan_class_new), its Class arm's too (cplan_class_new_class_arm) */
   NT_FOREACH_KIND(nt, NK_CallNode, n) {
-    int site = -1;
-    if (!nonval[n] && cplan_class_new(c, n, &site) == CNEW_STATIC && site >= 0 && site < nk) v[site] = 1;
+    int site = -1, arm = -1;
+    if (nonval[n]) continue;
+    if (cplan_class_new(c, n, &site) == CNEW_STATIC && site >= 0 && site < nk) v[site] = 1;
+    if (cplan_class_new_class_arm(c, n, &arm) == CNEW_STATIC && arm >= 0 && arm < nk) v[arm] = 1;
   }
   for (int k = 0; k < nk; k++) {
     int dn = c->classes[k].def_node;

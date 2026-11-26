@@ -916,9 +916,13 @@ static void cr_live_collect(CrLive *lv, int s, int id, int cls, int persist) {
     skip = cr_live_call_event(lv, s, id, call, cls, persist);
     if (own && call != own && is_send_family(own)) cr_live_call_event(lv, s, id, own, cls, persist);
     /* a Class.new the plan answers names its site class as a value, as the
-       constant read of a site evaluated once does (cplan_class_new) */
-    int site;
-    if (cplan_class_new(c, id, &site) != CNEW_NONE) cr_live_add(lv, s, CR_VALUE, c->classes[site].name, NULL, -1, persist);
+       constant read of a site evaluated once does (cplan_class_new), and so
+       does a `self.class.new` whose Class arm makes it
+       (cplan_class_new_class_arm) */
+    int site, arm;
+    cplan_class_new_class_arm(c, id, &arm);
+    if (cplan_class_new(c, id, &site) == CNEW_NONE) site = arm;
+    if (site >= 0) cr_live_add(lv, s, CR_VALUE, c->classes[site].name, NULL, -1, persist);
   }
   /* a call on a slot hands its arguments to it: their reads persist, the
      receiver's as it was */

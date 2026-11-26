@@ -599,9 +599,12 @@ int cplan_rt_family(const Compiler *c, int ci);
    whose site is no run-time site (cplan_rt_site), refused (feature_limit):
    CNEW_MIXED where that is only because the program does not answer class
    identity per evaluation (Compiler.rt_identity_per_eval), CNEW_REFUSED
-   where its family or its body cannot have records; CNEW_NONE for any
-   other call. */
-enum { CNEW_NONE, CNEW_RUNTIME, CNEW_STATIC, CNEW_REFUSED, CNEW_MIXED };
+   where its family or its body cannot have records; CNEW_RAISES, a
+   `self.class.new` that can be no site (EB_SELF_REFUSED), which raises
+   NotImplementedError where it runs, for the reason the desugar noted
+   (elab_builder_why), and which the compile warns of
+   (emit_class_new_raise); CNEW_NONE for any other call. */
+enum { CNEW_NONE, CNEW_RUNTIME, CNEW_STATIC, CNEW_REFUSED, CNEW_MIXED, CNEW_RAISES };
 /* May the class value at node (-1: one no node gives) be a class made at
    run time, its id a record's: a site class's Class object is in its class
    fact, or the fact is not bounded, in a program that has one? A constant
@@ -618,6 +621,31 @@ int cplan_class_value_may_be_rt(Compiler *c, int node);
    the site class's method in that class's place (cplan_rt_class_method_object). */
 int cplan_bind_call_rt_owner(Compiler *c, int id);
 int cplan_class_new(Compiler *c, int id, int *site);
+/* The same for the builtin Class's arm of the Class-value `new` switch at
+   a noted `self.class.new` the plan does not take as Class.new, whose self
+   is a class only at run time (a top-level def's, a module's, a reopened
+   Object's): where self.class is Class there, the call is Class.new.
+   CNEW_RUNTIME or CNEW_STATIC as above, with its site class; CNEW_RAISES,
+   no site (-1), for a call that can be no site (EB_SELF_REFUSED);
+   CNEW_NONE for any other call, and where the site would be refused (no
+   arm: the call answers as it is). */
+int cplan_class_new_class_arm(Compiler *c, int id, int *site);
+/* Why a Class.new is refused: CNR_BLOCK, a block that is not a literal the
+   class body can be lifted from; CNR_PARENT, a superclass that is a
+   builtin class or a class whose classes evaluated more than once cannot
+   have records; CNR_DYNAMIC_SUPER, a superclass only the run time holds;
+   CNR_CAPTURE, a block that reads the locals around it; CNR_ONCE, a block
+   holding a statement that runs only once in a class body (a jump that
+   leaves the block, a yield, an instance or class variable, a frame read,
+   a reflection: cn_stmt_reruns), or with block parameters other than the
+   class; CNR_MODULE_DEF, a block holding a def in a module's method,
+   whose def is also the module's method where the block runs on an
+   instance; CNR_DEF_HOOK, a block holding a statement ahead of a
+   declaration whose definition hook (method_added and the like) the
+   program defines, which must see the statement run first. Its message,
+   or with `brief` the words naming what is refused. */
+enum { CNR_BLOCK, CNR_PARENT, CNR_DYNAMIC_SUPER, CNR_CAPTURE, CNR_ONCE, CNR_MODULE_DEF, CNR_DEF_HOOK };
+const char *cplan_class_new_refusal(int why, int brief);
 /* Is node a statement of a site class's body, of a site whose classes are
    made at run time, that each evaluation runs on the class it makes
    (emit_op_class_new) and the body does not: the call of the block's

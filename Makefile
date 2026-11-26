@@ -2804,6 +2804,11 @@ reject-test: string-minus-reject-test $(SPINEL)
 	  echo "reject-test: FAIL (a flip-flop compiled)"; ok=0; \
 	else grep -qF "FlipFlopNode at $$t:5:8" "$$tmp/unk.out" && grep -qF "MatchLastLineNode at $$t:10:8" "$$tmp/unk.out" || \
 	  { echo "reject-test: FAIL (an unsupported node kind refused without naming it)"; sed -n 1,5p "$$tmp/unk.out"; ok=0; }; fi; \
+	t=test/reject/self_class_new_block_sdef_core_extended.rb; \
+	if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/scs.c" >"$$tmp/scs.out" 2>&1; then \
+	  echo "reject-test: FAIL (a def self.x in an extended core module's self.class.new block compiled)"; ok=0; \
+	else grep -q "singleton method on a receiver spinel cannot trace" "$$tmp/scs.out" || \
+	  { echo "reject-test: FAIL (a def self.x in an extended core module's self.class.new block refused without saying why)"; sed -n 1,5p "$$tmp/scs.out"; ok=0; }; fi; \
 	for t in $(shell grep -l '^\# spinel: reject-time-parse: ' test/reject/*.rb); do \
 	  why=$$(sed -n 's/^# spinel: reject-time-parse: //p' "$$t"); \
 	  if $(SPINEL) "$$t" -c --no-line-map -o "$$tmp/tp.c" >"$$tmp/tp.out" 2>&1; then \

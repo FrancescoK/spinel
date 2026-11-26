@@ -3117,6 +3117,16 @@ int emit_op_io_select(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_io_copy_stream(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_io_sysopen(Compiler *c, const BopCtx *x, Buf *b);
 int emit_op_class_new(Compiler *c, const BopCtx *x, Buf *b);
+/* The class a Class.new call id the plan answers cnew (cplan_class_new)
+   for site class `site` makes, an sp_Class: a record of its own for
+   CNEW_RUNTIME, with its body run on it, the site class itself otherwise.
+   A CNEW_RAISES call makes none (emit_call_new_arms). */
+void emit_class_new_site(Compiler *c, int id, int cnew, int site, Buf *b);
+/* The raise of a `self.class.new` the plan answers CNEW_RAISES, where it
+   runs on a class: the compile warns of it, and the call raises
+   NotImplementedError with Class.new's own refusal text for its reason
+   (elab_builder_why) */
+void emit_class_new_raise(Compiler *c, int id, Buf *b);
 int emit_op_io_set_winsize(Compiler *c, const BopCtx *x, Buf *b);
 /* A typed array receiver of a compare (`ck` "cmp") or a blockless sum (`ck`
    "sum"), wrapped in the runtime's nil check where the array can hold nil

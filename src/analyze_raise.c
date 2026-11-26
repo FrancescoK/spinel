@@ -964,23 +964,38 @@ static int rf_enclosing_ensures(const NodeTable *nt, const int *par, int id) {
   return d;
 }
 
-/* Does subtree `id` contain any local jump (return/break/next/redo) outside
-   nested defs/classes? Used to pick straight-line vs goto-ensure lowering. */
-int an_subtree_has_local_jump(const NodeTable *nt, int id) {
+/* Does subtree `id` hold a jump: a return anywhere outside nested defs,
+   classes and lambdas, and a break, next or redo there too, or with
+   `scoped` only one not inside a block or loop nested in the subtree
+   (`inner`), whose target is that block or loop. A for's collection is
+   evaluated before the loop: a jump there targets what is around it. */
+static int rf_jump_walk(const NodeTable *nt, int id, int scoped, int inner) {
   if (id < 0 || id >= nt->count) return 0;
   NodeKind k = nt_kind(nt, id);
-  if (k == NK_ReturnNode || k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode) return 1;
+  if (k == NK_ReturnNode) return 1;
+  if ((k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode) && !inner) return 1;
   if (k == NK_DefNode || k == NK_ClassNode || k == NK_ModuleNode ||
       k == NK_SingletonClassNode || k == NK_LambdaNode)
     return 0;
+  int loop = scoped && (k == NK_BlockNode || k == NK_WhileNode || k == NK_UntilNode || k == NK_ForNode);
+  int coll = k == NK_ForNode ? nt_ref(nt, id, "collection") : -1;
   const SpNode *nd = &nt->nodes[id];
-  for (int i = 0; i < nd->nr; i++)
-    if (an_subtree_has_local_jump(nt, nd->r[i].ref)) return 1;
+  for (int i = 0; i < nd->nr; i++) {
+    int r = nd->r[i].ref;
+    if (rf_jump_walk(nt, r, scoped, inner || (loop && r != coll))) return 1;
+  }
   for (int i = 0; i < nd->na; i++)
     for (int j = 0; j < nd->a[i].n; j++)
-      if (an_subtree_has_local_jump(nt, nd->a[i].ids[j])) return 1;
+      if (rf_jump_walk(nt, nd->a[i].ids[j], scoped, inner || loop)) return 1;
   return 0;
 }
+/* Does subtree `id` contain any local jump (return/break/next/redo) outside
+   nested defs/classes? Used to pick straight-line vs goto-ensure lowering. */
+int an_subtree_has_local_jump(const NodeTable *nt, int id) { return rf_jump_walk(nt, id, 0, 0); }
+/* Does statement `id` of a block body hold a jump that leaves the block: a
+   return outside a nested def, class or lambda, a break, next or redo whose
+   target is the block itself (rf_jump_walk)? */
+int an_subtree_leaves_block(const NodeTable *nt, int id) { return rf_jump_walk(nt, id, 1, 0); }
 
 static void rf_free(RF *f) {
   for (int s = 0; s < f->ns; s++) {

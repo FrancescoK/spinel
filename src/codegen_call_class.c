@@ -3674,8 +3674,17 @@ const unsigned char *g_poly_new_only = NULL;
 /* new and allocate on a Class value, a poly receiver, self's class or a constant */
 int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const char *name, int recv, int argc, const int *argv) {
   /* a Class.new the plan answers (cplan_class_new), `self.class.new` in a
-     class method among them, is Class's row, not a class value's new */
-  if (cplan_class_new(c, id, NULL) != CNEW_NONE && emit_builtin_class_op(c, id, name, b)) return 1;
+     class method among them, is Class's row, not a class value's new; one
+     that can make no class raises, and its value, never made, is boxed as
+     inference types it */
+  int cnew = cplan_class_new(c, id, NULL);
+  if (cnew == CNEW_RAISES) {
+    buf_puts(b, "(");
+    emit_class_new_raise(c, id, b);
+    buf_puts(b, ", sp_box_nil())");
+    return 1;
+  }
+  if (cnew != CNEW_NONE && emit_builtin_class_op(c, id, name, b)) return 1;
   if (emit_class_value_aref(c, id, b, recv, argc, argv)) return 1;
   /* .new WITH arguments on a Class value whose class is only known at run time.
      A local statically holding one class folds to that class and never gets
@@ -3734,7 +3743,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
        #4417 presented: no crash, no diagnostic, a nil that only misbehaves
        later. */
     ctor_arity_emit(&aerr, b);
-    emit_builtin_new_arms(c, argc, atmp, rt2, kt, 0, b);
+    emit_builtin_new_arms(c, id, argc, atmp, rt2, kt, 0, b);
     buf_printf(b, "} _t%d; })", rt2);
     bind_switch_rt_id(c, &sid, b);
     g_ctor_blk_tmp = sv_cbt;
@@ -3862,7 +3871,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       free(ab9.p); free(apre.p);
     }
     ctor_arity_emit(&aerr, b);
-    emit_builtin_new_arms(c, 0, NULL, rt2, kt, 0, b);
+    emit_builtin_new_arms(c, id, 0, NULL, rt2, kt, 0, b);
     buf_printf(b, "} _t%d; })", rt2);
     bind_switch_rt_id(c, &sid, b);
     g_ctor_blk_tmp = sv_cbt;
@@ -4086,7 +4095,7 @@ int emit_call_new_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, const c
       free(pdpre.p); free(ab.p); free(afill.p);
     }
     ctor_arity_emit(&aerr, b);
-    emit_builtin_new_arms(c, argc, atmp, rt2, kt, 1, b);
+    emit_builtin_new_arms(c, id, argc, atmp, rt2, kt, 1, b);
     buf_printf(b, "} _t%d; })", rt2);
     bind_switch_rt_id(c, &sid, b);
     g_ctor_blk_tmp = sv_cbt;
@@ -7383,10 +7392,32 @@ void emit_refl_im_params(Compiler *c, Buf *b) {
    The block's statements that run again run as each is made, with it as
    their self (cplan_rt_site_body). */
 int emit_op_class_new(Compiler *c, const BopCtx *x, Buf *b) {
-  int site;
-  if (cplan_class_new(c, x->id, &site) != CNEW_RUNTIME) { buf_printf(b, "((sp_Class){%d})", site); return 1; }
+  int site, cnew = cplan_class_new(c, x->id, &site);
+  emit_class_new_site(c, x->id, cnew, site, b);
+  return 1;
+}
+
+/* See codegen_internal.h. */
+void emit_class_new_raise(Compiler *c, int id, Buf *b) {
+  int why = elab_builder_why(c, id);
+  /* (the raise stands for the call where it runs on a class, the block
+     unemitted: the defs it holds report what emitting them reports, a
+     singleton def's refusal (sg_refused_def), as the call does on master) */
+  int blk = nt_ref(c->nt, id, "block"), nid = 0;
+  int *ids = blk >= 0 ? nt_subtree_ids((NodeTable *)c->nt, &blk, 1, &nid) : NULL;
+  for (int i = 0; i < nid; i++) if (nt_kind(c->nt, ids[i]) == NK_DefNode) sg_refused_def(c, ids[i]);
+  free(ids);
+  char what[256];
+  snprintf(what, sizeof what, "self.class.new with %s, where the method runs on a class,", cplan_class_new_refusal(why, 1));
+  warn_unrouted_call(c, id, what);
+  buf_puts(b, "sp_raise_cls(\"NotImplementedError\", \"spinel: ");
+  emit_c_escaped(b, cplan_class_new_refusal(why, 0));
+  buf_puts(b, "\")");
+}
+void emit_class_new_site(Compiler *c, int id, int cnew, int site, Buf *b) {
+  if (cnew != CNEW_RUNTIME) { buf_printf(b, "((sp_Class){%d})", site); return; }
   int body = cplan_rt_site_body(c, site);
-  if (body < 0) { buf_printf(b, "sp_rtclass_new(%d, %d)", site, comp_class_is_module(c, &c->classes[site])); return 1; }
+  if (body < 0) { buf_printf(b, "sp_rtclass_new(%d, %d)", site, comp_class_is_module(c, &c->classes[site])); return; }
   int t = ++g_tmp;
   char cls[32];
   snprintf(cls, sizeof cls, "_t%d", t);
@@ -7394,5 +7425,4 @@ int emit_op_class_new(Compiler *c, const BopCtx *x, Buf *b) {
   buf_printf(b, "(void)%s(", mc_method(c, &c->scopes[body]));
   emit_cmethod_self_cls_arg(c, body, site, cls, b);
   buf_printf(b, "); _t%d; })", t);
-  return 1;
 }

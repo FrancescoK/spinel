@@ -14070,8 +14070,11 @@ int emit_user_new_arm(Compiler *c, int id, int ci, int argc, const int *atmp,
    through sp_builtin_class_new, a builtin exception class through
    sp_class_value_new_fallback, which raises NoMethodError for any other.
    Each arm runs `pre` and then passes `argc_txt` boxed arguments at
-   `argv_txt`; the block is the hoisted g_ctor_blk_tmp. */
-static void emit_builtin_new_arms_text(Compiler *c, const char *pre, const char *argc_txt,
+   `argv_txt`; the block is the hoisted g_ctor_blk_tmp. The builtin Class
+   makes the class of the plan's site for the call id where self.class is
+   Class only at run time (cplan_class_new_class_arm), or raises the plan's
+   refusal of a call that can be no site, warned. */
+static void emit_builtin_new_arms_text(Compiler *c, int id, const char *pre, const char *argc_txt,
                                        const char *argv_txt, int rt2, int kt, int boxed, Buf *b) {
   static const struct { const char *name; char kind; } bnew[] = {
     { "String", 'S' }, { "Array", 'A' }, { "Hash", 'H' }, { "Object", 'O' },
@@ -14087,6 +14090,17 @@ static void emit_builtin_new_arms_text(Compiler *c, const char *pre, const char 
         buf_printf(b, "case %d: ", ci);
     buf_printf(b, "{ %s_t%d = sp_builtin_class_new('%c', %s, %s, %s); } break; ",
                pre, rt2, bnew[k].kind, argc_txt, argv_txt, blk);
+  }
+  int site, cnew = cplan_class_new_class_arm(c, id, &site);
+  if (cnew == CNEW_RAISES) {
+    buf_printf(b, "case %d: { %s", builtin_class_id("Class"), pre);
+    emit_class_new_raise(c, id, b);
+    buf_puts(b, "; } break; ");
+  }
+  else if (cnew != CNEW_NONE) {
+    buf_printf(b, "case %d: { %s_t%d = sp_box_class(", builtin_class_id("Class"), pre, rt2);
+    emit_class_new_site(c, id, cnew, site, b);
+    buf_puts(b, "); } break; ");
   }
   if (boxed)
     buf_printf(b, "default: { %s_t%d = sp_class_value_new_fallback(_t%d, _t%d.tag == SP_TAG_CLASS ? "
@@ -14225,7 +14239,7 @@ void emit_raise_class_value(Compiler *c, int id, int kn, int mn, Buf *b) {
 }
 
 /* The same, for arguments hoisted into the boxed temps `atmp`. */
-void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed,
+void emit_builtin_new_arms(Compiler *c, int id, int argc, const int *atmp, int rt2, int kt, int boxed,
                                   Buf *b) {
   Buf ab; memset(&ab, 0, sizeof ab);
   if (argc == 0) buf_puts(&ab, "NULL");
@@ -14235,7 +14249,7 @@ void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int 
     buf_puts(&ab, "}");
   }
   char nb[24]; snprintf(nb, sizeof nb, "%d", argc);
-  emit_builtin_new_arms_text(c, "", nb, ab.p, rt2, kt, boxed, b);
+  emit_builtin_new_arms_text(c, id, "", nb, ab.p, rt2, kt, boxed, b);
   free(ab.p);
 }
 
@@ -14633,7 +14647,7 @@ void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b) {
     char an[32], av[32];
     snprintf(an, sizeof an, "_t%d->len", tsa);
     snprintf(av, sizeof av, "_t%d->data", tsa);
-    emit_builtin_new_arms_text(c, pre.p, an, av, rt2, kt, boxed, b);
+    emit_builtin_new_arms_text(c, id, pre.p, an, av, rt2, kt, boxed, b);
     buf_printf(b, "} _t%d; })", rt2);
     free(spre.p); free(sv.p); free(pre.p);
   }

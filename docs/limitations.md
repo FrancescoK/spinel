@@ -315,9 +315,33 @@ is Class (a `def self.m`, a `def B.m`, a def of `class << self` or
 class extends, and no `class` of the program's own answers `self.class`), is
 `Class.new` made where the method runs: a class of its own at each call,
 with no superclass, a constant superclass that is a class of the program,
-or a block, as `Class.new` evaluated more than once is. With a builtin
-class or a non-constant as its superclass, or a block passed with `&` or
-reading the method's locals, it is refused.
+or a block, as `Class.new` evaluated more than once is. In a method whose
+self is a class only when it runs (a top-level def, a module's method, one
+of a reopened Object or Kernel, a block an instance_exec runs on a class),
+it makes such a class where `self.class` is Class when it runs, and an
+instance of self's class elsewhere. A builtin class or a non-constant as
+its superclass, a block passed with `&` or reading the method's locals, a
+block with a statement that runs only once in a class body (such as a
+`return`, or a `break` or `next` that leaves the block rather than a loop
+or block inside it, a `yield`, an instance or class variable,
+`block_given?`, `super`, a constant written, a reflection such as
+`instance_variable_get`), a block with parameters other than the class,
+a block with a statement ahead of a declaration whose definition hook
+(`method_added` and the like) the program defines, which must see the
+statement run first, and, in a module's method (the program's own module
+or a core one such as Kernel or Comparable), a block holding a `def`
+(which is the module's method where the block runs on an instance) are
+refused where the method runs on a class, in a def of a
+singleton (`def self.m`, `def B.m`, a def of `class << x`), a module's
+method a class extends and a define_singleton_method body alike: the
+compile warns, and that run raises NotImplementedError, while a program
+that never runs it (nor any use of its value) answers as CRuby, as do the
+runs on an instance or on main. The one exception is a core module's
+block holding a `def`: its method exists whether or not the block runs
+(also after a run on main, whose `initialize` takes no block), as for any
+`def` in a block of a core module's method. A module as its
+superclass, or more than one argument, is refused at compile time, as for
+a written `Class.new`.
 
 Besides `Class.new(Constant)`, a superclass written as a call may be
 `Struct.new(...)`, `Data.define(...)`, or the `new` of a Struct subclass of

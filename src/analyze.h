@@ -139,6 +139,9 @@ int an_begin_elides_setjmp(const Compiler *c, int id);
 int an_rescue_mod_elides_setjmp(const Compiler *c, int id);
 int an_rescue_elided(const Compiler *c, int id);
 int an_subtree_has_local_jump(const NodeTable *nt, int id);
+/* a jump in statement id of a block body that leaves the block: a return,
+   or a break, next or redo not in a block or loop nested in it */
+int an_subtree_leaves_block(const NodeTable *nt, int id);
 /* Does the subtree under `node` read or write an ivar (past depth 200: it
    may)? depth is the caller's, 0 at the top. */
 int an_subtree_has_ivar(const NodeTable *nt, int node, int depth);
@@ -704,6 +707,12 @@ int elab_body_call_owner(Compiler *c, int call);   /* does every run of the body
    record's parents once it is made), so the registration's walk asks it
    too. */
 int elab_body_self_object(Compiler *c, int node);
+/* Is self where node runs a class of the program the record names: in a
+   class's own singleton method (`def self.m` or a def of `class << self` in
+   its body), a class body or a class_eval block on it (lr_body_frame)? 0
+   for an object (an instance method's self, a `def o.m`'s or a `class << o`
+   body's, main) and where the record cannot tell. */
+int elab_body_self_class(Compiler *c, int node);
 /* Does node run whenever body (a def's, a lambda's or a call's block node)
    runs, once it gets past its start (lr_runs_with_body): no condition, rescued
    begin, block of its own or early exit between them? */
@@ -1131,11 +1140,17 @@ void const_pairs_free(Compiler *c);   /* the pairs program_writes_const_in kept 
    a class of a superclass only the run time holds; EB_RT_SITE (written
    with a block) and EB_RT_BARE (without), a call evaluated more than once,
    each evaluation a class of its own whose code is the site class: the
-   class node elab_builder_site answers (-1 for any other) */
-enum { EB_NONE, EB_DYNAMIC_SUPER, EB_RT_SITE, EB_RT_BARE };
+   class node elab_builder_site answers (-1 for any other); EB_SELF_REFUSED,
+   a `self.class.new` that can be no site, noted with the CNR_* reason
+   elab_builder_why answers (elab_builder_refuse), which the call plan
+   answers where self is a class when it runs as the raise of
+   NotImplementedError (CNEW_RAISES) */
+enum { EB_NONE, EB_DYNAMIC_SUPER, EB_RT_SITE, EB_RT_BARE, EB_SELF_REFUSED };
 int elab_builder_kind(const Compiler *c, int node);
 int elab_builder_site(const Compiler *c, int node);
+int elab_builder_why(const Compiler *c, int node);
 void elab_builder_note(Compiler *c, int node, int kind, int site_def);
+void elab_builder_refuse(Compiler *c, int node, int why);
 /* nt_swap_nodes, and the record's entries of the two nodes trade places
    with their contents */
 void elab_swap_nodes(Compiler *c, int a, int b);

@@ -8540,11 +8540,16 @@ const char *cplan_class_rows_recv(Compiler *c, int recv) {
 /* See call_plan.h. */
 const BuiltinClassOp *cplan_builtin_class_row(Compiler *c, int id, const char *cls) {
   const char *name = nt_str(c->nt, id, "name");
-  /* (a site's superclass is its site class's: desugar_class_new_blocks) */
-  int cnew = cplan_class_new(c, id, NULL), argc = 0;
-  if (cnew == CNEW_NONE) call_args(c->nt, id, &argc);
-  const BuiltinClassOp *cop = bop_class_find(cls, name, argc, nt_ref(c->nt, id, "block") >= 0);
-  if (cop && cop->op.emit == BOPE_CLASS_NEW && cnew == CNEW_NONE) return NULL;
+  /* (a site's superclass and block are its site class's; the call keeps
+     a copy only for where self is no class: desugar_class_new_blocks) */
+  int cnew = cplan_class_new(c, id, NULL), argc = 0, blk = 0;
+  if (cnew == CNEW_NONE) {
+    call_args(c->nt, id, &argc);
+    blk = nt_ref(c->nt, id, "block") >= 0;
+  }
+  const BuiltinClassOp *cop = bop_class_find(cls, name, argc, blk);
+  /* (a call that can make no class is no Class#new: it raises) */
+  if (cop && cop->op.emit == BOPE_CLASS_NEW && (cnew == CNEW_NONE || cnew == CNEW_RAISES)) return NULL;
   const char *a;
   for (int i = 0; cop && (a = builtin_ancestor_at(cls, i)); i++) {
     int ci = comp_class_index(c, a);
@@ -8652,16 +8657,73 @@ int cplan_rt_site_body(Compiler *c, int ci) {
         nt_int(c->nt, c->scopes[s].def_node, "rt_body_def", 0)) return s;
   return -1;
 }
-int cplan_class_new(Compiler *c, int id, int *site) {
+/* cplan_class_new's answer for the noted site at id, the plan taking the
+   call as Class.new (on_class) or not */
+static int cnew_answer(Compiler *c, int id, int on_class, int *site) {
   int kind = elab_builder_kind(c, id), ci = -1;
-  /* (a `self.class.new` site is one only where the call is on the builtin
-     Class: cplan_class_row_recv) */
-  if ((kind == EB_RT_SITE || kind == EB_RT_BARE) && cplan_class_row_recv(c, nt_ref(c->nt, id, "receiver")))
+  int takes = cplan_class_row_recv(c, nt_ref(c->nt, id, "receiver")) != NULL;
+  if ((kind == EB_RT_SITE || kind == EB_RT_BARE) && takes == on_class)
     ci = comp_class_of_def(c, elab_builder_site(c, id));
   if (site) *site = ci;
   if (ci < 0) return CNEW_NONE;
   if (cplan_rt_site(c, ci)) return CNEW_RUNTIME;
   return kind == EB_RT_SITE ? CNEW_STATIC : c->classes[ci].rt_site == RT_SITE_BARE ? CNEW_MIXED : CNEW_REFUSED;
+}
+int cplan_class_new(Compiler *c, int id, int *site) {
+  /* (a `self.class.new` site is one only where the call is on the builtin
+     Class, cplan_class_row_recv, and one that can be no site raises there:
+     a singleton's def's, an extended module's copy's) */
+  if (elab_builder_kind(c, id) == EB_SELF_REFUSED && cplan_class_row_recv(c, nt_ref(c->nt, id, "receiver"))) {
+    if (site) *site = -1;
+    return CNEW_RAISES;
+  }
+  return cnew_answer(c, id, 1, site);
+}
+int cplan_class_new_class_arm(Compiler *c, int id, int *site) {
+  int ci, cnew = cnew_answer(c, id, 0, &ci);
+  /* (a site the plan would refuse gets no arm: the call answers as it is) */
+  if (cnew != CNEW_RUNTIME && cnew != CNEW_STATIC) cnew = CNEW_NONE, ci = -1;
+  /* (one that can be no site, where self is a class only at run time: a
+     top-level def's, a module's, a reopened Object's) */
+  if (elab_builder_kind(c, id) == EB_SELF_REFUSED) cnew = CNEW_RAISES;
+  if (site) *site = ci;
+  return cnew;
+}
+const char *cplan_class_new_refusal(int why, int brief) {
+  switch (why) {
+  case CNR_BLOCK:
+    return brief ? "a block passed with `&`"
+                 : "Class.new with a block is not supported here by AOT compilation: the class "
+                   "graph, ancestor chain, and method/ivar layout are baked at compile time. "
+                   "Declare the class with `class ... end` instead (see docs/limitations.md)";
+  case CNR_PARENT:
+    return brief ? "a builtin class as its superclass"
+                 : "Class.new(parent) is not supported by AOT compilation: the class "
+                   "graph, ancestor chain, and method/ivar layout are baked at compile time. "
+                   "Declare the class with `class ... end` instead (see docs/limitations.md)";
+  case CNR_CAPTURE:
+    return brief ? "a block reading the method's locals"
+                 : "Class.new or Module.new with a block that captures outer locals is not supported";
+  case CNR_ONCE:
+    return brief ? "a statement that runs only once in a class body, such as a return, break, next or yield, "
+                   "an instance or class variable"
+                 : "Class.new with a block holding a statement that runs only once in a class body (such as a "
+                   "return, break, next or yield that leaves the block, an instance or class variable, "
+                   "block_given?, super or a reflection), or with block parameters other than the class, is not "
+                   "supported (see docs/limitations.md)";
+  case CNR_MODULE_DEF:
+    return brief ? "a block holding a def, in a module's method"
+                 : "Class.new with a block holding a def, in a method of a module, is not supported where the "
+                   "method runs on a class (see docs/limitations.md)";
+  case CNR_DEF_HOOK:
+    return brief ? "a statement ahead of a declaration whose definition hook (method_added and the like) the program "
+                   "defines"
+                 : "Class.new with a block holding a statement ahead of a declaration whose definition hook "
+                   "(method_added and the like) the program defines is not supported where the method runs on a "
+                   "class (see docs/limitations.md)";
+  default:
+    return brief ? "a non-constant superclass" : "Class.new with a non-constant superclass is not supported";
+  }
 }
 
 /* Does a builtin answer `name` on program class ci (main for -1): one on
@@ -10747,9 +10809,10 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
   if (is_raise_alias(name) && nt_int(nt, id, "sclass_self", 0) && cplan_reachable(c, id))
     return "the ancestry and the method table of a singleton class are not modeled: its name, "
            "identity, instance_methods(false) and method_defined? are; see docs/limitations.md";
-  if (elab_builder_kind(c, id) == EB_DYNAMIC_SUPER && cplan_reachable(c, id))
-    return "Class.new with a non-constant superclass is not supported; "
-           "use a constant superclass (see docs/limitations.md)";
+  if (elab_builder_kind(c, id) == EB_DYNAMIC_SUPER && cplan_reachable(c, id)) {
+    snprintf(buf, cap, "%s; use a constant superclass (see docs/limitations.md)", cplan_class_new_refusal(CNR_DYNAMIC_SUPER, 0));
+    return buf;
+  }
   if (nt_int(nt, id, "attr_splat", 0) && cplan_reachable(c, id)) {
     snprintf(buf, cap, "%s with a splat of anything but a constant Array literal of Symbols or Strings "
              "(written once, ahead of the call, and never changed) is not supported; "
@@ -10911,16 +10974,14 @@ static const char *feature_limit(Compiler *c, int id, int *stop, int *lx, char *
        class each evaluation makes. (A site's superclass is its site
        class's.) */
     else if (is_class_new(bcn, name) && ((cnew == CNEW_NONE && cplan_argc(nt, id) > 0) || cnew == CNEW_REFUSED))
-      why = "Class.new(parent) is not supported by AOT compilation: the class "
-            "graph, ancestor chain, and method/ivar layout are baked at compile time. "
-            "Declare the class with `class ... end` instead (see docs/limitations.md)";
+      why = cplan_class_new_refusal(CNR_PARENT, 0);
     /* a block the desugar leaves on the call (desugar_class_new_blocks):
        one that is not a block literal (`Class.new(&b)`, `Class.new(&:x)`),
-       or a literal whose body it cannot lift into a class body */
-    else if (is_class_new(bcn, name) && nt_ref(nt, id, "block") >= 0)
-      why = "Class.new with a block is not supported here by AOT compilation: the class "
-            "graph, ancestor chain, and method/ivar layout are baked at compile time. "
-            "Declare the class with `class ... end` instead (see docs/limitations.md)";
+       or a literal whose body it cannot lift into a class body; a site's
+       call keeps a copy only for where self is no class; one refused where
+       self is a class only at run time raises on that run) */
+    else if (is_class_new(bcn, name) && cnew == CNEW_NONE && nt_ref(nt, id, "block") >= 0)
+      why = cplan_class_new_refusal(CNR_BLOCK, 0);
     if (why) *lx = LX_NAME;
   }
   /* `k.method(:new).call` on a class value that may be one made at run

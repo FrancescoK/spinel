@@ -6583,6 +6583,16 @@ static int infer_class_module_call(Compiler *c, int id, const NodeTable *nt, con
      class, as a first-class class object */
   if (anon_struct_ci_for_value(c, id) >= 0) { *out = TY_CLASS; return 1; }
 
+  /* a Class.new that can only raise (CNEW_RAISES: no class is made where the
+     method runs on a class) has a value that never exists. It keeps master's
+     typing of a `new` on a class known only at run time, so its uses compile
+     as they do for any such value, and never run. Not TY_VOID, a raise's type:
+     the call emitter refuses a call on a void receiver, and a use one call
+     level away (`S.mk { }.who`, mk's body the raise) has no fact that it is
+     never reached. */
+  if (recv >= 0 && rt == TY_CLASS && is_new_name(name) && cplan_class_new(c, id, NULL) == CNEW_RAISES)
+    { *out = TY_POLY; return 1; }
+
   /* TY_CLASS method dispatch -- .new on a dynamic class variable returns TY_POLY.
      Exception: self.class.new(...) resolves to the enclosing class statically,
      and a Class.new the plan answers (cplan_class_new: `self.class.new` in a

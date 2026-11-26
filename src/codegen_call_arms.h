@@ -251,7 +251,7 @@ int ctor_arm_takes(Compiler *c, Scope *is, int argc);
 const char *ctor_blk_lead(const Buf *b);
 int ctor_block_dispatchable(Compiler *c, int id);
 int ctor_block_splices(Compiler *c, int id);
-void emit_builtin_new_arms(Compiler *c, int argc, const int *atmp, int rt2, int kt, int boxed, Buf *b);
+void emit_builtin_new_arms(Compiler *c, int id, int argc, const int *atmp, int rt2, int kt, int boxed, Buf *b);
 int emit_class_new_call(Compiler *c, int id, Buf *b);
 void emit_class_value_new_kw(Compiler *c, int id, int recv, int boxed, Buf *b);
 /* The head of a Class-value `new` switch on `_t<kt>` (an sp_Class, or a

@@ -3722,8 +3722,15 @@ static void cf_call(CF *f, int v) {
   cf_scal_bind(f, v, nm, r, argv, argc, blk);
   cf_anon_struct_value(f, v);
   /* a Class.new or Module.new the plan answers (cplan_class_new): its site
-     class's Class object, which each run-time class made there shares */
-  { int site; if (cplan_class_new(f->c, v, &site) != CNEW_NONE) { cf_add_set(f, v, cf_classval(f, site)); return; } }
+     class's Class object, which each run-time class made there shares; and
+     one of the values a `self.class.new` has whose self is a class only at
+     run time (cplan_class_new_class_arm); one the plan answers as a raise
+     (CNEW_RAISES) has no value, as a raise has none */
+  { int site, cnew = cplan_class_new(f->c, v, &site);
+    if (cnew == CNEW_RAISES) return;
+    if (cnew != CNEW_NONE) { cf_add_set(f, v, cf_classval(f, site)); return; }
+    cplan_class_new_class_arm(f->c, v, &site);
+    if (site >= 0) cf_add_set(f, v, cf_classval(f, site)); }
   cf_modfn_bind(f, v, nm, argv, argc, blk);
   if (cf_blk_call(f, v, r, nm, argv, argc)) return;
   /* `k.superclass` (#8837): the Class objects of the parents of the

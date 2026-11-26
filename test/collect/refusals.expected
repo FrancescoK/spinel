@@ -1884,6 +1884,12 @@ spinel: 1 refusal, nothing written
 == test/reject/self_call_in_block_still_reaches_class_method.rb [promote] rc=1
 spinel: test/reject/self_call_in_block_still_reaches_class_method.rb:8: undefined method '[]=' for a Class: no class in the program defines a class method '[]=' (NoMethodError)
 spinel: 1 refusal, nothing written
+== test/reject/self_class_new_block_sdef_core_extended.rb [default] rc=1
+spinel: test/reject/self_class_new_block_sdef_core_extended.rb:8: singleton method on a receiver spinel cannot trace to one `new` of a user class or Object (a String, an Array, a parameter, a value read out of a collection, a class held in a variable): no call on it would reach the method
+spinel: 1 refusal, nothing written
+== test/reject/self_class_new_block_sdef_core_extended.rb [promote] rc=1
+spinel: test/reject/self_class_new_block_sdef_core_extended.rb:8: singleton method on a receiver spinel cannot trace to one `new` of a user class or Object (a String, an Array, a parameter, a value read out of a collection, a class held in a variable): no call on it would reach the method
+spinel: 1 refusal, nothing written
 == test/reject/send_class_side_super_does_more.rb [default] rc=1
 spinel: test/reject/send_class_side_super_does_more.rb:9: Logged.send: unsupported `super` in a program-defined `send`: it reaches Object#send, which a program method cannot call yet (only a `send` that passes its parameters straight to `super` is supported, in a program with no other `send` of its own)
 spinel: 1 refusal, nothing written

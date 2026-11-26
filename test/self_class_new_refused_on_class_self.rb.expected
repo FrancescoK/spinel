@@ -1,0 +1,40 @@
+class blk: NotImplementedError: spinel: Class.new with a block is not supported here by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+class dyn: NotImplementedError: spinel: Class.new with a non-constant superclass is not supported
+class builtin: NotImplementedError: spinel: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+instance blk: B
+instance dyn: ArgumentError: wrong number of arguments (given 1, expected 0)
+instance builtin: ArgumentError: wrong number of arguments (given 1, expected 0)
+main blk: Object
+main dyn: ArgumentError: wrong number of arguments (given 1, expected 0)
+main builtin: ArgumentError: wrong number of arguments (given 1, expected 0)
+two: NotImplementedError: spinel: Class.new with a block is not supported here by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+class local: NotImplementedError: spinel: Class.new or Module.new with a block that captures outer locals is not supported
+class return: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+class yield: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+class ivar: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+class nested return: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+4
+7
+:early
+module both, instance: Y
+module both, class: NotImplementedError: spinel: Class.new with a block is not supported here by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+singleton amp: NotImplementedError: spinel: Class.new with a block is not supported here by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+singleton dyn: NotImplementedError: spinel: Class.new with a non-constant superclass is not supported
+singleton builtin: NotImplementedError: spinel: Class.new(parent) is not supported by AOT compilation: the class graph, ancestor chain, and method/ivar layout are baked at compile time. Declare the class with `class ... end` instead (see docs/limitations.md)
+singleton local: NotImplementedError: spinel: Class.new or Module.new with a block that captures outer locals is not supported
+singleton return: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+singleton ivar: NotImplementedError: spinel: Class.new with a block holding a statement that runs only once in a class body (such as a return, break, next or yield that leaves the block, an instance or class variable, block_given?, super or a reflection), or with block parameters other than the class, is not supported (see docs/limitations.md)
+core module def, class: NotImplementedError: spinel: Class.new with a block holding a def, in a method of a module, is not supported where the method runs on a class (see docs/limitations.md)
+5
+:kd
+Object
+module def, class: NotImplementedError: spinel: Class.new with a block holding a def, in a method of a module, is not supported where the method runs on a class (see docs/limitations.md)
+6
+:pd
+8
+Class
+definition hook, class: NotImplementedError: spinel: Class.new with a block holding a statement ahead of a declaration whose definition hook (method_added and the like) the program defines is not supported where the method runs on a class (see docs/limitations.md)
+hbody
+added hh
+2
+:dead_done

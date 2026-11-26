@@ -1426,7 +1426,7 @@ static void lr_nbody_note(LoadRecord *r, int b, int a, int sg, const char *name)
    class's site (site, -1 for none): such an entry opens no class
    (cls and want LR_UNKNOWN_CLASS), so the header readers answer it as a
    node they hold nothing for. */
-typedef struct LrHeader { int node, cls, owner, verdict, found, want, next; char *leaf; unsigned char builder; int site_def; } LrHeader;
+typedef struct LrHeader { int node, cls, owner, verdict, found, want, next; char *leaf; unsigned char builder, why; int site_def; } LrHeader;
 
 static LrCheck *lr_family(LoadRecord *r, const char *reader);
 static void lr_node_desc(Compiler *c, int id, char *buf, size_t sz);
@@ -6467,6 +6467,15 @@ int elab_body_self_object(Compiler *c, int node) {
   /* (the frame it stopped at is a define_method's block, or else a method's body or an instance_eval's block) */
   return fs == LR_FS_OBJECT && at >= 0 && nt_kind(c->nt, at) == NK_BlockNode && par[at] >= 0 && nt_ref(c->nt, par[at], "block") == at &&
          is_define_method_name(nt_str(c->nt, par[at], "name")) ? par[at] : -1;
+}
+/* See analyze.h */
+int elab_body_self_class(Compiler *c, int node) {
+  LoadRecord *r = c->lrec && c->lrec->walk ? c->lrec : elab_fresh(c);
+  int rec = r->recorded && !r->walk;   /* (the registration's walk: the tree's parents) */
+  const int *par = rec ? lr_par(c, 0) : comp_parent_map(c);
+  int n = rec ? r->n : c->nt->count, fs = LR_FS_NONE;
+  if (!par || node < 0 || node >= n) return 0;
+  return lr_body_frame(c, par, n, node, -1, 1, &fs, NULL) >= 0 && fs != LR_FS_OBJECT;
 }
 /* See analyze.h */
 int elab_body_call_owner(Compiler *c, int call) {
@@ -14010,6 +14019,10 @@ void elab_builder_note(Compiler *c, int node, int kind, int site_def) {
   h->builder = (unsigned char)kind;
   h->site_def = site_def;
 }
+void elab_builder_refuse(Compiler *c, int node, int why) {
+  elab_builder_note(c, node, EB_SELF_REFUSED, -1);
+  lr_header(lr_get(c), node, 1)->why = (unsigned char)why;
+}
 static const LrHeader *lr_builder_header(const Compiler *c, int node) {
   for (int depth = 0; c->lrec && node >= 0 && depth < 64; depth++) {
     const LrHeader *h = lr_header(c->lrec, node, 0);
@@ -14027,6 +14040,10 @@ int elab_builder_kind(const Compiler *c, int node) {
 int elab_builder_site(const Compiler *c, int node) {
   const LrHeader *h = lr_builder_header(c, node);
   return h ? h->site_def : -1;
+}
+int elab_builder_why(const Compiler *c, int node) {
+  const LrHeader *h = lr_builder_header(c, node);
+  return h ? h->why : 0;
 }
 
 /* Header map entry h now keys `node`: moved to that node's bucket */
