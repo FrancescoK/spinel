@@ -1,0 +1,19 @@
+K
+Mo
+[5, "s", [:sy, 1]]
+[K, Mo, nil, nil]
+[1]
+[Integer, Symbol, Integer]
+[Array]
+[nil, 5, 3]
+"q"
+"qxy"
+"qxy"
+[Integer, [Integer, 2]]
+[:k1, :k2]
+[["K", "K"], [1, "Symbol"]]
+NameError
+NameError
+1
+:b
+NoMethodError
