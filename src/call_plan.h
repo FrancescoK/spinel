@@ -1182,6 +1182,27 @@ int cplan_record_sclass_early(Compiler *c, int id);
 /* CPX_TARGET reads only the direct chain target under its name view, respecting builtin-only aliases. */
 enum { CPX_IE = 1, CPX_EMIT = 2, CPX_ARM = 4, CPX_TARGET = 8 };
 CallPlan cplan_user_in(Compiler *c, int id, int self_ci, int flags);
+/* The method a call with a block is spliced from (emit_inline_call_x), and
+   the self it binds; the yielding-target question (call_targets_yielding_method)
+   reads the same answer. mi -1 where the plan binds no program method or one
+   no splice takes. The context is the one the node does not carry: an
+   instance_exec self (ie_class), a poly arm's receiver class (arm_class),
+   the class body being emitted (cbody), the class body self is at the call
+   as codegen emits it (self_cbody, emit_self_class_body: none inside an
+   instance_eval splice), each -1 for none; narrow is the
+   yielding-target question's form, a constant receiver only and no Class
+   reopen. */
+typedef struct {
+  int mi;
+  int recv_class;   /* the instance self is bound to */
+  /* the class a CLASS METHOD is inlined for: no instance self to bind (which
+     is what recv_class drives), but its body's bare `new` must still build
+     this class rather than the host method's */
+  int cm_class, cm_self_id;
+  int implicit_self;
+} CplanInline;
+typedef struct { int ie_class, arm_class, cbody, self_cbody, narrow; } CplanInlineCtx;
+CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x);
 /* Is the node codegen is at read as itself: no view, no instance_exec scope
    move or class, no inline splice? Only there may a memo per node answer
    (cplan_user). */

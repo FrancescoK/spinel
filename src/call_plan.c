@@ -9550,6 +9550,113 @@ CallPlan cplan_user_in(Compiler *c, int id, int self_ci, int flags) {
   return cplan_dep(ctx);
 }
 
+/* The method a splice of call id takes and the self it binds, read from
+   the call's plan for the plans whose form says the binding: a bare call on
+   the enclosing class's chain, its class methods in a class method, a class
+   body's class method, a top-level method or an included module's; a class
+   constant's class method (a Class reopen's for a builtin class); an
+   instance receiver's own lookup. An instance_exec self and a poly arm's
+   receiver class are read into the plan (cplan_user_in). None (mi -1) for a
+   plan that binds no program method (a builtin's, a native_func stub's) or
+   a method of another form, which no splice takes. */
+CplanInline cplan_inline_target(Compiler *c, int id, const CplanInlineCtx *x) {
+  const NodeTable *nt = c->nt;
+  int recv = nt_ref(nt, id, "receiver");
+  CplanInline t = { -1, -1, -1, 0, 0 };
+  CallPlan p;
+  if (recv < 0 && x->ie_class >= 0) {
+    /* inside an instance_eval/exec splice self is the rebound receiver: its
+       class's lookup first, then the call as its own */
+    p = cplan_user_in(c, id, x->ie_class, CPX_IE);
+    if (p.chain && p.via == UC_INST && p.owner_ci == x->ie_class) {
+      t.mi = p.mi; t.recv_class = x->ie_class;
+      return t;
+    }
+  }
+  else if (recv >= 0 && !x->narrow && x->arm_class >= 0 &&
+           !ty_is_object(comp_ntype(c, recv)) && self_class_static_ci(c, recv) < 0 &&
+           !(nt_kind(nt, recv) == NK_ConstantReadNode || nt_kind(nt, recv) == NK_ConstantPathNode)) {
+    /* a poly arm (#2448): self is pre-bound to a cast of the boxed receiver,
+       and the concrete class is supplied out of band */
+    CallPlan q = cplan_user_in(c, id, x->arm_class, CPX_ARM);
+    t.recv_class = x->arm_class;
+    if (q.chain && q.via == UC_INST && q.owner_ci == x->arm_class) t.mi = q.mi;
+    return t;
+  }
+  else p = cplan_user(c, id);
+  if (p.mi < 0) return t;
+  if (recv < 0) {
+    Scope *encl = comp_scope_of(c, id);
+    int ecls = encl ? encl->class_id : -1;
+    /* a class body's own class methods come first (the class body being
+       emitted, x->cbody); the plan asked them first too when the call is
+       that body's (comp_cbody_call_mi) */
+    int top_ok = ecls >= 0 || x->cbody < 0 ||
+                 (c->node_cbody[id] == x->cbody && !(encl && encl->name));
+    if (ecls >= 0 && p.via == UC_INST && p.chain && p.owner_ci == ecls) {
+      /* a switch whose default is a top-level def or Object's method
+         (cplan_self_root_override): the def is the free function the
+         lookup names, Object's method no target of self's chain */
+      int rcls = c->scopes[p.mi].class_id;
+      if (rcls < 0) { t.mi = p.mi; return t; }
+      if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != ecls) return t;
+      t.mi = p.mi; t.implicit_self = 1;
+      return t;
+    }
+    if (ecls >= 0 && encl->is_cmethod && p.via == UC_CMETH && p.owner_ci == ecls &&
+        c->scopes[p.mi].is_cmethod) {
+      t.mi = p.mi;
+      return t;
+    }
+    if (ecls < 0 && x->self_cbody >= 0 && p.via == UC_CMETH && p.owner_ci == x->self_cbody) {
+      t.mi = p.mi; t.cm_class = x->self_cbody;
+      return t;
+    }
+    if (top_ok && p.via == UC_TOP) { t.mi = p.mi; return t; }
+    if (top_ok && p.via == UC_INCLUDED && !scope_uses_ivars(c, p.mi)) {
+      t.mi = p.mi;
+      if (c->scopes[p.mi].is_cmethod) t.cm_class = c->scopes[p.mi].class_id;
+    }
+    return t;
+  }
+  /* a send of a top-level def the receiver's class does not own */
+  if (p.via == UC_SEND_BLIND) { t.mi = p.mi; return t; }
+  NodeKind rk = nt_kind(nt, recv);
+  const char *cname = rk == NK_ConstantReadNode || rk == NK_ConstantPathNode ? key_name(c, recv) : NULL;
+  /* a class body's self is that class, as a constant naming it is */
+  int bci = rk == NK_SelfNode ? class_body_self_ci(c, recv) : -1;
+  if (x->narrow && !cname && bci < 0) {
+    TyKind rt = comp_ntype(c, recv);
+    if (p.via == UC_INST && p.chain && ty_is_object(rt) && p.owner_ci == ty_object_class(rt)) {
+      t.mi = p.mi; t.recv_class = p.owner_ci;
+    }
+    return t;
+  }
+  /* (the class the node names: an alias's too) */
+  int ci = cname ? const_node_class_index(c, recv) : bci >= 0 ? bci : self_class_static_ci(c, recv);
+  if (p.via == UC_CMETH && !p.by_name && (cname || ci >= 0)) {
+    if (ci >= 0 && p.owner_ci == ci) { t.mi = p.mi; t.cm_class = ci; return t; }
+    if (!x->narrow && cname && builtin_class_id(cname) && p.owner_ci == c->scopes[p.mi].class_id &&
+        p.owner_ci != ci) {
+      t.mi = p.mi; t.cm_class = p.owner_ci; t.cm_self_id = builtin_class_id(cname);
+      return t;
+    }
+    return t;
+  }
+  if (ci < 0 && p.via == UC_INST && p.chain) {
+    TyKind rt = comp_ntype(c, recv);
+    /* Object's method as the default of a switch on self's class
+       (cplan_self_root_override): no target of the receiver's chain */
+    int rcls = c->scopes[p.mi].class_id;
+    if (rcls == comp_core_class(c, CORE_OBJECT) && rcls != p.owner_ci) return t;
+    if (ty_is_object(rt) && p.owner_ci == ty_object_class(rt)) {
+      t.mi = p.mi; t.recv_class = p.owner_ci;
+      return t;
+    }
+  }
+  return t;
+}
+
 CallPlan cplan_user(Compiler *c, int id) {
   CallPlan res;
   if (id < 0 || id >= c->node_cap) { cplan_set(&res, -1, -1, UC_NONE, CP_NONE); return res; }
