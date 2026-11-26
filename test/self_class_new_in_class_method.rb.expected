@@ -1,0 +1,23 @@
+[Class, Object, nil, false]
+Class
+nil
+Object
+:hi
+false
+Base
+:base
+true
+[:sub, :base]
+Object
+[false, true]
+Class
+[Object, Object]
+Other
+1
+1
+:ok
+false
+Object
+Object
+Object
+Class

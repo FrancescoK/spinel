@@ -310,8 +310,14 @@ At top level or in a class body outside a method, loop or block, omitting
 the block with a constant superclass is equivalent to an empty block. A local
 holding a class is still not a supported superclass expression.
 `self.class.new` in a class method, where self is a class and `self.class`
-is Class, is `Class.new` made where the method runs: it is refused at
-compile time, with or without a superclass or a block.
+is Class (a `def self.m`, a `def B.m`, a def of `class << self` or
+`class << B`, a define_singleton_method body, or a method of a module the
+class extends, and no `class` of the program's own answers `self.class`), is
+`Class.new` made where the method runs: a class of its own at each call,
+with no superclass, a constant superclass that is a class of the program,
+or a block, as `Class.new` evaluated more than once is. With a builtin
+class or a non-constant as its superclass, or a block passed with `&` or
+reading the method's locals, it is refused.
 
 Besides `Class.new(Constant)`, a superclass written as a call may be
 `Struct.new(...)`, `Data.define(...)`, or the `new` of a Struct subclass of
