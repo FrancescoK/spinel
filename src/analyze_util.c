@@ -4259,6 +4259,11 @@ TyKind yield_value_type(Compiler *c, int mi) {
       result = ty_unify(result, ft);
       continue;
     }
+    /* a block whose body ends in `break`, `redo` or `retry` hands the yield
+       no value: it types nothing, and the next site's block does (a `next`
+       hands one, and a `return` is typed as its value, yvt_literal_block_value) */
+    { int j = nt_kind(nt, blk) == NK_BlockNode ? nt_block_tail_jump(nt, blk) : -1;
+      if (j >= 0 && nt_kind(nt, j) != NK_NextNode && nt_kind(nt, j) != NK_ReturnNode) continue; }
     TyKind bt = yvt_literal_block_value(c, blk);
     /* A yield-inlined (or self-recursive-lowered) method is specialized per
        call site, so its internal block type is the first concrete block. A

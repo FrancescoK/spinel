@@ -1039,8 +1039,10 @@ static void emit_ternary_arm_o(Compiler *c, int nd, TyKind res, int res_o, Buf *
      -- NULL for a pointer, which IS nil there -- the same shape as the raise
      coercion below. The poly arm above already handles it by boxing, which is
      why only a TYPED sibling ever saw this (#4163). */
+  /* (so has a yield that hands no value at this site, yield_hands_no_value,
+     whatever its type) */
   { TyKind at = repr_of(c, nd).as_ty;
-    if ((at == TY_VOID || at == TY_NIL) && res != TY_POLY && res != TY_UNKNOWN &&
+    if ((at == TY_VOID || at == TY_NIL || yield_hands_no_value(c, nd)) && res != TY_POLY && res != TY_UNKNOWN &&
         res != TY_VOID && res != TY_NIL) {
       Buf ab; memset(&ab, 0, sizeof ab);
       emit_expr_for_effect(c, nd, &ab);
