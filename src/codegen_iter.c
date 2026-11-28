@@ -722,6 +722,10 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   const char *name = nt_str(nt, id, "name");
   int recv = nt_ref(nt, id, "receiver");
   if (!name) return 0;
+  /* a `&.` call reaches its safe-navigation guard first, which re-enters
+     here on the non-nil receiver (g_sn_skip): spliced ahead of the guard,
+     the body ran on a nil receiver, where the call answers nil */
+  if (sn_guard_pending(c, id)) return 0;
   /* the target is the call's plan where its form says the binding;
      otherwise, and under --plan-check as the assertion, the lookup */
   InlineTarget it;
@@ -1284,6 +1288,20 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
   return emit_inline_call_x(c, id, b, indent, 0);
 }
 
+/* Does `node`, a `yield` or a call of the method's own block (`b.call`) as
+   this splice emits it, run a literal block whose body ends in a jump that
+   leaves it (`break`, `redo`, `retry`, `return`; a `next` hands a value), so
+   that it never produces a value here? A consumer runs such a node for its
+   effect and keeps its own nil, whatever type the node itself was given:
+   the node is typed for every site of its method, this answer for one. */
+int yield_hands_no_value(Compiler *c, int node) {
+  const NodeTable *nt = c->nt;
+  int n = nt_paren_single(nt, node);
+  if (g_yield_proc_ref || (nt_kind(nt, n) != NK_YieldNode && !is_block_call(c, n))) return 0;
+  if (nt_kind(nt, g_block_id) != NK_BlockNode) return 0;
+  int j = nt_block_tail_jump(nt, g_block_id);
+  return j >= 0 && nt_kind(nt, j) != NK_NextNode;
+}
 /* Is `id` a `<&block-param>.call(...)` invocation of the active block? */
 int is_block_call(Compiler *c, int id) {
   const NodeTable *nt = c->nt;
@@ -3891,6 +3909,8 @@ int emit_inline_expr(Compiler *c, int id, Buf *b) {
   return ok;
 }
 static int emit_inline_expr_held(Compiler *c, int id, Buf *b) {
+  /* a `&.` call is spliced from its guard (emit_inline_call_x) */
+  if (sn_guard_pending(c, id)) return 0;
   /* only when a value is actually produced (scalar return) */
   TyKind rt = repr_of(c, id).as_ty;
   if (!is_scalar_ret(rt)) {

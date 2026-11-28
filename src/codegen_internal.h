@@ -3244,6 +3244,7 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent);
 int emit_poly_recv_block_dispatch(Compiler *c, int id, Buf *b, int indent);
 int emit_poly_recv_block_value(Compiler *c, int id, Buf *b);
 int is_block_call(Compiler *c, int id);
+int yield_hands_no_value(Compiler *c, int node);
 int is_blockless_block_param_call(Compiler *c, int id);
 const char *blockless_block_param_call_name(Compiler *c, int id);
 void emit_block_invoke(Compiler *c, int site, Buf *b, int indent, int as_expr, TyKind want_ty);

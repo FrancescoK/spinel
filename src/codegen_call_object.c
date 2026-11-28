@@ -2359,12 +2359,17 @@ int emit_call_safe_nav_arms(Compiler *c, int id, Buf *b, const NodeTable *nt, co
         }
         else emit_expr(c, recv, &vbs);  /* override table full: degrade to unguarded */
         g_pre = sv_pre2;
-        if (!preb2.p || !preb2.p[0])
+        /* a method answering nothing has no C value to hold (a spliced one
+           holds its body's value boxed): the guarded call runs for its
+           effect, and the `&.` answers its nil arm */
+        int no_value = !ty_is_object(ret2) && !oint_kind(ret2) && !c_type_name(ret2);
+        if ((!preb2.p || !preb2.p[0]) && no_value)
+          buf_printf(b, "(%s ? %s : ((void)(%s), %s))", nilt, nilv, vbs.p ? vbs.p : "0", nilv);
+        else if (!preb2.p || !preb2.p[0])
           buf_printf(b, ret2 == TY_STRBUF ? "(%s ? %s : SP_STR_HDL(%s))" : "(%s ? %s : (%s))",
                      nilt, nilv, vbs.p ? vbs.p : "");
-        else if (!ty_is_object(ret2) && !oint_kind(ret2) && !c_type_name(ret2)) {
-          /* a method answering nothing has no C value to hold: the guarded
-             call runs as a statement and the `&.` answers its nil arm */
+        else if (no_value) {
+          /* (the guarded call runs as a statement here) */
           emit_indent(g_pre, g_indent);
           buf_printf(g_pre, "if (!(%s)) {\n", nilt);
           buf_puts(g_pre, preb2.p);

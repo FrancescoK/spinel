@@ -15188,6 +15188,15 @@ void emit_tail_value(Compiler *c, int node, Buf *b) {
     emit_ret_nil(c, g_ret_type, b); buf_puts(b, ")");
     return;
   }
+  /* So is a yield whose block leaves by a jump at this site (`pick { return
+     :r }`): its slot is this splice's, typed for this site, where the yield
+     is typed for every site of its method (yield_hands_no_value) */
+  if (yield_hands_no_value(c, node)) {
+    buf_puts(b, "((void)("); emit_expr_for_effect(c, node, b); buf_puts(b, "), ");
+    emit_ret_nil(c, (g_result_var && g_result_ty != TY_UNKNOWN) ? g_result_ty : g_ret_type, b);
+    buf_puts(b, ")");
+    return;
+  }
   /* An inlined body whose tail answers a different POINTER kind than the slot
      this emission types: the blockless `each` splice types its result from the
      CALL (an Enumerator) while the body's tail is `self`. That value is the
@@ -21245,7 +21254,9 @@ static int emit_call_stmt(Compiler *c, int id, Buf *b, int indent, const NodeTab
       if (ty_is_object(yrt)) {
         int ycid = ty_object_class(yrt);
         int ymi = ycid >= 0 ? call_target(c, id, ycid, ycn, 0, NULL) : -1;
-        if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id))
+        /* (a `&.` call goes on to its guard, which splices it) */
+        if (ymi >= 0 && c->scopes[ymi].yields && !block_call_takes_class_dispatch(c, id) &&
+            !sn_guard_pending(c, id))
           unsupported_feature(c, id,
             "a block-driving call to a method that yields could not be inlined "
             "(a yielding method has no standalone function to call)");

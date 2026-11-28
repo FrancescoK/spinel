@@ -664,6 +664,13 @@ static inline const int *nt_arr(const NodeTable *nt, int id, const char *key, in
     }
   return NULL;
 }
+/* The jump (nt_is_jump) that ends the body of the literal block `blk`, or -1:
+   a block ending so never hands its call a value of the body's own. */
+static inline int nt_block_tail_jump(const NodeTable *nt, int blk) {
+  int bn = 0;
+  const int *bd = nt_arr(nt, nt_ref(nt, blk, "body"), "body", &bn);
+  return bn > 0 && nt_is_jump(nt, bd[bn - 1]) ? bd[bn - 1] : -1;
+}
 /* ---- an argument list's shape ----
    Prism sets ArgumentsNodeFlags on an ArgumentsNode (CONTAINS_SPLAT,
    CONTAINS_MULTIPLE_SPLATS, CONTAINS_KEYWORDS, CONTAINS_KEYWORD_SPLAT,
