@@ -281,6 +281,12 @@ static inline NodeKind nt_kind(const NodeTable *nt, int id) {
   int k = nt->nodes[id].kind;
   return k ? (NodeKind)(k - 1) : nt_kind_resolve(nt, id);
 }
+/* Is `id` a jump: `break`, `next`, `redo`, `retry` or `return`? (One that
+   ends a block's body leaves the block with no value of the body's own.) */
+static inline int nt_is_jump(const NodeTable *nt, int id) {
+  NodeKind k = nt_kind(nt, id);
+  return k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode || k == NK_RetryNode || k == NK_ReturnNode;
+}
 
 /* Node ids of a given kind, in ascending id order (the table's kind index).
    Lets a pass iterate only the nodes it cares about instead of scanning the

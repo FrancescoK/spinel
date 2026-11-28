@@ -3211,9 +3211,9 @@ void emit_block_invoke(Compiler *c, int site, Buf *b, int indent, int as_expr,
       free(tb.p); }
     buf_puts(b, "; ");
   }
-  else if (as_expr && !nx_own && bn3 > 0 && ywo && !nx_tail_stmt &&
-           nt_kind(nt, bd3[bn3 - 1]) != NK_ReturnNode && nt_kind(nt, bd3[bn3 - 1]) != NK_NextNode) {
-    /* a bare tail wanted as the yield's oint: its oint form is the value */
+  else if (as_expr && !nx_own && bn3 > 0 && ywo && !nx_tail_stmt && !nt_is_jump(nt, bd3[bn3 - 1])) {
+    /* a bare tail wanted as the yield's oint: its oint form is the value (a
+       jump has none: the splice below runs it and gives the slot its nil) */
     if (block_of_body(c, bbody) >= 0) emit_block_locals_reset(c, block_of_body(c, bbody), b, 0);
     for (int k3 = 0; k3 < bn3 - 1; k3++) {
       if (rd_lbl && k3 == rd_head) buf_printf(b, "_redo_%d: ; ", rd_lbl);
@@ -3289,10 +3289,9 @@ void emit_block_invoke(Compiler *c, int site, Buf *b, int indent, int as_expr,
       /* a tail that jumps (`helper { break :x }`) leaves the statement
          expression without a value: give it the slot's nil, never reached,
          or the expression was void where the yield's value was read (#8215) */
-      int tk4 = (bd4 && bn4 > 0) ? (int)nt_kind(c->nt, bd4[bn4 - 1]) : -1;
-      if (rr4 < 0 && (tk4 == NK_BreakNode || tk4 == NK_NextNode || tk4 == NK_ReturnNode ||
-                      tk4 == NK_RedoNode || tk4 == NK_RetryNode)) {
+      if (rr4 < 0 && bd4 && bn4 > 0 && nt_is_jump(c->nt, bd4[bn4 - 1])) {
         if (want_poly || want_ty == TY_POLY || want_ty == TY_UNKNOWN) buf_puts(b, "sp_box_nil(); ");
+        else if (ywo) buf_printf(b, "%s; ", oint_nil(want_ty));
         else if (want_ty != TY_VOID) buf_printf(b, "%s; ", default_value_from_compiler(c, want_ty));
       }
       else if (bd4 && bn4 > 0 && (want_poly || (want_ty != TY_UNKNOWN && want_ty != TY_VOID && want_ty != TY_NIL)) &&

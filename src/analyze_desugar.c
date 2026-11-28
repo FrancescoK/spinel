@@ -4577,7 +4577,7 @@ static int mrv_jumps(const NodeTable *nt, int v) {
     const int *bb = b >= 0 && nt_kind(nt, b) == NK_StatementsNode ? nt_arr(nt, b, "body", &bn) : NULL;
     return bn > 0 && mrv_jumps(nt, bb[bn - 1]);
   }
-  return k == NK_ReturnNode || k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode || k == NK_RetryNode;
+  return nt_is_jump(nt, v);
 }
 /* Does the subtree under `root` write a variable -- any, or the one named
    `vn` when it is given? Past the depth it follows, it answers that it may. */

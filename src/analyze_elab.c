@@ -550,7 +550,7 @@ static int elab_builtin_reopen(Compiler *c, int p) {
 static int lr_stmt_leaves(Compiler *c, int st) {
   const NodeTable *nt = c->nt;
   NodeKind k = nt_kind(nt, st);
-  if (k == NK_BreakNode || k == NK_NextNode || k == NK_RedoNode || k == NK_RetryNode || k == NK_ReturnNode) return 1;
+  if (nt_is_jump(nt, st)) return 1;
   const char *nm = k == NK_CallNode && nt_ref(nt, st, "receiver") < 0 ? nt_str(nt, st, "name") : NULL;
   return nm && is_diverging_call(nm) && !lr_named(c, nm);
 }

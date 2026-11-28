@@ -826,8 +826,7 @@ static int res_body_ok(Compiler *c, int n, int parent, int top, const char *p0, 
   const NodeTable *nt = c->nt;
   if (n < 0 || n >= cap) return 1;
   NodeKind k = nt_kind(nt, n);
-  if (k == NK_NextNode || k == NK_BreakNode || k == NK_RedoNode || k == NK_RetryNode || k == NK_ReturnNode)
-    return 0;
+  if (nt_is_jump(nt, n)) return 0;
   if ((k == NK_LocalVariableWriteNode || k == NK_LocalVariableOperatorWriteNode ||
        k == NK_LocalVariableOrWriteNode || k == NK_LocalVariableAndWriteNode ||
        k == NK_LocalVariableTargetNode) && sp_streq(nt_str(nt, n, "name"), p0))

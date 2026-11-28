@@ -23299,8 +23299,7 @@ static void emit_stmt_node(Compiler *c, int id, Buf *b, int indent) {
   if (ty_k == NK_ParenthesesNode) {
     int pb = nt_ref(nt, id, "body"), pn = 0;
     const int *ps = pb >= 0 && nt_kind(nt, pb) == NK_StatementsNode ? nt_arr(nt, pb, "body", &pn) : NULL;
-    NodeKind lk = pn > 0 ? nt_kind(nt, ps[pn - 1]) : NK_NilNode;
-    if (lk == NK_ReturnNode || lk == NK_BreakNode || lk == NK_NextNode || lk == NK_RedoNode || lk == NK_RetryNode) {
+    if (pn > 0 && nt_is_jump(nt, ps[pn - 1])) {
       for (int i = 0; i < pn; i++) emit_stmt(c, ps[i], b, indent);
       return;
     }
