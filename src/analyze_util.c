@@ -3965,6 +3965,15 @@ TyKind block_next_value_ty(Compiler *c, int node) {
   return r;
 }
 
+/* The jump a literal block's body ends in (`break`, `redo`, `retry`,
+   `return`: nt_block_tail_jump) where no `next` in the body hands the block
+   a value (block_next_value_ty), so that the block never completes with one;
+   -1 otherwise. `{ next 7 if f; return :r }` can still hand 7. */
+int block_leaving_jump(Compiler *c, int blk) {
+  int j = nt_block_tail_jump(c->nt, blk);
+  return j >= 0 && block_next_value_ty(c, nt_ref(c->nt, blk, "body")) == TY_UNKNOWN ? j : -1;
+}
+
 /* Is `t` a kind block_store_value_ty answers: a concrete one that is not
    `want`? With no `want` (the receiver's elements are not known yet: a
    row read out of a table), one that no typed Array of numbers or objects
@@ -4259,11 +4268,12 @@ TyKind yield_value_type(Compiler *c, int mi) {
       result = ty_unify(result, ft);
       continue;
     }
-    /* a block whose body ends in `break`, `redo` or `retry` hands the yield
-       no value: it types nothing, and the next site's block does (a `next`
-       hands one, and a `return` is typed as its value, yvt_literal_block_value) */
-    { int j = nt_kind(nt, blk) == NK_BlockNode ? nt_block_tail_jump(nt, blk) : -1;
-      if (j >= 0 && nt_kind(nt, j) != NK_NextNode && nt_kind(nt, j) != NK_ReturnNode) continue; }
+    /* a block that leaves only by `break`, `redo` or `retry` (no `next`
+       hands it a value: block_leaving_jump) hands the yield no value: it
+       types nothing, and the next site's block does (a `return` is typed as
+       its value, yvt_literal_block_value) */
+    { int j = nt_kind(nt, blk) == NK_BlockNode ? block_leaving_jump(c, blk) : -1;
+      if (j >= 0 && nt_kind(nt, j) != NK_ReturnNode) continue; }
     TyKind bt = yvt_literal_block_value(c, blk);
     /* A yield-inlined (or self-recursive-lowered) method is specialized per
        call site, so its internal block type is the first concrete block. A

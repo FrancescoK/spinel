@@ -1299,9 +1299,9 @@ int emit_inline_call(Compiler *c, int id, Buf *b, int indent) {
 }
 
 /* Does `node`, a `yield` or a call of the method's own block (`b.call`) as
-   this splice emits it, run a literal block whose body ends in a jump that
-   leaves it (`break`, `redo`, `retry`, `return`; a `next` hands a value), so
-   that it never produces a value here? A consumer runs such a node for its
+   this splice emits it, run a literal block that leaves only by a jump
+   (block_leaving_jump: no `next` hands it a value), so that it never
+   produces a value here? A consumer runs such a node for its
    effect and keeps its own nil, whatever type the node itself was given:
    the node is typed for every site of its method, this answer for one. */
 int yield_hands_no_value(Compiler *c, int node) {
@@ -1309,8 +1309,7 @@ int yield_hands_no_value(Compiler *c, int node) {
   int n = nt_paren_single(nt, node);
   if (g_yield_proc_ref || (nt_kind(nt, n) != NK_YieldNode && !is_block_call(c, n))) return 0;
   if (nt_kind(nt, g_block_id) != NK_BlockNode) return 0;
-  int j = nt_block_tail_jump(nt, g_block_id);
-  return j >= 0 && nt_kind(nt, j) != NK_NextNode;
+  return block_leaving_jump(c, g_block_id) >= 0;
 }
 /* Is `id` a `<&block-param>.call(...)` invocation of the active block? */
 int is_block_call(Compiler *c, int id) {
