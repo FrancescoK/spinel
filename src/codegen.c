@@ -17306,12 +17306,7 @@ int emit_super_inline(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   int pushed_ytgt = yield_target_push(block, saved_block, saved_bpn, saved_nren, saved_ser, saved_ebase);
   g_block_id = block;
   g_block_nren = (block == saved_block) ? saved_bnren : saved_nren;
-  /* same break-context rules as emit_inline_call_x */
-  g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
-  g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
-  g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
-  g_block_brk_rescue_base = (block == saved_block) ? saved_bbres : saved_bres;
-  g_brk_ser_var = NULL;
+  inline_block_brk_bind(block == saved_block);
   g_block_param_name = m->blk_param;
   const char *saved_ypr = g_yield_proc_ref;
   TyKind saved_yslot = g_yield_slot_ty;

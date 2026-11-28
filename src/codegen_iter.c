@@ -200,6 +200,21 @@ void inline_block_ctx_restore(const InlineBlockCtx *s) {
   g_block_brk_var = s->brk_var; g_brk_ser_var = s->ser_var; g_block_brk_ebase = s->brk_ebase;
   g_block_brk_exc_base = s->brk_exc_base; g_block_brk_rescue_base = s->brk_rescue_base;
 }
+/* The break context a splice gives the block it makes current, the one
+   rule of every inliner (emit_inline_call_x, the super splice,
+   emit_ctor_yield_inline): a literal block's top-level `break` leaves the
+   spliced call, so it addresses the call site's wrapper (g_brk_ser_var as
+   the splice starts) under the call site's ensure, exception and rescue
+   bases; a forwarded block (`&b` of the method spliced around it) keeps
+   the context it was written under. The spliced body's own breaks (a
+   while inside the method) never target the caller. */
+void inline_block_brk_bind(int forwarded) {
+  if (!forwarded) {
+    g_block_brk_var = g_brk_ser_var; g_block_brk_ebase = g_brk_ensure_base;
+    g_block_brk_exc_base = g_brk_exc_base; g_block_brk_rescue_base = g_brk_rescue_base;
+  }
+  g_brk_ser_var = NULL;
+}
 /* Entry `fe` is the block a splice makes current: its own yields bind its
    lowered context (the spliced block's was what the fallback held), and
    its target, when recorded, becomes the fallback with that target's own
@@ -1026,12 +1041,7 @@ int emit_inline_call_x(Compiler *c, int id, Buf *b, int indent, int as_expr) {
   g_yield_slot_ty = TY_UNKNOWN;        /* set to the inline's return type below */
   /* the literal block binds to THIS call site's break scope; a forwarded
      BlockArgumentNode block keeps its original definition-site scope */
-  g_block_brk_var = (block == saved_block) ? saved_bbv : saved_ser;
-  g_block_brk_ebase = (block == saved_block) ? saved_bbe : saved_ebase;
-  g_block_brk_exc_base = (block == saved_block) ? saved_bbexc : saved_bexc;
-  g_block_brk_rescue_base = (block == saved_block) ? saved_bbres : saved_bres;
-  /* the METHOD BODY's own breaks (a while inside m) never target the caller */
-  g_brk_ser_var = NULL;
+  inline_block_brk_bind(block == saved_block);
   g_block_param_name = m->blk_param;
   BlockRetHome saved_brh = block_ret_home_enter(block, saved_block);
   /* The receiver, the `&callable` and the arguments below are call-site

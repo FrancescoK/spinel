@@ -749,6 +749,7 @@ typedef struct {
 } InlineBlockCtx;
 void inline_block_ctx_save(InlineBlockCtx *s);
 void inline_block_ctx_restore(const InlineBlockCtx *s);
+void inline_block_brk_bind(int forwarded);
 
 void block_ret_home_leave(int block, BlockRetHome old);
 extern const char *g_yield_self_fallback;        /* see codegen_util.c */

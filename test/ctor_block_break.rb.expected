@@ -1,0 +1,41 @@
+:b
+:g
+10
+:c
+:a
+6
+nil
+nil
+[1, 2]
+:b
+[:obj, 3]
+[:obj, [0, 1, 2]]
+[:obj, 2]
+1
+nil
+true
+[:a, [:obj, 3]]
+[:x, :y]
+:t
+5
+"v=7"
+nil
+2
+:e
+:ens
+:l2
+[:obj, 2]
+:z
+[:obj, 1]
+:s
+1
+:k
+2
+[:obj, 3]
+:outer
+[1, [:obj, 20]]
+1
+2
+:lb
+:lb
+:r

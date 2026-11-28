@@ -268,12 +268,10 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, const char *rtid, Buf *b
   InlineBlockCtx caller_bc;
   inline_block_ctx_save(&caller_bc);
   int saved_nren = g_nren, saved_block = g_block_id;
-  int saved_bnren = g_block_nren, saved_yfbn = g_yield_block_fallback_nren;
+  int saved_bnren = g_block_nren;
   const char *saved_self = g_self;
   const char *saved_self_deref = g_self_deref;
   int saved_emcls = g_emitting_class_id;
-  const char *saved_bpn = g_block_param_name;
-  int saved_yfb = g_yield_block_fallback;
   int is_val = c->classes[ci].is_value_type;
   /* stack-local: this ctor inliner recurses (a constructor's block may itself
      construct), and g_self points into this buffer -- a shared static would be
@@ -289,9 +287,6 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, const char *rtid, Buf *b
   const char *saved_self_fb = g_yield_self_fallback;
   const char *saved_deref_fb = g_yield_self_deref_fallback;
   int saved_emcls_fb = g_yield_emitting_class_fallback;
-  const char *saved_self_fb2 = g_yield_self_fallback2;
-  const char *saved_deref_fb2 = g_yield_self_deref_fallback2;
-  int saved_emcls_fb2 = g_yield_emitting_class_fallback2;
   if (!fwd_block) {
     /* a literal block runs under this call site's self; the block that was
        current keeps its own self one level out (see codegen_iter.c) */
@@ -308,6 +303,9 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, const char *rtid, Buf *b
   /* a literal block's `return` leaves the method it is written in, which
      may itself be spliced into its caller (its `_yretN` funnel) */
   BlockRetHome saved_brh = block_ret_home_enter(g_block_id, saved_block);
+  /* a literal block's `break` leaves this `new` with its value: it
+     addresses the call site's wrapper, as an inlined call's block does */
+  inline_block_brk_bind(fwd_block);
   InlineBlockCtx callee_bc;
   inline_block_ctx_save(&callee_bc);
   inline_block_ctx_restore(&caller_bc);
@@ -538,19 +536,12 @@ int emit_ctor_yield_inline(Compiler *c, int id, int ci, const char *rtid, Buf *b
 
   block_ret_home_leave(fwd_block ? saved_block : block, saved_brh);
   g_nren = saved_nren;
-  g_block_id = saved_block;
-  g_block_nren = saved_bnren;
-  g_yield_block_fallback_nren = saved_yfbn;
   g_self = saved_self;
   g_self_deref = saved_self_deref;
   g_emitting_class_id = saved_emcls;
-  g_block_param_name = saved_bpn;
-  g_yield_block_fallback = saved_yfb;
-  g_yield_self_fallback = saved_self_fb;
-  g_yield_self_fallback2 = saved_self_fb2; g_yield_self_deref_fallback2 = saved_deref_fb2;
-  g_yield_emitting_class_fallback2 = saved_emcls_fb2;
-  g_yield_self_deref_fallback = saved_deref_fb;
-  g_yield_emitting_class_fallback = saved_emcls_fb;
+  /* the caller's block context, its break context among it (a `break`
+     after this `new` in the caller's block addresses the caller's wrapper) */
+  inline_block_ctx_restore(&caller_bc);
   view_bind_unpark(c, parked);
   return 1;
 }
