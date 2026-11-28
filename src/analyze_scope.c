@@ -9175,6 +9175,9 @@ static void include_module_methods(Compiler *c, int ci, int mod_id, int guard, i
           desugar_included_bare_builtin(c, nb, c->classes[ci].name);
         }
         walk_scope(c, nb, dst_idx, ci);
+        /* (the walk makes a scope for a def in the copy, and comp_scope_new
+           may realloc c->scopes: re-derive both pointers) */
+        src = &c->scopes[ms]; dst = &c->scopes[dst_idx];
         g_inc_did_clone = 1;
       }
       else { dst->body = src->body; comp_touch_scope(dst->idx); }
