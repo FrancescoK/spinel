@@ -18,3 +18,14 @@ p((pick { break :x }), (pick2 { break 4 }), (pick2 { 3 }), pick2)
 p((pick3(1) { |v| break v * 5 }), (pick3(2) { |v| v + 1 }), (pick3(0) { |v| v }))
 r = [1, 2].map { |i| pick2 { break i if i == 1; i * 10 } }
 p r
+
+# A block that ends in a jump but holds an earlier `next` with a value can
+# still complete with that value, in the tail, in a local and in a
+# conditional's arm.
+def pk; yield; end
+def vi(flag); pk { next 7 if flag; return 8 }; end
+def vs(flag); pk { next :a if flag; return :r }; end
+def vl(flag); x = pk { next 7 if flag; return 8 }; x + 1; end
+def vt(flag); (flag ? pk { next 7 if flag; return 8 } : 0) + 1; end
+p vi(true), vi(false), vs(true), vs(false)
+p vl(true), vl(false), vt(true), vt(false)
