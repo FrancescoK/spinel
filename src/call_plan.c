@@ -3567,7 +3567,8 @@ int cplan_bam_reopen_target(Compiler *c, int mi) {
 }
 /* See call_plan.h. */
 int cplan_builtin_reopen_def(Compiler *c, int site, const char *cls, const char *sym, const char *own) {
-  int framed = elab_plan_enter(c, site);
+  /* (a wrapper with no site, bam_site unset, has no point to frame) */
+  int framed = site >= 0 && elab_plan_enter(c, site);
   int r = bam_reopen_walk(c, site, cls, sym, own);
   if (framed) elab_plan_leave(c);
   return r;
